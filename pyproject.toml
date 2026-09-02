@@ -1,0 +1,125 @@
+[project]
+name = "seikan"
+version = "3.0.0"
+description = "Stateless CLI statistical reporter: observer-pure forward-return event studies with a per-cell checklist, over strict CSV data."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "yewcast97" }]
+requires-python = ">=3.13"
+keywords = ["backtesting", "event-study", "statistics", "finance", "cli"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Intended Audience :: Financial and Insurance Industry",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Office/Business :: Financial :: Investment",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+    "Typing :: Typed",
+]
+dependencies = [
+    # The observer-pure backtest core: vectorized numpy for the windowed/elementwise transform
+    # kernels, numba for the recursive ones (EMA, first_true, bars_since_extremum), scipy for the
+    # statistical layer (HAC, rotation null, CSCV PBO).
+    "numba>=0.60",
+    "scipy>=1.13",
+    "numpy>=2",
+    "pandas>=2",
+    # The thesis DSL (validated models, extra="forbid") + the gate-threshold settings
+    # (SEIKAN_* env vars overridden by CLI flags).
+    "pydantic>=2",
+    "pydantic-settings>=2.5",
+]
+
+[project.urls]
+Repository = "https://github.com/yewcast97/seikan"
+Changelog = "https://github.com/yewcast97/seikan/blob/main/CHANGELOG.md"
+
+[project.scripts]
+seikan = "seikan.cli:main"
+
+[build-system]
+# Pure-Python package (no compiled extensions); a plain setuptools backend is enough.
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# Ship the agent-facing DSL reference (`seikan schema --markdown` reads it out of the installed
+# package UNGUARDED, so a wheel without it does not answer `--markdown` quietly or emptily: the
+# FileNotFoundError falls through to the CLI's catch-all and the command exits 4 with an `internal`
+# error envelope on stdout — a packaging omission surfacing as a seikan bug) and the PEP 561
+# `py.typed` marker, which tells a downstream type checker that this package's own annotations are
+# the authority — without the marker mypy/pyright silently treat every `seikan.*` import as `Any`,
+# and a caller building against the DSL models or `serialize`'s writer signatures loses exactly
+# the contract surface those annotations exist to state.
+[tool.setuptools.package-data]
+"seikan" = ["reference/*.md", "py.typed"]
+
+[tool.pytest.ini_options]
+# Warnings are ERRORS: the engine's own numerics are warning-free by design (degenerate pools
+# null their moments instead of tripping scipy's precision-loss warning; the slope regression
+# has no RankWarning channel; kernel arithmetic scopes its errstate), so any warning that
+# appears is a regression to hear about, not scroll past.
+filterwarnings = ["error"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+    "mypy>=1.14",
+    "ruff>=0.9",
+]
+
+# The `py.typed` marker above claims these annotations are authoritative, and a claim nothing checks
+# is a claim that drifts. mypy is what makes it true; `disallow_untyped_defs` is what keeps a new
+# function from quietly re-opening the hole.
+[tool.mypy]
+python_version = "3.13"
+files = ["src/seikan"]
+strict = true
+warn_unreachable = true
+enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
+
+# numba ships no stubs and its decorators are untyped, so every njit kernel would otherwise become
+# an untyped call at the boundary. The kernels themselves stay annotated; only the import is waived.
+#
+# pandas is the same shape of problem with a sharper edge: it ships no `py.typed`, and the only
+# stubs that exist (`pandas-stubs`) are a third-party approximation maintained apart from pandas
+# itself. Adopting them here reports 79 errors, and the overwhelming majority are the stubs being
+# less precise than the library — `DatetimeIndex` narrowing lost through `.index`, groupby keys
+# widened to `Hashable`, `Series.median()` on a timedelta series typed `float`. Every one of those
+# would have to be answered with a `cast`, i.e. ~40 new assertions that the checker is wrong, which
+# is a worse contract than declaring the boundary untyped once and annotating everything on OUR
+# side of it. This waiver covers the IMPORT only: every seikan function that takes or returns a
+# frame still declares `pd.DataFrame` / `pd.Series` / `pd.DatetimeIndex` in its own signature, so
+# the shapes a caller sees are stated — mypy simply cannot look inside pandas to verify them.
+[[tool.mypy.overrides]]
+module = ["numba.*", "scipy.*", "pandas.*"]
+ignore_missing_imports = true
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+# Formatting is enforced (`ruff format --check` is part of the dev loop below), with ruff's
+# defaults stated explicitly so a reformat can never arrive as a surprise.
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "SIM", "RUF"]
+# The prose in this package uses real typography — em dashes, `×` between swept axes, `≥`/`≤` in
+# threshold descriptions. The ambiguous-unicode rules read every one of those as a possible homoglyph
+# typo, which is 269 findings about punctuation that is doing exactly what it means to do.
+ignore = ["RUF001", "RUF002", "RUF003"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests name fixtures after the statistical objects they build (`T`, `X`, `HAC`), where the
+# convention the maths uses beats the convention the linter wants.
+"tests/**" = ["N806", "N803"]
