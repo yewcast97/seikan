@@ -279,7 +279,8 @@ produced under; the checklist dispatches its rubric on it), `statistics_version`
 `gate_evidence_basis`, `params`/`targets` (the swept entry axes and the regime — the two grid
 labels), `rotation`, the per-target `sources` availability panel,
 `cross_breadth` (the effective-universe ledger, one entry per cross node × combo summarizing the
-per-bar finite-member count `k` the cross kernels reduce over — always present, `[]` outside
+per-bar entering-member count `k` the cross kernels reduce over — finite input, and under the
+node's `where`/`group` selectors eligible and finitely labelled — always present, `[]` outside
 basket; evidence-only), the
 grid-level CSCV `pbo` block (ONE nested object: `{pbo, reason, n_splits, n_splits_attempted,
 n_candidates_min, n_combos, n_combos_scoreable, n_combos_declared, blocks, lambda_mean,
@@ -724,12 +725,20 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   series and locates none of them, and `BacktestParams` carries no sampling knob of any kind, so
   the DSL can express neither where its data lives nor a partition of it that some cells see and
   others do not). Layered behind the `schema.py` facade: `nodes` (the Series vocabulary and its
-  union), `conditions`, `thesis_model` (feed/data/outcome/params/`Thesis`), `traverse` (the tree
-  walks) and `render` (presentation-only labels).
+  union — the data leaves, the time transforms, the cross-sectional trio with its `where`/`group`
+  population selectors, the operator pair, the event-anchor family `mask` / `bars_since_event` /
+  `event_value` / `event_agg` that embeds a Condition, `native` for feed-clock transforms, and
+  the `AxisRef` shared-axis reference), `conditions` (threshold, the combinators, `rolling`,
+  `first_true`, `lag` — and the ONE rebuild site for both mutually recursive vocabularies),
+  `thesis_model` (feed/data/outcome/params/`axes`/`Thesis`), `traverse` (the tree walks, in a
+  direct layer and a crossing layer that reaches into embedded conditions; one sweep-scan state
+  mirrors the engine resolver) and `render` (presentation-only labels for Series and
+  Conditions).
   `compiler/` — data loading (`resolve_data_files` is where the invocation's `--data` /
   `--column` pairs meet the thesis's declared keys, and the only thing that checks the two
   agree; the loader returns READ-ONLY frames, so a value write raises instead of serving stale
-  `md.cache` results) + numpy/numba transform kernels (`nb.py`, `vectorize.py`,
+  memo results, and retains each feed's native post-lag prints as `MarketData.externals_native`
+  for the `native` node) + numpy/numba transform kernels (`nb.py`, `vectorize.py`,
   `transforms.py`) + the pure path/source leaves (`paths.py`, `sources.py`) + the runner, which
   measures every declared cell once over the whole index and builds the per-cell panel off the
   DECLARED grid.
@@ -798,6 +807,22 @@ conservative, fully-ledgered results today, never wrong ones:
   side has no expressible bound, so whether an outcome feed is alive over the measured window
   is the caller's data honesty, exactly like vintages. An optional per-feed `max_age`
   (censoring stale joined values fail-closed) is the designed future fix.
+
+Three more, deferred with the 4.0.0 DSL expressiveness release (2026-09-13), each with an
+honest workaround today:
+
+- **Target-clock resampling.** `native(feed, expr)` evaluates on a FEED's own clock, but the
+  engine has no session calendar, so resampling the TARGET's own bars (a weekly close from daily
+  bars) still needs a caller-consolidated feed stamped at period completion; likewise the LAST
+  trading day of a month needs a schedule feed (the first is `change(calendar(month), 1, diff)
+  != 0`).
+- **Applicability vs missing data.** A basket member that leaves the universe and stops trading
+  is still a raw-source hole to `source_coverage` — telling "inapplicable" from "missing" is a
+  versioned ledger-contract change; today the `where` eligibility selector keeps such a member
+  out of the cross-section, and its hole is reported, never absorbed.
+- **Reference universes and member weights.** A cross-section is always the declared targets:
+  a rank against an OUTSIDE universe is supplied as a feed of breakpoints; a weighted mean is
+  the exact composition `cross_agg(x·w, mean) / cross_agg(w, mean)`.
 
 Two pieces of CALLER discipline worth naming without legislating: a report is a FILE artifact —
 reference it by path and identity (`dsl_hash`, `data_digests`), never re-type its numbers through

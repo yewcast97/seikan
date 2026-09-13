@@ -1,6 +1,6 @@
 [project]
 name = "seikan"
-version = "3.0.0"
+version = "4.0.0"
 description = "Stateless CLI statistical reporter: observer-pure forward-return event studies with a per-cell checklist, over strict CSV data."
 readme = "README.md"
 license = "MIT"

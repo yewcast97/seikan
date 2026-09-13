@@ -62,6 +62,16 @@ of substituting a nearby question; no stamp moves and every emitted number is by
   constant's name or a reserved column refuse at parse. Library signatures:
   `collect_sweeps(entry, axes=None)`, `iter_param_assignments(entry, axes=None)`,
   `declared_grid_size(entry, horizon, axes=None)`.
+- Depth accounting: `bars_since_event` / `event_value` / `event_agg` / `native` each count one
+  level (over their input / expr); `mask` is transparent; an embedded Condition adds nothing to
+  its embedding node and its operands are roots of their own; a cross node's `group` counts as a
+  second child, its `where` operands are roots. `MAX_SERIES_NESTING` stays 5.
+- NaN-gating contract, unchanged in kind: every new node yields NaN (→ an undefined threshold →
+  `signal_coverage`) on a post-warmup hole, and raw leaves under an embedded condition or a
+  native expr still flow to `source_coverage`. No stamp moves: `report_schema_version` 5,
+  `statistics_version` 4, `policy_version` 3; every number a 3.0.0 document produced is
+  byte-identical (verified by diffing full conjunction and basket reports before/after — only
+  `identity.dsl_hash` differs, per the `exclude_none` change).
 
 ## 3.0.0 — report schema 5, statistics 4, policy 3
 
