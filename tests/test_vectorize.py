@@ -1138,6 +1138,20 @@ def test_sweep_axis_names_match_collect_sweeps_order_exact():
                 ),
             ]
         ),
+        # A cross node's sweeps register input → where → group, in that order.
+        sc.ThresholdCondition(
+            left=sc.CrossRank(
+                input=sc.Change(input=c("close"), periods=[5, 10]),
+                where=sc.ThresholdCondition(
+                    left=sc.RollingAgg(input=c("volume"), window=[20, 40], agg="mean"),
+                    op=">",
+                    right=sc.Constant(value=[1.0, 2.0], name="liq"),
+                ),
+                group=sc.Shift(input=sc.External(name="sector"), periods=[1, 2]),
+            ),
+            op=">=",
+            right=sc.Constant(value=[0.6, 0.8], name="q"),
+        ),
         # A native-clock expr: its sweeps register through the recursion like any input's.
         sc.ThresholdCondition(
             left=sc.Native(
@@ -2019,3 +2033,220 @@ def test_native_explicit_nan_print_is_a_hole_on_the_native_clock(ohlcv):
     assert vz.build_series(
         Native(name="eps", expr=RollingAgg(input=External(name="eps"), window=2, agg="mean")), md
     )[1]["t"].to_numpy()[6]
+
+
+# ---- the cross-sectional population model: where / group ---------------------------------
+
+
+def _md4(x, elig=None, sector=None, n=8) -> MarketData:
+    """Four flat-priced targets with per-target feeds ``x`` (constant per member), optional
+    ``elig`` and ``sector`` (constant per member, or a per-member array over the bars)."""
+    idx = pd.date_range("2022-01-01", periods=n, freq="1D")
+    targets = ["T0", "T1", "T2", "T3"]
+    close = pd.DataFrame(dict.fromkeys(targets, 100.0), index=idx)
+
+    def feed(values):
+        return pd.DataFrame(
+            {
+                t: np.broadcast_to(np.asarray(v, float), (n,))
+                for t, v in zip(targets, values, strict=True)
+            },
+            index=idx,
+        )
+
+    ext = {"x": feed(x)}
+    if elig is not None:
+        ext["elig"] = feed(elig)
+    if sector is not None:
+        ext["sector"] = feed(sector)
+    return MarketData(
+        close=close, open=close, high=close, low=close, volume=None, externals=ext, targets=targets
+    )
+
+
+def _e(name, op=">=", v=1.0):
+    return ThresholdCondition(left=External(name=name), op=op, right=Constant(value=v))
+
+
+_X = External(name="x")
+_ELIG = _e("elig")
+
+
+def test_cross_membership_without_where_or_group_is_input_finiteness():
+    md = _md3()
+    node = CrossRank(input=ZScore(input=Field(column="close"), window=20))
+    x = vz.build_series(node.input, md)[0].to_numpy(dtype=float)
+    np.testing.assert_array_equal(vz.cross_membership(node, md), np.isfinite(x))
+    assert vz.cross_population(node, md).all()
+
+
+def test_cross_rank_where_ranks_within_the_eligible_population():
+    # The review's case: values [100, 90, 80, 70], the last two eligible → ranks within {80, 70}
+    # are [nan, nan, 1.0, 0.0], and the kernel saw k = 2.
+    md = _md4(x=[100, 90, 80, 70], elig=[0, 0, 1, 1])
+    v, i = vz.build_series(CrossRank(input=_X, where=_ELIG), md)
+    np.testing.assert_array_equal(v.iloc[-1].to_numpy(), [np.nan, np.nan, 1.0, 0.0])
+    np.testing.assert_array_equal(i.iloc[-1].to_numpy(), [False, False, True, True])
+    assert (vz.cross_membership(CrossRank(input=_X, where=_ELIG), md).sum(axis=1) == 2).all()
+    # without `where` the global ranks put 80 in the bottom half
+    np.testing.assert_allclose(
+        vz.build_series(CrossRank(input=_X), md)[0].iloc[-1].to_numpy(), [1.0, 2 / 3, 1 / 3, 0.0]
+    )
+
+
+def test_cross_rank_where_late_eligibility_feed_is_warmup_not_a_hole():
+    # T0's eligibility feed starts late (leading NaN): warmup, so T0 is simply out of the
+    # population there — no bar is voided and nothing is undefined.
+    elig0 = np.array([np.nan, np.nan, np.nan, 1, 1, 1, 1, 1])
+    md = _md4(x=[100, 90, 80, 70], elig=[elig0, 1, 1, 1])
+    node = CrossRank(input=_X, where=_ELIG)
+    cond = ThresholdCondition(left=node, op=">=", right=Constant(value=0.0))
+    assert not vz.undefined_mask(cond, md).any()
+    k = vz.cross_membership(node, md).sum(axis=1)
+    np.testing.assert_array_equal(k, [3, 3, 3, 4, 4, 4, 4, 4])
+
+
+def test_cross_rank_where_undefined_member_voids_the_whole_bar():
+    # A post-warmup hole in ONE member's eligibility voids the bar for EVERY member (fail-closed
+    # population): eligible, initialized members read undefined there. And the outer guard does
+    # NOT absorb an undefined eligibility of its own (U ∧ U = U) — that hole is ledgered too.
+    elig0 = np.array([1, 1, 1, np.nan, 1, 1, 1, 1])
+    md = _md4(x=[100, 90, 80, 70], elig=[elig0, 0, 1, 1])
+    node = CrossRank(input=_X, where=_ELIG)
+    guarded = AndCondition(
+        conditions=[_ELIG, ThresholdCondition(left=node, op=">=", right=Constant(value=0.8))]
+    )
+    undef = vz.undefined_mask(guarded, md)
+    np.testing.assert_array_equal(undef[3], [True, False, True, True])
+    assert undef.sum() == 3
+    assert vz.cross_membership(node, md).sum(axis=1)[3] == 0
+    np.testing.assert_array_equal(vz.signal(guarded, md).to_numpy()[3], [False] * 4)
+
+
+def test_cross_rank_where_outer_guard_makes_ineligible_decidedly_false():
+    # The canonical idiom: a once-eligible member that turns ineligible reads post-init NaN from
+    # the node (a bare threshold would be undefined); `and(E, …)` absorbs it as False (F ∧ U = F).
+    elig3 = np.array([1, 1, 1, 1, 0, 0, 0, 0])
+    md = _md4(x=[100, 90, 80, 70], elig=[1, 1, 1, elig3])
+    node = CrossRank(input=_X, where=_ELIG)
+    bare = ThresholdCondition(left=node, op=">=", right=Constant(value=0.0))
+    guarded = AndCondition(conditions=[_ELIG, bare])
+    assert vz.undefined_mask(bare, md)[4:, 3].all()
+    assert not vz.undefined_mask(guarded, md).any()
+    assert not vz.signal(guarded, md).to_numpy()[4:, 3].any()
+    assert vz.signal(guarded, md).to_numpy()[:4, 3].all()
+
+
+def test_cross_rank_where_bare_threshold_leaves_a_previously_eligible_member_undefined():
+    elig3 = np.array([1, 1, 1, 1, 0, 0, 0, 0])
+    md = _md4(x=[100, 90, 80, 70], elig=[1, 1, 1, elig3])
+    bare = ThresholdCondition(
+        left=CrossRank(input=_X, where=_ELIG), op=">=", right=Constant(value=0.0)
+    )
+    u = vz.undefined_mask(bare, md)
+    assert u[4:, 3].all() and not u[:4].any() and not u[:, :3].any()
+
+
+def test_cross_agg_where_excluded_member_reads_no_aggregate_and_init_stays_own_input_gated():
+    md = _md4(x=[100, 90, 80, 70], elig=[0, 1, 1, 1])
+    v, i = vz.build_series(CrossAgg(input=_X, agg="mean", where=_ELIG), md)
+    np.testing.assert_array_equal(v.iloc[-1].to_numpy(), [np.nan, 80.0, 80.0, 80.0])
+    np.testing.assert_array_equal(i.iloc[-1].to_numpy(), [False, True, True, True])
+    # a warming member INSIDE the population still sees the group's value, but cannot fire off it
+    x1 = np.array([np.nan, np.nan, 90, 90, 90, 90, 90, 90])
+    md = _md4(x=[100, x1, 80, 70], elig=[1, 1, 1, 1])
+    v, i = vz.build_series(CrossAgg(input=_X, agg="mean", where=_ELIG), md)
+    assert v.iloc[0, 1] == pytest.approx((100 + 80 + 70) / 3) and not i.iloc[0, 1]
+    assert i.iloc[2, 1]
+
+
+def test_cross_group_constant_label_is_bit_exact_with_ungrouped():
+    md = _md3()
+    for plain, grouped in (
+        (
+            CrossRank(input=Field(column="close")),
+            CrossRank(input=Field(column="close"), group=Constant(value=7.0)),
+        ),
+        (
+            CrossDemean(input=Field(column="close"), min_valid=3),
+            CrossDemean(input=Field(column="close"), min_valid=3, group=Constant(value=1.0)),
+        ),
+        (
+            CrossAgg(input=ZScore(input=Field(column="close"), window=10), agg="std"),
+            CrossAgg(
+                input=ZScore(input=Field(column="close"), window=10),
+                agg="std",
+                group=Constant(value=0.0),
+            ),
+        ),
+    ):
+        pv, pi = vz.build_series(plain, md)
+        gv, gi = vz.build_series(grouped, md)
+        assert np.array_equal(pv.to_numpy(), gv.to_numpy(), equal_nan=True)
+        assert np.array_equal(pi.to_numpy(), gi.to_numpy())
+
+
+def test_cross_rank_group_ranks_within_sector():
+    md = _md4(x=[100, 90, 80, 70], sector=[1, 1, 2, 2])
+    v = vz.build_series(CrossRank(input=_X, group=External(name="sector")), md)[0]
+    np.testing.assert_array_equal(v.iloc[-1].to_numpy(), [1.0, 0.0, 1.0, 0.0])
+    a = vz.build_series(CrossAgg(input=_X, agg="mean", group=External(name="sector")), md)[0]
+    np.testing.assert_array_equal(a.iloc[-1].to_numpy(), [95.0, 95.0, 75.0, 75.0])
+
+
+def test_cross_rank_group_nan_label_is_excluded():
+    md = _md4(x=[100, 90, 80, 70], sector=[1, 1, 1, np.nan])
+    node = CrossRank(input=_X, group=External(name="sector"))
+    v, i = vz.build_series(node, md)
+    np.testing.assert_array_equal(v.iloc[-1].to_numpy(), [1.0, 0.5, 0.0, np.nan])
+    assert not i.iloc[-1, 3]
+    np.testing.assert_array_equal(vz.cross_membership(node, md)[-1], [True, True, True, False])
+
+
+def test_cross_rank_group_label_changes_over_time():
+    sector0 = np.array([1, 1, 1, 1, 2, 2, 2, 2])
+    md = _md4(x=[100, 90, 80, 70], sector=[sector0, 1, 2, 2])
+    v = vz.build_series(CrossRank(input=_X, group=External(name="sector")), md)[0].to_numpy()
+    np.testing.assert_array_equal(v[0], [1.0, 0.0, 1.0, 0.0])
+    np.testing.assert_array_equal(v[-1], [1.0, np.nan, 0.5, 0.0])  # T1 alone in sector 1
+
+
+def test_cross_rank_group_of_size_one_is_nan():
+    md = _md4(x=[100, 90, 80, 70], sector=[1, 2, 2, 2])
+    v = vz.build_series(CrossRank(input=_X, group=External(name="sector")), md)[0]
+    assert np.isnan(v.iloc[-1, 0])
+
+
+def test_collect_sweeps_cross_where_and_group_order_is_input_where_group():
+    entry = ThresholdCondition(
+        left=CrossRank(
+            input=Change(input=Field(column="close"), periods=[5, 10]),
+            where=RollingCondition(window=[3, 5], agg="any", condition=_e("elig")),
+            group=Shift(input=External(name="sector"), periods=[1, 2]),
+        ),
+        op=">=",
+        right=Constant(value=0.8),
+    )
+    assert [lvl for lvl, _ in vz.collect_sweeps(entry)] == [
+        "change_periods",
+        "rolling_window",
+        "shift_periods",
+    ]
+
+
+def test_iter_param_assignments_scalarizes_where_and_group():
+    entry = ThresholdCondition(
+        left=CrossAgg(
+            input=_X,
+            agg="mean",
+            where=RollingCondition(window=[3, 5], agg="any", condition=_e("elig")),
+            group=Shift(input=External(name="sector"), periods=[1, 2]),
+        ),
+        op=">",
+        right=Constant(value=0.0),
+    )
+    combos = list(vz.iter_param_assignments(entry))
+    assert len(combos) == 4
+    for combo, tree in combos:
+        assert tree.left.where.window == combo["rolling_window"]
+        assert tree.left.group.periods == combo["shift_periods"]

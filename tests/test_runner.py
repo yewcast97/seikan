@@ -4571,3 +4571,119 @@ def test_native_feed_end_to_end_with_lag_and_freshness_guard(tmp_path):
         res.summary["sources"]["target"]["by_source"]["external:eps"]["first_available"]
         == "2024-01-03T00:00:00"
     )
+
+
+# ---- the cross-sectional population model end to end -------------------------------------
+
+
+def _pop_basket(tmp_path, entry, *, x, elig=None, sector=None, n=30, horizon=2):
+    """Four flat-priced targets with per-target feeds ``x`` (a constant per member), optional
+    ``elig`` and ``sector`` (a constant or a per-bar array per member)."""
+    idx = pd.date_range("2021-01-01", periods=n, freq="1D")
+    targets = ["T0", "T1", "T2", "T3"]
+    files = {
+        t: _write_bars(tmp_path / f"{t}.csv", np.full(n, 100.0 + j), idx)
+        for j, t in enumerate(targets)
+    }
+    external = {"x": {"per_target": True}}
+    feeds = {"x": x}
+    if elig is not None:
+        external["elig"] = {"per_target": True}
+        feeds["elig"] = elig
+    if sector is not None:
+        external["sector"] = {"per_target": True}
+        feeds["sector"] = sector
+    for name, values in feeds.items():
+        for t, v in zip(targets, values, strict=True):
+            df = pd.DataFrame({name: np.broadcast_to(np.asarray(v, float), (n,))}, index=idx)
+            df.index.name = "datetime"
+            df.to_csv(tmp_path / f"{name}_{t}.csv")
+            files[f"{name}@{t}"] = str(tmp_path / f"{name}_{t}.csv")
+    thesis = Thesis.model_validate(
+        {
+            "name": "pop",
+            "target_mode": "basket",
+            "data": {"targets": targets, "external": external},
+            "entry": entry,
+            "params": {"horizon": horizon},
+        }
+    )
+    return run_backtest(thesis, load(thesis, files))
+
+
+_ELIG_GE1 = {
+    "type": "threshold",
+    "left": {"type": "external", "name": "elig"},
+    "op": ">=",
+    "right": {"type": "constant", "value": 1.0},
+}
+_XF = {"type": "external", "name": "x"}
+
+
+def _rank_ge(q, **selectors):
+    return {
+        "type": "threshold",
+        "left": {"type": "cross_rank", "input": _XF, **selectors},
+        "op": ">=",
+        "right": {"type": "constant", "value": q},
+    }
+
+
+def test_cross_rank_where_ranks_within_the_eligible_population_end_to_end(tmp_path):
+    # The review's case: x = [100, 90, 80, 70], only the last two eligible. Ranked within the
+    # eligible population the 80 member is on top and fires; the guarded GLOBAL rank fires
+    # nobody (100 tops the basket but is ineligible; 80 is in the bottom half).
+    within = {"type": "and", "conditions": [_ELIG_GE1, _rank_ge(0.8, where=_ELIG_GE1)]}
+    res = _pop_basket(tmp_path, within, x=[100, 90, 80, 70], elig=[0, 0, 1, 1])
+    assert set(res.trades["target"]) == {"T2"}
+    breadth = res.summary["cross_breadth"]
+    assert len(breadth) == 1 and breadth[0]["k_min"] == breadth[0]["k_max"] == 2
+    assert breadth[0]["node"] == "cross_rank(x,where=(elig>=1))"
+    cell = res.summary["cells"][0]
+    assert all(v["n_undefined"] == 0 for v in cell["signal_coverage"].values())
+    assert all(v["n_missing"] == 0 for v in res.summary["sources"].values())
+    global_ = {"type": "and", "conditions": [_ELIG_GE1, _rank_ge(0.8)]}
+    res = _pop_basket(tmp_path, global_, x=[100, 90, 80, 70], elig=[0, 0, 1, 1])
+    assert res.trades.empty
+    assert res.summary["cross_breadth"][0]["k_min"] == 4
+
+
+def test_cross_breadth_counts_entering_members_under_where(tmp_path):
+    # T0's eligibility starts late (warmup, not a hole): k runs 2 → 3 and the ledger says so.
+    elig0 = np.r_[np.full(10, np.nan), np.ones(20)]
+    res = _pop_basket(
+        tmp_path, _rank_ge(0.5, where=_ELIG_GE1), x=[100, 90, 80, 70], elig=[elig0, 0, 1, 1]
+    )
+    entry = res.summary["cross_breadth"][0]
+    assert entry["k_min"] == 2 and entry["k_max"] == 3 and entry["n_bars_below_full"] == 30
+    assert entry["n_bars_evaluated"] == 30 and entry["first_full_bar"] is None
+    assert all(v["n_undefined"] == 0 for v in res.summary["cells"][0]["signal_coverage"].values())
+
+
+def test_cross_rank_where_hole_in_one_members_eligibility_refuses_every_eligible_member(tmp_path):
+    # A post-warmup hole in T0's eligibility at bar 10 voids that bar's population for every
+    # member: the eligible, initialized members read undefined there (ledgered), T0's own
+    # undefined eligibility is not absorbed by the guard (U ∧ U = U), and source_coverage names
+    # the feed hole.
+    elig0 = np.ones(30)
+    elig0[10] = np.nan
+    entry = {"type": "and", "conditions": [_ELIG_GE1, _rank_ge(0.8, where=_ELIG_GE1)]}
+    res = _pop_basket(tmp_path, entry, x=[100, 90, 80, 70], elig=[elig0, 0, 1, 1])
+    undef = {t: v["n_undefined"] for t, v in res.summary["cells"][0]["signal_coverage"].items()}
+    assert undef == {"T0": 1, "T1": 0, "T2": 1, "T3": 1}
+    assert res.summary["sources"]["T0"]["by_source"]["external:elig"]["n_missing"] == 1
+    assert res.summary["cross_breadth"][0]["n_bars_evaluated"] == 29
+
+
+def test_cross_rank_group_sector_relative_end_to_end(tmp_path):
+    # Within-sector top ≠ global top: sectors {T0, T1} and {T2, T3}; the sector-relative rank
+    # fires T0 AND T2, the global rank T0 only; every member enters (k = 4 across groups).
+    sector = {"type": "external", "name": "sector"}
+    res = _pop_basket(
+        tmp_path, _rank_ge(0.8, group=sector), x=[100, 90, 80, 70], sector=[1, 1, 2, 2]
+    )
+    assert set(res.trades["target"]) == {"T0", "T2"}
+    assert res.summary["cross_breadth"][0]["k_min"] == 4
+    assert res.summary["cross_breadth"][0]["node"] == "cross_rank(x,group=sector)"
+    res = _pop_basket(tmp_path, _rank_ge(0.8), x=[100, 90, 80, 70])
+    assert set(res.trades["target"]) == {"T0"}

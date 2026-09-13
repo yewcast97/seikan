@@ -346,6 +346,38 @@ floor sweeps the SAMPLE, not the hypothesis. Each node counts as one operator le
   (ddof=0, matching `rolling_agg`); `frac_positive` is the fraction of finite values > 0, in
   `[0, 1]`.
 
+**The population model** — two optional selectors on every cross node say WHO is in the
+cross-section, so a rank is the rank within the population the thesis means, not the global rank
+with a filter bolted on afterwards:
+- `"where": <Condition>` — ELIGIBILITY. Member g enters the cross-section at bar t iff the
+  condition's tradable signal holds for g there. A warming (not yet initialized) or decided-False
+  member is EXCLUDED: its input is NaN to the kernel and its own output is NaN. ANY member whose
+  eligibility is post-warmup UNDEFINED (a hole in its eligibility feed) voids the WHOLE bar's
+  cross-section — NaN for every member, fail-closed: a population whose membership is unknowable
+  is not a population. **The canonical idiom is `and(E, cross_rank(x, where=E) >= q)`**: a
+  once-eligible member that turns ineligible reads post-init NaN from the node, so a bare
+  threshold over it is undefined (→ `signal_coverage`), and the outer `and(E, …)` absorbs that
+  as a decided False (Kleene F ∧ U = F). The guard does NOT absorb an undefined E of its own
+  (U ∧ U = U) — intended; `source_coverage` reports that feed hole too.
+- `"group": <Series>` — point-in-time LABELS (typically a `per_target` feed of integer codes; a
+  `Constant` is legal and is no grouping). The node reduces WITHIN each distinct finite label at
+  each bar; a NaN label excludes the member; `min_valid` applies PER GROUP (a group of one is
+  NaN); `cross_agg` broadcasts each group's aggregate to that group's members only. Labels
+  compare by exact float equality — use integer codes. A member's label may change over time.
+- Nested cross nodes inside `where`/`group` are legal — a liquidity screen selecting the ranking
+  population is `where = cross_rank(dollar_volume) >= 0.5` — and each carries its own
+  `cross_breadth` entry. `where` operands are decision roots (depth-checked on their own, listed
+  by `--root-series-out`); `group` counts as a second child like `rolling_corr`'s. Sweeps inside
+  either register in the order input → where → group. Rendered as
+  `cross_rank(close,3,where=(elig>=1),group=sector)`.
+- `cross_breadth.k` counts ENTERING members — finite input, and eligible and finitely labelled —
+  across all groups; a bar voided by an undefined eligibility has `k = 0`.
+- Deferred, by decision: a reference universe OUTSIDE the targets (supply the breakpoints as a
+  feed and threshold against them), member weights (`cross_agg(x·w, mean) / cross_agg(w, mean)`
+  is the exact weighted mean), and "applicability vs missing data" — a member that leaves the
+  universe and stops trading is still a raw-source hole, and telling the two apart is a
+  versioned ledger change.
+
 Combinators:
 - `{"type": "binary_op", "left": <Series>, "right": <Series>, "op": "+|-|*|/"}` — element-wise
   arithmetic of two series (e.g. a fast−slow EMA spread, or a normalized ratio). Division by zero
@@ -557,8 +589,8 @@ expression that says the thesis.
 ### Thesis recipes (archetype-neutral engine)
 
 The engine validates **any** observer-pure thesis (entry + horizon; no exit) — per-target
-time-series under conjunction, cross-sectional under `target_mode: "basket"`. Two worked recipes
-here; the basket archetype is the third full example at the bottom of this guide:
+time-series under conjunction, cross-sectional under `target_mode: "basket"`. Three worked
+recipes here; the basket archetype is the third full example at the bottom of this guide:
 
 #### (a) Deep-drawdown rebound / mean-reversion
 
@@ -612,6 +644,23 @@ Observer-native pattern for "synthetic warning features fire → leave before th
    falls / underperforms after the alarm (the gate requires a positive edge).
 5. **Horizon** — sweep the forward window as a response curve (e.g. `[5, 21, 63]`).
 6. **Benchmark** (optional) — `params.benchmark: "market"` (+ `--data benchmark=…`) to strip beta from the excess underperformance.
+
+#### (d) Population-relative rank (basket)
+
+"Top quintile of 21-day momentum AMONG the liquid, investable names" — not the global rank with
+an eligibility filter bolted on (which fires nobody when every top-ranked name is ineligible):
+
+1. **Eligibility** — a `per_target` feed `elig` (1/0, or any condition over feeds: a liquidity
+   screen `cross_rank(dollar_volume) >= 0.5` nests legally inside `where`).
+2. **Rank within the population** — `cross_rank(change(close, 21), where=E)` with
+   `E = elig >= 1`.
+3. **The outer guard** — `first_true(and(E, cross_rank(...) >= 0.8))`: `and(E, …)` turns a
+   member's post-eligibility NaN into a decided False, `first_true` fires on ENTERING the
+   quintile (the dense-signal doctrine). `cross_breadth.k` then counts the eligible members per
+   bar, and any member whose eligibility is unknowable on a bar voids that bar for everyone —
+   ledgered in `signal_coverage`, refused by the checklist.
+4. **Sector-relative** instead: `group: sector` (a `per_target` feed of integer codes) ranks
+   within each sector at each bar; `where` and `group` compose.
 
 All windows (`horizon`, `rolling.window`, transform windows) are **bar counts**, not calendar
 months. Alternative-data feeds are external CSV files, not DSL builtins.
@@ -1012,8 +1061,10 @@ open to quote a statistic honestly.
 - `summary.cross_breadth` (basket only; `[]` elsewhere) — the effective-universe ledger, one
   entry per cross node × combo: `{node, params, min_valid, n_bars, n_bars_evaluated,
   n_bars_below_full, k_min, k_median, k_max, first_full_bar}` over the per-bar count `k` of
-  finite member inputs the cross kernels reduce over. Member warmup legally thins `k` (a late
-  start is warmup, not a hole), so `k_min < len(targets)` states coverage, not a defect — what
+  ENTERING members the cross kernels reduce over (finite input, and under `where`/`group`
+  eligible and finitely labelled, across every group). Member warmup — or an eligibility
+  screen — legally thins `k` (a late start is warmup, not a hole), so `k_min < len(targets)`
+  states coverage, not a defect — what
   the panel makes visible is the effective universe drifting through time: early bars ranked
   among fewer members than late ones. Entries repeat across combos that do not move the node's
   input; they are never summed, and no check reads any of it.

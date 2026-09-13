@@ -104,10 +104,13 @@ class CrossBreadthEntry(TypedDict):
     built by ``compiler.runner`` off the node's memoized input frame. Evidence only; read by
     no check.
 
-    ``k`` is the per-bar count of FINITE member inputs — recomputed bit-exactly as the cross
-    kernels (``compiler.nb``) compute it before reducing, then summarized instead of
-    discarded: member warmup legally thins the cross-section (a late start is warmup, not a
-    hole), and this panel is what makes the thinning visible. ``params`` carries the swept
+    ``k`` is the per-bar count of ENTERING members — finite input, and under the node's
+    ``where``/``group`` selectors eligible and finitely labelled, across every group —
+    recomputed bit-exactly as the cross kernels (``compiler.nb``) see it before reducing, then
+    summarized instead of discarded: member warmup (or an eligibility screen) legally thins the
+    cross-section (a late start is warmup, not a hole), and this panel is what makes the
+    thinning visible. A bar voided by an undefined eligibility has ``k = 0`` and is not
+    "evaluated". ``params`` carries the swept
     signal axes only (``{}`` when nothing swept; the horizon has no say in the entry
     condition), so combos that do not move the node's input repeat the same entry — honest
     repetition, the ``signal_coverage`` precedent, never a sum. ``min_valid`` is the effective

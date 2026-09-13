@@ -137,8 +137,9 @@ METRIC_ROLES: dict[str, JsonValue] = {
         "construction; row-vs-episode divergence is the visible cluster diagnostic, reported "
         "never corrected; see caveats.episode_profile)",
         "bar_spacing (run-level {min,median,max}_seconds — the index's clock geometry)",
-        "summary.cross_breadth (per cross node × combo: the per-bar finite-member count k the "
-        "cross kernels reduced over, summarized — n_bars_evaluated, n_bars_below_full, "
+        "summary.cross_breadth (per cross node × combo: the per-bar entering-member count k the "
+        "cross kernels reduced over — finite input, and under where/group eligible and finitely "
+        "labelled — summarized: n_bars_evaluated, n_bars_below_full, "
         "k_min/k_median/k_max, first_full_bar. The effective-universe ledger: member warmup "
         "legally thins k, and this panel is what makes the thinning visible; [] outside "
         "basket)",
@@ -262,9 +263,10 @@ METRIC_ROLES: dict[str, JsonValue] = {
             "(n_splits_attempted, n_candidates_min)"
         ),
         "cross_breadth": (
-            "k counts finite INPUTS per bar — member warmup legally thins it (a late start is "
-            "warmup, not a hole), so k_min < len(targets) states coverage, not a defect; below "
-            "min_valid the node emitted no cross-section at all"
+            "k counts ENTERING members per bar (finite input, and under where/group eligible "
+            "and finitely labelled) — member warmup or a screen legally thins it (a late start "
+            "is warmup, not a hole), so k_min < len(targets) states coverage, not a defect; "
+            "below min_valid the node emitted no cross-section at all"
         ),
         "mean_ret": (
             "in-sample full-sample descriptive, gross of costs — no holdout and no deflation; "
@@ -613,8 +615,9 @@ METRIC_ROLES_DOC: dict[str, JsonValue] = {
         "cells, with an exclusions ledger and, in basket, a pooled row; NO uplift field ever — "
         "the conditional-vs-base-rate comparison is the caller's, and no check reads it)",
         "summary.cross_breadth (per cross node × combo, basket only — the per-bar count k of "
-        "finite member inputs the cross kernels reduced over, recomputed off the node's own "
-        "memoized input frame and summarized: n_bars_evaluated (k >= min_valid), "
+        "entering members the cross kernels reduced over (finite input, and under where/group "
+        "eligible and finitely labelled), recomputed off the node's own memoized frames and "
+        "summarized: n_bars_evaluated (k >= min_valid), "
         "n_bars_below_full (evaluated bars short of the declared basket), k_min/k_median/"
         "k_max over the evaluated bars, and first_full_bar, the warmup-tail mirror of "
         "first_available. The effective-universe ledger: member warmup legally thins the "
@@ -711,9 +714,11 @@ METRIC_ROLES_DOC: dict[str, JsonValue] = {
             "says which S was used)."
         ),
         "cross_breadth": (
-            "k counts finite INPUTS to a cross node per bar, recomputed off the node's own "
-            "memoized input frame — exactly the count the kernels floor at min_valid and then "
-            "discard. Member warmup legally thins it (a late start is warmup, not a hole; "
+            "k counts ENTERING members of a cross node per bar (finite input, and under "
+            "where/group eligible and finitely labelled), recomputed off the node's own "
+            "memoized frames — exactly the count the kernels floor at min_valid and then "
+            "discard. Member warmup or a screen legally thins it (a late start is warmup, not "
+            "a hole; "
             "post-warmup holes refuse via source_coverage), so k_min < len(targets) states "
             "COVERAGE, not a defect: what it makes visible is the effective universe drifting "
             "through time — early bars ranked among fewer members than late ones. Entries "
@@ -1080,7 +1085,8 @@ REPORT_FIELDS: dict[str, JsonValue] = {
         "cross_breadth": (
             "per (cross node × combo): {node, params, min_valid, n_bars, n_bars_evaluated, "
             "n_bars_below_full, k_min, k_median, k_max, first_full_bar} — the effective-"
-            "universe ledger over the cross kernels' finite-member count k; always present, "
+            "universe ledger over the cross kernels' entering-member count k (finite input, "
+            "and under where/group eligible and finitely labelled); always present, "
             "[] outside basket; evidence-only"
         ),
         "params / targets": (

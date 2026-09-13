@@ -25,6 +25,7 @@ their own single-column helpers.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Literal
 
 import numpy as np
@@ -445,6 +446,35 @@ def cross_agg_apply_nb(
     ok = (k >= float(max(min_valid, 2))) & np.isfinite(v)
     # (n, 1) aggregate → all columns
     return np.broadcast_to(np.where(ok, v, np.nan), a.shape).copy()
+
+
+def cross_grouped_apply_nb(
+    kernel: Callable[[npt.NDArray[np.float64]], npt.NDArray[np.float64]],
+    arr: npt.NDArray[np.float64],
+    labels: npt.NDArray[np.float64],
+) -> npt.NDArray[np.float64]:
+    """Apply a cross-sectional kernel WITHIN each distinct finite label at each bar.
+
+    Grouping wraps the existing kernel per label rather than re-deriving it: for every distinct
+    finite label the kernel sees the (rows × targets) input with every OTHER member masked to
+    NaN, and only the labelled members' outputs are kept. Every property the ungrouped kernel
+    has — the per-group ``min_valid`` floor, ``rankdata(method="average")`` ties, the overflow
+    sanitization, ``cross_agg``'s broadcast (now to the group's members only) — is inherited
+    unchanged, and ONE label reproduces the ungrouped result bit-exactly (a pandas
+    ``groupby.transform`` was measured NOT bit-exact — summation order — and rejected). Labels are
+    point-in-time: a member's label may change from bar to bar. A NaN label excludes the member.
+    """
+    a = np.asarray(arr, dtype=float)
+    lab = np.asarray(labels, dtype=float)
+    if a.shape != lab.shape:
+        raise ValueError(f"cross_grouped shape mismatch: {a.shape} vs {lab.shape}")
+    out = np.full(a.shape, np.nan)
+    finite = np.isfinite(lab)
+    for value in np.unique(lab[finite]):
+        in_group = finite & (lab == value)
+        res = kernel(np.where(in_group, a, np.nan))
+        out[in_group] = res[in_group]
+    return out
 
 
 # =============================================================================

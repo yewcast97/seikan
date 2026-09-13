@@ -790,3 +790,83 @@ def test_mask_apply_nb_known_answers():
     init = _b(0, 1, 1, 1, 1)
     defd = _b(1, 1, 0, 1, 1)
     _assert(nb.mask_apply_nb(value, init, defd), [np.nan, 1.0, np.nan, 0.0, 1.0])
+
+
+# ---- grouped cross-sectional kernels --------------------------------------------------------
+
+
+def _labels(rows: int = 60, cols: int = 5, seed: int = 8) -> np.ndarray:
+    rng = np.random.RandomState(seed)
+    lab = rng.randint(1, 4, size=(rows, cols)).astype(float)
+    lab[rng.rand(rows, cols) < 0.1] = np.nan
+    return lab
+
+
+def _rank_kernel(mv=2):
+    return lambda a: nb.cross_rank_apply_nb(a, mv)
+
+
+def _demean_kernel(mv=2):
+    return lambda a: nb.cross_demean_apply_nb(a, mv)
+
+
+def _agg_kernel(agg, mv=2):
+    return lambda a: nb.cross_agg_apply_nb(a, agg, mv)
+
+
+def test_cross_grouped_matches_reference():
+    a = _nan_riddled()
+    lab = _labels()
+    _assert(nb.cross_grouped_apply_nb(_rank_kernel(), a, lab), ref.cross_rank_grouped_ref(a, lab))
+    _assert(
+        nb.cross_grouped_apply_nb(_demean_kernel(), a, lab), ref.cross_demean_grouped_ref(a, lab)
+    )
+    for agg in ("mean", "median", "std", "frac_positive"):
+        _assert(
+            nb.cross_grouped_apply_nb(_agg_kernel(agg), a, lab),
+            ref.cross_agg_grouped_ref(a, lab, agg),
+        )
+
+
+def test_cross_grouped_single_label_is_bit_exact_with_ungrouped():
+    a = _nan_riddled()
+    one = np.ones_like(a)
+    for kernel in (_rank_kernel(3), _demean_kernel(), _agg_kernel("std"), _agg_kernel("mean")):
+        assert np.array_equal(nb.cross_grouped_apply_nb(kernel, a, one), kernel(a), equal_nan=True)
+
+
+def test_cross_grouped_nan_label_and_singleton_group_are_nan():
+    a = np.array([[1.0, 2.0, 3.0, 4.0]])
+    lab = np.array([[1.0, 1.0, 2.0, np.nan]])
+    got = nb.cross_grouped_apply_nb(_rank_kernel(), a, lab)
+    _assert(got, [[0.0, 1.0, np.nan, np.nan]])  # member 2 is alone (k=1 < 2); member 3 unlabelled
+    got = nb.cross_grouped_apply_nb(_agg_kernel("mean"), a, lab)
+    _assert(got, [[1.5, 1.5, np.nan, np.nan]])
+
+
+def test_cross_grouped_labels_are_point_in_time():
+    a = np.array([[1.0, 2.0, 3.0, 4.0], [1.0, 2.0, 3.0, 4.0]])
+    lab = np.array([[1.0, 1.0, 2.0, 2.0], [1.0, 2.0, 1.0, 2.0]])
+    got = nb.cross_grouped_apply_nb(_rank_kernel(), a, lab)
+    _assert(got, [[0.0, 1.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0]])
+
+
+def test_cross_grouped_agg_broadcasts_within_the_group_only():
+    a = np.array([[1.0, 3.0, np.nan, 10.0, 30.0]])
+    lab = np.array([[1.0, 1.0, 1.0, 2.0, 2.0]])
+    got = nb.cross_grouped_apply_nb(_agg_kernel("mean"), a, lab)
+    # the NaN-input member of group 1 still sees ITS group's mean (the sanctioned broadcast),
+    # never group 2's
+    _assert(got, [[2.0, 2.0, 2.0, 20.0, 20.0]])
+
+
+def test_cross_grouped_min_valid_is_per_group():
+    a = np.array([[1.0, 2.0, 3.0, 4.0, 5.0]])
+    lab = np.array([[1.0, 1.0, 1.0, 2.0, 2.0]])
+    got = nb.cross_grouped_apply_nb(_rank_kernel(3), a, lab)
+    _assert(got, [[0.0, 0.5, 1.0, np.nan, np.nan]])  # group 2 has k=2 < min_valid=3
+
+
+def test_cross_grouped_shape_mismatch_raises():
+    with pytest.raises(ValueError, match="cross_grouped shape mismatch"):
+        nb.cross_grouped_apply_nb(_rank_kernel(), np.ones((3, 2)), np.ones((3, 3)))

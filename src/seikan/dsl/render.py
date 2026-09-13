@@ -91,12 +91,12 @@ def render_series(node: Series) -> str:
             return f"shift({render_series(inp)},{p})"
         case RollingCorr(left=left, right=right, window=w):
             return f"rolling_corr({render_series(left)},{render_series(right)},{w})"
-        case CrossRank(input=inp, min_valid=mv):
-            return f"cross_rank({render_series(inp)}{'' if mv == 2 else f',{mv}'})"
-        case CrossDemean(input=inp, min_valid=mv):
-            return f"cross_demean({render_series(inp)}{'' if mv == 2 else f',{mv}'})"
-        case CrossAgg(input=inp, agg=agg, min_valid=mv):
-            return f"cross_agg({render_series(inp)},{agg}{'' if mv == 2 else f',{mv}'})"
+        case CrossRank(input=inp, min_valid=mv, where=wh, group=gr):
+            return f"cross_rank({render_series(inp)}{_cross_suffix(mv, wh, gr)})"
+        case CrossDemean(input=inp, min_valid=mv, where=wh, group=gr):
+            return f"cross_demean({render_series(inp)}{_cross_suffix(mv, wh, gr)})"
+        case CrossAgg(input=inp, agg=agg, min_valid=mv, where=wh, group=gr):
+            return f"cross_agg({render_series(inp)},{agg}{_cross_suffix(mv, wh, gr)})"
         case BinaryOp(left=left, right=right, op=op):
             return f"({render_series(left)}{op}{render_series(right)})"
         case UnaryOp(input=inp, op=op):
@@ -113,6 +113,18 @@ def render_series(node: Series) -> str:
             return f"native({name},{render_series(e)})"
         case _:
             raise TypeError(f"unknown series node: {node!r}")
+
+
+def _cross_suffix(min_valid: int, where: Condition | None, group: Series | None) -> str:
+    """The trailing tokens of a cross node: a non-default ``min_valid``, then the population
+    selectors as ``where=<cond>`` / ``group=<series>`` — ``cross_rank(close)``,
+    ``cross_rank(close,3,where=(elig>=1),group=sector)``."""
+    parts = [] if min_valid == 2 else [str(min_valid)]
+    if where is not None:
+        parts.append(f"where={render_condition(where)}")
+    if group is not None:
+        parts.append(f"group={render_series(group)}")
+    return "".join(f",{p}" for p in parts)
 
 
 def render_condition(node: Condition) -> str:

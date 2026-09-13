@@ -407,7 +407,10 @@ class Thesis(_Strict):
         # exactly the coupling conjunction declares the targets do NOT have — so cross nodes
         # require target_mode='basket' (which _check_target_mode already holds to >= 2 targets)
         # and a satisfiable min_valid. Features are scanned too: a cross-sectional feature
-        # snapshot couples the targets the same way an entry operand does.
+        # snapshot couples the targets the same way an entry operand does. The walk crosses
+        # into embedded conditions, so a cross node nested inside another's ``where``/``group``
+        # (a liquidity screen selecting the ranking population) is found and held to the same
+        # mode and floor.
         series_iter = list(iter_condition_series(self.entry))
         series_iter.extend((self.params.features or {}).values())
         cross_nodes = [n for s in series_iter for n in series_cross_nodes(s)]

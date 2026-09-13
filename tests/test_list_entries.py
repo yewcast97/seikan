@@ -758,3 +758,71 @@ def test_root_series_includes_embedded_condition_operands_in_order(tmp_path):
         "close",
         "shift(rolling_agg(high,3,max),1)",
     ]
+
+
+def test_render_series_cross_population_selectors():
+    from seikan.dsl.schema import CrossAgg, CrossDemean, CrossRank, ThresholdCondition
+
+    close = Field()
+    elig = ThresholdCondition(left=External(name="elig"), op=">=", right=Constant(value=1.0))
+    sector = External(name="sector")
+    assert render_series(CrossRank(input=close)) == "cross_rank(close)"
+    assert render_series(CrossRank(input=close, min_valid=3, where=elig, group=sector)) == (
+        "cross_rank(close,3,where=(elig>=1),group=sector)"
+    )
+    assert (
+        render_series(CrossDemean(input=close, where=elig)) == "cross_demean(close,where=(elig>=1))"
+    )
+    assert render_series(CrossAgg(input=close, agg="mean", group=sector)) == (
+        "cross_agg(close,mean,group=sector)"
+    )
+
+
+def test_root_series_includes_eligibility_operands(tmp_path):
+    # The `where` condition's operands are decision roots: listed after the cross node's own
+    # column, before anything that follows.
+    n = 12
+    idx = pd.date_range("2021-01-01", periods=n, freq="1D")
+    files = {}
+    for t in ("a", "b", "c"):
+        px = pd.DataFrame(
+            {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "volume": 1.0}, index=idx
+        )
+        px.index.name = "datetime"
+        px.to_csv(tmp_path / f"{t}.csv")
+        el = pd.DataFrame({"elig": 1.0}, index=idx)
+        el.index.name = "datetime"
+        el.to_csv(tmp_path / f"elig_{t}.csv")
+        files[t] = tmp_path / f"{t}.csv"
+        files[f"elig@{t}"] = tmp_path / f"elig_{t}.csv"
+    thesis = Thesis.model_validate(
+        {
+            "name": "t",
+            "target_mode": "basket",
+            "data": {"targets": ["a", "b", "c"], "external": {"elig": {"per_target": True}}},
+            "entry": {
+                "type": "threshold",
+                "left": {
+                    "type": "cross_rank",
+                    "input": {"type": "field"},
+                    "where": {
+                        "type": "threshold",
+                        "left": {"type": "external", "name": "elig"},
+                        "op": ">=",
+                        "right": {"type": "constant", "value": 1.0},
+                    },
+                },
+                "op": ">=",
+                "right": {"type": "constant", "value": 0.5},
+            },
+            "params": {"horizon": 1},
+        }
+    )
+    rep = list_entries(thesis, load(thesis, files))
+    cols = list(rep.root_series.columns)
+    assert cols[:3] == [
+        "cross_rank(close,where=(elig>=1))@a",
+        "cross_rank(close,where=(elig>=1))@b",
+        "cross_rank(close,where=(elig>=1))@c",
+    ]
+    assert cols[3:6] == ["elig@a", "elig@b", "elig@c"]

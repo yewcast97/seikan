@@ -35,6 +35,15 @@ of substituting a nearby question; no stamp moves and every emitted number is by
   time transforms, `binary_op` and `rolling_corr`; anything on the bar clock refuses by name.
   Counts one level over `expr`. `MarketData.externals_native` / `external_native(name)` retain
   each feed's native prints (a hand-built `MarketData` must supply them to serve a `native` node).
+- ADDED the cross-sectional population model: optional `where` (a Condition — eligibility;
+  a warming or decided-False member is excluded, any member post-warmup undefined voids the
+  whole bar, fail-closed) and `group` (a Series of point-in-time labels — reduce within each
+  finite label, `min_valid` per group, `cross_agg` broadcasts per group) on `cross_rank` /
+  `cross_demean` / `cross_agg`. The canonical idiom is `and(E, cross_rank(x, where=E) >= q)`.
+  Grouping wraps the existing kernels per label (`nb.cross_grouped_apply_nb`; one label is
+  bit-exact with the ungrouped result). `cross_breadth.k` now counts ENTERING members (finite
+  input, eligible, finitely labelled) — identical to before for nodes without selectors; no
+  report field moves. Sweep axes inside a cross node register input → where → group.
 
 ## 3.0.0 — report schema 5, statistics 4, policy 3
 

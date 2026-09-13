@@ -2560,3 +2560,153 @@ def test_native_requires_declared_feed_and_marks_it_used():
         Thesis.model_validate(_native_doc(_SUE, external={}))
     t = Thesis.model_validate(_native_doc(_SUE))  # referenced only through the native node
     assert t.data_keys() == ["target", "eps"]
+
+
+# ---- the cross-sectional population model: where / group ---------------------------------
+
+_ELIG_GE1 = {
+    "type": "threshold",
+    "left": {"type": "external", "name": "elig"},
+    "op": ">=",
+    "right": {"type": "constant", "value": 1.0},
+}
+_SECTOR = {"type": "external", "name": "sector"}
+
+
+def _basket_over(left: dict, external: dict | None = None, *, mode="basket", features=None) -> dict:
+    doc = {
+        "name": "x",
+        "target_mode": mode,
+        "data": {"targets": ["a", "b", "c"], "external": external or {}},
+        "entry": {
+            "type": "threshold",
+            "left": left,
+            "op": ">=",
+            "right": {"type": "constant", "value": 0.8},
+        },
+    }
+    if features is not None:
+        doc["params"] = {"features": features}
+    return doc
+
+
+_PER = {"per_target": True}
+
+
+@pytest.mark.parametrize("kind", ["cross_rank", "cross_demean", "cross_agg"])
+def test_cross_nodes_parse_where_and_group_and_roundtrip(kind):
+    node = {"type": kind, "input": _FIELD_CLOSE, "where": _ELIG_GE1, "group": _SECTOR}
+    if kind == "cross_agg":
+        node["agg"] = "mean"
+    t = Thesis.model_validate(_basket_over(node, {"elig": _PER, "sector": _PER}))
+    assert Thesis.model_validate_json(t.model_dump_json()) == t
+    assert t.entry.left.where is not None and t.entry.left.group is not None
+    plain = Thesis.model_validate(
+        _basket_over({k: v for k, v in node.items() if k not in ("where", "group")})
+    )
+    assert plain.entry.left.where is None and plain.entry.left.group is None
+
+
+def test_cross_where_must_be_a_condition_and_group_a_series():
+    with pytest.raises(ValidationError):
+        Thesis.model_validate(
+            _basket_over(
+                {"type": "cross_rank", "input": _FIELD_CLOSE, "where": _SECTOR}, {"sector": _PER}
+            )
+        )
+    with pytest.raises(ValidationError):
+        Thesis.model_validate(
+            _basket_over(
+                {"type": "cross_rank", "input": _FIELD_CLOSE, "group": _ELIG_GE1}, {"elig": _PER}
+            )
+        )
+
+
+def test_feed_used_only_in_where_or_group_counts_as_referenced():
+    Thesis.model_validate(
+        _basket_over(
+            {"type": "cross_rank", "input": _FIELD_CLOSE, "where": _ELIG_GE1}, {"elig": _PER}
+        )
+    )
+    Thesis.model_validate(
+        _basket_over(
+            {"type": "cross_rank", "input": _FIELD_CLOSE, "group": _SECTOR}, {"sector": _PER}
+        )
+    )
+    with pytest.raises(ValidationError, match="external feed\\(s\\) \\['sector'\\] not declared"):
+        Thesis.model_validate(
+            _basket_over({"type": "cross_rank", "input": _FIELD_CLOSE, "group": _SECTOR})
+        )
+
+
+def test_sweeps_in_where_and_group_count_toward_the_grid():
+    node = {
+        "type": "cross_rank",
+        "input": _FIELD_CLOSE,
+        "where": {"type": "rolling", "window": [3, 5, 7], "agg": "any", "condition": _ELIG_GE1},
+        "group": {"type": "shift", "input": _SECTOR, "periods": [1, 2]},
+    }
+    t = Thesis.model_validate(_basket_over(node, {"elig": _PER, "sector": _PER}))
+    assert declared_grid_size(t.entry, t.params.horizon) == 6
+    from seikan.dsl.traverse import _iter_sweep_axis_names
+
+    assert _iter_sweep_axis_names(t.entry) == ["rolling_window", "shift_periods"]
+
+
+def test_where_operands_are_depth_checked_as_roots_and_group_counts_as_a_second_child():
+    from pydantic import TypeAdapter
+
+    from seikan.dsl.schema import Series
+    from seikan.dsl.traverse import _series_depth
+
+    depth = lambda d: _series_depth(TypeAdapter(Series).validate_python(d))  # noqa: E731
+    deep_where = {
+        "type": "threshold",
+        "left": _D5,
+        "op": ">",
+        "right": {"type": "constant", "value": 0.0},
+    }
+    assert depth({"type": "cross_rank", "input": _FIELD_CLOSE, "where": deep_where}) == 1
+    assert depth({"type": "cross_rank", "input": _FIELD_CLOSE, "group": _CHAIN4}) == 5
+    Thesis.model_validate(
+        _basket_over({"type": "cross_rank", "input": _FIELD_CLOSE, "where": deep_where})
+    )
+    with pytest.raises(ValidationError, match="'ema' nests 6"):
+        Thesis.model_validate(
+            _basket_over(
+                {"type": "cross_rank", "input": _FIELD_CLOSE, "where": {**deep_where, "left": _D6}}
+            )
+        )
+    with pytest.raises(ValidationError, match="'cross_rank' nests 6"):
+        Thesis.model_validate(
+            _basket_over({"type": "cross_rank", "input": _FIELD_CLOSE, "group": _D5})
+        )
+
+
+def test_nested_cross_node_inside_where_is_legal_in_basket_and_refused_in_conjunction():
+    screen = {
+        "type": "threshold",
+        "left": {"type": "cross_rank", "input": {"type": "field", "column": "volume"}},
+        "op": ">=",
+        "right": {"type": "constant", "value": 0.5},
+    }
+    node = {"type": "cross_rank", "input": _FIELD_CLOSE, "where": screen}
+    Thesis.model_validate(_basket_over(node))
+    doc = _basket_over(node, mode="conjunction")
+    with pytest.raises(ValidationError, match="require target_mode='basket'"):
+        Thesis.model_validate(doc)
+    # the nested node's own min_valid floor is checked too
+    with pytest.raises(ValidationError, match="min_valid=4 but only 3 targets"):
+        Thesis.model_validate(
+            _basket_over({**node, "where": {**screen, "left": {**screen["left"], "min_valid": 4}}})
+        )
+
+
+def test_swept_where_inside_a_feature_refuses():
+    feat = {
+        "type": "cross_rank",
+        "input": _FIELD_CLOSE,
+        "where": {"type": "rolling", "window": [3, 5], "agg": "any", "condition": _ELIG_GE1},
+    }
+    with pytest.raises(ValidationError, match="feature 'r' must use scalar params"):
+        Thesis.model_validate(_basket_over(_FIELD_CLOSE, {"elig": _PER}, features={"r": feat}))

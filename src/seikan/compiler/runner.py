@@ -974,13 +974,15 @@ def _measure_grid(
     # no say in it. Horizon siblings therefore legitimately report the same counts — each cell is
     # graded alone, so nothing is ever summed across them.
     undef_by_combo: dict[ComboKey, np.ndarray] = {}
-    # Cross-sectional breadth (evidence-only): the per-bar finite-member count k each cross
-    # kernel reduced over — recomputed bit-exactly off the node's memoized input frame
-    # (`build_series` is a memo hit below: the signal build already materialized it) and
-    # SUMMARIZED instead of discarded, so member warmup thinning the effective universe is
-    # visible. Keyed per (node × combo): a swept input moves the warmup, so per-combo entries
-    # are the only non-understating key — combos that do not move a node's input repeat the
-    # same entry, the honest repetition `signal_coverage` already accepts, never a sum. ENTRY
+    # Cross-sectional breadth (evidence-only): the per-bar ENTERING-member count k each cross
+    # kernel reduced over — finite input, and under `where`/`group` eligible and finitely
+    # labelled, across every group — recomputed bit-exactly off the node's memoized frames
+    # (`cross_membership` is memo hits below: the signal build already materialized them) and
+    # SUMMARIZED instead of discarded, so member warmup (or a screen) thinning the effective
+    # universe is visible. Keyed per (node × combo): a swept input moves the warmup, so
+    # per-combo entries are the only non-understating key — combos that do not move a node's
+    # input repeat the same entry, the honest repetition `signal_coverage` already accepts,
+    # never a sum. ENTRY
     # tree only (features are evidence-side snapshots); cross nodes are basket-gated, so a
     # conjunction run emits the empty panel by construction. Read by no check.
     cross_breadth: list[CrossBreadthEntry] = []
@@ -991,8 +993,7 @@ def _measure_grid(
         undef_by_combo[combo_tuple] = vectorize.undefined_mask(entry, md)
         combo_params = {lvl: combo[lvl] for lvl in sweep_levels}
         for cross_node in iter_cross_series(entry):
-            vals = vectorize.build_series(cross_node.input, md)[0].to_numpy(dtype=float)
-            k = np.isfinite(vals).sum(axis=1)
+            k = vectorize.cross_membership(cross_node, md).sum(axis=1)
             eff_min_valid = max(int(cross_node.min_valid), 2)  # the kernels' hard floor
             evaluated = k >= eff_min_valid
             k_eval = k[evaluated]

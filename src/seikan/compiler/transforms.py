@@ -59,14 +59,20 @@ def _scalar_or_none(param: int | list[int] | None) -> int | None:
     return cast("int | None", param)
 
 
-def transform_values(node: Series, feed: np.ndarray) -> np.ndarray:
+def transform_values(
+    node: Series, feed: np.ndarray, *, labels: np.ndarray | None = None
+) -> np.ndarray:
     """Compute a transform over feed column(s): (rows,) or (rows × targets) in → same shape out.
 
     Params are scalar. Every transform takes a precomputed input array (built by
-    ``vectorize.build_series`` from the node's ``input`` Series).
+    ``vectorize.build_series`` from the node's ``input`` Series). ``labels`` — point-in-time
+    group labels shaped like ``feed`` — are legal for the cross nodes only, and reduce each
+    cross-section within its labels (``nb.cross_grouped_apply_nb``).
     """
     raw = np.asarray(feed, dtype=float)
     x = _2d(raw)
+    if labels is not None and not isinstance(node, (CrossRank, CrossDemean, CrossAgg)):
+        raise ValueError(f"group labels are only meaningful for a cross node, not {node.type!r}")
     match node:
         case EMA(window=w):
             out = nb.ema_apply_nb(x, _scalar(w))
@@ -106,14 +112,22 @@ def transform_values(node: Series, feed: np.ndarray) -> np.ndarray:
                     f"got {x.shape[1]}"
                 )
             if isinstance(node, CrossAgg):
-                out = nb.cross_agg_apply_nb(x, node.agg, mv)
+                cross_agg = node.agg
+
+                def kernel(a: np.ndarray) -> np.ndarray:
+                    return nb.cross_agg_apply_nb(a, cross_agg, mv)
+
             else:
                 fn = (
                     nb.cross_rank_apply_nb
                     if isinstance(node, CrossRank)
                     else nb.cross_demean_apply_nb
                 )
-                out = fn(x, mv)
+
+                def kernel(a: np.ndarray) -> np.ndarray:
+                    return fn(a, mv)
+
+            out = kernel(x) if labels is None else nb.cross_grouped_apply_nb(kernel, x, _2d(labels))
         case _:
             raise TypeError(f"not a transform: {node!r}")
     out = _2d(np.asarray(out, dtype=float))

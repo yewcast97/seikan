@@ -490,3 +490,95 @@ def lag_channels(
         i[t] = init[t - periods]
         d[t] = defined[t - periods]
     return v, i, d
+
+
+# ---- grouped cross-sectional kernels --------------------------------------------------------
+#
+# Row loop × per-label loop, independently authored: at each bar, the members sharing one finite
+# label form a cross-section of their own; a NaN label excludes the member; ``min_valid`` applies
+# per group; ``cross_agg`` broadcasts the group's aggregate to that group's members only.
+
+
+def _avg_ranks(vals: list[float]) -> list[float]:
+    """Average ranks (1-based) with ties averaged."""
+    order = sorted(range(len(vals)), key=lambda k: vals[k])
+    ranks = [0.0] * len(vals)
+    i = 0
+    while i < len(order):
+        j = i
+        while j + 1 < len(order) and vals[order[j + 1]] == vals[order[i]]:
+            j += 1
+        avg = (i + 1 + j + 1) / 2.0
+        for k in range(i, j + 1):
+            ranks[order[k]] = avg
+        i = j + 1
+    return ranks
+
+
+def _groups(row: np.ndarray, labels: np.ndarray) -> dict[float, list[int]]:
+    groups: dict[float, list[int]] = {}
+    for g, lab in enumerate(labels):
+        if math.isfinite(lab) and math.isfinite(row[g]):
+            groups.setdefault(float(lab), []).append(g)
+    return groups
+
+
+def cross_rank_grouped_ref(arr: np.ndarray, labels: np.ndarray, min_valid: int = 2) -> np.ndarray:
+    rows, cols = arr.shape
+    out = np.full((rows, cols), np.nan)
+    for i in range(rows):
+        for members in _groups(arr[i], labels[i]).values():
+            k = len(members)
+            if k < max(min_valid, 2):
+                continue
+            ranks = _avg_ranks([float(arr[i, g]) for g in members])
+            for g, r in zip(members, ranks, strict=True):
+                out[i, g] = (r - 1.0) / (k - 1.0)
+    return out
+
+
+def cross_demean_grouped_ref(arr: np.ndarray, labels: np.ndarray, min_valid: int = 2) -> np.ndarray:
+    rows, cols = arr.shape
+    out = np.full((rows, cols), np.nan)
+    for i in range(rows):
+        for members in _groups(arr[i], labels[i]).values():
+            if len(members) < max(min_valid, 2):
+                continue
+            mean = sum(float(arr[i, g]) for g in members) / len(members)
+            for g in members:
+                out[i, g] = arr[i, g] - mean
+    return out
+
+
+def cross_agg_grouped_ref(
+    arr: np.ndarray, labels: np.ndarray, agg: str, min_valid: int = 2
+) -> np.ndarray:
+    rows, cols = arr.shape
+    out = np.full((rows, cols), np.nan)
+    for i in range(rows):
+        # a group is every member with THIS finite label — its aggregate is over the finite ones
+        # and broadcasts to every labelled member of the group, finite input or not
+        by_label: dict[float, list[int]] = {}
+        for g, lab in enumerate(labels[i]):
+            if math.isfinite(lab):
+                by_label.setdefault(float(lab), []).append(g)
+        for members in by_label.values():
+            vals = [float(arr[i, g]) for g in members if math.isfinite(arr[i, g])]
+            if len(vals) < max(min_valid, 2):
+                continue
+            if agg == "mean":
+                v = sum(vals) / len(vals)
+            elif agg == "median":
+                s = sorted(vals)
+                m = len(s) // 2
+                v = s[m] if len(s) % 2 else (s[m - 1] + s[m]) / 2.0
+            elif agg == "std":
+                mu = sum(vals) / len(vals)
+                v = math.sqrt(sum((x - mu) ** 2 for x in vals) / len(vals))
+            elif agg == "frac_positive":
+                v = sum(1.0 for x in vals if x > 0.0) / len(vals)
+            else:
+                raise ValueError(agg)
+            for g in members:
+                out[i, g] = v
+    return out

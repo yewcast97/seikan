@@ -295,6 +295,26 @@ class CrossRank(_Strict):
     type: Literal["cross_rank"] = "cross_rank"
     input: Series
     min_valid: Ge2Int = 2
+    # THE POPULATION MODEL, shared by the three cross nodes (documented once, here).
+    # ``where`` — ELIGIBILITY: member g enters the cross-section at bar t iff ``where``'s tradable
+    # signal holds for g there. A warming (``~init``) or decided-False member is EXCLUDED (its
+    # input is NaN to the kernel; its own output is NaN). ANY member post-warmup UNDEFINED
+    # (``init & ~defined``) voids the WHOLE bar's cross-section (NaN for every member): a
+    # population whose membership is unknowable is not a population — fail-closed. The canonical
+    # idiom is ``and(E, cross_rank(x, where=E) >= q)``: a once-eligible member's later ineligible
+    # bars are post-init NaN, so the bare threshold reads undefined, and the outer ``and(E, …)``
+    # absorbs it (Kleene F ∧ U = F). The guard does NOT absorb an undefined E (U ∧ U = U) —
+    # intended; ``source_coverage`` reports that feed hole too.
+    # ``group`` — point-in-time LABELS (typically a ``per_target`` feed of integer codes; a
+    # ``Constant`` is legal and equals no grouping): the node reduces WITHIN each distinct finite
+    # label at each bar; a NaN label excludes the member; ``min_valid`` applies PER GROUP;
+    # ``cross_agg`` broadcasts each group's aggregate to that group's members only. Labels compare
+    # by exact float equality — use integer codes. Nested cross nodes inside ``where``/``group``
+    # are legal (a liquidity screen ``where = cross_rank(dollar_volume) >= 0.5``), each with its
+    # own ``cross_breadth`` entry. ``cross_breadth.k`` counts ENTERING members (finite input ∧
+    # eligible ∧ finitely labelled); a bar voided by an undefined eligibility has k = 0.
+    where: Condition | None = None
+    group: Series | None = None
 
 
 class CrossDemean(_Strict):
@@ -306,6 +326,8 @@ class CrossDemean(_Strict):
     type: Literal["cross_demean"] = "cross_demean"
     input: Series
     min_valid: Ge2Int = 2
+    where: Condition | None = None  # see ``CrossRank`` for the population model
+    group: Series | None = None
 
 
 class CrossAgg(_Strict):
@@ -326,6 +348,8 @@ class CrossAgg(_Strict):
     input: Series
     agg: Literal["mean", "median", "std", "frac_positive"]
     min_valid: Ge2Int = 2
+    where: Condition | None = None  # see ``CrossRank`` for the population model
+    group: Series | None = None
 
 
 class BinaryOp(_Strict):

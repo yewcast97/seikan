@@ -193,14 +193,18 @@ def _transform_series(node: Series, resolve: _ParamResolver) -> Series:
                 right=_transform_series(rhs, resolve),
                 window=resolve("rolling_corr", "window", w),
             )
-        case CrossRank(input=inp, min_valid=mv):
-            # No swept params of its own (min_valid is a plain int); the inner input's sweeps
-            # register through the recursive call.
-            return CrossRank(input=_transform_series(inp, resolve), min_valid=mv)
-        case CrossDemean(input=inp, min_valid=mv):
-            return CrossDemean(input=_transform_series(inp, resolve), min_valid=mv)
-        case CrossAgg(input=inp, agg=agg, min_valid=mv):
-            return CrossAgg(input=_transform_series(inp, resolve), agg=agg, min_valid=mv)
+        case CrossRank() | CrossDemean() | CrossAgg():
+            # No swept params of their own (min_valid is a plain int); the sweeps under
+            # input → where → group register through the recursive calls in that order.
+            inp_t = _transform_series(node.input, resolve)
+            wh_t = None if node.where is None else _transform_condition(node.where, resolve)
+            gr_t = None if node.group is None else _transform_series(node.group, resolve)
+            if isinstance(node, CrossAgg):
+                return CrossAgg(
+                    input=inp_t, agg=node.agg, min_valid=node.min_valid, where=wh_t, group=gr_t
+                )
+            cls = CrossRank if isinstance(node, CrossRank) else CrossDemean
+            return cls(input=inp_t, min_valid=node.min_valid, where=wh_t, group=gr_t)
         case BinaryOp(left=lhs, right=rhs, op=op):
             return BinaryOp(
                 left=_transform_series(lhs, resolve), right=_transform_series(rhs, resolve), op=op
@@ -494,6 +498,36 @@ def _anchor_native(
     return anchored
 
 
+def cross_population(
+    node: CrossRank | CrossDemean | CrossAgg, md: MarketData
+) -> npt.NDArray[np.bool_]:
+    """The ONE membership definition of a cross node's population (rows × targets): every member,
+    narrowed by ``where`` (eligible = its tradable signal; a warming or decided-False member is
+    out; ANY member post-warmup undefined voids the WHOLE bar — fail-closed) and by ``group``
+    (a member with a NaN label is out). Input finiteness is NOT part of it: see
+    :func:`cross_membership`."""
+    pop = _all_true(md)
+    if node.where is not None:
+        v, i, d = condition_arrays(node.where, md)
+        pop &= v & i & d
+        voided: npt.NDArray[np.bool_] = np.any(i & ~d, axis=1, keepdims=True)
+        pop &= ~voided
+    if node.group is not None:
+        pop &= np.isfinite(build_series(node.group, md)[0].to_numpy(dtype=float))
+    return pop
+
+
+def cross_membership(
+    node: CrossRank | CrossDemean | CrossAgg, md: MarketData
+) -> npt.NDArray[np.bool_]:
+    """The ENTERING members of a cross node per bar — :func:`cross_population` with a finite
+    input — exactly the ``k`` the kernel reduces over (across every group), which the runner's
+    ``cross_breadth`` panel summarizes."""
+    x = build_series(node.input, md)[0].to_numpy(dtype=float)
+    entering: npt.NDArray[np.bool_] = cross_population(node, md) & np.isfinite(x)
+    return entering
+
+
 def build_series(node: Series, md: MarketData) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Return ``(value, init)`` DataFrames (rows × targets) for a scalar-param Series node.
 
@@ -538,18 +572,30 @@ def _build_series(node: Series, md: MarketData) -> tuple[pd.DataFrame, pd.DataFr
         case DaysSince(name=name):
             arr = md.days_since_values(name)
             return _df(arr, md), _df(_latch(arr), md)
-        case CrossAgg():
-            # The aggregate broadcasts a finite value into EVERY column wherever the
-            # cross-section is thick enough — including a column whose own series has not yet
-            # produced a value. Letting that column latch ``init`` off the broadcast would FIRE
-            # a member before its own data begins (and classify every such firing
-            # ``no_outcome``, hard-refusing the cell), so the warmup latch is gated by the
-            # member's OWN input as well: a member sees the group's breadth (the sanctioned
-            # broadcast VALUE) but cannot fire before its own series exists.
-            cv = build_series(node.input, md)[0]
-            x = cv.to_numpy(dtype=float)
-            arr = xf.transform_values(node, x)
-            return _df(arr, md), _df(_latch(arr) & _latch(x), md)
+        case CrossRank() | CrossDemean() | CrossAgg():
+            # The population model (``dsl.nodes.CrossRank``): the kernel sees the input with
+            # every non-member masked to NaN, and reduces within the group labels when given.
+            # With neither ``where`` nor ``group`` this is exactly the plain path.
+            x = build_series(node.input, md)[0].to_numpy(dtype=float)
+            pop = cross_population(node, md)
+            xm = np.where(pop, x, np.nan)
+            labels = None
+            if node.group is not None:
+                g = build_series(node.group, md)[0].to_numpy(dtype=float)
+                labels = np.where(pop, g, np.nan)
+            arr = xf.transform_values(node, xm, labels=labels)
+            if isinstance(node, CrossAgg):
+                # The aggregate broadcasts a finite value into EVERY member column wherever the
+                # cross-section is thick enough — including a member whose own series has not
+                # yet produced a value (the sanctioned semantics: a warming member INSIDE the
+                # population still sees the group's breadth) — but it stops at the population
+                # boundary. Letting a warming column latch ``init`` off the broadcast would FIRE
+                # a member before its own data begins (and classify every such firing
+                # ``no_outcome``, hard-refusing the cell), so the warmup latch is gated by the
+                # member's OWN input as well.
+                arr = np.where(pop, arr, np.nan)
+                return _df(arr, md), _df(_latch(arr) & _latch(x), md)
+            return _df(arr, md), _df(_latch(arr), md)
         case (
             EMA()
             | ZScore()
@@ -560,8 +606,6 @@ def _build_series(node: Series, md: MarketData) -> tuple[pd.DataFrame, pd.DataFr
             | BarsSinceExtremum()
             | Change()
             | Shift()
-            | CrossRank()
-            | CrossDemean()
             | UnaryOp()
         ):
             cv = build_series(node.input, md)[0]

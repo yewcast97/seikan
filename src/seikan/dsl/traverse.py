@@ -73,9 +73,6 @@ _SERIES_INPUT_NODES = (
     BarsSinceExtremum,
     Change,
     Shift,
-    CrossRank,
-    CrossDemean,
-    CrossAgg,
     UnaryOp,
     EventValue,
     EventAgg,
@@ -83,6 +80,8 @@ _SERIES_INPUT_NODES = (
 
 #: The Series nodes that embed a Condition (the event-anchor family).
 _EVENT_NODES = (BarsSinceEvent, EventValue, EventAgg)
+#: The cross-sectional trio — ``input`` plus the optional ``where`` (a Condition) / ``group``.
+_CROSS_NODES = (CrossRank, CrossDemean, CrossAgg)
 
 
 # ---- the direct layer ---------------------------------------------------------------------
@@ -92,6 +91,10 @@ def _iter_child_series(node: Series) -> Iterator[Series]:
     """A Series node's DIRECT Series children (never its embedded Conditions' operands)."""
     if isinstance(node, _SERIES_INPUT_NODES):
         yield node.input
+    elif isinstance(node, _CROSS_NODES):
+        yield node.input
+        if node.group is not None:
+            yield node.group
     elif isinstance(node, (BinaryOp, RollingCorr)):
         yield node.left
         yield node.right
@@ -105,6 +108,8 @@ def _iter_child_conditions(node: Series) -> Iterator[Condition]:
         yield node.condition
     elif isinstance(node, _EVENT_NODES):
         yield node.event
+    elif isinstance(node, _CROSS_NODES) and node.where is not None:
+        yield node.where
 
 
 def _iter_threshold_operands(node: Condition) -> Iterator[Series]:
@@ -319,12 +324,21 @@ def _series_axis_names(node: Series, counts: dict[str, int], out: list[str]) -> 
             _series_axis_names(lhs, counts, out)
             _series_axis_names(rhs, counts, out)
             lvl = _sweep_axis_name("rolling_corr", "window", w, counts)
-        case CrossRank(input=inp) | CrossDemean(input=inp) | CrossAgg(input=inp):
-            # No swept params of their own (``min_valid`` is a plain int); the input's sweeps
-            # register through the recursion — dropping these cases would fall through to the
-            # wildcard and silently skip every axis inside a cross input, breaking the
-            # parse-time/engine parity the pin test enforces.
+        case (
+            CrossRank(input=inp, where=wh, group=gr)
+            | CrossDemean(input=inp, where=wh, group=gr)
+            | CrossAgg(input=inp, where=wh, group=gr)
+        ):
+            # No swept params of their own (``min_valid`` is a plain int); the sweeps under
+            # input → where → group register through the recursion in THAT order (the engine's
+            # construction order; existing documents' axis names are unchanged) — dropping these
+            # cases would fall through to the wildcard and silently skip every axis inside a
+            # cross node, breaking the parse-time/engine parity the pin test enforces.
             _series_axis_names(inp, counts, out)
+            if wh is not None:
+                _condition_axis_names(wh, counts, out)
+            if gr is not None:
+                _series_axis_names(gr, counts, out)
             lvl = None
         case BinaryOp(left=lhs, right=rhs):
             _series_axis_names(lhs, counts, out)
@@ -414,7 +428,8 @@ def _series_depth(node: Series) -> int:
     transparent (arithmetic/plumbing — they pass through the max child depth); every other
     operator adds one level over its Series children (``bars_since_event`` has none, so it is
     exactly one; ``event_value``/``event_agg`` count one over their ``input``; ``native`` one
-    over its ``expr``). An embedded
+    over its ``expr``; a cross node one over the deeper of ``input`` and ``group``, like
+    ``rolling_corr``'s two children — ``where`` adds nothing, its operands being roots). An embedded
     Condition is invisible here by construction — it is a decision, not a transform level — and
     its operands are depth-checked as roots of their own (:func:`iter_condition_series`,
     :func:`iter_series_depth_roots`)."""
@@ -465,7 +480,8 @@ def iter_cross_series(node: Condition) -> Iterator[CrossRank | CrossDemean | Cro
     actually stood on is visible nowhere unless it is recorded. The runner walks these nodes
     per scalarized combo to emit ``summary["cross_breadth"]``, recomputing ``k`` bit-exactly
     off each node's memoized input frame. Deduplicated by canonical JSON: two identical nodes
-    share one memoized frame and one breadth profile."""
+    share one memoized frame and one breadth profile, and the JSON carries ``where``/``group``,
+    so the same input under two populations stays two nodes with two profiles."""
     seen: set[str] = set()
     for series in _iter_threshold_operands(node):
         for cross in series_cross_nodes(series):
