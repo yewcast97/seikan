@@ -474,12 +474,45 @@ spelling), named sub-expression references (the memo makes a repeated subtree fr
 axis carries the identity that matters), and a looser `rolling(any)` over undecided bars
 (fail-closed by doctrine).
 
+### Native-clock transforms
+
+- `{"type": "native", "name": "<feed>", "expr": <Series>}` — evaluate `expr` on the feed's OWN
+  clock (over its native prints, in print order), then anchor the RESULT onto the bars with the
+  same backward-asof rule a raw feed uses. The sampling clock of a transform is otherwise the bar
+  clock: `rolling_agg(external(eps), 8, std)` counts eight BARS of the forward-filled feed — eight
+  days of the same quarterly print — while `native(eps, rolling_agg(eps, 8, std))` counts eight
+  RELEASES. And every print between two bars is seen: three prints inside one day collapse to the
+  last one under asof anchoring, so no bar-clock expression can tell `[10, 20, 30]` from
+  `[99, 20, 30]`; their native three-print means (20 vs 49.67) differ.
+- Availability-honest by construction: the value at print `i` is computed from prints `≤ i` and
+  becomes usable at the first bar stamped at-or-after print `i`'s (post-`lag`) availability time.
+  A `lag` on the feed shifts every print BEFORE the native evaluation; pair with
+  `days_since(feed) <= N` for a freshness guard on the same stamps.
+- `expr` reads exactly ONE feed — `external(name)` with this node's `name` — plus constants,
+  through the single-input time transforms (`ema`/`zscore`/`percentile`/`rolling_agg`/
+  `drawdown`/`runup`/`bars_since_extremum`/`change`/`shift`/`unary_op`), `binary_op` and
+  `rolling_corr`. Refused, each naming the offending node: a target `field` (the bar clock —
+  note `drawdown`/`runup`/`bars_since_extremum` default `input` to close, so pass `input`
+  explicitly), another feed, `calendar`/`days_since` (properties of the bar index), a cross node
+  (ranks across the targets at a bar), an event node or `mask` (a Condition decided on the bar
+  clock), a nested `native`, and an `expr` that never reads the feed.
+- Counts one level over `expr`. The feed is evaluated over its WHOLE print history (feeds are not
+  sliced by `data.start`/`end`; the anchored bars are) — causal on print order. An explicitly
+  stamped NaN print is a hole on the native clock and on every bar it anchors to.
+- Recipes: **SUE** (standardized unexpected earnings over eight releases) =
+  `native(eps, change(eps, 4, diff) / rolling_agg(change(eps, 4, diff), 8, std))`; a true
+  **10-week EMA** = a caller-consolidated weekly close stamped at week completion +
+  `native(weekly, ema(weekly, 10))`. Deferred: resampling the TARGET's own bars (weekly from
+  daily) still needs a caller-consolidated feed stamped at period completion — the engine has no
+  session calendar.
+
 **Nesting limit:** operators may nest at most **five levels** deep. Each transform (`ema`,
 `zscore`, `percentile`, `rolling_agg`, `drawdown`, `runup`, `bars_since_extremum`, `change`,
 `rolling_corr`, the cross-sectional nodes, and the event-anchor nodes `bars_since_event` /
 `event_value` / `event_agg`) counts one level, so a five-stage pipeline like
 `zscore(ema(percentile(change(rolling_agg(...)))))` is the deepest shape allowed and a sixth
-wrap is rejected at validation. `binary_op` / `unary_op` / `shift` / `mask` are transparent (they
+wrap is rejected at validation; `native` counts one level over its `expr`. `binary_op` /
+`unary_op` / `shift` / `mask` are transparent (they
 don't count as a level), so `binary_op(ema(x), ema(y))` costs one level, not two; `rolling_corr`
 counts one level over its deeper child. A Condition embedded in an event node is invisible to the
 count of the node that embeds it — its own operands are checked as roots. Depth is a budget, not a

@@ -31,6 +31,7 @@ from seikan.dsl.nodes import (
     External,
     Field,
     Mask,
+    Native,
     Percentile,
     RollingAgg,
     RollingCorr,
@@ -108,6 +109,8 @@ def render_series(node: Series) -> str:
             return f"event_value({render_condition(e)},{render_series(inp)})"
         case EventAgg(event=e, input=inp, agg=agg):
             return f"event_agg({render_condition(e)},{render_series(inp)},{agg})"
+        case Native(name=name, expr=e):
+            return f"native({name},{render_series(e)})"
         case _:
             raise TypeError(f"unknown series node: {node!r}")
 

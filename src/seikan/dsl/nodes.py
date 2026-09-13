@@ -412,6 +412,75 @@ class EventAgg(_Strict):
     agg: Literal["sum", "max", "min", "mean"]
 
 
+class Native(_Strict):
+    # A transform evaluated on an external feed's OWN clock — over its native prints, in print
+    # order — and only then anchored onto the bars with the same backward-asof rule a raw feed
+    # uses. ``rolling_agg(external(eps), 8, std)`` counts eight BARS of the forward-filled feed
+    # (eight days of the same quarterly print); ``native(eps, rolling_agg(eps, 8, std))`` counts
+    # eight RELEASES, and every print between two bars is seen (the asof collapse would keep the
+    # last one only). Availability-honest by construction: the value at native print ``i`` is
+    # computed from prints ``<= i`` and becomes usable at the first bar stamped at-or-after print
+    # ``i``'s (post-``lag``) availability time. ``expr`` reads exactly one feed — ``external(name)``
+    # with THIS node's name — and constants, through the single-input time transforms,
+    # ``binary_op`` and ``rolling_corr``; everything that reads the bar clock (a target field, a
+    # calendar attribute, a feed age, a cross-section, an embedded Condition) or another feed is
+    # refused, as is a nested ``native``. Counts one level over ``expr``. The feed is evaluated
+    # over its WHOLE print history (feeds are not sliced by ``data.start``/``end``; the anchored
+    # bars are) — causal on print order, consistent with the raw asof anchoring and ``days_since``.
+    # The engine has no session calendar: resampling the TARGET's own bars (weekly from daily)
+    # still needs a caller-consolidated feed stamped at period completion.
+    type: Literal["native"] = "native"
+    name: str
+    expr: Series
+
+    @model_validator(mode="after")
+    def _check_expr_reads_one_feed_clock(self) -> Native:
+        # A local pre-order walk (this module cannot import ``traverse``): every node under
+        # ``expr`` must be evaluable on the feed's print sequence alone.
+        allowed = (
+            f"allowed inside a native expr: external({self.name!r}), constant, the single-input "
+            "time transforms (ema/zscore/percentile/rolling_agg/drawdown/runup/"
+            "bars_since_extremum/change/shift/unary_op), binary_op, rolling_corr"
+        )
+        reads_feed = False
+        stack: list[Series] = [self.expr]
+        while stack:
+            node = stack.pop()
+            reason: str | None = None
+            if isinstance(node, Field):
+                reason = (
+                    "a target field reads the BAR clock — and drawdown/runup/bars_since_extremum "
+                    "default 'input' to close: pass 'input' explicitly"
+                )
+            elif isinstance(node, External):
+                if node.name != self.name:
+                    reason = "a native expr reads exactly one feed, on that feed's own clock"
+                else:
+                    reads_feed = True
+            elif isinstance(node, (Calendar, DaysSince)):
+                reason = "properties of the bar index"
+            elif isinstance(node, (CrossRank, CrossDemean, CrossAgg)):
+                reason = "ranks across the targets at a bar"
+            elif isinstance(node, (Mask, BarsSinceEvent, EventValue, EventAgg)):
+                reason = "embeds a Condition decided on the bar clock"
+            elif isinstance(node, Native):
+                reason = "does not nest"
+            if reason is not None:
+                raise ValueError(
+                    f"native({self.name!r}) expr contains {node.type!r}: {reason}; {allowed}"
+                )
+            for attr in ("input", "expr", "left", "right"):
+                child = getattr(node, attr, None)
+                if child is not None:
+                    stack.append(child)
+        if not reads_feed:
+            raise ValueError(
+                f"native({self.name!r}) expr never reads the feed: it must contain "
+                f"external({self.name!r}) — a native transform of nothing is a constant"
+            )
+        return self
+
+
 Series = Annotated[
     Field
     | Constant
@@ -436,7 +505,8 @@ Series = Annotated[
     | Mask
     | BarsSinceEvent
     | EventValue
-    | EventAgg,
+    | EventAgg
+    | Native,
     PField(discriminator="type"),
 ]
 

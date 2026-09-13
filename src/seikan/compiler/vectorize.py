@@ -41,7 +41,7 @@ import pandas as pd
 
 from seikan.compiler import nb
 from seikan.compiler import transforms as xf
-from seikan.compiler.data import MarketData
+from seikan.compiler.data import MarketData, _anchor_feed
 from seikan.constants import RESERVED_SWEEP_LEVELS
 from seikan.dsl.schema import (
     EMA,
@@ -65,6 +65,7 @@ from seikan.dsl.schema import (
     FirstTrueCondition,
     LagCondition,
     Mask,
+    Native,
     NotCondition,
     OrCondition,
     Percentile,
@@ -216,6 +217,8 @@ def _transform_series(node: Series, resolve: _ParamResolver) -> Series:
         case EventAgg(event=e, input=inp, agg=agg):
             e_t = _transform_condition(e, resolve)
             return EventAgg(event=e_t, input=_transform_series(inp, resolve), agg=agg)
+        case Native(name=name, expr=e):
+            return Native(name=name, expr=_transform_series(e, resolve))
         case _:
             raise TypeError(f"unknown series node: {node!r}")
 
@@ -442,6 +445,55 @@ def _calendar_values(md: MarketData, field: str) -> npt.NDArray[np.float64]:
     return np.repeat(np.asarray(col, dtype=float).reshape(-1, 1), len(md.targets), axis=1)
 
 
+def _eval_native(expr: Series, prints: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+    """Evaluate a ``native`` node's ``expr`` over ONE feed's native print sequence (1-D, in print
+    order) — the same kernels the bar-clock path dispatches, applied to prints instead of bars.
+    ``Native`` validation already confined ``expr`` to the feed leaf, constants, the single-input
+    time transforms, ``binary_op`` and ``rolling_corr``; the wildcard is the backstop."""
+    match expr:
+        case External():
+            return prints
+        case Constant(value=val):
+            return np.full(prints.shape[0], float(cast("float", val)))
+        case (
+            EMA()
+            | ZScore()
+            | Percentile()
+            | RollingAgg()
+            | Drawdown()
+            | Runup()
+            | BarsSinceExtremum()
+            | Change()
+            | Shift()
+            | UnaryOp()
+        ):
+            out: npt.NDArray[np.float64] = xf.transform_values(
+                expr, _eval_native(expr.input, prints)
+            )
+            return out
+        case RollingCorr(left=lhs, right=rhs, window=w):
+            a = _eval_native(lhs, prints).reshape(-1, 1)
+            b = _eval_native(rhs, prints).reshape(-1, 1)
+            return nb.rolling_corr_apply_nb(a, b, cast("int", w)).reshape(-1)
+        case BinaryOp(left=lhs, right=rhs, op=op):
+            with np.errstate(all="ignore"):
+                arr = _ARITH[op](_eval_native(lhs, prints), _eval_native(rhs, prints))
+            return np.where(np.isfinite(arr), arr, np.nan)
+        case _:
+            raise TypeError(f"not evaluable on a feed's native clock: {expr!r}")
+
+
+def _anchor_native(
+    out: npt.NDArray[np.float64], native: pd.Series, index: pd.DatetimeIndex
+) -> np.ndarray:
+    """Anchor a native-clock result onto the bars with the ONE asof rule raw feeds use: usable at
+    the first bar stamped at-or-after the print's (post-lag) availability time."""
+    anchored: np.ndarray = _anchor_feed(pd.Series(out, index=native.index), index).to_numpy(
+        dtype=float
+    )
+    return anchored
+
+
 def build_series(node: Series, md: MarketData) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Return ``(value, init)`` DataFrames (rows × targets) for a scalar-param Series node.
 
@@ -562,6 +614,26 @@ def _build_series(node: Series, md: MarketData) -> tuple[pd.DataFrame, pd.DataFr
             # as silent warmup. Strictly more refusals than the plain latch, never fewer.
             init = _latch(arr) | _latch_mask(ci & ~known)
             return _df(arr, md), _df(init, md)
+        case Native(name=name, expr=expr):
+            # Evaluate on the feed's own prints, THEN anchor — a shared feed's result broadcasts
+            # to every target, a per-target feed evaluates each member on its own print history.
+            native = md.external_native(name)
+            if isinstance(native, dict):
+                arr = np.column_stack(
+                    [
+                        _anchor_native(
+                            _eval_native(expr, native[t].to_numpy(dtype=float)), native[t], md.index
+                        )
+                        for t in md.targets
+                    ]
+                )
+            else:
+                anchored = _anchor_native(
+                    _eval_native(expr, native.to_numpy(dtype=float)), native, md.index
+                )
+                arr = np.repeat(anchored.reshape(-1, 1), len(md.targets), axis=1)
+            arr = np.where(np.isfinite(arr), arr, np.nan)
+            return _df(arr, md), _df(_latch(arr), md)
         case _:
             raise TypeError(f"unknown series node: {node!r}")
 

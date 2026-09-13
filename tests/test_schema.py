@@ -2400,3 +2400,163 @@ def test_event_node_requires_a_condition_and_a_series_in_the_right_slots():
         )
     with pytest.raises(ValidationError):  # a Condition is still not a Series — mask is the bridge
         Thesis.model_validate(_entry_over(_CLOSE_GT_0))
+
+
+# ---- native-clock transforms ---------------------------------------------------------------
+
+_EPS = {"type": "external", "name": "eps"}
+_SUE = {
+    "type": "binary_op",
+    "left": {"type": "change", "input": _EPS, "periods": 4, "kind": "diff"},
+    "op": "/",
+    "right": {
+        "type": "rolling_agg",
+        "input": {"type": "change", "input": _EPS, "periods": 4, "kind": "diff"},
+        "window": 8,
+        "agg": "std",
+    },
+}
+
+
+def _native_doc(expr: dict, feed: str = "eps", external: dict | None = None) -> dict:
+    doc = _entry_over({"type": "native", "name": feed, "expr": expr})
+    doc["data"]["external"] = external if external is not None else {feed: {}}
+    return doc
+
+
+@pytest.mark.parametrize(
+    "expr",
+    [
+        _SUE,
+        {"type": "ema", "input": _EPS, "window": 10},
+        {
+            "type": "rolling_corr",
+            "left": {"type": "change", "input": _EPS, "kind": "diff"},
+            "right": {"type": "ema", "input": _EPS, "window": 3},
+            "window": 5,
+        },
+        {
+            "type": "unary_op",
+            "op": "abs",
+            "input": {"type": "drawdown", "input": _EPS, "window": 4},
+        },
+        {"type": "binary_op", "left": _EPS, "op": "-", "right": {"type": "constant", "value": 1.0}},
+    ],
+)
+def test_native_allowed_exprs_parse_and_roundtrip(expr):
+    t = Thesis.model_validate(_native_doc(expr))
+    assert Thesis.model_validate_json(t.model_dump_json()) == t
+
+
+@pytest.mark.parametrize(
+    ("expr", "message"),
+    [
+        (
+            _FIELD_CLOSE,
+            "native\\('eps'\\) expr contains 'field': a target field reads the BAR clock",
+        ),
+        ({"type": "drawdown", "window": 4}, "contains 'field'.*pass 'input' explicitly"),
+        (
+            {"type": "ema", "input": {"type": "external", "name": "other"}, "window": 3},
+            "contains 'external': a native expr reads exactly one feed",
+        ),
+        (
+            {
+                "type": "binary_op",
+                "left": _EPS,
+                "op": "*",
+                "right": {"type": "calendar", "field": "month"},
+            },
+            "contains 'calendar': properties of the bar index",
+        ),
+        (
+            {
+                "type": "binary_op",
+                "left": _EPS,
+                "op": "*",
+                "right": {"type": "days_since", "name": "eps"},
+            },
+            "contains 'days_since': properties of the bar index",
+        ),
+        (
+            {"type": "cross_rank", "input": _EPS},
+            "contains 'cross_rank': ranks across the targets at a bar",
+        ),
+        (
+            {
+                "type": "mask",
+                "condition": {
+                    "type": "threshold",
+                    "left": _EPS,
+                    "op": ">",
+                    "right": {"type": "constant", "value": 0.0},
+                },
+            },
+            "contains 'mask': embeds a Condition decided on the bar clock",
+        ),
+        (
+            {
+                "type": "event_value",
+                "event": {
+                    "type": "threshold",
+                    "left": _EPS,
+                    "op": ">",
+                    "right": {"type": "constant", "value": 0.0},
+                },
+                "input": _EPS,
+            },
+            "contains 'event_value': embeds a Condition",
+        ),
+        (
+            {"type": "native", "name": "eps", "expr": {"type": "ema", "input": _EPS, "window": 3}},
+            "contains 'native': does not nest",
+        ),
+        ({"type": "constant", "value": 1.0}, "native\\('eps'\\) expr never reads the feed"),
+    ],
+)
+def test_native_refusals_name_the_offending_node(expr, message):
+    with pytest.raises(ValidationError, match=message):
+        Thesis.model_validate(_native_doc(expr, external={"eps": {}, "other": {}}))
+
+
+def test_native_counts_one_level_over_expr():
+    from pydantic import TypeAdapter
+
+    from seikan.dsl.schema import Series
+    from seikan.dsl.traverse import _series_depth
+
+    assert (
+        _series_depth(
+            TypeAdapter(Series).validate_python({"type": "native", "name": "eps", "expr": _SUE})
+        )
+        == 3
+    )
+    d5 = {
+        "type": "ema",
+        "window": 5,
+        "input": {
+            "type": "percentile",
+            "window": 3,
+            "input": {
+                "type": "ema",
+                "window": 5,
+                "input": {
+                    "type": "percentile",
+                    "window": 3,
+                    "input": {"type": "ema", "window": 5, "input": _EPS},
+                },
+            },
+        },
+    }
+    Thesis.model_validate(
+        _entry_over(d5) | {"data": {"targets": ["target"], "external": {"eps": {}}}}
+    )
+    with pytest.raises(ValidationError, match="'native' nests 6"):
+        Thesis.model_validate(_native_doc(d5))
+
+
+def test_native_requires_declared_feed_and_marks_it_used():
+    with pytest.raises(ValidationError, match="external feed\\(s\\) \\['eps'\\] not declared"):
+        Thesis.model_validate(_native_doc(_SUE, external={}))
+    t = Thesis.model_validate(_native_doc(_SUE))  # referenced only through the native node
+    assert t.data_keys() == ["target", "eps"]

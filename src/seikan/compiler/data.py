@@ -74,6 +74,13 @@ class MarketData:
     # before each bar; NaN before the first stamp) — the ``days_since`` event-distance primitive.
     # Same shared-Series / per-target-DataFrame shape convention as ``externals``.
     externals_age: dict[str, pd.Series | pd.DataFrame] | None = None
+    # Each feed's NATIVE post-lag prints on their own stamps — the series ``_prepare_feed``
+    # returns before anchoring — retained so a ``native(feed, expr)`` node can evaluate ``expr``
+    # on the feed's own clock and anchor only the result. A shared feed is one Series; a
+    # per-target feed is ``{target: Series}`` (members keep their own print histories). Frozen by
+    # the loader like every other frame; a hand-built ``MarketData`` that omits it cannot serve a
+    # ``native`` node (``external_native`` refuses by name).
+    externals_native: dict[str, pd.Series | dict[str, pd.Series]] | None = None
     # "ohlcv" (price targets) or "series" (a single value column synthesized into OHLC; no
     # volume) — uniform across targets, enforced at load. Recorded on the summary so evidence
     # self-describes what was measured.
@@ -139,6 +146,18 @@ class MarketData:
     def days_since_values(self, name: str) -> np.ndarray:
         """Feed age (days since the last native stamp) as a (rows × targets) float array."""
         return self._feed_as_array(self.externals_age or {}, name)
+
+    def external_native(self, name: str) -> pd.Series | dict[str, pd.Series]:
+        """A feed's native post-lag prints on their own stamps (a shared feed: one Series; a
+        per-target feed: ``{target: Series}``) — what a ``native`` node evaluates over."""
+        natives = self.externals_native or {}
+        if name not in natives:
+            raise ValueError(
+                f"external feed {name!r} has no retained native prints: a native(...) node "
+                "evaluates on the feed's own clock, which load_market_data retains as "
+                "MarketData.externals_native — a hand-built MarketData must supply them"
+            )
+        return natives[name]
 
 
 def _slice(df: pd.DataFrame, start: str | None, end: str | None) -> pd.DataFrame:
@@ -555,6 +574,7 @@ def load_market_data(spec: DataSpec, files: DataFiles) -> MarketData:
     join_warnings: list[DataIssue] = []
     externals: dict[str, pd.Series | pd.DataFrame] = {}
     externals_age: dict[str, pd.Series | pd.DataFrame] = {}
+    externals_native: dict[str, pd.Series | dict[str, pd.Series]] = {}
     for fname, feed in feed_specs.items():
         lag = feed.lag_timedelta
         paths = feed_paths[fname]
@@ -570,6 +590,7 @@ def load_market_data(spec: DataSpec, files: DataFiles) -> MarketData:
                 )
                 externals[fname] = _anchor_feed(native, common)
                 externals_age[fname] = _feed_age_days(native, common)
+                externals_native[fname] = _frozen_series(native)
             else:
                 # Each MEMBER of a per-target feed is bound under its own derived key, so the
                 # members may now name DIFFERENT columns — deliberate, and the symmetric twin of
@@ -594,6 +615,7 @@ def load_market_data(spec: DataSpec, files: DataFiles) -> MarketData:
                 externals_age[fname] = pd.DataFrame(
                     {name: _feed_age_days(natives[name], common) for name in names}, columns=names
                 )
+                externals_native[fname] = {name: _frozen_series(natives[name]) for name in names}
         except ValueError as exc:
             _fail("spec_data_mismatch", str(exc))
         cov = _coverage(externals[fname])
@@ -643,6 +665,7 @@ def load_market_data(spec: DataSpec, files: DataFiles) -> MarketData:
         benchmark_open=_frozen_series(benchmark_open) if benchmark_open is not None else None,
         benchmark_path=files.benchmark,
         externals_age={k: _frozen(v) for k, v in externals_age.items()},
+        externals_native=externals_native,
         target_shape=target_shape,
         report=build_data_report(reports, join=join),
     )

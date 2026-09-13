@@ -51,6 +51,7 @@ from seikan.dsl.nodes import (
     External,
     Field,
     Mask,
+    Native,
     Percentile,
     RollingAgg,
     RollingCorr,
@@ -94,6 +95,8 @@ def _iter_child_series(node: Series) -> Iterator[Series]:
     elif isinstance(node, (BinaryOp, RollingCorr)):
         yield node.left
         yield node.right
+    elif isinstance(node, Native):
+        yield node.expr
 
 
 def _iter_child_conditions(node: Series) -> Iterator[Condition]:
@@ -173,7 +176,7 @@ def iter_series_depth_roots(node: Series) -> Iterator[Series]:
 
 def _series_external_names(node: Series) -> Iterator[str]:
     for s in _iter_series_tree(node):
-        if isinstance(s, (External, DaysSince)):
+        if isinstance(s, (External, DaysSince, Native)):
             yield s.name
 
 
@@ -338,6 +341,9 @@ def _series_axis_names(node: Series, counts: dict[str, int], out: list[str]) -> 
             _condition_axis_names(e, counts, out)
             _series_axis_names(inp, counts, out)
             lvl = None
+        case Native(expr=e):
+            _series_axis_names(e, counts, out)
+            lvl = None
         case _:
             # The arms above happen to cover the whole ``Series`` union today, so a checker reads
             # this arm as dead — but the arm is what makes the traversal TOTAL, and staying total
@@ -407,7 +413,8 @@ def _series_depth(node: Series) -> int:
     """Operator-nesting depth. Leaves are 0; ``BinaryOp``/``UnaryOp``/``Shift``/``Mask`` are
     transparent (arithmetic/plumbing — they pass through the max child depth); every other
     operator adds one level over its Series children (``bars_since_event`` has none, so it is
-    exactly one; ``event_value``/``event_agg`` count one over their ``input``). An embedded
+    exactly one; ``event_value``/``event_agg`` count one over their ``input``; ``native`` one
+    over its ``expr``). An embedded
     Condition is invisible here by construction — it is a decision, not a transform level — and
     its operands are depth-checked as roots of their own (:func:`iter_condition_series`,
     :func:`iter_series_depth_roots`)."""

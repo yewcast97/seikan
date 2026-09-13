@@ -36,6 +36,7 @@ from seikan.dsl.schema import (
     FirstTrueCondition,
     LagCondition,
     Mask,
+    Native,
     NotCondition,
     OrCondition,
     Percentile,
@@ -77,8 +78,9 @@ def ohlcv() -> pd.DataFrame:
     )
 
 
-def _md(df: pd.DataFrame, externals=()) -> MarketData:
-    """Single-target MarketData from a fixture DataFrame (``_ext_<name>`` columns become feeds)."""
+def _md(df: pd.DataFrame, externals=(), natives=None) -> MarketData:
+    """Single-target MarketData from a fixture DataFrame (``_ext_<name>`` columns become feeds;
+    ``natives`` — ``{feed: Series on its own stamps}`` — become the retained native prints)."""
 
     def frame(col):
         return pd.DataFrame({"t": df[col]})
@@ -92,6 +94,7 @@ def _md(df: pd.DataFrame, externals=()) -> MarketData:
         volume=frame("volume") if "volume" in df else None,
         externals=ext,
         targets=["t"],
+        externals_native=dict(natives) if natives else None,
     )
 
 
@@ -1135,6 +1138,23 @@ def test_sweep_axis_names_match_collect_sweeps_order_exact():
                 ),
             ]
         ),
+        # A native-clock expr: its sweeps register through the recursion like any input's.
+        sc.ThresholdCondition(
+            left=sc.Native(
+                name="eps",
+                expr=sc.BinaryOp(
+                    left=sc.Change(input=sc.External(name="eps"), periods=[4, 8], kind="diff"),
+                    op="/",
+                    right=sc.RollingAgg(
+                        input=sc.Change(input=sc.External(name="eps"), periods=[4, 8], kind="diff"),
+                        window=[8, 12],
+                        agg="std",
+                    ),
+                ),
+            ),
+            op=">",
+            right=sc.Constant(value=[1.0, 2.0], name="sue"),
+        ),
     ]
     for entry in trees:
         assert _iter_sweep_axis_names(entry) == [lvl for lvl, _ in vz.collect_sweeps(entry)]
@@ -1878,3 +1898,124 @@ def test_embedded_condition_sweeps_count_once_in_declared_grid():
         "ema_window",
     ]
     assert declared_grid_size(entry, 1) == 8
+
+
+# ---- native-clock transforms ---------------------------------------------------------------
+
+
+def _native_prints(stamps, values) -> pd.Series:
+    return pd.Series(np.asarray(values, float), index=pd.DatetimeIndex(stamps))
+
+
+def _ref_native(expr, prints: np.ndarray) -> np.ndarray:
+    """The reference evaluation of a native expr over the print sequence: the frozen oracles of
+    ``_ref_series`` applied to a one-column frame whose ``_ext_<feed>`` column is the prints."""
+    frame = pd.DataFrame({"_ext_eps": prints})
+    return _ref_series(expr, frame)
+
+
+def _ref_anchor(out: np.ndarray, stamps: pd.DatetimeIndex, index: pd.DatetimeIndex) -> np.ndarray:
+    """Backward asof by hand: each bar takes the latest print stamped at-or-before it."""
+    res = np.full(len(index), np.nan)
+    for i, ts in enumerate(index):
+        j = np.searchsorted(stamps.to_numpy(), np.datetime64(ts), side="right") - 1
+        if j >= 0:
+            res[i] = out[j]
+    return res
+
+
+def test_native_parity_with_native_clock_reference(ohlcv):
+    rng = np.random.RandomState(9)
+    # ~3 prints a week, some inside one bar's day, over the bar index's span
+    stamps = pd.DatetimeIndex(
+        sorted(set(ohlcv.index[0] + pd.to_timedelta(rng.randint(0, 299 * 24, 140), unit="h")))
+    )
+    prints = _native_prints(stamps, rng.randn(len(stamps)).cumsum() + 50)
+    md = _md(ohlcv, natives={"eps": prints})
+    eps = External(name="eps")
+    exprs = [
+        RollingAgg(input=eps, window=5, agg="mean"),
+        EMA(input=eps, window=10),
+        BinaryOp(
+            left=Change(input=eps, periods=4, kind="diff"),
+            op="/",
+            right=RollingAgg(input=Change(input=eps, periods=4, kind="diff"), window=8, agg="std"),
+        ),
+        ZScore(input=eps, window=12, mean_type="ema"),
+        Percentile(input=Shift(input=eps, periods=2), window=6),
+        UnaryOp(input=Drawdown(input=eps, window=7), op="abs"),
+    ]
+    for expr in exprs:
+        got = vz.build_series(Native(name="eps", expr=expr), md)[0]["t"].to_numpy()
+        want = _ref_anchor(_ref_native(expr, prints.to_numpy()), stamps, ohlcv.index)
+        np.testing.assert_allclose(got, want, rtol=1e-9, atol=1e-9, equal_nan=True)
+
+
+def test_native_windows_count_native_prints_not_bars(ohlcv):
+    # A weekly print on daily bars: rolling_agg(external, 3) needs three BARS of the ffilled feed
+    # (defined from the third bar after the first print), native(rolling_agg(eps, 3)) needs three
+    # PRINTS (defined from the third print's bar).
+    stamps = ohlcv.index[::7][:10]
+    prints = _native_prints(stamps, np.arange(10, dtype=float))
+    df = ohlcv.copy()
+    df["_ext_eps"] = prints.reindex(ohlcv.index, method="ffill")
+    md = _md(df, externals=("eps",), natives={"eps": prints})
+    eps = External(name="eps")
+    bar = vz.build_series(RollingAgg(input=eps, window=3, agg="mean"), md)[0]["t"].to_numpy()
+    nat = vz.build_series(Native(name="eps", expr=RollingAgg(input=eps, window=3, agg="mean")), md)[
+        0
+    ]["t"].to_numpy()
+    assert int(np.argmax(np.isfinite(bar))) == 2
+    assert int(np.argmax(np.isfinite(nat))) == 14
+    assert nat[14] == pytest.approx(1.0) and bar[2] == pytest.approx(0.0)
+
+
+def test_native_per_target_feed_evaluates_each_member_on_its_own_clock():
+    idx = pd.date_range("2022-01-01", periods=12, freq="1D")
+    close = pd.DataFrame({"a": 100.0, "b": 100.0}, index=idx)
+    pa = _native_prints(["2022-01-02", "2022-01-05", "2022-01-09"], [1.0, 3.0, 5.0])
+    pb = _native_prints(
+        ["2022-01-01", "2022-01-03", "2022-01-04", "2022-01-11"], [10.0, 30.0, 50.0, 70.0]
+    )
+    md = MarketData(
+        close=close,
+        open=close,
+        high=close,
+        low=close,
+        volume=None,
+        externals={},
+        targets=["a", "b"],
+        externals_native={"eps": {"a": pa, "b": pb}},
+    )
+    got = vz.build_series(
+        Native(name="eps", expr=RollingAgg(input=External(name="eps"), window=2, agg="mean")), md
+    )[0]
+    want_a = _ref_anchor(ref.rolling_agg(pa.to_numpy(), 2, "mean"), pa.index, idx)
+    want_b = _ref_anchor(ref.rolling_agg(pb.to_numpy(), 2, "mean"), pb.index, idx)
+    np.testing.assert_allclose(got["a"].to_numpy(), want_a, equal_nan=True)
+    np.testing.assert_allclose(got["b"].to_numpy(), want_b, equal_nan=True)
+    assert got["a"].to_numpy()[4] == pytest.approx(2.0) and got["b"].to_numpy()[3] == pytest.approx(
+        40.0
+    )
+
+
+def test_native_hand_built_md_without_native_prints_raises_naming_the_feed(ohlcv_ext):
+    md = _md(ohlcv_ext, externals=("rate",))
+    with pytest.raises(ValueError, match="external feed 'rate' has no retained native prints"):
+        vz.build_series(Native(name="rate", expr=EMA(input=External(name="rate"), window=3)), md)
+
+
+def test_native_explicit_nan_print_is_a_hole_on_the_native_clock(ohlcv):
+    stamps = ohlcv.index[[0, 3, 6, 9, 12, 15]]
+    prints = _native_prints(stamps, [1.0, 2.0, np.nan, 4.0, 5.0, 6.0])
+    md = _md(ohlcv, natives={"eps": prints})
+    got = vz.build_series(
+        Native(name="eps", expr=RollingAgg(input=External(name="eps"), window=2, agg="mean")), md
+    )[0]["t"].to_numpy()
+    # the NaN print poisons the two windows it sits in (prints 2 and 3), and stays NaN on the
+    # bars those prints cover — a hole on the native clock is a hole on every bar it anchors to
+    assert np.isnan(got[6:12]).all()
+    assert got[3] == pytest.approx(1.5) and got[12] == pytest.approx(4.5)
+    assert vz.build_series(
+        Native(name="eps", expr=RollingAgg(input=External(name="eps"), window=2, agg="mean")), md
+    )[1]["t"].to_numpy()[6]

@@ -718,6 +718,15 @@ def test_render_series_event_nodes_and_render_condition_rule_table():
     )
 
 
+def test_render_series_native():
+    from seikan.dsl.schema import Native
+
+    eps = External(name="eps")
+    assert render_series(Native(name="eps", expr=RollingAgg(input=eps, window=8, agg="std"))) == (
+        "native(eps,rolling_agg(eps,8,std))"
+    )
+
+
 def test_root_series_includes_embedded_condition_operands_in_order(tmp_path):
     # Column order: the outer operand first, then its embedded conditions' operands, pre-order —
     # each embedded threshold operand is a decision root the listing explains.

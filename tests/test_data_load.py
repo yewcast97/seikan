@@ -380,3 +380,48 @@ def test_loaded_frames_are_read_only(tmp_path):
         md.close.iloc[0, 0] = 1e9
     with pytest.raises(ValueError):
         md.open.iloc[-1, 0] = 0.0
+
+
+def test_load_retains_native_prints_post_lag_shared_and_per_target(tmp_path):
+    # The loader keeps each feed's NATIVE prints (post-lag stamps, values untouched, read-only,
+    # NOT sliced by data.start/end) beside the anchored values — what a `native` node reads.
+    _ohlcv(tmp_path / "AAA.csv", n=6, start="2021-01-03")
+    _ohlcv(tmp_path / "BBB.csv", n=6, start="2021-01-03")
+    shared = pd.DataFrame(
+        {"v": [1.0, 2.0, 3.0]}, index=pd.DatetimeIndex(["2020-12-30", "2021-01-04", "2021-01-06"])
+    )
+    shared.index.name = "datetime"
+    shared.to_csv(tmp_path / "s.csv")
+    for sym, vals in (("AAA", [10.0, 11.0]), ("BBB", [20.0, 21.0, 22.0])):
+        df = pd.DataFrame(
+            {"v": vals}, index=pd.date_range("2021-01-02", periods=len(vals), freq="2D")
+        )
+        df.index.name = "datetime"
+        df.to_csv(tmp_path / f"p_{sym}.csv")
+    thesis = _thesis(
+        ["AAA", "BBB"],
+        start="2021-01-04",
+        external={"s": {"lag": 1}, "p": {"per_target": True}},
+    )
+    md = load(
+        thesis,
+        {
+            "AAA": tmp_path / "AAA.csv",
+            "BBB": tmp_path / "BBB.csv",
+            "s": tmp_path / "s.csv",
+            "p@AAA": tmp_path / "p_AAA.csv",
+            "p@BBB": tmp_path / "p_BBB.csv",
+        },
+    )
+    s = md.external_native("s")
+    assert isinstance(s, pd.Series)
+    # lag-shifted stamps, every print retained (the pre-start one included), values verbatim
+    assert list(s.index) == list(pd.DatetimeIndex(["2020-12-31", "2021-01-05", "2021-01-07"]))
+    np.testing.assert_array_equal(s.to_numpy(), [1.0, 2.0, 3.0])
+    assert not s.to_numpy().flags.writeable
+    p = md.external_native("p")
+    assert isinstance(p, dict) and set(p) == {"AAA", "BBB"}
+    np.testing.assert_array_equal(p["BBB"].to_numpy(), [20.0, 21.0, 22.0])
+    assert len(p["AAA"]) == 2
+    with pytest.raises(ValueError, match="external feed 'nope' has no retained native prints"):
+        md.external_native("nope")

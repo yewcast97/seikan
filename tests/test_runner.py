@@ -4442,3 +4442,132 @@ def test_first_recovery_after_a_fresh_excursion_fires_on_rearm_only(tmp_path):
         4,
         6,
     ]
+
+
+# ---- native-clock transforms end to end ---------------------------------------------------
+
+
+def _native_run(tmp_path, stamps, values, entry, *, n=10, start="2024-01-01", lag=0, horizon=1):
+    idx = pd.date_range(start, periods=n, freq="1D")
+    closes = np.full(n, 100.0)
+    df = pd.DataFrame(
+        {"open": closes, "high": closes, "low": closes, "close": closes, "volume": 1.0}, index=idx
+    )
+    df.index.name = "datetime"
+    df.to_csv(tmp_path / "px.csv")
+    feed = pd.DataFrame({"eps": np.asarray(values, float)}, index=pd.DatetimeIndex(stamps))
+    feed.index.name = "datetime"
+    feed.to_csv(tmp_path / "eps.csv")
+    thesis = Thesis.model_validate(
+        {
+            "name": "t",
+            "data": {"targets": ["target"], "external": {"eps": {"lag": lag}}},
+            "entry": entry,
+            "params": {"horizon": horizon},
+        }
+    )
+    md = load(thesis, {"target": tmp_path / "px.csv", "eps": tmp_path / "eps.csv"})
+    return thesis, md
+
+
+_EPS = {"type": "external", "name": "eps"}
+
+
+def _gt0(left):
+    return {
+        "type": "threshold",
+        "left": left,
+        "op": ">",
+        "right": {"type": "constant", "value": 0.0},
+    }
+
+
+def test_native_sue_style_two_release_mean_vs_bar_mean(tmp_path):
+    # The review's table: prints on day 2 (10) and day 4 (20) over a 10-day index. The bar-clock
+    # mean of the ffilled feed reads 10 on day 3 (two BARS of one print) and 20 from day 5; the
+    # native two-RELEASE mean is 15 from day 4 on and never anything else.
+    from seikan.api import list_entries
+
+    native = {
+        "type": "native",
+        "name": "eps",
+        "expr": {"type": "rolling_agg", "input": _EPS, "window": 2, "agg": "mean"},
+    }
+    bar = {"type": "rolling_agg", "input": _EPS, "window": 2, "agg": "mean"}
+    entry = {"type": "and", "conditions": [_gt0(native), _gt0(bar)]}
+    thesis, md = _native_run(tmp_path, ["2024-01-02", "2024-01-04"], [10.0, 20.0], entry)
+    roots = list_entries(thesis, md).root_series
+    np.testing.assert_allclose(
+        roots["native(eps,rolling_agg(eps,2,mean))"].to_numpy(),
+        [np.nan, np.nan, np.nan, 15, 15, 15, 15, 15, 15, 15],
+        equal_nan=True,
+    )
+    np.testing.assert_allclose(
+        roots["rolling_agg(eps,2,mean)"].to_numpy(),
+        [np.nan, np.nan, 10, 15, 20, 20, 20, 20, 20, 20],
+        equal_nan=True,
+    )
+
+
+def test_native_sees_every_print_between_two_bars(tmp_path):
+    # Three prints inside ONE day: [10, 20, 30] vs [99, 20, 30]. The asof-anchored feed keeps the
+    # last print only (identical bars for both), so no bar-clock expression can tell them apart;
+    # the native three-print mean does (20 vs 49.67).
+    from seikan.api import list_entries
+
+    stamps = ["2024-01-03T09:00", "2024-01-03T12:00", "2024-01-03T15:00"]
+    native = {
+        "type": "native",
+        "name": "eps",
+        "expr": {"type": "rolling_agg", "input": _EPS, "window": 3, "agg": "mean"},
+    }
+    entry = {"type": "and", "conditions": [_gt0(native), _gt0(_EPS)]}
+    means = {}
+    bars = {}
+    for tag, values in (("a", [10.0, 20.0, 30.0]), ("b", [99.0, 20.0, 30.0])):
+        thesis, md = _native_run(tmp_path, stamps, values, entry)
+        roots = list_entries(thesis, md).root_series
+        means[tag] = roots["native(eps,rolling_agg(eps,3,mean))"].to_numpy()
+        bars[tag] = roots["eps"].to_numpy()
+    np.testing.assert_array_equal(bars["a"], bars["b"])
+    assert means["a"][3] == pytest.approx(20.0) and means["b"][3] == pytest.approx(
+        49.666666666666664
+    )
+    assert np.isnan(means["a"][:3]).all()
+
+
+def test_native_feed_end_to_end_with_lag_and_freshness_guard(tmp_path):
+    # A one-day publication lag shifts every print's availability by a day BEFORE the native
+    # window is anchored; the days_since freshness guard reads the same post-lag stamps.
+    entry = {
+        "type": "and",
+        "conditions": [
+            {
+                "type": "threshold",
+                "left": {
+                    "type": "native",
+                    "name": "eps",
+                    "expr": {"type": "change", "input": _EPS, "periods": 1, "kind": "diff"},
+                },
+                "op": ">",
+                "right": {"type": "constant", "value": 0.0},
+            },
+            {
+                "type": "threshold",
+                "left": {"type": "days_since", "name": "eps"},
+                "op": "<=",
+                "right": {"type": "constant", "value": 1.0},
+            },
+        ],
+    }
+    thesis, md = _native_run(
+        tmp_path, ["2024-01-02", "2024-01-05", "2024-01-08"], [1.0, 3.0, 2.0], entry, lag=1
+    )
+    res = run_backtest(thesis, md)
+    # the +2 print stamped 01-05 is available 01-06 (bar 5): fires there and on 01-07 (age 1);
+    # the −1 print (01-08 → 01-09) never fires
+    assert sorted(int(b) for b in res.trades["entry_bar"]) == [5, 6]
+    assert (
+        res.summary["sources"]["target"]["by_source"]["external:eps"]["first_available"]
+        == "2024-01-03T00:00:00"
+    )

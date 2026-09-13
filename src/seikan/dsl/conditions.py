@@ -135,6 +135,7 @@ for _model in (
     nodes.BarsSinceEvent,
     nodes.EventValue,
     nodes.EventAgg,
+    nodes.Native,
     ThresholdCondition,
     AndCondition,
     OrCondition,

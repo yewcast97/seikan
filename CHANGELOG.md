@@ -29,6 +29,12 @@ of substituting a nearby question; no stamp moves and every emitted number is by
   embedded condition register once, in engine order (the condition before the node's input).
   `render_condition` joins `render_series` on the `dsl.schema` facade; `iter_condition_series`
   now yields embedded-condition operands beside the outer ones.
+- ADDED `native(name, expr)`: a transform evaluated on an external feed's own clock (over its
+  native post-lag prints, every print seen) and only then asof-anchored onto the bars — windows
+  count releases, not bars. `expr` reads exactly that feed plus constants through the single-input
+  time transforms, `binary_op` and `rolling_corr`; anything on the bar clock refuses by name.
+  Counts one level over `expr`. `MarketData.externals_native` / `external_native(name)` retain
+  each feed's native prints (a hand-built `MarketData` must supply them to serve a `native` node).
 
 ## 3.0.0 — report schema 5, statistics 4, policy 3
 
