@@ -582,3 +582,80 @@ def cross_agg_grouped_ref(
             for g in members:
                 out[i, g] = v
     return out
+
+
+# ---- robust window statistics and the explicit-decay EW forms -----------------------------
+
+
+def _sorted_median(vals: list[float]) -> float:
+    s = sorted(vals)
+    m = len(s) // 2
+    return s[m] if len(s) % 2 else (s[m - 1] + s[m]) / 2.0
+
+
+def rolling_median(arr: np.ndarray, window: int) -> np.ndarray:
+    n = arr.shape[0]
+    out = np.full(n, np.nan, dtype=np.float64)
+    for i in range(window - 1, n):
+        vals = [float(v) for v in arr[i - window + 1 : i + 1]]
+        if any(math.isnan(v) for v in vals):
+            continue
+        out[i] = _sorted_median(vals)
+    return out
+
+
+def rolling_mad(arr: np.ndarray, window: int) -> np.ndarray:
+    """Median absolute deviation about the SAME window's median, unscaled."""
+    n = arr.shape[0]
+    out = np.full(n, np.nan, dtype=np.float64)
+    for i in range(window - 1, n):
+        vals = [float(v) for v in arr[i - window + 1 : i + 1]]
+        if any(math.isnan(v) for v in vals):
+            continue
+        med = _sorted_median(vals)
+        out[i] = _sorted_median([abs(v - med) for v in vals])
+    return out
+
+
+def ema_alpha(arr: np.ndarray, alpha: float, warmup: int) -> np.ndarray:
+    """EMA with an explicit decay: first finite value seeds, NaN-skipping, NaN until ``warmup``
+    observations."""
+    n = arr.shape[0]
+    out = np.full(n, np.nan, dtype=np.float64)
+    e = np.nan
+    seen = 0
+    for i in range(n):
+        x = arr[i]
+        if np.isnan(x):
+            continue
+        e = x if np.isnan(e) else alpha * x + (1.0 - alpha) * e
+        seen += 1
+        if seen >= warmup:
+            out[i] = e
+    return out
+
+
+def zscore_ema_alpha(arr: np.ndarray, alpha: float, warmup: int) -> np.ndarray:
+    n = arr.shape[0]
+    out = np.full(n, np.nan, dtype=np.float64)
+    mu = np.nan
+    s = 0.0
+    seen = 0
+    for i in range(n):
+        x = arr[i]
+        if np.isnan(x):
+            continue
+        if np.isnan(mu):
+            mu = x
+            s = 0.0
+        else:
+            d = x - mu
+            mu = mu + alpha * d
+            s = (1.0 - alpha) * (s + alpha * d * d)
+        seen += 1
+        if seen < warmup or s <= 0.0 or not np.isfinite(s):
+            continue
+        z = (x - mu) / math.sqrt(s)
+        if np.isfinite(z):
+            out[i] = z
+    return out

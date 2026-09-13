@@ -44,6 +44,14 @@ of substituting a nearby question; no stamp moves and every emitted number is by
   bit-exact with the ungrouped result). `cross_breadth.k` now counts ENTERING members (finite
   input, eligible, finitely labelled) — identical to before for nodes without selectors; no
   report field moves. Sweep axes inside a cross node register input → where → group.
+- ADDED estimator forms: `ema` / `zscore` take exactly one of `window` or `alpha` (an explicit
+  EW decay, `0 < alpha ≤ 1`, warmup `ceil(2/alpha − 1)`; bit-exact with the window form at
+  `alpha = 2/(window+1)`; sweeps as `ema_alpha` / `zscore_alpha`; `zscore` alpha needs
+  `mean_type: "ema"` and `alpha < 1`); `rolling_agg` gains `median` and `mad` (unscaled median
+  absolute deviation about the same window's median; trailing only); `calendar` gains `hour` and
+  `minute`. `nb.ema_params(window, alpha)` is the one `(alpha, warmup)` derivation; the EW
+  kernels take that pair. The `window` form's payload is unchanged, so an existing `ema` /
+  `zscore` document's hash does not move beyond the `exclude_none` change above.
 
 ## 3.0.0 — report schema 5, statistics 4, policy 3
 

@@ -718,6 +718,24 @@ def test_render_series_event_nodes_and_render_condition_rule_table():
     )
 
 
+def test_render_series_alpha_median_mad_and_intraday_calendar():
+    close = Field()
+    assert render_series(EMA(input=close, alpha=0.06)) == "ema(close,a=0.06)"
+    assert (
+        render_series(ZScore(input=close, alpha=0.06, mean_type="ema"))
+        == "zscore(close,a=0.06,ema)"
+    )
+    assert (
+        render_series(RollingAgg(input=close, window=20, agg="median"))
+        == "rolling_agg(close,20,median)"
+    )
+    assert (
+        render_series(RollingAgg(input=close, window=20, agg="mad")) == "rolling_agg(close,20,mad)"
+    )
+    assert render_series(Calendar(field="hour")) == "calendar(hour)"
+    assert render_series(Calendar(field="minute")) == "calendar(minute)"
+
+
 def test_render_series_native():
     from seikan.dsl.schema import Native
 

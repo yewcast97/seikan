@@ -92,6 +92,11 @@ FiniteFloat = Annotated[float, PField(allow_inf_nan=False)]
 
 FloatParam = FiniteFloat | Annotated[list[FiniteFloat], *_Sweep]
 
+#: An EW decay factor stated directly: ``0 < alpha <= 1`` (RiskMetrics 0.06; Wilder's 1/N).
+UnitFloat = Annotated[float, PField(gt=0, le=1, allow_inf_nan=False)]
+
+UnitFloatParam = UnitFloat | Annotated[list[UnitFloat], *_Sweep]
+
 #: The plain shape the constrained param aliases above erase to: a numeric node param as the
 #: traversal/rendering helpers below receive it — the scalar form, or the list form that sweeps it
 #: (a ``window``/``periods``/``cooldown`` is int-valued, a ``constant.value`` float-valued). It
@@ -144,9 +149,10 @@ class Calendar(_Strict):
     # (1-12), ``day_of_week`` (0=Monday .. 6=Sunday), ``day_of_month`` (1-31), ``days_to_month_end``
     # (calendar days remaining in the month, 0 = the month's last calendar day). All are knowable at
     # the bar itself; a "trading bars to month end" field would need the future session calendar and
-    # is deliberately absent (look-ahead).
+    # is deliberately absent (look-ahead). ``hour`` (0-23) and ``minute`` (0-59) read the stamp AS
+    # THE CSV GIVES IT — the engine does not interpret whether a stamp is a bar's open or close.
     type: Literal["calendar"] = "calendar"
-    field: Literal["month", "day_of_week", "day_of_month", "days_to_month_end"]
+    field: Literal["month", "day_of_week", "day_of_month", "days_to_month_end", "hour", "minute"]
 
 
 class DaysSince(_Strict):
@@ -163,16 +169,61 @@ class DaysSince(_Strict):
 
 
 class EMA(_Strict):
+    # Exponentially weighted mean of ``input``, seeded at the first finite value, NaN-skipping.
+    # EXACTLY ONE of ``window`` / ``alpha``: ``window`` sets ``alpha = 2/(window+1)`` with a
+    # ``window``-observation warmup (the classic span form); ``alpha`` states the decay directly
+    # (``0 < alpha <= 1`` — RiskMetrics 0.06; Wilder's 1/N smoother is ``alpha = 1/N`` with THIS
+    # seed, not an SMA seed) with warmup ``ceil(2/alpha − 1)`` observations, so the two forms
+    # agree bit-exactly where ``alpha = 2/(window+1)``. ``alpha = 1`` is the input itself. A list
+    # sweeps as ``ema_window`` / ``ema_alpha`` by which field is set.
     type: Literal["ema"] = "ema"
     input: Series
-    window: PosIntParam
+    window: PosIntParam | None = None
+    alpha: UnitFloatParam | None = None
+
+    @model_validator(mode="after")
+    def _check_window_xor_alpha(self) -> EMA:
+        _require_window_xor_alpha("ema", self.window, self.alpha)
+        return self
+
+
+def _require_window_xor_alpha(kind: str, window: object, alpha: object) -> None:
+    if (window is None) == (alpha is None):
+        got = "both" if window is not None else "neither"
+        raise ValueError(
+            f"{kind} takes exactly one of 'window' or 'alpha'; got {got} — 'window' sets "
+            "alpha = 2/(window+1) with a window-bar warmup, 'alpha' states the decay directly "
+            "(0 < alpha <= 1, e.g. RiskMetrics 0.06) with warmup = ceil(2/alpha − 1) bars; both "
+            "are seeded at the first finite value"
+        )
 
 
 class ZScore(_Strict):
+    # ``(x − mean) / std`` over a trailing window (``sma``: two-pass population moments over the
+    # last ``window`` bars) or an EW recurrence (``ema``: the West recurrence; ``window`` sets
+    # ``alpha = 2/(window+1)`` or ``alpha`` states it directly — the EMA's own two forms; ``alpha``
+    # is only valid with ``mean_type="ema"`` and must be < 1, since ``alpha = 1`` leaves zero EW
+    # variance and the z-score could never be defined). Sweeps as ``zscore_window`` /
+    # ``zscore_alpha``.
     type: Literal["zscore"] = "zscore"
     input: Series
-    window: Ge2IntParam
+    window: Ge2IntParam | None = None
+    alpha: UnitFloatParam | None = None
     mean_type: Literal["sma", "ema"] = "sma"
+
+    @model_validator(mode="after")
+    def _check_window_xor_alpha(self) -> ZScore:
+        _require_window_xor_alpha("zscore", self.window, self.alpha)
+        if self.alpha is not None:
+            if self.mean_type != "ema":
+                raise ValueError("zscore 'alpha' is only valid with mean_type='ema'")
+            alphas = self.alpha if isinstance(self.alpha, list) else [self.alpha]
+            if any(a >= 1.0 for a in alphas):
+                raise ValueError(
+                    "zscore alpha must be < 1: alpha=1 leaves zero EW variance, so the z-score "
+                    "could never be defined"
+                )
+        return self
 
 
 class Percentile(_Strict):
@@ -193,10 +244,16 @@ class RollingAgg(_Strict):
     # ``binary_op(close / rolling_agg(close, N, "max"))`` remains valid. ``std`` needs ``window``
     # >= 2, so a set ``window`` is ``Ge2IntParam`` like sibling transforms. A simple moving average
     # is ``agg:"mean"``; realized vol is ``rolling_agg(change(close, kind="log"), N, "std")``.
+    # ``median`` and ``mad`` (the median absolute deviation about the SAME window's median,
+    # UNSCALED — multiply by 1.4826 via ``binary_op`` for the normal-consistent sigma) are the
+    # robust pair: robust z = ``(x − rolling_agg(x, N, median)) / (1.4826 · rolling_agg(x, N,
+    # mad))``. Note a rolling median of ``|x − rolling_median(x)|`` is NOT the MAD (each bar's
+    # deviation would be taken about a different window's median); ``mad`` centres every
+    # deviation on the one window it is computed over. Trailing-window only (no expanding form).
     type: Literal["rolling_agg"] = "rolling_agg"
     input: Series
     window: Ge2IntParam | None = None
-    agg: Literal["max", "min", "mean", "std"]
+    agg: Literal["max", "min", "mean", "std", "median", "mad"]
 
     @model_validator(mode="after")
     def _check_expanding(self) -> RollingAgg:

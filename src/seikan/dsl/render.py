@@ -51,6 +51,13 @@ def fmt_num(value: _NumericParam) -> str:
     return str(value)
 
 
+def _decay(window: _NumericParam | None, alpha: _NumericParam | None) -> str:
+    """The EW decay token: the window as before (``20``), or the alpha form as ``a=0.06``."""
+    if window is not None:
+        return str(window)
+    return f"a={fmt_num(alpha)}" if alpha is not None else "?"
+
+
 def render_series(node: Series) -> str:
     """Deterministic compact expression label for a scalar-param Series node — the value-column
     name the root-series output CSV uses (e.g. ``percentile(iv30,80)``, ``(close/ema(close,20))``).
@@ -71,10 +78,10 @@ def render_series(node: Series) -> str:
             return f"calendar({cal_field})"
         case DaysSince(name=name):
             return f"days_since({name})"
-        case EMA(input=inp, window=w):
-            return f"ema({render_series(inp)},{w})"
-        case ZScore(input=inp, window=w, mean_type=mt):
-            return f"zscore({render_series(inp)},{w}{',ema' if mt == 'ema' else ''})"
+        case EMA(input=inp, window=w, alpha=a):
+            return f"ema({render_series(inp)},{_decay(w, a)})"
+        case ZScore(input=inp, window=w, alpha=a, mean_type=mt):
+            return f"zscore({render_series(inp)},{_decay(w, a)}{',ema' if mt == 'ema' else ''})"
         case Percentile(input=inp, window=w):
             return f"percentile({render_series(inp)},{w})"
         case RollingAgg(input=inp, window=w, agg=agg):

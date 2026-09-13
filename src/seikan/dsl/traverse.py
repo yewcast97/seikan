@@ -209,7 +209,7 @@ def series_source_leaves(node: Series) -> Iterator[tuple[str, str]]:
 # ---- sweeps -------------------------------------------------------------------------------
 
 #: The Series-node params that may sweep (list-valued), beside ``Constant.value``.
-_SWEPT_SERIES_ATTRS = ("window", "periods")
+_SWEPT_SERIES_ATTRS = ("window", "periods", "alpha")
 #: The Condition-node params that may sweep: ``rolling.window``, ``first_true.cooldown``,
 #: ``lag.periods``.
 _SWEPT_CONDITION_ATTRS = ("window", "cooldown", "periods")
@@ -290,12 +290,21 @@ def _series_axis_names(node: Series, counts: dict[str, int], out: list[str]) -> 
             return
         case Constant(value=val, name=nm):
             lvl = _sweep_axis_name("constant", "value", val, counts, name=nm)
-        case EMA(input=inp, window=w):
+        case EMA(input=inp, window=w, alpha=a):
             _series_axis_names(inp, counts, out)
-            lvl = _sweep_axis_name("ema", "window", w, counts)
-        case ZScore(input=inp, window=w):
+            # Named by WHICH field is set (exactly one is): ``ema_window`` or ``ema_alpha``.
+            lvl = (
+                _sweep_axis_name("ema", "window", w, counts)
+                if w is not None
+                else _sweep_axis_name("ema", "alpha", a, counts)
+            )
+        case ZScore(input=inp, window=w, alpha=a):
             _series_axis_names(inp, counts, out)
-            lvl = _sweep_axis_name("zscore", "window", w, counts)
+            lvl = (
+                _sweep_axis_name("zscore", "window", w, counts)
+                if w is not None
+                else _sweep_axis_name("zscore", "alpha", a, counts)
+            )
         case Percentile(input=inp, window=w):
             _series_axis_names(inp, counts, out)
             lvl = _sweep_axis_name("percentile", "window", w, counts)

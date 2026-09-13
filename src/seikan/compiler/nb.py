@@ -9,7 +9,8 @@ Two implementation styles, **no vectorbt**:
   use ``numpy.lib.stride_tricks.sliding_window_view`` (a window requires every bar finite, else
   NaN); elementwise ones use plain lag slicing. No Python time-loop.
 * **Numba** ``@njit`` for the genuinely sequential kernels — the EMA / EMA-z-score recurrences
-  (``alpha = 2/(window+1)``), ``bars_since_extremum``, the ``first_true`` episode-entry latch,
+  (``(alpha, warmup)`` from ``ema_params``: the span form ``alpha = 2/(window+1)`` or an explicit
+  decay), ``bars_since_extremum``, the ``first_true`` episode-entry latch,
   and the event-anchor family (``event_anchor`` — the latest-event index ``s(t)`` a Condition's
   tradable signal defines — and ``event_agg``, the resettable running aggregate since it; the
   ``bars_since_event`` / ``event_value`` / ``mask`` reads off those are plain numpy).
@@ -25,6 +26,7 @@ their own single-column helpers.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from typing import Literal
 
@@ -114,6 +116,12 @@ def rolling_agg_apply_nb(
             m = win.mean(axis=-1)
             var = ((win - m[..., None]) ** 2).mean(axis=-1)
             v = np.sqrt(np.maximum(var, 0.0))
+        elif agg == "median":
+            v = np.median(win, axis=-1)
+        elif agg == "mad":
+            # Median absolute deviation about the SAME window's median, unscaled.
+            med = np.median(win, axis=-1)
+            v = np.median(np.abs(win - med[..., None]), axis=-1)
         else:
             raise ValueError(f"unknown rolling_agg agg: {agg!r}")
     # `isfinite(v)`: a finite window can still overflow its sum/squared deviations to ±inf.
@@ -482,21 +490,39 @@ def cross_grouped_apply_nb(
 # =============================================================================
 
 
+def ema_params(window: int | None, alpha: float | None) -> tuple[float, int]:
+    """The ``(alpha, warmup)`` pair the EW kernels take, from EXACTLY one of the two DSL forms.
+
+    ``window`` → ``(2/(window+1), window)`` — the classic span form. ``alpha`` →
+    ``(alpha, max(1, ceil(2/alpha − 1)))`` — the equivalent span, so ``alpha = 2/(w+1)``
+    reproduces warmup ``w`` exactly (rounded to 9 places before the ceiling, so the float
+    reciprocal cannot land one bar late); RiskMetrics 0.06 warms 33 observations. Wilder's 1/N
+    smoother is ``alpha = 1/N`` with THIS seed (the first finite value), not an SMA seed.
+    """
+    if (window is None) == (alpha is None):
+        raise ValueError("ema takes exactly one of 'window' or 'alpha'")
+    if window is not None:
+        return 2.0 / (window + 1.0), int(window)
+    a = float(alpha)  # type: ignore[arg-type]  # narrowed by the xor above
+    return a, max(1, math.ceil(round(2.0 / a - 1.0, 9)))
+
+
 @njit(cache=True)
-def zscore_ema_1d(arr: npt.NDArray[np.float64], window: int) -> npt.NDArray[np.float64]:
+def zscore_ema_1d(
+    arr: npt.NDArray[np.float64], alpha: float, warmup: int
+) -> npt.NDArray[np.float64]:
     """EW z-score via the West variance recurrence: ``d = x − μ; μ += α·d; s = (1−α)(s + α·d²)``.
 
     Algebraically identical (in exact arithmetic) to the EW[x²] − EW[x]² pair it replaces, but
     computed on centered quantities, so it is translation-invariant in floating point — the
     one-pass form lost its mantissa to cancellation at large input levels and drifted with the
-    input offset. Same seeding (first finite value → μ = x, s = 0), same NaN-skipping warmup,
-    same ``s > 0`` emission gate.
+    input offset. Same seeding (first finite value → μ = x, s = 0), same NaN-skipping warmup
+    (``warmup`` observations, from ``ema_params``), same ``s > 0`` emission gate.
     """
     n = arr.shape[0]
     out = np.full(n, np.nan)
-    if window < 2:
+    if warmup < 1 or not (0.0 < alpha <= 1.0):
         return out
-    alpha = 2.0 / (window + 1.0)
     mu = np.nan
     s = 0.0
     seen = 0
@@ -512,7 +538,7 @@ def zscore_ema_1d(arr: npt.NDArray[np.float64], window: int) -> npt.NDArray[np.f
             mu = mu + alpha * d
             s = (1.0 - alpha) * (s + alpha * d * d)
         seen += 1
-        if seen < window:
+        if seen < warmup:
             continue
         if s <= 0.0 or not np.isfinite(s):
             continue
@@ -523,15 +549,14 @@ def zscore_ema_1d(arr: npt.NDArray[np.float64], window: int) -> npt.NDArray[np.f
 
 
 @njit(cache=True)
-def ema_1d(arr: npt.NDArray[np.float64], window: int) -> npt.NDArray[np.float64]:
-    """EMA (alpha = 2/(window+1)): seeded at the first finite value, NaN-skipping, NaN until
-    ``window`` observations (warmup) — the same warmup convention as the EMA inside
+def ema_1d(arr: npt.NDArray[np.float64], alpha: float, warmup: int) -> npt.NDArray[np.float64]:
+    """EMA with decay ``alpha`` (``ema_params``): seeded at the first finite value, NaN-skipping,
+    NaN until ``warmup`` observations — the same warmup convention as the EMA inside
     ``zscore_ema``."""
     n = arr.shape[0]
     out = np.full(n, np.nan)
-    if window < 1:
+    if warmup < 1 or not (0.0 < alpha <= 1.0):
         return out
-    alpha = 2.0 / (window + 1.0)
     e = np.nan
     seen = 0
     for i in range(n):
@@ -540,7 +565,7 @@ def ema_1d(arr: npt.NDArray[np.float64], window: int) -> npt.NDArray[np.float64]
             continue
         e = x if np.isnan(e) else alpha * x + (1.0 - alpha) * e
         seen += 1
-        if seen >= window:
+        if seen >= warmup:
             out[i] = e
     return out
 
@@ -806,18 +831,22 @@ def mask_apply_nb(
 
 
 @njit(cache=True)
-def zscore_ema_apply_nb(arr: npt.NDArray[np.float64], window: int) -> npt.NDArray[np.float64]:
+def zscore_ema_apply_nb(
+    arr: npt.NDArray[np.float64], alpha: float, warmup: int
+) -> npt.NDArray[np.float64]:
     out = np.empty_like(arr)
     for j in range(arr.shape[1]):
-        out[:, j] = zscore_ema_1d(arr[:, j], window)
+        out[:, j] = zscore_ema_1d(arr[:, j], alpha, warmup)
     return out
 
 
 @njit(cache=True)
-def ema_apply_nb(arr: npt.NDArray[np.float64], window: int) -> npt.NDArray[np.float64]:
+def ema_apply_nb(
+    arr: npt.NDArray[np.float64], alpha: float, warmup: int
+) -> npt.NDArray[np.float64]:
     out = np.empty_like(arr)
     for j in range(arr.shape[1]):
-        out[:, j] = ema_1d(arr[:, j], window)
+        out[:, j] = ema_1d(arr[:, j], alpha, warmup)
     return out
 
 

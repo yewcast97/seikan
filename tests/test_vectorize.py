@@ -139,20 +139,27 @@ def _ref_series(node, df) -> np.ndarray:
     if t == "external":
         return _c(df, f"_ext_{node.name}")
     if t == "ema":
-        return ref.ema(_ref_series(node.input, df), node.window)
+        src = _ref_series(node.input, df)
+        if node.window is not None:
+            return ref.ema(src, node.window)
+        return ref.ema_alpha(src, node.alpha, _warmup_of(node.alpha))
     if t == "zscore":
         src = _ref_series(node.input, df)
-        return (
-            ref.zscore_sma(src, node.window)
-            if node.mean_type == "sma"
-            else ref.zscore_ema(src, node.window)
-        )
+        if node.mean_type == "sma":
+            return ref.zscore_sma(src, node.window)
+        if node.window is not None:
+            return ref.zscore_ema(src, node.window)
+        return ref.zscore_ema_alpha(src, node.alpha, _warmup_of(node.alpha))
     if t == "percentile":
         return ref.percentile(_ref_series(node.input, df), node.window)
     if t == "rolling_agg":
         src = _ref_series(node.input, df)
         if node.window is None:
             return ref.expanding(src, node.agg)
+        if node.agg == "median":
+            return ref.rolling_median(src, node.window)
+        if node.agg == "mad":
+            return ref.rolling_mad(src, node.window)
         return ref.rolling_agg(src, node.window, node.agg)
     if t == "drawdown":
         return ref.drawdown(_ref_series(node.input, df), node.window)
@@ -190,6 +197,13 @@ def _ref_series(node, df) -> np.ndarray:
 
 
 _EVENT_NODES = ("bars_since_event", "event_value", "event_agg")
+
+
+def _warmup_of(alpha: float) -> int:
+    """The alpha form's warmup, spelled independently of ``nb.ema_params``."""
+    import math
+
+    return max(1, math.ceil(round(2.0 / alpha - 1.0, 9)))
 
 
 def _ref_cond_channels(node, df) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -1137,6 +1151,17 @@ def test_sweep_axis_names_match_collect_sweeps_order_exact():
                     right=sc.Constant(value=[1.0, 1.5], name="zmax"),
                 ),
             ]
+        ),
+        # ema_alpha / zscore_alpha are their own axes; a window-swept EMA beside an alpha-swept
+        # one keeps two independent occurrence counters.
+        sc.ThresholdCondition(
+            left=sc.BinaryOp(
+                left=sc.EMA(input=c("close"), alpha=[0.05, 0.1]),
+                op="-",
+                right=sc.EMA(input=sc.EMA(input=c("close"), window=[5, 10]), alpha=[0.2, 0.3]),
+            ),
+            op=">",
+            right=sc.ZScore(input=c("close"), alpha=[0.06, 0.1], mean_type="ema"),
         ),
         # A cross node's sweeps register input → where → group, in that order.
         sc.ThresholdCondition(
@@ -2250,3 +2275,59 @@ def test_iter_param_assignments_scalarizes_where_and_group():
     for combo, tree in combos:
         assert tree.left.where.window == combo["rolling_window"]
         assert tree.left.group.periods == combo["shift_periods"]
+
+
+# ---- explicit-decay EW forms, robust window statistics, intraday calendar fields -----------
+
+
+def test_ema_and_zscore_alpha_parity(ohlcv):
+    _assert_series(EMA(input=Field(column="close"), alpha=0.06), ohlcv)
+    _assert_series(EMA(input=Field(column="close"), alpha=1.0), ohlcv)
+    _assert_series(ZScore(input=Field(column="close"), alpha=0.1, mean_type="ema"), ohlcv)
+    # alpha = 2/(w+1) is the window form, bit for bit
+    a = vz.build_series(EMA(input=Field(column="close"), alpha=2.0 / 21.0), _md(ohlcv))[0]
+    w = vz.build_series(EMA(input=Field(column="close"), window=20), _md(ohlcv))[0]
+    assert np.array_equal(a.to_numpy(), w.to_numpy(), equal_nan=True)
+
+
+@pytest.mark.parametrize("agg", ["median", "mad"])
+def test_rolling_median_and_mad_parity(ohlcv, agg):
+    _assert_series(RollingAgg(input=Field(column="close"), window=9, agg=agg), ohlcv)
+    _assert_series(RollingAgg(input=Change(input=Field(column="close")), window=5, agg=agg), ohlcv)
+
+
+def test_robust_zscore_recipe_matches_hand_computation():
+    # (x − median_N) / (1.4826 · mad_N): a flat window (mad = 0) divides by zero → NaN, no firing.
+    idx = pd.date_range("2020-01-01", periods=8, freq="1D")
+    close = pd.Series([1.0, 2.0, 3.0, 4.0, 100.0, 5.0, 5.0, 5.0], index=idx)
+    df = pd.DataFrame({"open": close, "high": close, "low": close, "close": close}, index=idx)
+    x = Field(column="close")
+    med = RollingAgg(input=x, window=3, agg="median")
+    mad = RollingAgg(input=x, window=3, agg="mad")
+    rz = BinaryOp(
+        left=BinaryOp(left=x, op="-", right=med),
+        op="/",
+        right=BinaryOp(left=Constant(value=1.4826), op="*", right=mad),
+    )
+    got = vz.build_series(rz, _md(df))[0]["t"].to_numpy()
+    # bar 4: window [3, 4, 100] → median 4, |dev| [1, 0, 96] → mad 1 → (100 − 4) / 1.4826
+    assert got[4] == pytest.approx(96.0 / 1.4826)
+    # bar 7: window [5, 5, 5] → mad 0 → NaN (never fires)
+    assert np.isnan(got[7])
+    fired = vz.signal(ThresholdCondition(left=rz, op=">", right=Constant(value=3.0)), _md(df))
+    np.testing.assert_array_equal(fired["t"].to_numpy(), [0, 0, 0, 0, 1, 0, 0, 0])
+
+
+def test_calendar_hour_minute_on_intraday_bars():
+    idx = pd.date_range("2020-01-01 09:30", periods=6, freq="30min")
+    close = pd.Series(100.0, index=idx)
+    df = pd.DataFrame({"open": close, "high": close, "low": close, "close": close}, index=idx)
+    md = _md(df)
+    from seikan.dsl.schema import Calendar
+
+    np.testing.assert_array_equal(
+        vz.build_series(Calendar(field="hour"), md)[0]["t"].to_numpy(), [9, 10, 10, 11, 11, 12]
+    )
+    np.testing.assert_array_equal(
+        vz.build_series(Calendar(field="minute"), md)[0]["t"].to_numpy(), [30, 0, 30, 0, 30, 0]
+    )

@@ -55,8 +55,15 @@ def _scalar(param: int | list[int]) -> int:
 def _scalar_or_none(param: int | list[int] | None) -> int | None:
     """:func:`_scalar` for the windows that are legitimately optional, where ``None`` is a real
     value rather than an unexpanded sweep: an omitted ``window`` selects the kernel's EXPANDING
-    form — the extremum taken from the first bar — not a missing one."""
+    form — the extremum taken from the first bar — not a missing one (or, on the EW nodes, the
+    ``alpha`` form)."""
     return cast("int | None", param)
+
+
+def _scalar_float_or_none(param: float | list[float] | None) -> float | None:
+    """The float twin of :func:`_scalar_or_none`, for the EW ``alpha`` (``None`` = the window
+    form is in use)."""
+    return cast("float | None", param)
 
 
 def transform_values(
@@ -74,14 +81,18 @@ def transform_values(
     if labels is not None and not isinstance(node, (CrossRank, CrossDemean, CrossAgg)):
         raise ValueError(f"group labels are only meaningful for a cross node, not {node.type!r}")
     match node:
-        case EMA(window=w):
-            out = nb.ema_apply_nb(x, _scalar(w))
-        case ZScore(window=w, mean_type=mt):
-            out = (
-                nb.zscore_sma_apply_nb(x, _scalar(w))
-                if mt == "sma"
-                else nb.zscore_ema_apply_nb(x, _scalar(w))
-            )
+        case EMA(window=w, alpha=a):
+            out = nb.ema_apply_nb(x, *nb.ema_params(_scalar_or_none(w), _scalar_float_or_none(a)))
+        case ZScore(window=w, alpha=a, mean_type=mt):
+            if mt == "sma":
+                ws = _scalar_or_none(w)
+                if ws is None:  # validator-guaranteed; the library-boundary backstop
+                    raise ValueError("zscore mean_type='sma' requires 'window'")
+                out = nb.zscore_sma_apply_nb(x, ws)
+            else:
+                out = nb.zscore_ema_apply_nb(
+                    x, *nb.ema_params(_scalar_or_none(w), _scalar_float_or_none(a))
+                )
         case Percentile(window=w):
             out = nb.percentile_apply_nb(x, _scalar(w))
         case RollingAgg(window=w, agg=agg):

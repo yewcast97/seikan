@@ -4687,3 +4687,112 @@ def test_cross_rank_group_sector_relative_end_to_end(tmp_path):
     assert res.summary["cross_breadth"][0]["node"] == "cross_rank(x,group=sector)"
     res = _pop_basket(tmp_path, _rank_ge(0.8), x=[100, 90, 80, 70])
     assert set(res.trades["target"]) == {"T0"}
+
+
+# ---- explicit-decay EW forms, robust window statistics, intraday calendar fields -----------
+
+
+def test_ema_riskmetrics_alpha_end_to_end_known_answer(tmp_path):
+    from seikan.api import list_entries
+
+    closes = (100 + np.random.RandomState(4).randn(80).cumsum()).tolist()
+    px = _bars(tmp_path / "px.csv", closes)
+    thesis = Thesis.model_validate(
+        {
+            "name": "rm",
+            "data": {"targets": ["target"]},
+            "entry": {
+                "type": "threshold",
+                "left": {"type": "field"},
+                "op": ">",
+                "right": {"type": "ema", "input": {"type": "field"}, "alpha": 0.06},
+            },
+            "params": {"horizon": 1},
+        }
+    )
+    roots = list_entries(thesis, load(thesis, {"target": px})).root_series
+    got = roots["ema(close,a=0.06)"].to_numpy()
+    assert int(np.argmax(np.isfinite(got))) == 32  # warmup 33 observations
+    e = closes[0]
+    for i in range(1, 80):
+        e = 0.06 * closes[i] + 0.94 * e
+        if i >= 32:
+            assert got[i] == pytest.approx(e)
+
+
+def test_robust_zscore_recipe_fires_on_a_planted_spike_only(tmp_path):
+    # every 5-bar window here has a MAD of 1 (no degenerate zero-dispersion window), and the
+    # spike at bar 7 is the only bar more than 5 robust sigmas from its window's median
+    closes = [10.0, 12.0, 11.0, 13.0, 12.0, 14.0, 13.0, 60.0, 12.0, 14.0, 13.0, 15.0, 14.0]
+    px = _bars(tmp_path / "px.csv", closes)
+    x = {"type": "field"}
+    rz = {
+        "type": "binary_op",
+        "left": {
+            "type": "binary_op",
+            "left": x,
+            "op": "-",
+            "right": {"type": "rolling_agg", "input": x, "window": 5, "agg": "median"},
+        },
+        "op": "/",
+        "right": {
+            "type": "binary_op",
+            "left": {"type": "constant", "value": 1.4826},
+            "op": "*",
+            "right": {"type": "rolling_agg", "input": x, "window": 5, "agg": "mad"},
+        },
+    }
+    thesis = Thesis.model_validate(
+        {
+            "name": "rz",
+            "data": {"targets": ["target"]},
+            "entry": {
+                "type": "threshold",
+                "left": rz,
+                "op": ">",
+                "right": {"type": "constant", "value": 5.0},
+            },
+            "params": {"horizon": 1},
+        }
+    )
+    res = run_backtest(thesis, load(thesis, {"target": px}))
+    assert sorted(int(b) for b in res.trades["entry_bar"]) == [7]
+    assert res.summary["cells"][0]["signal_coverage"]["target"]["n_undefined"] == 0
+
+
+def test_calendar_hour_filters_intraday_bars(tmp_path):
+    idx = pd.date_range("2024-03-04 09:00", periods=14, freq="30min")
+    px = pd.DataFrame(
+        {"open": 100.0, "high": 100.5, "low": 99.5, "close": 100.0, "volume": 1.0}, index=idx
+    )
+    px.index.name = "datetime"
+    px.to_csv(tmp_path / "px.csv")
+    thesis = Thesis.model_validate(
+        {
+            "name": "open-range",
+            "data": {"targets": ["target"]},
+            "entry": {
+                "type": "and",
+                "conditions": [
+                    {
+                        "type": "threshold",
+                        "left": {"type": "calendar", "field": "hour"},
+                        "op": "==",
+                        "right": {"type": "constant", "value": 9.0},
+                    },
+                    {
+                        "type": "threshold",
+                        "left": {"type": "calendar", "field": "minute"},
+                        "op": "<",
+                        "right": {"type": "constant", "value": 45.0},
+                    },
+                ],
+            },
+            "params": {"horizon": 1},
+        }
+    )
+    res = run_backtest(thesis, load(thesis, {"target": tmp_path / "px.csv"}))
+    assert [ts.strftime("%H:%M") for ts in res.trades["entry_time"]] == [
+        "09:30",
+        "10:00",
+    ]  # next-open anchors of 09:00 and 09:30

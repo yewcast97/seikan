@@ -135,12 +135,18 @@ def _transform_series(node: Series, resolve: _ParamResolver) -> Series:
             # scalar constant's name, and the DSL refuses one — keeping it would also split the
             # evaluation memo into one slot per axis spelling of the same value.
             return Constant(value=resolve("constant", "value", val, name=nm))
-        case EMA(input=inp, window=w):
-            return EMA(input=_transform_series(inp, resolve), window=resolve("ema", "window", w))
-        case ZScore(input=inp, window=w, mean_type=mt):
+        case EMA(input=inp, window=w, alpha=a):
+            inp_t = _transform_series(inp, resolve)
+            if w is not None:
+                return EMA(input=inp_t, window=resolve("ema", "window", w))
+            return EMA(input=inp_t, alpha=None if a is None else resolve("ema", "alpha", a))
+        case ZScore(input=inp, window=w, alpha=a, mean_type=mt):
+            inp_t = _transform_series(inp, resolve)
+            if w is not None:
+                return ZScore(input=inp_t, window=resolve("zscore", "window", w), mean_type=mt)
             return ZScore(
-                input=_transform_series(inp, resolve),
-                window=resolve("zscore", "window", w),
+                input=inp_t,
+                alpha=None if a is None else resolve("zscore", "alpha", a),
                 mean_type=mt,
             )
         case Percentile(input=inp, window=w):
@@ -444,6 +450,10 @@ def _calendar_values(md: MarketData, field: str) -> npt.NDArray[np.float64]:
         col = idx.day
     elif field == "days_to_month_end":
         col = idx.days_in_month - idx.day  # calendar days remaining; 0 = last calendar day
+    elif field == "hour":
+        col = idx.hour  # the stamp as given — not interpreted as a bar's open or close
+    elif field == "minute":
+        col = idx.minute
     else:
         raise ValueError(f"unknown calendar field: {field!r}")
     return np.repeat(np.asarray(col, dtype=float).reshape(-1, 1), len(md.targets), axis=1)

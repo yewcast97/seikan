@@ -253,10 +253,15 @@ Leaves:
   unique and not `target`/`horizon`/a trade-or-feature column. A SCALAR `value` refuses a `name`:
   execution never reads it, so it would move the hash without moving the measurement.
 - `{"type": "external", "name": "<feed_name>"}`
-- `{"type": "calendar", "field": "month|day_of_week|day_of_month|days_to_month_end"}` — the bar
-  timestamp's calendar attribute (month 1-12; day_of_week 0=Mon..6=Sun; days_to_month_end =
-  calendar days left in the month, 0 = last calendar day). The seasonality primitive:
-  turn-of-month = `or(day_of_month >= 25, day_of_month <= 3)`. Calendar-day arithmetic only.
+- `{"type": "calendar", "field": "month|day_of_week|day_of_month|days_to_month_end|hour|minute"}`
+  — the bar timestamp's calendar attribute (month 1-12; day_of_week 0=Mon..6=Sun;
+  days_to_month_end = calendar days left in the month, 0 = last calendar day; hour 0-23 and
+  minute 0-59 read the stamp AS THE CSV GIVES IT — the engine does not interpret whether a stamp
+  is a bar's open or close). The seasonality primitive: turn-of-month =
+  `or(day_of_month >= 25, day_of_month <= 3)`; an opening-range filter on 30-minute bars =
+  `and(calendar(hour) == 9, calendar(minute) < 45)`. Calendar-day arithmetic only. The FIRST
+  trading day of a month is `change(calendar(month), 1, diff) != 0`; the LAST needs a schedule
+  feed (it would read the future session calendar).
 - `{"type": "days_since", "name": "<feed_name>"}` — calendar days since the feed's most recent
   NATIVE observation (its real stamps + `lag`, not the forward-filled values); NaN before the
   first stamp. The event-distance primitive: PEAD window = `days_since(earnings) <= 3`; also a
@@ -268,8 +273,18 @@ There is **no Indicator family** (no RSI/ADX/ATR/OBV/VWAP/ROC); compose what you
 primitives. Classic technical indicators are deliberately absent — too widely used to be
 informative once everyone already trades them.
 
-- `ema` (input, window) — exponential moving average of any Series.
-- `zscore` (input, window, mean_type `"sma"|"ema"` default `"sma"`).
+- `ema` (input, exactly one of `window` / `alpha`) — exponentially weighted mean of any Series,
+  seeded at the first finite value, NaN-skipping. `window` sets `alpha = 2/(window+1)` with a
+  `window`-observation warmup (the classic span form); `alpha` states the decay directly
+  (`0 < alpha ≤ 1`, e.g. RiskMetrics `0.06`) with warmup `ceil(2/alpha − 1)` observations, so
+  the two forms agree bit-exactly where `alpha = 2/(window+1)`. Wilder's 1/N smoother is
+  `alpha = 1/N` with THIS seed (not an SMA seed); `alpha = 1` is the input itself. A list sweeps
+  as `ema_window` / `ema_alpha` by which field is set. Rendered `ema(x,20)` / `ema(x,a=0.06)`.
+- `zscore` (input, exactly one of `window` / `alpha`, mean_type `"sma"|"ema"` default `"sma"`)
+  — `(x − mean) / std`: `sma` uses two-pass population moments over the last `window` bars;
+  `ema` uses the West EW recurrence with the EMA's own two forms. `alpha` is only valid with
+  `mean_type: "ema"` and must be `< 1` (`alpha = 1` leaves zero EW variance). Sweeps as
+  `zscore_window` / `zscore_alpha`.
 - `percentile` (input, window) — fraction of the window strictly below the current value
   `count(value < current)/window` in `[0, (window−1)/window]` (the current bar sits in its own
   window, so exactly 1 is unattainable).
@@ -283,12 +298,19 @@ informative once everyone already trades them.
 - `shift` (periods=1) — the input `periods` bars ago (backward-only; leading bars NaN). Prefer
   `change` for k-period pct/log/diff; `shift` remains for level comparisons
   (`close > shift(high, 1)`). Free for the nesting limit, like `binary_op`.
-- `rolling_agg` (window, `agg`: `"max"|"min"|"mean"|"std"`) — trailing-window aggregate when
-  `window` is set (std is population, ddof=0; NaN until the window is full and finite). **Omit
-  `window`** for an EXPANDING (all-time) `max`/`min` only — expanding `mean`/`std` are rejected.
-  Prefer the dedicated `drawdown` node for depth-below-peak; the composed form
-  `binary_op(close ÷ rolling_agg(close, N, "max"))` remains valid. A **simple moving average** is
-  `agg:"mean"`; **realized vol** is `rolling_agg(change(close, kind="log"), N, "std")`.
+- `rolling_agg` (window, `agg`: `"max"|"min"|"mean"|"std"|"median"|"mad"`) — trailing-window
+  aggregate when `window` is set (std is population, ddof=0; NaN until the window is full and
+  finite). **Omit `window`** for an EXPANDING (all-time) `max`/`min` only — expanding
+  `mean`/`std`/`median`/`mad` are rejected. Prefer the dedicated `drawdown` node for
+  depth-below-peak; the composed form `binary_op(close ÷ rolling_agg(close, N, "max"))` remains
+  valid. A **simple moving average** is `agg:"mean"`; **realized vol** is
+  `rolling_agg(change(close, kind="log"), N, "std")`. `median` and `mad` are the robust pair:
+  `mad` is the median absolute deviation about the SAME window's median, UNSCALED (multiply by
+  1.4826 for the normal-consistent sigma), so the **robust z-score** is
+  `(x − rolling_agg(x, N, median)) / (1.4826 · rolling_agg(x, N, mad))` — a zero-dispersion
+  window has `mad = 0` and divides to NaN (never fires). A rolling median of
+  `|x − rolling_median(x)|` is NOT the MAD: each bar's deviation would be taken about a
+  different window's median.
 - `drawdown` (optional `input` defaulting to close, optional `window`) — fractional depth below a
   peak: `input / peak − 1` (≤ 0). POSITIVE-scale domain: a non-positive peak → NaN (the ratio
   inverts on a negative scale; signed series compose level reads with `change(kind:"diff")`
@@ -505,6 +527,14 @@ Not adopted, by decision: a `quorum` node (`mask(A) + mask(B) + mask(C) >= K` is
 spelling), named sub-expression references (the memo makes a repeated subtree free, and a shared
 axis carries the identity that matters), and a looser `rolling(any)` over undecided bars
 (fail-closed by doctrine).
+
+**Exact compositions, no node needed** — each of these is one `binary_op` away and gets no
+operator of its own: a rolling SUM is `N · rolling_agg(x, N, mean)`; a binary MAX / MIN is
+`(a + b + |a − b|) / 2` / `(a + b − |a − b|) / 2`; a value-valued QUANTILE is not needed because
+`percentile(x, N) >= q` already answers "is x above its own trailing q-quantile"; a weighted
+cross-sectional mean is `cross_agg(x · w, mean) / cross_agg(w, mean)`; a rolling beta is
+`rolling_corr(a, b, N) · rolling_agg(a, N, std) / rolling_agg(b, N, std)` (tie the three windows
+with a shared axis, see below).
 
 ### Native-clock transforms
 

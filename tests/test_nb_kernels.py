@@ -86,7 +86,7 @@ def test_zscore_sma_matches_reference():
 
 def test_zscore_ema_matches_reference():
     arr = _rand(200)
-    _assert(nb.zscore_ema_1d(arr, 20), ref.zscore_ema(arr, 20))
+    _assert(nb.zscore_ema_1d(arr, *nb.ema_params(20, None)), ref.zscore_ema(arr, 20))
 
 
 def test_percentile_matches_reference():
@@ -157,12 +157,12 @@ def test_change_unknown_kind_raises():
 
 def test_ema_matches_reference():
     arr = _rand(200)
-    _assert(nb.ema_1d(arr, 20), ref.ema(arr, 20))
+    _assert(nb.ema_1d(arr, *nb.ema_params(20, None)), ref.ema(arr, 20))
 
 
 def test_ema_skips_nan_and_seeds_first_finite():
     arr = np.array([np.nan, np.nan, 5.0, 6.0, np.nan, 7.0, 8.0])
-    _assert(nb.ema_1d(arr, 3), ref.ema(arr, 3))
+    _assert(nb.ema_1d(arr, *nb.ema_params(3, None)), ref.ema(arr, 3))
 
 
 # ---- 2D apply forms are columnwise (no cross-column leakage), pinned against the reference --
@@ -187,7 +187,7 @@ def test_numpy_apply_nb_is_columnwise():
         _assert(nb.rolling_agg_apply_nb(a, 12, "std")[:, j], ref.rolling_agg(a[:, j], 12, "std"))
         for kind in ("pct", "log", "diff"):
             _assert(nb.change_apply_nb(a, 5, kind)[:, j], ref.change(a[:, j], 5, kind))
-        _assert(nb.ema_apply_nb(a, 10)[:, j], ref.ema(a[:, j], 10))
+        _assert(nb.ema_apply_nb(a, *nb.ema_params(10, None))[:, j], ref.ema(a[:, j], 10))
         _assert(nb.shift_apply_nb(a, 3)[:, j], ref.shift_ref(a[:, j], 3))
 
 
@@ -574,8 +574,8 @@ def test_zscore_sma_translation_invariant_across_levels(base):
 @pytest.mark.parametrize("base", [0.0, 1e8, 1e12])
 def test_zscore_ema_translation_invariant_across_levels(base):
     r = _rand(200, seed=12)
-    z0 = nb.zscore_ema_1d(r, 20)
-    z = nb.zscore_ema_1d(r + base, 20)
+    z0 = nb.zscore_ema_1d(r, *nb.ema_params(20, None))
+    z = nb.zscore_ema_1d(r + base, *nb.ema_params(20, None))
     tol = 1e-9 if base == 0.0 else (1e-6 if base <= 1e8 else 1e-3)
     np.testing.assert_allclose(z, z0, rtol=0, atol=tol, equal_nan=True)
     assert np.isfinite(z[19:]).all()
@@ -607,7 +607,7 @@ def test_kernel_overflow_yields_nan_never_inf():
         drawdown_1d(np.array([1e-320, -1e308])),
         runup_1d(np.array([1e-320, 1e308])),
         rolling_corr_1d(np.tile([0.0, 1e-160], 6), np.tile([0.0, 1e-160], 6), 4),
-        nb.zscore_ema_1d(np.array([0.0, 2e154, 1.0, 1.0, 1.0]), 2),
+        nb.zscore_ema_1d(np.array([0.0, 2e154, 1.0, 1.0, 1.0]), *nb.ema_params(2, None)),
         nb.cross_demean_apply_nb(np.array([[1.7e308, -1.7e308, -1.7e308]]), 2).ravel(),
         nb.cross_agg_apply_nb(np.array([[1.6e308, 1.6e308, 1.6e308]]), "mean", 2).ravel(),
         nb.cross_agg_apply_nb(np.array([[1.6e308, -1.6e308, 1.6e308]]), "std", 2).ravel(),
@@ -870,3 +870,104 @@ def test_cross_grouped_min_valid_is_per_group():
 def test_cross_grouped_shape_mismatch_raises():
     with pytest.raises(ValueError, match="cross_grouped shape mismatch"):
         nb.cross_grouped_apply_nb(_rank_kernel(), np.ones((3, 2)), np.ones((3, 3)))
+
+
+# ---- rolling median / mad, and the explicit-decay EW forms --------------------------------
+
+
+@pytest.mark.parametrize("agg", ["median", "mad"])
+def test_rolling_median_and_mad_match_reference(agg):
+    arr = _rand(200, seed=21)
+    arr[[7, 40, 41, 150]] = np.nan
+    want = ref.rolling_median(arr, 9) if agg == "median" else ref.rolling_mad(arr, 9)
+    _assert(rolling_agg_1d(arr, 9, agg), want)
+
+
+def test_rolling_median_window_two_is_the_midpoint():
+    _assert(rolling_agg_1d(np.array([1.0, 3.0, 8.0]), 2, "median"), [np.nan, 2.0, 5.5])
+
+
+def test_rolling_mad_centres_on_the_same_windows_median():
+    # Window [1, 2, 10]: median 2, deviations [1, 0, 8] → MAD 1. The naive nesting
+    # median(|x − rolling_median(x)|) reads a DIFFERENT number here, because each bar's deviation
+    # is taken about its own window's median: rolling_median over [1,2,10] (window 3) is
+    # [nan, nan, 2], and |x − that| over the same three bars is [nan, nan, 8] — not a MAD at all.
+    x = np.array([1.0, 2.0, 10.0])
+    _assert(rolling_agg_1d(x, 3, "mad"), [np.nan, np.nan, 1.0])
+    naive = rolling_agg_1d(np.abs(x - rolling_agg_1d(x, 3, "median")), 3, "median")
+    assert np.isnan(naive).all()
+    # a flat window has zero MAD; a NaN window is censored
+    _assert(rolling_agg_1d(np.array([5.0, 5.0, 5.0, 5.0]), 3, "mad"), [np.nan, np.nan, 0.0, 0.0])
+    _assert(
+        rolling_agg_1d(np.array([1.0, np.nan, 3.0, 4.0]), 2, "mad"), [np.nan, np.nan, np.nan, 0.5]
+    )
+
+
+def test_rolling_median_mad_apply_nb_are_columnwise():
+    a = np.column_stack([_rand(50, seed=1), _rand(50, seed=2)])
+    for agg, fn in (("median", ref.rolling_median), ("mad", ref.rolling_mad)):
+        got = nb.rolling_agg_apply_nb(a, 5, agg)
+        for j in range(2):
+            _assert(got[:, j], fn(a[:, j], 5))
+
+
+def test_rolling_mad_overflow_yields_nan_never_inf():
+    x = np.array([-1e308, 1e308, 1e308])
+    got = rolling_agg_1d(x, 3, "mad")
+    assert not np.isinf(got).any()
+
+
+def test_ema_params_window_form_and_alpha_form():
+    assert nb.ema_params(20, None) == (2.0 / 21.0, 20)
+    assert nb.ema_params(None, 0.06) == (0.06, 33)
+    assert nb.ema_params(None, 1.0) == (1.0, 1)
+    for w in range(1, 501):
+        assert nb.ema_params(None, 2.0 / (w + 1.0))[1] == w, w
+    with pytest.raises(ValueError, match="exactly one of 'window' or 'alpha'"):
+        nb.ema_params(20, 0.06)
+    with pytest.raises(ValueError, match="exactly one of 'window' or 'alpha'"):
+        nb.ema_params(None, None)
+
+
+def test_ema_alpha_form_is_bit_exact_with_window_form():
+    arr = _rand(300, seed=5)
+    arr[[3, 77]] = np.nan
+    for w in (1, 2, 5, 20, 63):
+        a, warm = nb.ema_params(None, 2.0 / (w + 1.0))
+        assert np.array_equal(
+            nb.ema_1d(arr, a, warm), nb.ema_1d(arr, *nb.ema_params(w, None)), equal_nan=True
+        )
+        assert np.array_equal(
+            nb.zscore_ema_1d(arr, a, warm),
+            nb.zscore_ema_1d(arr, *nb.ema_params(w, None)),
+            equal_nan=True,
+        )
+
+
+def test_ema_alpha_one_is_the_input():
+    arr = _rand(20, seed=6)
+    arr[4] = np.nan
+    _assert(nb.ema_1d(arr, *nb.ema_params(None, 1.0)), arr)
+
+
+def test_ema_riskmetrics_known_answer_vs_hand_recurrence():
+    arr = _rand(120, seed=7)
+    got = nb.ema_1d(arr, *nb.ema_params(None, 0.06))
+    e = arr[0]
+    hand = np.full(120, np.nan)
+    for i in range(1, 120):
+        e = 0.06 * arr[i] + 0.94 * e
+        if i + 1 >= 33:
+            hand[i] = e
+    _assert(got, hand)
+    _assert(got, ref.ema_alpha(arr, 0.06, 33))
+    assert int(np.argmax(np.isfinite(got))) == 32
+
+
+def test_zscore_ema_alpha_matches_reference():
+    arr = _rand(150, seed=8)
+    arr[[10, 11]] = np.nan
+    a, warm = nb.ema_params(None, 0.1)
+    _assert(nb.zscore_ema_1d(arr, a, warm), ref.zscore_ema_alpha(arr, a, warm))
+    got2d = nb.zscore_ema_apply_nb(np.column_stack([arr, arr * 2]), a, warm)
+    _assert(got2d[:, 1], ref.zscore_ema_alpha(arr * 2, a, warm))

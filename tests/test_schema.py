@@ -2710,3 +2710,94 @@ def test_swept_where_inside_a_feature_refuses():
     }
     with pytest.raises(ValidationError, match="feature 'r' must use scalar params"):
         Thesis.model_validate(_basket_over(_FIELD_CLOSE, {"elig": _PER}, features={"r": feat}))
+
+
+# ---- explicit-decay EW forms, robust window statistics, intraday calendar fields -----------
+
+
+def test_ema_takes_exactly_one_of_window_or_alpha():
+    Thesis.model_validate(_entry_over({"type": "ema", "input": _FIELD_CLOSE, "alpha": 0.06}))
+    Thesis.model_validate(_entry_over({"type": "ema", "input": _FIELD_CLOSE, "window": 20}))
+    with pytest.raises(
+        ValidationError, match="ema takes exactly one of 'window' or 'alpha'; got both"
+    ):
+        Thesis.model_validate(
+            _entry_over({"type": "ema", "input": _FIELD_CLOSE, "window": 20, "alpha": 0.06})
+        )
+    with pytest.raises(
+        ValidationError, match="ema takes exactly one of 'window' or 'alpha'; got neither"
+    ):
+        Thesis.model_validate(_entry_over({"type": "ema", "input": _FIELD_CLOSE}))
+
+
+@pytest.mark.parametrize("alpha", [0.0, -0.1, 1.5, "0.06"])
+def test_ema_alpha_bounds(alpha):
+    with pytest.raises(ValidationError):
+        Thesis.model_validate(_entry_over({"type": "ema", "input": _FIELD_CLOSE, "alpha": alpha}))
+
+
+def test_ema_alpha_sweeps_as_its_own_axis_and_refuses_duplicates():
+    from seikan.dsl.traverse import _iter_sweep_axis_names
+
+    t = Thesis.model_validate(
+        _entry_over({"type": "ema", "input": _FIELD_CLOSE, "alpha": [0.05, 0.1]})
+    )
+    assert _iter_sweep_axis_names(t.entry) == ["ema_alpha"]
+    assert declared_grid_size(t.entry, t.params.horizon) == 2
+    with pytest.raises(ValidationError, match="repeats the value"):
+        Thesis.model_validate(
+            _entry_over({"type": "ema", "input": _FIELD_CLOSE, "alpha": [0.1, 0.1]})
+        )
+
+
+def test_zscore_alpha_only_with_ema_mean_and_below_one():
+    Thesis.model_validate(
+        _entry_over({"type": "zscore", "input": _FIELD_CLOSE, "alpha": 0.06, "mean_type": "ema"})
+    )
+    with pytest.raises(ValidationError, match="zscore 'alpha' is only valid with mean_type='ema'"):
+        Thesis.model_validate(_entry_over({"type": "zscore", "input": _FIELD_CLOSE, "alpha": 0.06}))
+    with pytest.raises(ValidationError, match="zscore alpha must be < 1"):
+        Thesis.model_validate(
+            _entry_over({"type": "zscore", "input": _FIELD_CLOSE, "alpha": 1.0, "mean_type": "ema"})
+        )
+    with pytest.raises(ValidationError, match="zscore alpha must be < 1"):
+        Thesis.model_validate(
+            _entry_over(
+                {"type": "zscore", "input": _FIELD_CLOSE, "alpha": [0.5, 1.0], "mean_type": "ema"}
+            )
+        )
+    with pytest.raises(
+        ValidationError, match="zscore takes exactly one of 'window' or 'alpha'; got both"
+    ):
+        Thesis.model_validate(
+            _entry_over(
+                {
+                    "type": "zscore",
+                    "input": _FIELD_CLOSE,
+                    "window": 10,
+                    "alpha": 0.06,
+                    "mean_type": "ema",
+                }
+            )
+        )
+
+
+def test_rolling_agg_median_and_mad_accepted_trailing_only():
+    for agg in ("median", "mad"):
+        Thesis.model_validate(
+            _entry_over({"type": "rolling_agg", "input": _FIELD_CLOSE, "window": 5, "agg": agg})
+        )
+        with pytest.raises(
+            ValidationError, match=r"expanding rolling_agg .* only supports agg='max' or 'min'"
+        ):
+            Thesis.model_validate(
+                _entry_over({"type": "rolling_agg", "input": _FIELD_CLOSE, "agg": agg})
+            )
+
+
+def test_calendar_hour_and_minute_parse():
+    for field in ("hour", "minute"):
+        t = Thesis.model_validate(_entry_over({"type": "calendar", "field": field}))
+        assert t.entry.left.field == field
+    with pytest.raises(ValidationError):
+        Thesis.model_validate(_entry_over({"type": "calendar", "field": "second"}))

@@ -53,6 +53,8 @@ from seikan.dsl.nodes import (
     Series,
     Shift,
     UnaryOp,
+    UnitFloat,
+    UnitFloatParam,
     ZScore,
 )
 from seikan.dsl.render import (
@@ -131,6 +133,8 @@ __all__ = [
     "Thesis",
     "ThresholdCondition",
     "UnaryOp",
+    "UnitFloat",
+    "UnitFloatParam",
     "ZScore",
     "declared_grid_size",
     "fmt_num",
