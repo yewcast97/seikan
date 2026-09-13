@@ -964,8 +964,9 @@ REPORT_FIELDS: dict[str, JsonValue] = {
     "identity": {
         "name": "the thesis's own declared name, echoed verbatim",
         "dsl_hash": (
-            "canonical_dsl_hash of the normalized document (defaults filled, keys sorted) — "
-            "the identity two runs compare on; paths and column names live OUTSIDE it"
+            "canonical_dsl_hash of the normalized document (defaults filled, null-valued optional "
+            "fields dropped, keys sorted) — the identity two runs compare on; paths and column "
+            "names live OUTSIDE it"
         ),
         "data_digests": (
             "per declared data key: {path, column, sha256} — where THIS invocation found the "

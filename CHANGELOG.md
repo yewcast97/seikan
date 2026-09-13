@@ -7,6 +7,18 @@ semantics — `gate.POLICY_VERSION`). Each entry below names every stamp it move
 frozen statistic is only ever a correction, and it bumps `statistics_version`; anything that
 merely repackages code changes no number.
 
+## 4.0.0 — report schema 5, statistics 4, policy 3
+
+DSL expressiveness release: the entry vocabulary grows so a thesis can say what it means instead
+of substituting a nearby question; no stamp moves and every emitted number is byte-identical to
+3.0.0 for every document 3.0.0 accepted.
+
+- CHANGED `canonical_dsl_hash`: the normalized payload now drops every `null`-valued optional field
+  (`exclude_none`) beside filling defaults and sorting keys. Every `dsl_hash` moves exactly once
+  (no stored theses or reports exist); from here on a new `None`-defaulted optional field is
+  hash-safe like a new node type — it appears in the payload only when set — while a non-`None`
+  default still moves every hash.
+
 ## 3.0.0 — report schema 5, statistics 4, policy 3
 
 Audit release: statistically inappropriate or degenerate report content removed, every surviving

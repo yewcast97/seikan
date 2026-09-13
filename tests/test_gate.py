@@ -20,6 +20,7 @@ apply uniformly.
 
 from __future__ import annotations
 
+import json
 import math
 
 import pytest
@@ -2057,6 +2058,37 @@ def test_hash_fills_defaults_and_sorts_keys():
 def test_hash_changes_with_the_rules():
     other = {**_DSL, "params": {"horizon": 10}}
     assert canonical_dsl_hash(_DSL) != canonical_dsl_hash(other)
+
+
+def test_hash_drops_none_valued_optional_fields():
+    # `exclude_none`: an optional field left at None contributes NOTHING to the payload, so a
+    # document written before the field existed, one omitting it, and one spelling it `null`
+    # canonicalize to ONE identity — which is what makes a new `None`-defaulted optional field
+    # hash-safe (it appears only when used), exactly like a new node type.
+    from seikan.gate._hash import _canonical_payload
+
+    payload = json.loads(_canonical_payload(_DSL))
+    assert "description" not in payload
+    assert "features" not in payload["params"] and "benchmark" not in payload["params"]
+    assert "start" not in payload["data"] and "end" not in payload["data"]
+    assert "name" not in payload["entry"]["right"]  # a scalar constant's absent name
+    # Explicit-null spellings hash like omission, at every one of those sites.
+    spelled = [
+        {**_DSL, "description": None},
+        {**_DSL, "params": {"horizon": 5, "features": None, "benchmark": None}},
+        {**_DSL, "data": {"targets": ["target"], "start": None, "end": None}},
+        {
+            **_DSL,
+            "entry": {
+                **_DSL["entry"],
+                "right": {"type": "constant", "value": 100.0, "name": None},
+            },
+        },
+    ]
+    for doc in spelled:
+        assert canonical_dsl_hash(doc) == canonical_dsl_hash(_DSL), doc
+    # A SET optional field still moves the identity.
+    assert canonical_dsl_hash({**_DSL, "description": "x"}) != canonical_dsl_hash(_DSL)
 
 
 def test_hash_outcome_omitted_and_empty_share_one_identity():

@@ -69,8 +69,9 @@ seikan run <thesis.json>         full-grid event study + the per-cell checklist,
 seikan hash <thesis.json|->      validate the thesis DSL and emit its canonical identity on
                                  stdout: `{name, dsl_hash, data_keys}` after the standard
                                  header. `dsl_hash` is `canonical_dsl_hash` (defaults
-                                 filled, keys sorted — the same identity a run report
-                                 stamps), and `data_keys` is the EXACT key set a `run`'s
+                                 filled, `null`-valued optional fields dropped, keys
+                                 sorted — the same identity a run report stamps), and
+                                 `data_keys` is the EXACT key set a `run`'s
                                  --data must answer, `benchmark` included when
                                  `params.benchmark == "market"` — so a host can assemble
                                  the whole invocation from this one document, no Python
@@ -590,12 +591,14 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   grid above the sealed search cap refuses at validation, BEFORE any data is read — such a grid can
   never meet `search_cap` under any legal thresholds, so the engine owes it neither a report nor
   the O(grid × length) work of producing one.
-- **Hash discipline**: `canonical_dsl_hash` fills defaults and sorts keys, so omitted-default and
-  explicit-default DSLs share one identity; adding a default-valued DSL field moves every stored
-  hash, and callers keeping reports must re-validate rather than assume a stored hash still names the
-  same thesis. Prefer new node types, which are hash-safe. `target_mode` is the discipline's one
-  DELIBERATE exception: a mode is a property of the whole thesis, not of any node, so it has to be
-  a default-valued field, and that cost is paid openly instead of being smuggled in.
+- **Hash discipline**: `canonical_dsl_hash` fills defaults, drops every `null`-valued optional
+  field and sorts keys, so omitted-default, explicit-default and explicit-`null` DSLs share one
+  identity. New node types and `None`-defaulted optional fields are hash-safe (they appear only
+  when used); a non-`None` default still moves every stored hash, and callers keeping reports must
+  re-validate rather than assume a stored hash still names the same thesis. `target_mode` remains
+  the discipline's one DELIBERATE exception: a mode is a property of the whole thesis, not of any
+  node, so it has to be a non-`None`-defaulted field, and that cost is paid openly instead of being
+  smuggled in.
   REMOVING a field moves every stored hash the same way (the
   normalization fills defaults over whatever the model still declares). File paths and column names
   sit OUTSIDE the hashed document for exactly this reason: the same exam over re-pulled or

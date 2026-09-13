@@ -69,8 +69,10 @@ The checks read the engine summary directly (the dict ``compile_thesis`` produce
   while its siblings grade normally. Drifted input refuses with a detail; it never raises.
 
 ``canonical_dsl_hash`` is the identity discipline: sha256 over the defaults-filled, key-sorted
-DSL, so omitted defaults and explicit-default forms hash identically and a report is bound to
-exactly the rules it validated.
+DSL with every ``null``-valued optional field dropped, so omitted defaults, explicit-default
+forms and explicit-``null`` optionals hash identically and a report is bound to exactly the
+rules it validated. New node types and ``None``-defaulted optional fields are therefore
+hash-safe (they appear only when used); a non-``None`` default still moves every hash.
 
 The package is layered: ``_read`` holds the strict readers over drifted input, ``_checks_run``
 and ``_checks_cell`` the checks, ``_evaluate`` the checklist driver, ``_model`` the policy
