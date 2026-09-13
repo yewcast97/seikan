@@ -46,6 +46,7 @@ from seikan.constants import RESERVED_SWEEP_LEVELS
 from seikan.dsl.schema import (
     EMA,
     AndCondition,
+    AxisRef,
     BarsSinceEvent,
     BarsSinceExtremum,
     BinaryOp,
@@ -94,34 +95,40 @@ _ARITH = {"+": operator.add, "-": operator.sub, "*": operator.mul, "/": operator
 
 # ---- parameter grid --------------------------------------------------------
 
-#: A transform param as the DSL writes it: the scalar every kernel takes, or the list that declares
+#: A transform param as the DSL writes it: the scalar every kernel takes, the list that declares
 #: it a sweep axis (``PosIntParam`` / ``FloatParam`` in ``dsl.schema`` — an int axis and a float
-#: axis, never a mixed list). Both tree walks below hand exactly this to their resolver.
-type _SweptParam = ParamValue | list[int] | list[float]
+#: axis, never a mixed list), or a reference to a shared axis. Both tree walks below hand exactly
+#: this to their resolver.
+type _SweptParam = ParamValue | list[int] | list[float] | AxisRef
+
+#: The shared axes a thesis declares (``Thesis.axes``): name → values.
+type Axes = dict[str, list[int] | list[float]]
 
 
 class _SweepCallback(Protocol):
-    """What a resolver does when it meets a list: name the axis, hand back this pass's scalar.
+    """What a resolver does when it meets a sweep: name the axis, say whether it is a SHARED
+    one, hand back this pass's scalar.
 
     The two implementations are the two passes — ``collect_sweeps`` records the axis and takes the
     first level, ``iter_param_assignments`` looks the level up in the combo it is building.
     """
 
-    def __call__(self, level: str, values: Sequence[ParamValue], /) -> ParamValue: ...
+    def __call__(self, level: str, values: Sequence[ParamValue], shared: bool, /) -> ParamValue: ...
 
 
 class _ParamResolver(Protocol):
-    """The per-param callback the tree walks apply: scalar in → same scalar out, list in → the
-    level chosen by this pass's :class:`_SweepCallback`. ``name`` labels a swept ``Constant``'s axis
-    verbatim (see :func:`_make_resolver`).
+    """The per-param callback the tree walks apply: scalar in → same scalar out, list or axis
+    reference in → the level chosen by this pass's :class:`_SweepCallback`. ``name`` labels a
+    swept ``Constant``'s axis verbatim (see :func:`_make_resolver`).
 
     Kind-preserving by construction — an int param resolves to one of ITS levels and a float
     param to one of its own — which is what lets a resolved value go straight back into the node
-    it came from (``EMA.window`` takes ints, ``Constant.value`` floats).
+    it came from (``EMA.window`` takes ints, ``Constant.value`` floats; a shared int axis feeding
+    a float param is re-validated at parse and coerced by the model).
     """
 
     def __call__[T: (int, float)](
-        self, kind: str, param: str, value: T | list[T], name: str | None = None
+        self, kind: str, param: str, value: T | list[T] | AxisRef, name: str | None = None
     ) -> T: ...
 
 
@@ -264,18 +271,29 @@ def _transform_condition(node: Condition, resolve: _ParamResolver) -> Condition:
             raise TypeError(f"unknown condition node: {node!r}")
 
 
-def _make_resolver(on_sweep: _SweepCallback) -> _ParamResolver:
-    """Build a ``resolve(kind, param, value, name=None)`` that names each swept (list) param
+def _make_resolver(on_sweep: _SweepCallback, axes: Axes | None = None) -> _ParamResolver:
+    """Build a ``resolve(kind, param, value, name=None)`` that names each swept param
     deterministically.
 
-    Both the collection and the assignment passes walk the trees in the same order and detect lists
-    identically (the original tree still holds the lists), so the generated level names line up. An
-    explicit ``name`` (used by a swept ``Constant``) labels the axis verbatim, bypassing the
-    ``{kind}_{param}`` auto-naming and its occurrence counter.
+    Both the collection and the assignment passes walk the trees in the same order and detect
+    sweeps identically (the original tree still holds the lists and references), so the generated
+    level names line up. An explicit ``name`` (used by a swept ``Constant``) labels the axis
+    verbatim, bypassing the ``{kind}_{param}`` auto-naming and its occurrence counter; an
+    ``AxisRef`` reads the declared shared axis under ITS name and never touches the counter
+    either. A reference to an axis ``axes`` lacks raises — the runtime backstop for a
+    ``model_construct`` thesis, and what keeps a forgotten ``axes`` from mis-expanding.
+    ``dsl.traverse._SweepScan.visit`` mirrors this exactly (a parity test pins the two).
     """
     counts: dict[str, int] = {}
 
     def resolve(kind: str, param: str, value: _SweptParam, name: str | None = None) -> ParamValue:
+        if isinstance(value, AxisRef):
+            if axes is None or value.axis not in axes:
+                raise ValueError(
+                    f"{kind}.{param} references shared axis {value.axis!r}, which is not "
+                    f"declared under 'axes' (declared: {sorted(axes or {})})"
+                )
+            return on_sweep(value.axis, axes[value.axis], True)
         if isinstance(value, list):
             if name is not None:
                 level = name
@@ -283,7 +301,7 @@ def _make_resolver(on_sweep: _SweepCallback) -> _ParamResolver:
                 base = f"{kind}_{param}"
                 counts[base] = counts.get(base, 0) + 1
                 level = base if counts[base] == 1 else f"{base}_{counts[base]}"
-            return on_sweep(level, value)
+            return on_sweep(level, value, False)
         return value
 
     # ``resolve`` reads one param at a time, so nothing in its body ties the scalar it returns to
@@ -303,21 +321,34 @@ def _make_resolver(on_sweep: _SweepCallback) -> _ParamResolver:
 _RESERVED_LEVELS = RESERVED_SWEEP_LEVELS
 
 
-def collect_sweeps(entry: Condition) -> list[tuple[str, list[ParamValue]]]:
-    """Ordered ``[(level_name, values)]`` for every list-valued param across the entry tree.
+def collect_sweeps(
+    entry: Condition, axes: Axes | None = None
+) -> list[tuple[str, list[ParamValue]]]:
+    """Ordered ``[(level_name, values)]`` for every sweep axis across the entry tree — a
+    list-valued param under its auto/explicit name, a shared axis (``axes``) ONCE under its
+    declared name at its first reference.
 
-    Raises ``ValueError`` on a duplicate or reserved level name (a swept ``Constant`` whose ``name``
-    collides with another sweep axis or a structural column would otherwise miscount silently).
+    The dedupe rule (implemented verbatim in ``dsl.traverse._fold_sites``): fold sites left to
+    right; a shared site whose level was already recorded as shared is dropped; every other site
+    is appended; a level then appearing twice is a duplicate. Raises ``ValueError`` on a
+    duplicate or reserved level name (a swept ``Constant`` whose ``name`` collides with another
+    sweep axis, a shared axis named like an auto axis, or a structural column would otherwise
+    miscount silently).
     """
     sweeps: list[tuple[str, list[ParamValue]]] = []
+    shared_seen: set[str] = set()
 
-    def record(level: str, values: Sequence[ParamValue]) -> ParamValue:
+    def record(level: str, values: Sequence[ParamValue], shared: bool) -> ParamValue:
         # This pass only names the axes; the scalar it hands back (the first level) keeps the walk
         # type-correct and is discarded with the tree it builds.
+        if shared:
+            if level in shared_seen:
+                return values[0]
+            shared_seen.add(level)
         sweeps.append((level, list(values)))
         return values[0]
 
-    resolve = _make_resolver(record)
+    resolve = _make_resolver(record, axes)
     _transform_condition(entry, resolve)
     seen: set[str] = set()
     for lvl, _ in sweeps:
@@ -327,27 +358,32 @@ def collect_sweeps(entry: Condition) -> list[tuple[str, list[ParamValue]]]:
             )
         if lvl in seen:
             raise ValueError(
-                f"duplicate sweep axis name {lvl!r}; each swept constant 'name' must be unique and "
-                f"must not collide with a transform axis (e.g. 'ema_window')"
+                f"duplicate sweep axis name {lvl!r}; each swept constant 'name' and shared axis "
+                f"must be unique and must not collide with a transform axis (e.g. 'ema_window')"
             )
         seen.add(lvl)
     return sweeps
 
 
-def iter_param_assignments(entry: Condition) -> Iterator[tuple[dict[str, ParamValue], Condition]]:
+def iter_param_assignments(
+    entry: Condition, axes: Axes | None = None
+) -> Iterator[tuple[dict[str, ParamValue], Condition]]:
     """Yield ``(combo, entry)`` for each point of the swept-param Cartesian product.
 
-    ``combo`` maps level name → chosen scalar (empty when nothing is swept). ``entry`` is a fresh
-    scalarized condition tree.
+    ``combo`` maps level name → chosen scalar (empty when nothing is swept; a shared axis is one
+    level however many params read it — every reference site resolves to ``combo[level]``).
+    ``entry`` is a fresh scalarized condition tree. The signature is ``(entry, axes)`` rather
+    than a thesis: the compiler does not depend on the document spine, and the resolver's own
+    refusal keeps a forgotten ``axes`` from mis-expanding a referencing tree.
     """
-    sweeps = collect_sweeps(entry)
+    sweeps = collect_sweeps(entry, axes)
     levels = [lvl for lvl, _ in sweeps]
     grids = [vals for _, vals in sweeps]
 
     def resolver_for(combo: dict[str, ParamValue]) -> _ParamResolver:
         # ``combo`` is a PARAMETER here, so each point of the product binds its own — the callback
         # can never read a later iteration's assignment.
-        return _make_resolver(lambda level, _value: combo[level])
+        return _make_resolver(lambda level, _values, _shared: combo[level], axes)
 
     for point in product(*grids) if grids else [()]:
         # One level per axis by construction: ``levels`` and ``grids`` are the two halves of the

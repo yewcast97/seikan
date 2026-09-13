@@ -2202,3 +2202,35 @@ def test_lag_omitted_periods_hashes_like_explicit_one():
     explicit = {**_DSL, "entry": {"type": "lag", "condition": _DSL["entry"], "periods": 1}}
     assert canonical_dsl_hash(lagged) == canonical_dsl_hash(explicit)
     assert canonical_dsl_hash(lagged) != canonical_dsl_hash(_DSL)
+
+
+_BETA = {
+    "type": "threshold",
+    "left": {
+        "type": "rolling_agg",
+        "input": {"type": "change", "input": {"type": "field", "column": "close"}, "kind": "diff"},
+        "window": {"axis": "N"},
+        "agg": "std",
+    },
+    "op": ">",
+    "right": {"type": "constant", "value": 1.0},
+}
+
+
+def test_hash_axes_null_and_omitted_share_one_identity():
+    assert canonical_dsl_hash({**_DSL, "axes": None}) == canonical_dsl_hash(_DSL)
+
+
+def test_hash_shared_axes_move_the_identity():
+    a = {**_DSL, "entry": _BETA, "axes": {"N": [20, 60]}}
+    b = {**_DSL, "entry": _BETA, "axes": {"N": [20, 90]}}
+    assert canonical_dsl_hash(a) != canonical_dsl_hash(b)
+    # the listed spelling of the same two windows is a DIFFERENT document (a different
+    # hypothesis count under repeated sites), so it hashes apart too
+    listed = {**_DSL, "entry": {**_BETA, "left": {**_BETA["left"], "window": [20, 60]}}}
+    assert canonical_dsl_hash(a) != canonical_dsl_hash(listed)
+
+
+def test_hash_rejects_unused_axis():
+    with pytest.raises(ValidationError):
+        canonical_dsl_hash({**_DSL, "axes": {"N": [20, 60]}})

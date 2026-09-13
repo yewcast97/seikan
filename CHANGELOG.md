@@ -52,6 +52,16 @@ of substituting a nearby question; no stamp moves and every emitted number is by
   `minute`. `nb.ema_params(window, alpha)` is the one `(alpha, warmup)` derivation; the EW
   kernels take that pair. The `window` form's payload is unchanged, so an existing `ema` /
   `zscore` document's hash does not move beyond the `exclude_none` change above.
+- ADDED shared sweep axes: a top-level `"axes": {"N": [20, 60]}` declares one hypothesis axis
+  that any sweepable ENTRY param reads with `{"axis": "N"}` (transform `window`/`periods`/
+  `alpha`, `constant.value`, `rolling.window`, `first_true.cooldown`, `lag.periods`; never
+  `params.horizon`, never inside `params.features`). Recorded once in `summary.params` /
+  `cells[].params` / the trades CSV and counted once toward the cap; every axis value is
+  re-validated against every referencing param at parse; an undeclared reference, an
+  unreferenced axis, an empty `axes` and a name colliding with an auto-named axis, a swept
+  constant's name or a reserved column refuse at parse. Library signatures:
+  `collect_sweeps(entry, axes=None)`, `iter_param_assignments(entry, axes=None)`,
+  `declared_grid_size(entry, horizon, axes=None)`.
 
 ## 3.0.0 — report schema 5, statistics 4, policy 3
 

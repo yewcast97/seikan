@@ -4796,3 +4796,122 @@ def test_calendar_hour_filters_intraday_bars(tmp_path):
         "09:30",
         "10:00",
     ]  # next-open anchors of 09:00 and 09:30
+
+
+# ---- shared sweep axes end to end ----------------------------------------------------------
+
+
+def _beta_doc(axes, horizon, n=None):
+    n = n if n is not None else {"axis": "N"}
+    dc = {"type": "change", "input": {"type": "field", "column": "close"}, "kind": "diff"}
+    dv = {"type": "change", "input": {"type": "field", "column": "volume"}, "kind": "diff"}
+    doc = {
+        "name": "beta",
+        "data": {"targets": ["target"]},
+        "entry": {
+            "type": "threshold",
+            "left": {
+                "type": "binary_op",
+                "op": "/",
+                "left": {
+                    "type": "binary_op",
+                    "op": "*",
+                    "left": {"type": "rolling_corr", "left": dc, "right": dv, "window": n},
+                    "right": {"type": "rolling_agg", "input": dc, "window": n, "agg": "std"},
+                },
+                "right": {"type": "rolling_agg", "input": dv, "window": n, "agg": "std"},
+            },
+            "op": ">",
+            "right": {"type": "constant", "value": 0.0},
+        },
+        "params": {"horizon": horizon},
+    }
+    if axes is not None:
+        doc["axes"] = axes
+    return doc
+
+
+def test_shared_axis_rolling_beta_is_one_grid_axis(tmp_path):
+    from tests._helpers import write_ohlcv
+
+    rng = np.random.RandomState(9)
+    idx = pd.date_range("2018-01-01", periods=300, freq="1D")
+    s = pd.Series(100 * np.exp(np.cumsum(rng.randn(300) * 0.01)), index=idx)
+    df = pd.DataFrame(
+        {
+            "open": s,
+            "high": s * 1.01,
+            "low": s * 0.99,
+            "close": s,
+            "volume": rng.randint(500, 1500, 300).astype(float),
+        },
+        index=idx,
+    )
+    df.index.name = "datetime"
+    df.to_csv(tmp_path / "px.csv")
+    del write_ohlcv
+    thesis = Thesis.model_validate(_beta_doc({"N": [20, 60]}, [5, 10, 21]))
+    res = run_backtest(thesis, load(thesis, {"target": tmp_path / "px.csv"}))
+    s_ = res.summary
+    assert s_["params"] == ["N", "horizon"]
+    assert s_["n_hypotheses_attempted"] == 6 == len(s_["cells"])
+    assert {c["params"]["N"] for c in s_["cells"]} == {20, 60}
+    assert "N" in res.trades.columns and set(res.trades["N"]) <= {20, 60}
+    # the listed spelling of the same windows declares 8 × 3 = 24 cells — the defect the shared
+    # axis exists to remove
+    listed = Thesis.model_validate(_beta_doc(None, [5, 10, 21], n=[20, 60]))
+    assert (
+        run_backtest(listed, load(listed, {"target": tmp_path / "px.csv"})).summary[
+            "n_hypotheses_attempted"
+        ]
+        == 24
+    )
+
+
+def test_shared_axis_serving_constant_and_window_reports_one_param(tmp_path):
+    closes = (100 + np.random.RandomState(2).randn(120).cumsum()).tolist()
+    px = _bars(tmp_path / "px.csv", closes)
+    thesis = Thesis.model_validate(
+        {
+            "name": "cw",
+            "data": {"targets": ["target"]},
+            "axes": {"N": [5, 10]},
+            "entry": {
+                "type": "and",
+                "conditions": [
+                    {
+                        "type": "threshold",
+                        "left": {"type": "field"},
+                        "op": ">",
+                        "right": {
+                            "type": "ema",
+                            "input": {"type": "field"},
+                            "window": {"axis": "N"},
+                        },
+                    },
+                    {
+                        "type": "threshold",
+                        "left": {"type": "bars_since_extremum", "extremum": "max", "window": 30},
+                        "op": ">=",
+                        "right": {"type": "constant", "value": {"axis": "N"}},
+                    },
+                ],
+            },
+            "params": {"horizon": 3},
+        }
+    )
+    res = run_backtest(thesis, load(thesis, {"target": px}))
+    assert res.summary["params"] == ["N"]
+    assert [c["params"] for c in res.summary["cells"]] == [
+        {"N": 5, "horizon": 3},
+        {"N": 10, "horizon": 3},
+    ]
+
+
+def test_runner_backstop_refuses_forged_axis_ref_without_axes(tmp_path):
+    closes = (100 + np.random.RandomState(3).randn(120).cumsum()).tolist()
+    px = _bars(tmp_path / "px.csv", closes)
+    valid = Thesis.model_validate(_beta_doc({"N": [20, 60]}, 5))
+    forged = valid.model_construct(**{**dict(valid), "axes": None})
+    with pytest.raises(ValueError, match="references shared axis 'N', which is not declared"):
+        run_backtest(forged, load(valid, {"target": px}))

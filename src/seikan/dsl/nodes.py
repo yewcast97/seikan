@@ -66,21 +66,54 @@ def _distinct_sweep[T](values: list[T]) -> list[T]:
 #: A swept list: bounded length, and every value distinct.
 _Sweep = (PField(min_length=1, max_length=MAX_DECLARED_GRID), AfterValidator(_distinct_sweep))
 
+
+class _Strict(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+
+
+class AxisRef(_Strict):
+    """``{"axis": "N"}`` in any sweepable ENTRY param: read this param's values from the
+    top-level ``Thesis.axes["N"]`` list, so several params sweep TOGETHER as ONE hypothesis axis.
+
+    Three ``[20, 60]`` lists inside a rolling-beta expression declare three independent axes
+    and eight cells where the thesis meant two; one shared axis ``N`` referenced three times
+    is two cells, recorded once in ``summary.params`` / ``cells[].params`` / the trades CSV and
+    counted once toward the 64-cell cap. Never ``params.horizon`` (the horizon is its own axis)
+    and never inside ``params.features`` (features are scalar); every reference must name a
+    declared axis, every declared axis must be referenced, and every axis value must fit every
+    param that reads it (checked at parse — ``Thesis._check_shared_axes``)."""
+
+    axis: str
+
+    @model_validator(mode="after")
+    def _check_name(self) -> AxisRef:
+        if not self.axis or self.axis != self.axis.strip():
+            raise ValueError(
+                f"an axis reference must name a shared axis (non-empty, no surrounding "
+                f"whitespace); got {self.axis!r}"
+            )
+        return self
+
+
 PosInt = Annotated[int, PField(gt=0)]
 
-PosIntParam = PosInt | Annotated[list[PosInt], *_Sweep]
+PosIntParam = PosInt | Annotated[list[PosInt], *_Sweep] | AxisRef
 
 Ge2Int = Annotated[int, PField(ge=2)]
 
-Ge2IntParam = Ge2Int | Annotated[list[Ge2Int], *_Sweep]
+Ge2IntParam = Ge2Int | Annotated[list[Ge2Int], *_Sweep] | AxisRef
 
 Ge3Int = Annotated[int, PField(ge=3)]
 
-Ge3IntParam = Ge3Int | Annotated[list[Ge3Int], *_Sweep]
+Ge3IntParam = Ge3Int | Annotated[list[Ge3Int], *_Sweep] | AxisRef
 
 NonNegInt = Annotated[int, PField(ge=0)]
 
-NonNegIntParam = NonNegInt | Annotated[list[NonNegInt], *_Sweep]
+NonNegIntParam = NonNegInt | Annotated[list[NonNegInt], *_Sweep] | AxisRef
+
+#: ``BacktestParams.horizon``: a scalar or a list, NEVER a shared axis — the horizon is the
+#: measurement window, its own result axis by construction, and no entry param shares it.
+HorizonParam = PosInt | Annotated[list[PosInt], *_Sweep]
 
 # A threshold constant accepts a scalar or a list; a list sweeps the threshold as its own named axis
 # (see ``Constant.name``), taking part in the same Cartesian product as transform-window sweeps.
@@ -90,23 +123,24 @@ NonNegIntParam = NonNegInt | Annotated[list[NonNegInt], *_Sweep]
 # read back — so the identity of such a thesis is unrecoverable.
 FiniteFloat = Annotated[float, PField(allow_inf_nan=False)]
 
-FloatParam = FiniteFloat | Annotated[list[FiniteFloat], *_Sweep]
+FloatParam = FiniteFloat | Annotated[list[FiniteFloat], *_Sweep] | AxisRef
 
 #: An EW decay factor stated directly: ``0 < alpha <= 1`` (RiskMetrics 0.06; Wilder's 1/N).
 UnitFloat = Annotated[float, PField(gt=0, le=1, allow_inf_nan=False)]
 
-UnitFloatParam = UnitFloat | Annotated[list[UnitFloat], *_Sweep]
+UnitFloatParam = UnitFloat | Annotated[list[UnitFloat], *_Sweep] | AxisRef
+
+#: The values a shared axis declares: an int list or a float list (distinct, bounded like every
+#: sweep). Unconstrained on the int side — the constraints are checked where the axis is READ,
+#: against each referencing param's own field type (``Thesis._check_shared_axes``).
+AxisValues = Annotated[list[int], *_Sweep] | Annotated[list[FiniteFloat], *_Sweep]
 
 #: The plain shape the constrained param aliases above erase to: a numeric node param as the
-#: traversal/rendering helpers below receive it — the scalar form, or the list form that sweeps it
-#: (a ``window``/``periods``/``cooldown`` is int-valued, a ``constant.value`` float-valued). It
-#: carries no constraint metadata and is never a field annotation; the models declare the
-#: constrained aliases.
-_NumericParam = int | float | list[int] | list[float]
-
-
-class _Strict(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+#: traversal/rendering helpers below receive it — the scalar form, the list form that sweeps it
+#: (a ``window``/``periods``/``cooldown`` is int-valued, a ``constant.value`` float-valued), or
+#: a shared-axis reference. It carries no constraint metadata and is never a field annotation;
+#: the models declare the constrained aliases.
+_NumericParam = int | float | list[int] | list[float] | AxisRef
 
 
 class Field(_Strict):
@@ -132,8 +166,9 @@ class Constant(_Strict):
             )
         if not isinstance(self.value, list) and self.name is not None:
             raise ValueError(
-                "a scalar constant takes no 'name' — the name labels a sweep axis and exists "
-                "only when 'value' is a list"
+                "a scalar or axis-referencing constant takes no 'name' — the name labels a "
+                "sweep axis and exists only when 'value' is a list; a shared axis is already "
+                "labelled by its declared name"
             )
         return self
 
@@ -217,6 +252,9 @@ class ZScore(_Strict):
         if self.alpha is not None:
             if self.mean_type != "ema":
                 raise ValueError("zscore 'alpha' is only valid with mean_type='ema'")
+            if isinstance(self.alpha, AxisRef):
+                # Checked per axis value by ``Thesis._check_shared_axes``'s re-validation.
+                return self
             alphas = self.alpha if isinstance(self.alpha, list) else [self.alpha]
             if any(a >= 1.0 for a in alphas):
                 raise ValueError(

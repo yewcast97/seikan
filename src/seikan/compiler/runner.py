@@ -382,7 +382,7 @@ def _resolve_run_config(thesis: Thesis, md: MarketData) -> _RunConfig:
     swept_horizon = isinstance(hz, list)
     horizon_values: list[int] = list(hz) if isinstance(hz, list) else [hz]
 
-    param_levels = [lvl for lvl, _ in vectorize.collect_sweeps(thesis.entry)]
+    param_levels = [lvl for lvl, _ in vectorize.collect_sweeps(thesis.entry, thesis.axes)]
     # The entry-tree sweep axes alone — a combo dict's exact key set, BEFORE the horizon axis is
     # appended below. The canonical per-combo lookup key everywhere a combo indexes a dict.
     sweep_levels = list(param_levels)
@@ -986,7 +986,7 @@ def _measure_grid(
     # tree only (features are evidence-side snapshots); cross nodes are basket-gated, so a
     # conjunction run emits the empty panel by construction. Read by no check.
     cross_breadth: list[CrossBreadthEntry] = []
-    for combo, entry in vectorize.iter_param_assignments(thesis.entry):
+    for combo, entry in vectorize.iter_param_assignments(thesis.entry, thesis.axes):
         n_combos_attempted += 1
         mask = vectorize.signal(entry, md).to_numpy()  # (bars × targets) bool, warmup-gated
         combo_tuple = tuple(combo[lvl] for lvl in sweep_levels)

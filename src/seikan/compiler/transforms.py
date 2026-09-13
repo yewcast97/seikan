@@ -19,6 +19,7 @@ import numpy as np
 from seikan.compiler import nb
 from seikan.dsl.schema import (
     EMA,
+    AxisRef,
     BarsSinceExtremum,
     Change,
     CrossAgg,
@@ -40,19 +41,20 @@ def _2d(values: np.ndarray) -> np.ndarray:
     return arr.reshape(-1, 1) if arr.ndim == 1 else arr
 
 
-def _scalar(param: int | list[int]) -> int:
+def _scalar(param: int | list[int] | AxisRef) -> int:
     """The scalar value a window/period param already holds by the time dispatch sees it.
 
-    Transform params are DECLARED ``int | list[int]`` because the DSL lets any window or period
-    SWEEP, but ``vectorize.iter_param_assignments`` expands that grid and scalarizes every node
-    before a kernel is ever reached — the precondition this module's docstring opens with. The
-    kernels take the scalar; this states that the expansion has already happened, which the
-    declared type cannot.
+    Transform params are DECLARED ``int | list[int] | AxisRef`` because the DSL lets any window
+    or period SWEEP (as a list, or by reading a shared axis), but
+    ``vectorize.iter_param_assignments`` expands that grid and scalarizes every node before a
+    kernel is ever reached — the precondition this module's docstring opens with. The kernels
+    take the scalar; this states that the expansion has already happened, which the declared
+    type cannot.
     """
     return cast("int", param)
 
 
-def _scalar_or_none(param: int | list[int] | None) -> int | None:
+def _scalar_or_none(param: int | list[int] | AxisRef | None) -> int | None:
     """:func:`_scalar` for the windows that are legitimately optional, where ``None`` is a real
     value rather than an unexpanded sweep: an omitted ``window`` selects the kernel's EXPANDING
     form — the extremum taken from the first bar — not a missing one (or, on the EW nodes, the
@@ -60,7 +62,7 @@ def _scalar_or_none(param: int | list[int] | None) -> int | None:
     return cast("int | None", param)
 
 
-def _scalar_float_or_none(param: float | list[float] | None) -> float | None:
+def _scalar_float_or_none(param: float | list[float] | AxisRef | None) -> float | None:
     """The float twin of :func:`_scalar_or_none`, for the EW ``alpha`` (``None`` = the window
     form is in use)."""
     return cast("float | None", param)

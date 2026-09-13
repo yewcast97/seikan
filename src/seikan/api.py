@@ -197,7 +197,7 @@ def list_entries(thesis: Thesis, md: MarketData) -> EntryListReport:
     value_cols: dict[str, tuple[str, pd.DataFrame]] = {}  # node canonical JSON -> (label, values)
     # (combo, boolean signal frame)
     entry_cols: list[tuple[dict[str, ParamValue], pd.DataFrame]] = []
-    for combo, entry in vectorize.iter_param_assignments(thesis.entry):
+    for combo, entry in vectorize.iter_param_assignments(thesis.entry, thesis.axes):
         sig = vectorize.signal(entry, md)  # (bars × targets), warmup-gated
         mask = sig.to_numpy()
         rows.extend(

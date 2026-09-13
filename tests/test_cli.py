@@ -3102,3 +3102,58 @@ def test_failed_report_write_leaves_previous_report_intact(tmp_path, capsys, mon
     assert doc["error"]["type"] == "internal"
     assert out.read_text(encoding="utf-8") == "PRECIOUS"
     assert not list(tmp_path.glob("*.tmp"))
+
+
+# ---- shared sweep axes ---------------------------------------------------------------------
+
+
+def test_schema_json_schema_includes_axis_ref(capsys):
+    code, doc = _run(capsys, ["schema"])
+    assert code == 0
+    assert "AxisRef" in doc["dsl_json_schema"]["$defs"]
+    assert "axes" in doc["dsl_json_schema"]["properties"]
+
+
+def _shared_axis_dsl(axes):
+    return {
+        "name": "cli-e2e",
+        "data": {"targets": ["target"]},
+        "axes": axes,
+        "entry": {
+            "type": "threshold",
+            "left": {"type": "field", "column": "close"},
+            "op": "<",
+            "right": {
+                "type": "ema",
+                "input": {"type": "field", "column": "close"},
+                "window": {"axis": "N"},
+            },
+        },
+        "params": {"horizon": 5},
+    }
+
+
+@pytest.mark.parametrize(
+    "axes",
+    [
+        {"N": [0.5, 1.5]},  # a float axis into an int window: the type-fit refusal
+        {"N": [20, 60], "M": [1, 2]},  # an unreferenced axis
+    ],
+)
+def test_run_bad_shared_axes_exit_3_without_reading_data(tmp_path, capsys, axes):
+    # Mirrors the colliding-sweep-axis case: refused at PARSE time (exit 3) before any CSV is
+    # read — the --data pair points at a nonexistent file, so a data-first path would exit 2.
+    bad = tmp_path / "bad.json"
+    bad.write_text(json.dumps(_shared_axis_dsl(axes)), encoding="utf-8")
+    code, doc = _run(
+        capsys,
+        [
+            "run",
+            str(bad),
+            *_target(tmp_path / "does-not-exist.csv"),
+            "--report-out",
+            str(tmp_path / "r.json"),
+        ],
+    )
+    assert code == 3
+    assert doc["error"]["type"] == "dsl_invalid"

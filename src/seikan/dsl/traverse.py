@@ -19,6 +19,7 @@ its embedding threshold), so nothing is yielded twice.
 from __future__ import annotations
 
 from collections.abc import Iterator
+from typing import NamedTuple
 
 from seikan.constants import (
     MAX_DECLARED_GRID,
@@ -35,6 +36,7 @@ from seikan.dsl.conditions import (
 )
 from seikan.dsl.nodes import (
     EMA,
+    AxisRef,
     BarsSinceEvent,
     BarsSinceExtremum,
     BinaryOp,
@@ -207,81 +209,68 @@ def series_source_leaves(node: Series) -> Iterator[tuple[str, str]]:
 
 
 # ---- sweeps -------------------------------------------------------------------------------
-
-#: The Series-node params that may sweep (list-valued), beside ``Constant.value``.
-_SWEPT_SERIES_ATTRS = ("window", "periods", "alpha")
-#: The Condition-node params that may sweep: ``rolling.window``, ``first_true.cooldown``,
-#: ``lag.periods``.
-_SWEPT_CONDITION_ATTRS = ("window", "cooldown", "periods")
-
-
-def _iter_series_sweep_lengths(node: Series) -> Iterator[int]:
-    """Yield the length of every list-valued (swept) param under a Series node — its own, its
-    children's, and (delegated to the condition walk, so each counts exactly once) every swept
-    param inside a Condition it embeds."""
-    if isinstance(node, Constant) and isinstance(node.value, list):
-        yield len(node.value)
-    for attr in _SWEPT_SERIES_ATTRS:
-        value = getattr(node, attr, None)
-        if isinstance(value, list):
-            yield len(value)
-    for cond in _iter_child_conditions(node):
-        yield from _iter_condition_sweep_lengths(cond)
-    for child in _iter_child_series(node):
-        yield from _iter_series_sweep_lengths(child)
+#
+# ONE scan state, the exact twin of ``compiler.vectorize._make_resolver``: the same tree order,
+# the same occurrence counter, the same dedupe of shared-axis sites (a parity test pins the two
+# together). A parse-time refusal here is the same refusal the engine would raise after a data
+# load — surfaced at exit 3 instead of exit 4.
 
 
-def _iter_condition_sweep_lengths(node: Condition) -> Iterator[int]:
-    """Yield the length of every swept param anywhere under a condition tree — the Series
-    operands' (embedded conditions included) plus the conditions' own list-valued params
-    (``RollingCondition.window``, ``FirstTrueCondition.cooldown``, ``LagCondition.periods``)."""
-    for attr in _SWEPT_CONDITION_ATTRS:
-        value = getattr(node, attr, None)
-        if isinstance(value, list):
-            yield len(value)
-    match node:
-        case ThresholdCondition(left=left, right=right):
-            yield from _iter_series_sweep_lengths(left)
-            yield from _iter_series_sweep_lengths(right)
-        case AndCondition(conditions=conditions) | OrCondition(conditions=conditions):
-            for child in conditions:
-                yield from _iter_condition_sweep_lengths(child)
-        case (
-            NotCondition(condition=child)
-            | RollingCondition(condition=child)
-            | FirstTrueCondition(condition=child)
-            | LagCondition(condition=child)
-        ):
-            yield from _iter_condition_sweep_lengths(child)
+class _SweepSite(NamedTuple):
+    """One occurrence of a swept param: the level (axis) it sweeps under, the values, whether it
+    reads a SHARED axis, and where it sits (``kind.param`` on ``node``)."""
+
+    level: str
+    values: list[int] | list[float] | None  # None only for an unresolved ref (axes unknown)
+    shared: bool
+    kind: str
+    param: str
+    node: Series | Condition
 
 
-def _series_has_sweep(node: Series) -> bool:
-    """True if any param anywhere under a Series node is list-valued (a sweep) — inside an
-    embedded Condition included, so a feature carrying a swept ``rolling.window`` in its event
-    node is refused like one carrying a swept transform window."""
-    return next(_iter_series_sweep_lengths(node), None) is not None
+class _SweepScan:
+    """The scan state ``_series_axis_names`` / ``_condition_axis_names`` thread: every site in
+    engine order. ``visit`` mirrors the engine resolver EXACTLY — an ``AxisRef`` yields the
+    declared axis (its values, ``shared=True``) and never touches the occurrence counter; a list
+    yields the auto-named (``{kind}_{param}``, disambiguated by occurrence) or explicitly named
+    level as today; a scalar yields nothing."""
+
+    def __init__(self, axes: Axes | None, *, strict: bool) -> None:
+        self.axes = axes
+        self.strict = strict  # refuse a reference to an undeclared axis (else record it raw)
+        self.counts: dict[str, int] = {}
+        self.sites: list[_SweepSite] = []
+
+    def visit(
+        self,
+        node: Series | Condition,
+        kind: str,
+        param: str,
+        value: _NumericParam | None,
+        name: str | None = None,
+    ) -> None:
+        if isinstance(value, AxisRef):
+            if self.axes is None or value.axis not in self.axes:
+                if self.strict:
+                    raise ValueError(
+                        f"{kind}.{param} references shared axis {value.axis!r}, which is not "
+                        f"declared under 'axes' (declared: {sorted(self.axes or {})})"
+                    )
+                self.sites.append(_SweepSite(value.axis, None, True, kind, param, node))
+                return
+            values = self.axes[value.axis]
+            self.sites.append(_SweepSite(value.axis, list(values), True, kind, param, node))
+        elif isinstance(value, list):
+            if name is not None:
+                level = name
+            else:
+                base = f"{kind}_{param}"
+                self.counts[base] = self.counts.get(base, 0) + 1
+                level = base if self.counts[base] == 1 else f"{base}_{self.counts[base]}"
+            self.sites.append(_SweepSite(level, list(value), False, kind, param, node))
 
 
-def _sweep_axis_name(
-    kind: str,
-    param: str,
-    value: _NumericParam | None,
-    counts: dict[str, int],
-    name: str | None = None,
-) -> str | None:
-    """The level name ``compiler.vectorize._make_resolver`` assigns a swept (list-valued) param,
-    or ``None`` when the param is scalar. Kept bit-identical to that resolver (a parity test pins
-    it) so this parse-time check and the engine name every sweep axis the same."""
-    if not isinstance(value, list):
-        return None
-    if name is not None:
-        return name
-    base = f"{kind}_{param}"
-    counts[base] = counts.get(base, 0) + 1
-    return base if counts[base] == 1 else f"{base}_{counts[base]}"
-
-
-def _series_axis_names(node: Series, counts: dict[str, int], out: list[str]) -> None:
+def _series_axis_names(node: Series, scan: _SweepScan) -> None:
     # Mirrors compiler.vectorize._transform_series EXACTLY: recurse operands (an embedded
     # condition first, then input, or left then right) BEFORE the node's own param, so the shared
     # occurrence counter advances in engine order.
@@ -289,50 +278,47 @@ def _series_axis_names(node: Series, counts: dict[str, int], out: list[str]) -> 
         case Field() | External() | Calendar() | DaysSince():
             return
         case Constant(value=val, name=nm):
-            lvl = _sweep_axis_name("constant", "value", val, counts, name=nm)
+            scan.visit(node, "constant", "value", val, name=nm)
         case EMA(input=inp, window=w, alpha=a):
-            _series_axis_names(inp, counts, out)
+            _series_axis_names(inp, scan)
             # Named by WHICH field is set (exactly one is): ``ema_window`` or ``ema_alpha``.
-            lvl = (
-                _sweep_axis_name("ema", "window", w, counts)
-                if w is not None
-                else _sweep_axis_name("ema", "alpha", a, counts)
-            )
+            if w is not None:
+                scan.visit(node, "ema", "window", w)
+            else:
+                scan.visit(node, "ema", "alpha", a)
         case ZScore(input=inp, window=w, alpha=a):
-            _series_axis_names(inp, counts, out)
-            lvl = (
-                _sweep_axis_name("zscore", "window", w, counts)
-                if w is not None
-                else _sweep_axis_name("zscore", "alpha", a, counts)
-            )
+            _series_axis_names(inp, scan)
+            if w is not None:
+                scan.visit(node, "zscore", "window", w)
+            else:
+                scan.visit(node, "zscore", "alpha", a)
         case Percentile(input=inp, window=w):
-            _series_axis_names(inp, counts, out)
-            lvl = _sweep_axis_name("percentile", "window", w, counts)
+            _series_axis_names(inp, scan)
+            scan.visit(node, "percentile", "window", w)
         case RollingAgg(input=inp, window=w):
-            _series_axis_names(inp, counts, out)
-            lvl = _sweep_axis_name("rolling_agg", "window", w, counts)
+            _series_axis_names(inp, scan)
+            scan.visit(node, "rolling_agg", "window", w)
         case Drawdown(input=inp, window=w):
-            _series_axis_names(inp, counts, out)
-            lvl = _sweep_axis_name("drawdown", "window", w, counts)
+            _series_axis_names(inp, scan)
+            scan.visit(node, "drawdown", "window", w)
         case Runup(input=inp, window=w):
-            _series_axis_names(inp, counts, out)
-            lvl = _sweep_axis_name("runup", "window", w, counts)
+            _series_axis_names(inp, scan)
+            scan.visit(node, "runup", "window", w)
         case BarsSinceExtremum(input=inp, window=w):
-            _series_axis_names(inp, counts, out)
-            lvl = _sweep_axis_name("bars_since_extremum", "window", w, counts)
+            _series_axis_names(inp, scan)
+            scan.visit(node, "bars_since_extremum", "window", w)
         case Change(input=inp, periods=p):
-            _series_axis_names(inp, counts, out)
-            lvl = _sweep_axis_name("change", "periods", p, counts)
+            _series_axis_names(inp, scan)
+            scan.visit(node, "change", "periods", p)
         case Shift(input=inp, periods=p):
-            _series_axis_names(inp, counts, out)
-            lvl = _sweep_axis_name("shift", "periods", p, counts)
+            _series_axis_names(inp, scan)
+            scan.visit(node, "shift", "periods", p)
         case UnaryOp(input=inp):
-            _series_axis_names(inp, counts, out)
-            lvl = None
+            _series_axis_names(inp, scan)
         case RollingCorr(left=lhs, right=rhs, window=w):
-            _series_axis_names(lhs, counts, out)
-            _series_axis_names(rhs, counts, out)
-            lvl = _sweep_axis_name("rolling_corr", "window", w, counts)
+            _series_axis_names(lhs, scan)
+            _series_axis_names(rhs, scan)
+            scan.visit(node, "rolling_corr", "window", w)
         case (
             CrossRank(input=inp, where=wh, group=gr)
             | CrossDemean(input=inp, where=wh, group=gr)
@@ -343,87 +329,134 @@ def _series_axis_names(node: Series, counts: dict[str, int], out: list[str]) -> 
             # construction order; existing documents' axis names are unchanged) — dropping these
             # cases would fall through to the wildcard and silently skip every axis inside a
             # cross node, breaking the parse-time/engine parity the pin test enforces.
-            _series_axis_names(inp, counts, out)
+            _series_axis_names(inp, scan)
             if wh is not None:
-                _condition_axis_names(wh, counts, out)
+                _condition_axis_names(wh, scan)
             if gr is not None:
-                _series_axis_names(gr, counts, out)
-            lvl = None
+                _series_axis_names(gr, scan)
         case BinaryOp(left=lhs, right=rhs):
-            _series_axis_names(lhs, counts, out)
-            _series_axis_names(rhs, counts, out)
-            lvl = None
+            _series_axis_names(lhs, scan)
+            _series_axis_names(rhs, scan)
         case Mask(condition=c):
-            _condition_axis_names(c, counts, out)
-            lvl = None
+            _condition_axis_names(c, scan)
         case BarsSinceEvent(event=e):
-            _condition_axis_names(e, counts, out)
-            lvl = None
+            _condition_axis_names(e, scan)
         case EventValue(event=e, input=inp) | EventAgg(event=e, input=inp):
             # Embedded condition BEFORE the input — the engine constructs them in that order.
-            _condition_axis_names(e, counts, out)
-            _series_axis_names(inp, counts, out)
-            lvl = None
+            _condition_axis_names(e, scan)
+            _series_axis_names(inp, scan)
         case Native(expr=e):
-            _series_axis_names(e, counts, out)
-            lvl = None
+            _series_axis_names(e, scan)
         case _:
             # The arms above happen to cover the whole ``Series`` union today, so a checker reads
             # this arm as dead — but the arm is what makes the traversal TOTAL, and staying total
             # is exactly the property a new node type would take away. Silenced narrowly, never
             # deleted: without it an unhandled node raises here instead of contributing no axis.
-            lvl = None  # type: ignore[unreachable]
-    if lvl is not None:
-        out.append(lvl)
+            return  # type: ignore[unreachable]
 
 
-def _condition_axis_names(node: Condition, counts: dict[str, int], out: list[str]) -> None:
+def _condition_axis_names(node: Condition, scan: _SweepScan) -> None:
     # Mirrors compiler.vectorize._transform_condition: for Rolling/FirstTrue/Lag the INNER
     # condition resolves before the node's own window/cooldown/periods axis.
     match node:
         case ThresholdCondition(left=lhs, right=rhs):
-            _series_axis_names(lhs, counts, out)
-            _series_axis_names(rhs, counts, out)
+            _series_axis_names(lhs, scan)
+            _series_axis_names(rhs, scan)
         case AndCondition(conditions=cs) | OrCondition(conditions=cs):
             for c in cs:
-                _condition_axis_names(c, counts, out)
+                _condition_axis_names(c, scan)
         case NotCondition(condition=c):
-            _condition_axis_names(c, counts, out)
+            _condition_axis_names(c, scan)
         case RollingCondition(window=w, condition=inner):
-            _condition_axis_names(inner, counts, out)
-            lvl = _sweep_axis_name("rolling", "window", w, counts)
-            if lvl is not None:
-                out.append(lvl)
+            _condition_axis_names(inner, scan)
+            scan.visit(node, "rolling", "window", w)
         case FirstTrueCondition(condition=inner, cooldown=cd):
-            _condition_axis_names(inner, counts, out)
-            lvl = _sweep_axis_name("first_true", "cooldown", cd, counts)
-            if lvl is not None:
-                out.append(lvl)
+            _condition_axis_names(inner, scan)
+            scan.visit(node, "first_true", "cooldown", cd)
         case LagCondition(condition=inner, periods=p):
-            _condition_axis_names(inner, counts, out)
-            lvl = _sweep_axis_name("lag", "periods", p, counts)
-            if lvl is not None:
-                out.append(lvl)
+            _condition_axis_names(inner, scan)
+            scan.visit(node, "lag", "periods", p)
 
 
-def _iter_sweep_axis_names(entry: Condition) -> list[str]:
-    """Ordered sweep-axis names for every list-valued param across the entry tree — the exact names
-    ``compiler.vectorize.collect_sweeps`` produces (a parity test pins the equality). Lets the
-    ``Thesis`` validator refuse a reserved/duplicate/column-colliding axis at PARSE time (exit 3)
-    instead of the runner discovering it after a data load (exit 4)."""
-    out: list[str] = []
-    _condition_axis_names(entry, {}, out)
+#: The shared axes a thesis declares (``Thesis.axes``): name → values.
+Axes = dict[str, list[int] | list[float]]
+
+_CONDITION_TYPES = (
+    ThresholdCondition,
+    AndCondition,
+    OrCondition,
+    NotCondition,
+    RollingCondition,
+    FirstTrueCondition,
+    LagCondition,
+)
+
+
+def _iter_sweep_sites(
+    root: Condition | Series, axes: Axes | None = None, *, strict: bool = True
+) -> list[_SweepSite]:
+    """EVERY swept-param occurrence under ``root`` (a Condition tree or a Series), raw and in
+    engine order — a shared axis referenced three times yields three sites (the type-fit check
+    needs each). ``strict`` refuses a reference to an undeclared axis; off, the site is recorded
+    with unknown values (what ``_series_has_sweep`` needs of a feature)."""
+    scan = _SweepScan(axes, strict=strict)
+    if isinstance(root, _CONDITION_TYPES):
+        _condition_axis_names(root, scan)
+    else:
+        _series_axis_names(root, scan)
+    return scan.sites
+
+
+def _fold_sites(sites: list[_SweepSite]) -> list[tuple[str, list[int] | list[float]]]:
+    """The dedupe rule, implemented VERBATIM in ``vectorize.collect_sweeps``: fold left to right;
+    a shared site whose level was already recorded as shared is dropped; every other site is
+    appended. A level then appearing twice is a duplicate (list↔list, list↔axis and
+    constant-name↔axis alike) — the callers refuse it; the first occurrence fixes the axis
+    position."""
+    out: list[tuple[str, list[int] | list[float]]] = []
+    shared_seen: set[str] = set()
+    for site in sites:
+        if site.shared:
+            if site.level in shared_seen:
+                continue
+            shared_seen.add(site.level)
+        # A strict scan resolved every ref, so ``values`` is never None here.
+        out.append((site.level, site.values if site.values is not None else []))
     return out
 
 
-def declared_grid_size(entry: Condition, horizon: int | list[int]) -> int:
-    """The DECLARED hypothesis count: the Cartesian product of every swept entry param times
-    the number of horizons — the same quantity the runner records as
-    ``n_hypotheses_attempted``, computed structurally so it is knowable BEFORE any data is read.
-    Non-firing combos cannot shrink it."""
+def _iter_sweep_axes(
+    entry: Condition, axes: Axes | None = None
+) -> list[tuple[str, list[int] | list[float]]]:
+    """Ordered ``[(level, values)]`` — the exact twin of ``vectorize.collect_sweeps`` minus its
+    refusals (the parity test compares the full lists, values included)."""
+    return _fold_sites(_iter_sweep_sites(entry, axes))
+
+
+def _iter_sweep_axis_names(entry: Condition, axes: Axes | None = None) -> list[str]:
+    """Ordered sweep-axis names for every swept param across the entry tree — the exact names
+    ``compiler.vectorize.collect_sweeps`` produces (a parity test pins the equality). Lets the
+    ``Thesis`` validator refuse a reserved/duplicate/column-colliding axis at PARSE time (exit 3)
+    instead of the runner discovering it after a data load (exit 4). Shared axes appear once, at
+    their first reference."""
+    return [lvl for lvl, _ in _iter_sweep_axes(entry, axes)]
+
+
+def _series_has_sweep(node: Series) -> bool:
+    """True if any param anywhere under a Series node sweeps — a list, or a shared-axis
+    reference — inside an embedded Condition included, so a feature carrying a swept
+    ``rolling.window`` in its event node is refused like one carrying a swept transform window."""
+    return bool(_iter_sweep_sites(node, None, strict=False))
+
+
+def declared_grid_size(entry: Condition, horizon: int | list[int], axes: Axes | None = None) -> int:
+    """The DECLARED hypothesis count: the Cartesian product of every swept entry axis (a shared
+    axis counted ONCE, however many params read it) times the number of horizons — the same
+    quantity the runner records as ``n_hypotheses_attempted``, computed structurally so it is
+    knowable BEFORE any data is read. Non-firing combos cannot shrink it."""
     size = len(horizon) if isinstance(horizon, list) else 1
-    for length in _iter_condition_sweep_lengths(entry):
-        size *= length
+    for _lvl, values in _iter_sweep_axes(entry, axes):
+        size *= len(values)
         if size > MAX_DECLARED_GRID:  # early exit — no need to multiply out a runaway grid
             return size
     return size

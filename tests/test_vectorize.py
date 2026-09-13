@@ -996,7 +996,7 @@ def test_sweep_axis_names_match_collect_sweeps_order_exact():
     # collect_sweeps does — same order, same occurrence-counter spelling — or the Thesis validator
     # would refuse a different set of names than the runner assigns. Pins the two walkers together.
     from seikan.dsl import schema as sc
-    from seikan.dsl.traverse import _iter_sweep_axis_names
+    from seikan.dsl.traverse import _iter_sweep_axes, _iter_sweep_axis_names
 
     def c(col):
         return sc.Field(column=col)
@@ -1197,6 +1197,57 @@ def test_sweep_axis_names_match_collect_sweeps_order_exact():
     ]
     for entry in trees:
         assert _iter_sweep_axis_names(entry) == [lvl for lvl, _ in vz.collect_sweeps(entry)]
+        assert _iter_sweep_axes(entry) == vz.collect_sweeps(entry)
+    # ... and with SHARED axes: the full (level, values) lists, dedupe rule included.
+    N = sc.AxisRef(axis="N")
+    K = sc.AxisRef(axis="K")
+    axes = {"N": [20, 60], "K": [0, 3]}
+    dc = sc.Change(input=c("close"), kind="diff")
+    dv = sc.Change(input=c("volume"), kind="diff")
+    shared_trees = [
+        # the rolling beta: three sites, one axis
+        sc.ThresholdCondition(
+            left=sc.BinaryOp(
+                left=sc.BinaryOp(
+                    left=sc.RollingCorr(left=dc, right=dv, window=N),
+                    op="*",
+                    right=sc.RollingAgg(input=dc, window=N, agg="std"),
+                ),
+                op="/",
+                right=sc.RollingAgg(input=dv, window=N, agg="std"),
+            ),
+            op=">",
+            right=sc.Constant(value=0.5),
+        ),
+        # a ref beside two list-swept emas: the ref keeps its name, the counter is untouched
+        sc.ThresholdCondition(
+            left=sc.EMA(input=sc.EMA(input=c("close"), window=[5, 10]), window=N),
+            op=">",
+            right=sc.EMA(input=c("close"), window=[3, 4]),
+        ),
+        # refs across rolling.window / first_true.cooldown / a constant in two `and` branches
+        sc.AndCondition(
+            conditions=[
+                sc.RollingCondition(
+                    window=N,
+                    agg="any",
+                    condition=sc.FirstTrueCondition(
+                        cooldown=K,
+                        condition=sc.ThresholdCondition(
+                            left=c("close"), op=">", right=sc.Constant(value=N)
+                        ),
+                    ),
+                ),
+                sc.ThresholdCondition(
+                    left=sc.Percentile(input=c("close"), window=N),
+                    op="<",
+                    right=sc.Constant(value=N),
+                ),
+            ]
+        ),
+    ]
+    for entry in shared_trees:
+        assert _iter_sweep_axes(entry, axes) == vz.collect_sweeps(entry, axes)
 
 
 # ---- rolling-condition window sweep ----------------------------------------
@@ -2331,3 +2382,119 @@ def test_calendar_hour_minute_on_intraday_bars():
     np.testing.assert_array_equal(
         vz.build_series(Calendar(field="minute"), md)[0]["t"].to_numpy(), [30, 0, 30, 0, 30, 0]
     )
+
+
+# ---- shared sweep axes ---------------------------------------------------------------------
+
+
+def _beta_tree(n):
+    from seikan.dsl.schema import AxisRef, RollingCorr
+
+    dc = Change(input=Field(column="close"), kind="diff")
+    dv = Change(input=Field(column="volume"), kind="diff")
+    if isinstance(n, str):
+        n = AxisRef(axis=n)
+    return ThresholdCondition(
+        left=BinaryOp(
+            left=BinaryOp(
+                left=RollingCorr(left=dc, right=dv, window=n),
+                op="*",
+                right=RollingAgg(input=dc, window=n, agg="std"),
+            ),
+            op="/",
+            right=RollingAgg(input=dv, window=n, agg="std"),
+        ),
+        op=">",
+        right=Constant(value=0.5),
+    )
+
+
+def test_collect_sweeps_shared_axis_recorded_once_rolling_beta():
+    # The review's case: three [20, 60] lists were three axes and eight cells; one shared N is
+    # one axis, two combos, and every window in each scalarized tree reads combo["N"].
+    entry = _beta_tree("N")
+    assert vz.collect_sweeps(entry, {"N": [20, 60]}) == [("N", [20, 60])]
+    combos = list(vz.iter_param_assignments(entry, {"N": [20, 60]}))
+    assert [c for c, _ in combos] == [{"N": 20}, {"N": 60}]
+    for combo, tree in combos:
+        assert tree.left.left.left.window == combo["N"]
+        assert tree.left.left.right.window == combo["N"]
+        assert tree.left.right.window == combo["N"]
+    # the listed form, for contrast: 8 cells
+    listed = _beta_tree([20, 60])
+    assert len(list(vz.iter_param_assignments(listed))) == 8
+
+
+def test_collect_sweeps_shared_axis_does_not_advance_occurrence_counter():
+    from seikan.dsl.schema import AxisRef
+
+    entry = ThresholdCondition(
+        left=EMA(input=EMA(input=Field(column="close"), window=[5, 10]), window=AxisRef(axis="N")),
+        op=">",
+        right=EMA(input=Field(column="close"), window=[3, 4]),
+    )
+    assert vz.collect_sweeps(entry, {"N": [20, 60]}) == [
+        ("ema_window", [5, 10]),
+        ("N", [20, 60]),
+        ("ema_window_2", [3, 4]),
+    ]
+
+
+def test_collect_sweeps_shared_axis_colliding_with_auto_axis_refused():
+    from seikan.dsl.schema import AxisRef
+
+    entry = AndCondition(
+        conditions=[
+            ThresholdCondition(
+                left=EMA(input=Field(column="close"), window=[3, 4]),
+                op=">",
+                right=Field(column="close"),
+            ),
+            ThresholdCondition(
+                left=EMA(input=Field(column="close"), window=AxisRef(axis="ema_window")),
+                op=">",
+                right=Field(column="close"),
+            ),
+        ]
+    )
+    with pytest.raises(ValueError, match="duplicate sweep axis name 'ema_window'"):
+        vz.collect_sweeps(entry, {"ema_window": [5, 6]})
+
+
+@pytest.mark.parametrize("reserved", ["target", "horizon"])
+def test_collect_sweeps_shared_axis_reserved_name_refused(reserved):
+    with pytest.raises(ValueError, match=f"sweep axis name '{reserved}' is reserved"):
+        vz.collect_sweeps(_beta_tree(reserved), {reserved: [20, 60]})
+
+
+def test_make_resolver_refuses_axis_ref_without_axes():
+    with pytest.raises(
+        ValueError,
+        match=r"rolling_corr.window references shared axis 'N', .*\(declared: \[\]\)",
+    ):
+        vz.collect_sweeps(_beta_tree("N"))
+    with pytest.raises(ValueError, match=r"declared: \['M'\]"):
+        vz.collect_sweeps(_beta_tree("N"), {"M": [20, 60]})
+
+
+def test_iter_param_assignments_shared_axis_serves_constant_and_window():
+    from seikan.dsl.schema import AxisRef
+
+    entry = AndCondition(
+        conditions=[
+            ThresholdCondition(
+                left=EMA(input=Field(column="close"), window=AxisRef(axis="N")),
+                op=">",
+                right=Field(column="close"),
+            ),
+            ThresholdCondition(
+                left=Field(column="close"), op=">", right=Constant(value=AxisRef(axis="N"))
+            ),
+        ]
+    )
+    combos = list(vz.iter_param_assignments(entry, {"N": [20, 60]}))
+    assert [c for c, _ in combos] == [{"N": 20}, {"N": 60}]
+    for combo, tree in combos:
+        assert tree.conditions[0].left.window == combo["N"]
+        assert tree.conditions[1].right.value == float(combo["N"])
+        assert tree.conditions[1].right.name is None

@@ -31,6 +31,7 @@ size of your grid — **you** choose among the cells and own the multiplicity of
   "description": "optional, free text",
   "target_mode": "conjunction",  // or "basket" — how multiple targets relate; defaults to conjunction
   "data":   { /* DataSpec */ },
+  "axes":   { "N": [20, 60] },   // optional: SHARED sweep axes, read by {"axis": "N"} (see below)
   "entry":  { /* Condition — the firing signal */ },
   "params": { /* BacktestParams — horizon defaults to 1; set it explicitly */ }
 }
@@ -250,8 +251,10 @@ Leaves:
 - `{"type": "constant", "value": 1.23}` — `value` may also be a **list** to sweep the threshold as
   its own axis (like a transform-window sweep); then `name` is **required** to label it, e.g.
   `{"type": "constant", "value": [-0.20, -0.30, -0.40], "name": "dd_thresh"}`. The `name` must be
-  unique and not `target`/`horizon`/a trade-or-feature column. A SCALAR `value` refuses a `name`:
-  execution never reads it, so it would move the hash without moving the measurement.
+  unique and not `target`/`horizon`/a trade-or-feature column. Or `{"axis": "<name>"}` to read a
+  shared axis (no `name` then — the axis is already labelled). A SCALAR or axis-referencing
+  `value` refuses a `name`: execution never reads it, so it would move the hash without moving
+  the measurement.
 - `{"type": "external", "name": "<feed_name>"}`
 - `{"type": "calendar", "field": "month|day_of_week|day_of_month|days_to_month_end|hour|minute"}`
   — the bar timestamp's calendar attribute (month 1-12; day_of_week 0=Mon..6=Sun;
@@ -268,7 +271,8 @@ Leaves:
   staleness guard on any feed. For SCHEDULED future events (FOMC), feed a user-computed
   days-until-next-event series instead — a `days_until` over stamps would read the future.
 
-Transforms (the ONE operator family — `window`/`periods` may be a **list** to sweep a grid).
+Transforms (the ONE operator family — `window`/`periods`/`alpha` may be a **list** to sweep a
+grid, or `{"axis": "<name>"}` to read a shared axis).
 There is **no Indicator family** (no RSI/ADX/ATR/OBV/VWAP/ROC); compose what you need from these
 primitives. Classic technical indicators are deliberately absent — too widely used to be
 informative once everyone already trades them.
@@ -568,6 +572,59 @@ with a shared axis, see below).
   daily) still needs a caller-consolidated feed stamped at period completion — the engine has no
   session calendar.
 
+### Shared sweep axes
+
+The defect: a rolling beta `rolling_corr(Δp, Δm, N) · std(Δp, N) / std(Δm, N)` spelled with
+three `[20, 60]` lists declares THREE independent axes (`rolling_corr_window`,
+`rolling_agg_window`, `rolling_agg_window_2`) and eight cells — six of which mix windows the
+thesis never meant — where the thesis has ONE parameter `N` and two hypotheses. The rule:
+
+- Declare the axis once at the top level, `"axes": {"N": [20, 60]}` (an int list or a float
+  list, distinct values, at most 64), and reference it from any sweepable ENTRY param with
+  `{"axis": "N"}` — a transform `window`/`periods`/`alpha`, a `constant.value`, a
+  `rolling.window`, a `first_true.cooldown`, a `lag.periods`.
+- A shared axis is recorded ONCE — in `summary.params`, in every `cells[].params`, as one trades
+  CSV column — under its declared name, at the position of its first reference, and counts once
+  toward the 64-cell cap however many params read it. Every reference site resolves to the same
+  value in each cell.
+- Refused at parse (exit 3), before any data is read: a reference to an undeclared axis; a
+  declared axis nothing references (it would move the `dsl_hash` without changing the
+  measurement); `"axes": {}` (omit the field instead; `null` ≡ omitted); an axis value that does
+  not fit a param that reads it (`[0.5, 1.5]` into an integer window, `2` into
+  `rolling_corr`'s ≥ 3 window, a `rolling(count)` window below its `min_count` — every value is
+  re-validated against every referencing param); an axis named `target`/`horizon`, a trade or
+  feature column, an auto-named axis present in the tree (`ema_window`), or a swept constant's
+  `name`; a reference inside `params.features` (features are scalar); and `params.horizon`
+  never reads a shared axis (it is its own axis by construction). An axis of length one is
+  legal (a one-level sweep that keeps `N` visible as a named parameter); an axis named like a
+  feed or target is legal (separate namespaces).
+- An int axis may serve a float param (`Constant.value` stores `20.0` where `EMA.window`
+  stores `20`; `cells[].params["N"]` is `20`).
+
+The rolling beta, correctly:
+```jsonc
+{
+  "name": "beta-regime",
+  "data": { "targets": ["px"] },
+  "axes": { "N": [20, 60] },
+  "entry": {
+    "type": "threshold", "op": ">",
+    "left": { "type": "binary_op", "op": "/",
+      "left": { "type": "binary_op", "op": "*",
+        "left": { "type": "rolling_corr", "window": { "axis": "N" },
+          "left":  { "type": "change", "kind": "diff", "input": { "type": "field", "column": "close" } },
+          "right": { "type": "change", "kind": "diff", "input": { "type": "field", "column": "volume" } } },
+        "right": { "type": "rolling_agg", "window": { "axis": "N" }, "agg": "std",
+          "input": { "type": "change", "kind": "diff", "input": { "type": "field", "column": "close" } } } },
+      "right": { "type": "rolling_agg", "window": { "axis": "N" }, "agg": "std",
+        "input": { "type": "change", "kind": "diff", "input": { "type": "field", "column": "volume" } } } },
+    "right": { "type": "constant", "value": 0.0 }
+  },
+  "params": { "horizon": [5, 10, 21] }
+}
+```
+`summary.params == ["N", "horizon"]`, six cells, each trades row carrying its `N`.
+
 **Nesting limit:** operators may nest at most **five levels** deep. Each transform (`ema`,
 `zscore`, `percentile`, `rolling_agg`, `drawdown`, `runup`, `bars_since_extremum`, `change`,
 `rolling_corr`, the cross-sectional nodes, and the event-anchor nodes `bars_since_event` /
@@ -592,13 +649,15 @@ expression that says the thesis.
   of the last 5 bars closed down" = `{"agg": "count", "window": 5, "min_count": 3, "condition":
   <close-down>}`) — a sustained-regime trigger `all`/`any` can't state. `window` may also be a **list** to
   sweep the trailing-window length as its own `rolling_window` axis (like a transform-window sweep),
-  e.g. `"window": [3, 5, 10]`; keep `min_count` scalar. Prefer `bars_since_extremum(max) >= N` for
+  e.g. `"window": [3, 5, 10]` — or `{"axis": "<name>"}` to read a shared axis; keep `min_count`
+  scalar. Prefer `bars_since_extremum(max) >= N` for
   true duration-since-peak; `rolling` + `agg:"all"` over a drawdown threshold remains valid as
   "sustained depth for ≥ M bars".
 - `{"type": "first_true", "condition": <Condition>, "cooldown": K}` — **episode entry**: fires only
   on a false→true transition of the child's tradable signal. The first True after warmup does NOT
   count (must have seen an initialized False first). Optional `cooldown`
-  (default 0) suppresses re-fires for K bars after a fire; a list sweeps as `first_true_cooldown`.
+  (default 0) suppresses re-fires for K bars after a fire; a list sweeps as `first_true_cooldown`
+  (or `{"axis": "<name>"}` reads a shared axis).
   The episode-entry primitive: measure forward return from the bar a regime is first entered
   (deep drawdown, end-of-bull risk alarm, …), not every bar inside it. Also the **crossover recipe**:
   `first_true(threshold(fast > slow))` (there is no dedicated crossover condition). Sparse episodes

@@ -19,6 +19,8 @@ from seikan.dsl.conditions import (
 )
 from seikan.dsl.nodes import (
     EMA,
+    AxisRef,
+    AxisValues,
     BarsSinceEvent,
     BarsSinceExtremum,
     BinaryOp,
@@ -40,6 +42,7 @@ from seikan.dsl.nodes import (
     Ge2IntParam,
     Ge3Int,
     Ge3IntParam,
+    HorizonParam,
     Mask,
     Native,
     NonNegInt,
@@ -87,6 +90,8 @@ __all__ = [
     "EMA",
     "RESERVED_DATA_KEYS",
     "AndCondition",
+    "AxisRef",
+    "AxisValues",
     "BacktestParams",
     "BarsSinceEvent",
     "BarsSinceExtremum",
@@ -113,6 +118,7 @@ __all__ = [
     "Ge2IntParam",
     "Ge3Int",
     "Ge3IntParam",
+    "HorizonParam",
     "LagCondition",
     "Mask",
     "Native",

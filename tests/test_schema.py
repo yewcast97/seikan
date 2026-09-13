@@ -2121,7 +2121,9 @@ def test_empty_features_dict_refuses():
 
 
 def test_scalar_constant_refuses_a_name():
-    with pytest.raises(ValidationError, match="scalar constant takes no 'name'"):
+    with pytest.raises(
+        ValidationError, match="scalar or axis-referencing constant takes no 'name'"
+    ):
         Constant.model_validate({"type": "constant", "value": 0.35, "name": "cut"})
     # The swept form still REQUIRES one — the name labels a real sweep axis there.
     with pytest.raises(ValidationError, match="requires a non-empty 'name'"):
@@ -2801,3 +2803,330 @@ def test_calendar_hour_and_minute_parse():
         assert t.entry.left.field == field
     with pytest.raises(ValidationError):
         Thesis.model_validate(_entry_over({"type": "calendar", "field": "second"}))
+
+
+# ---- shared sweep axes: `axes` + {"axis": …} ----------------------------------------------
+
+_CLOSE = {"type": "field", "column": "close"}
+_AX = {"axis": "N"}
+
+
+def _beta_entry(n=_AX, c=0.5):
+    """rolling_corr(Δclose, Δvolume, N) · std(Δclose, N) / std(Δvolume, N) > c — three sites
+    reading ONE axis."""
+    dc = {"type": "change", "input": _CLOSE, "kind": "diff"}
+    dv = {"type": "change", "input": {"type": "field", "column": "volume"}, "kind": "diff"}
+    return {
+        "type": "threshold",
+        "left": {
+            "type": "binary_op",
+            "op": "/",
+            "left": {
+                "type": "binary_op",
+                "op": "*",
+                "left": {"type": "rolling_corr", "left": dc, "right": dv, "window": n},
+                "right": {"type": "rolling_agg", "input": dc, "window": n, "agg": "std"},
+            },
+            "right": {"type": "rolling_agg", "input": dv, "window": n, "agg": "std"},
+        },
+        "op": ">",
+        "right": {"type": "constant", "value": c},
+    }
+
+
+def _axes_doc(entry, axes, **params):
+    doc = {"name": "ax", "data": {"targets": ["target"]}, "entry": entry}
+    if axes is not None:
+        doc["axes"] = axes
+    if params:
+        doc["params"] = params
+    return doc
+
+
+@pytest.mark.parametrize(
+    "left",
+    [
+        {"type": "ema", "input": _CLOSE, "window": _AX},
+        {"type": "ema", "input": _CLOSE, "alpha": {"axis": "A"}},
+        {"type": "zscore", "input": _CLOSE, "window": _AX},
+        {"type": "zscore", "input": _CLOSE, "alpha": {"axis": "A"}, "mean_type": "ema"},
+        {"type": "percentile", "input": _CLOSE, "window": _AX},
+        {"type": "rolling_agg", "input": _CLOSE, "window": _AX, "agg": "mean"},
+        {"type": "drawdown", "window": _AX},
+        {"type": "runup", "window": _AX},
+        {"type": "bars_since_extremum", "extremum": "max", "window": _AX},
+        {"type": "change", "input": _CLOSE, "periods": _AX},
+        {"type": "shift", "input": _CLOSE, "periods": _AX},
+        {
+            "type": "rolling_corr",
+            "left": _CLOSE,
+            "right": {"type": "field", "column": "open"},
+            "window": _AX,
+        },
+        {"type": "constant", "value": {"axis": "A"}},
+    ],
+)
+def test_axis_ref_parses_in_every_sweepable_series_param(left):
+    axes = {"N": [3, 5]} if "N" in json.dumps(left) else {"A": [0.25, 0.5]}
+    t = Thesis.model_validate(
+        _axes_doc({"type": "threshold", "left": left, "op": ">", "right": _CLOSE}, axes)
+    )
+    assert Thesis.model_validate_json(t.model_dump_json()) == t
+    assert declared_grid_size(t.entry, t.params.horizon, t.axes) == 2
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        {
+            "type": "rolling",
+            "window": _AX,
+            "agg": "any",
+            "condition": {"type": "threshold", "left": _CLOSE, "op": ">", "right": _CLOSE},
+        },
+        {
+            "type": "first_true",
+            "cooldown": _AX,
+            "condition": {"type": "threshold", "left": _CLOSE, "op": ">", "right": _CLOSE},
+        },
+        {
+            "type": "lag",
+            "periods": _AX,
+            "condition": {"type": "threshold", "left": _CLOSE, "op": ">", "right": _CLOSE},
+        },
+    ],
+)
+def test_axis_ref_parses_in_every_sweepable_condition_param(entry):
+    t = Thesis.model_validate(_axes_doc(entry, {"N": [1, 2]}))
+    from seikan.dsl.traverse import _iter_sweep_axis_names
+
+    assert _iter_sweep_axis_names(t.entry, t.axes) == ["N"]
+
+
+def test_horizon_refuses_axis_ref():
+    with pytest.raises(ValidationError):
+        Thesis.model_validate(_axes_doc(_beta_entry(), {"N": [20, 60]}, horizon=_AX))
+
+
+def test_axis_ref_constant_refuses_name():
+    with pytest.raises(
+        ValidationError, match="scalar or axis-referencing constant takes no 'name'"
+    ):
+        Thesis.model_validate(
+            _axes_doc(
+                {
+                    "type": "threshold",
+                    "left": _CLOSE,
+                    "op": ">",
+                    "right": {"type": "constant", "value": {"axis": "N"}, "name": "N"},
+                },
+                {"N": [1.0, 2.0]},
+            )
+        )
+
+
+def test_axes_empty_dict_refused_and_null_equals_omitted():
+    with pytest.raises(ValidationError, match="axes, when given, must be non-empty"):
+        Thesis.model_validate(_axes_doc(_beta_entry(20), {}))
+    a = Thesis.model_validate(_axes_doc(_beta_entry(20), None))
+    b = Thesis.model_validate({**_axes_doc(_beta_entry(20), None), "axes": None})
+    assert a == b and a.axes is None
+
+
+def test_axes_unreferenced_axis_refused():
+    with pytest.raises(
+        ValidationError,
+        match=r"shared axis\(es\) \['M'\] are declared under 'axes' but never referenced",
+    ):
+        Thesis.model_validate(_axes_doc(_beta_entry(), {"N": [20, 60], "M": [1, 2]}))
+
+
+def test_axis_ref_to_undeclared_axis_refused():
+    with pytest.raises(
+        ValidationError,
+        match=r"rolling_corr.window references shared axis 'N', .*\(declared: \[\]\)",
+    ):
+        Thesis.model_validate(_axes_doc(_beta_entry(), None))
+    with pytest.raises(
+        ValidationError,
+        match=r"references shared axis 'N', .*\(declared: \['M'\]\)",
+    ):
+        Thesis.model_validate(
+            _axes_doc(
+                {
+                    "type": "threshold",
+                    "left": {"type": "ema", "input": _CLOSE, "window": _AX},
+                    "op": ">",
+                    "right": {"type": "ema", "input": _CLOSE, "window": {"axis": "M"}},
+                },
+                {"M": [3, 4]},
+            )
+        )
+
+
+@pytest.mark.parametrize("name", ["", " N", "N "])
+def test_axes_key_hygiene(name):
+    with pytest.raises(ValidationError):
+        Thesis.model_validate(_axes_doc(_beta_entry({"axis": name}), {name: [20, 60]}))
+
+
+@pytest.mark.parametrize("name", ["target", "horizon"])
+def test_axis_name_reserved_refused(name):
+    with pytest.raises(ValidationError, match=f"sweep axis name '{name}' is reserved"):
+        Thesis.model_validate(_axes_doc(_beta_entry({"axis": name}), {name: [20, 60]}))
+
+
+@pytest.mark.parametrize("name", ["ret", "vol_14", "is_open"])
+def test_axis_name_collides_with_trade_or_feature_column(name):
+    with pytest.raises(ValidationError, match="collide with reserved trade/feature columns"):
+        Thesis.model_validate(_axes_doc(_beta_entry({"axis": name}), {name: [20, 60]}))
+
+
+def test_axis_name_collides_with_auto_named_axis():
+    entry = {
+        "type": "and",
+        "conditions": [
+            {
+                "type": "threshold",
+                "left": {"type": "ema", "input": _CLOSE, "window": [3, 4]},
+                "op": ">",
+                "right": _CLOSE,
+            },
+            {
+                "type": "threshold",
+                "left": {"type": "ema", "input": _CLOSE, "window": {"axis": "ema_window"}},
+                "op": ">",
+                "right": _CLOSE,
+            },
+        ],
+    }
+    with pytest.raises(ValidationError, match="duplicate sweep axis name 'ema_window'"):
+        Thesis.model_validate(_axes_doc(entry, {"ema_window": [5, 6]}))
+
+
+def test_axis_name_collides_with_swept_constant_name():
+    entry = {
+        "type": "and",
+        "conditions": [
+            {
+                "type": "threshold",
+                "left": _CLOSE,
+                "op": ">",
+                "right": {"type": "constant", "value": [1.0, 2.0], "name": "N"},
+            },
+            {
+                "type": "threshold",
+                "left": {"type": "ema", "input": _CLOSE, "window": _AX},
+                "op": ">",
+                "right": _CLOSE,
+            },
+        ],
+    }
+    with pytest.raises(ValidationError, match="duplicate sweep axis name 'N'"):
+        Thesis.model_validate(_axes_doc(entry, {"N": [5, 6]}))
+
+
+def test_axis_name_equal_to_feed_name_is_legal():
+    doc = _axes_doc(
+        {
+            "type": "threshold",
+            "left": {"type": "ema", "input": {"type": "external", "name": "N"}, "window": _AX},
+            "op": ">",
+            "right": _CLOSE,
+        },
+        {"N": [3, 5]},
+    )
+    doc["data"]["external"] = {"N": {}}
+    t = Thesis.model_validate(doc)
+    assert t.data_keys() == ["target", "N"]
+
+
+def test_axis_type_fit_float_axis_into_int_window_refused():
+    with pytest.raises(
+        ValidationError, match=r"shared axis 'N' value 0\.5 does not fit rolling_corr\.window"
+    ):
+        Thesis.model_validate(_axes_doc(_beta_entry(), {"N": [0.5, 1.5]}))
+
+
+def test_axis_type_fit_ge3_window_refuses_value_2():
+    with pytest.raises(
+        ValidationError,
+        match=r"value 2 does not fit rolling_corr\.window: .*greater than or equal to 3",
+    ):
+        Thesis.model_validate(_axes_doc(_beta_entry(), {"N": [2, 20]}))
+
+
+def test_axis_int_list_fits_constant_and_window():
+    entry = {
+        "type": "and",
+        "conditions": [
+            {
+                "type": "threshold",
+                "left": {"type": "ema", "input": _CLOSE, "window": _AX},
+                "op": ">",
+                "right": _CLOSE,
+            },
+            {
+                "type": "threshold",
+                "left": _CLOSE,
+                "op": ">",
+                "right": {"type": "constant", "value": _AX},
+            },
+        ],
+    }
+    t = Thesis.model_validate(_axes_doc(entry, {"N": [20, 60]}))
+    from seikan.compiler.vectorize import iter_param_assignments
+
+    combos = list(iter_param_assignments(t.entry, t.axes))
+    assert [c for c, _ in combos] == [{"N": 20}, {"N": 60}]
+    _, tree = combos[0]
+    assert tree.conditions[0].left.window == 20 and tree.conditions[1].right.value == 20.0
+
+
+def test_axis_ref_rolling_window_min_count_checked_per_axis_value():
+    entry = {
+        "type": "rolling",
+        "window": _AX,
+        "agg": "count",
+        "min_count": 5,
+        "condition": {"type": "threshold", "left": _CLOSE, "op": ">", "right": _CLOSE},
+    }
+    with pytest.raises(
+        ValidationError,
+        match=r"value 3 does not fit rolling\.window: .*'min_count' \(5\) exceeds the window \(3\)",
+    ):
+        Thesis.model_validate(_axes_doc(entry, {"N": [3, 10]}))
+    Thesis.model_validate(_axes_doc(entry, {"N": [5, 10]}))
+
+
+def test_axis_ref_in_features_refused():
+    doc = _axes_doc(_beta_entry(), {"N": [20, 60]})
+    doc["params"] = {"features": {"f": {"type": "ema", "input": _CLOSE, "window": _AX}}}
+    with pytest.raises(
+        ValidationError,
+        match=r"feature 'f' must use scalar params \(no list sweeps and no \{\"axis\": …\}",
+    ):
+        Thesis.model_validate(doc)
+
+
+def test_axis_of_length_one_is_legal():
+    t = Thesis.model_validate(_axes_doc(_beta_entry(), {"N": [20]}))
+    assert declared_grid_size(t.entry, t.params.horizon, t.axes) == 1
+    from seikan.compiler.vectorize import collect_sweeps
+
+    assert collect_sweeps(t.entry, t.axes) == [("N", [20])]
+
+
+def test_declared_grid_counts_shared_axis_once():
+    t = Thesis.model_validate(_axes_doc(_beta_entry(), {"N": [20, 60]}, horizon=[1, 2, 3, 4]))
+    assert declared_grid_size(t.entry, t.params.horizon, t.axes) == 8
+    with pytest.raises(ValidationError, match="declared hypothesis grid is 68"):
+        Thesis.model_validate(
+            _axes_doc(_beta_entry(), {"N": list(range(3, 20))}, horizon=[1, 2, 3, 4])
+        )
+
+
+def test_json_schema_includes_axis_ref_and_axes():
+    schema = Thesis.model_json_schema()
+    assert "AxisRef" in schema["$defs"]
+    assert "axes" in schema["properties"]

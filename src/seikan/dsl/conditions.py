@@ -10,7 +10,7 @@ from pydantic import Field as PField
 from pydantic import model_validator
 
 from seikan.dsl import nodes
-from seikan.dsl.nodes import NonNegIntParam, PosInt, PosIntParam, Series, _Strict
+from seikan.dsl.nodes import AxisRef, NonNegIntParam, PosInt, PosIntParam, Series, _Strict
 
 
 class ThresholdCondition(_Strict):
@@ -57,6 +57,10 @@ class RollingCondition(_Strict):
                 raise ValueError(
                     "rolling agg='count' requires 'min_count' (the K of 'at least K of N')"
                 )
+            if isinstance(self.window, AxisRef):
+                # Checked per axis value by the Thesis-level re-validation
+                # (``Thesis._check_shared_axes``), which re-runs this validator with each value.
+                return self
             floor = min(self.window) if isinstance(self.window, list) else self.window
             if self.min_count > floor:
                 raise ValueError(

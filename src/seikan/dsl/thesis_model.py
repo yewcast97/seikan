@@ -21,10 +21,13 @@ from seikan.constants import (
 
 if TYPE_CHECKING:
     import pandas as pd
+from pydantic import ValidationError
+
 from seikan.dsl.conditions import Condition
-from seikan.dsl.nodes import PosIntParam, Series, _Strict
+from seikan.dsl.nodes import AxisValues, HorizonParam, Series, _Strict
 from seikan.dsl.traverse import (
     _iter_sweep_axis_names,
+    _iter_sweep_sites,
     _series_depth,
     _series_external_names,
     _series_has_sweep,
@@ -274,7 +277,9 @@ class BacktestParams(_Strict):
     # at a bar censors the WHOLE bar's benchmark leg, so every member's firing there exits as
     # ``no_benchmark`` — a hole in one member never silently reshapes the others' benchmark.
     direction: Literal["longonly", "shortonly"] = "longonly"
-    horizon: PosIntParam = PField(default=1)
+    # A scalar or a list — never a shared-axis reference: the horizon is the measurement window,
+    # its own result axis by construction, and no entry param shares it.
+    horizon: HorizonParam = PField(default=1)
     features: dict[str, Series] | None = PField(default=None)
     benchmark: Literal["market", "cross_mean"] | None = None
     # Non-optional with a default factory, so the field has ONE canonical spelling per meaning:
@@ -288,10 +293,12 @@ class BacktestParams(_Strict):
         for name, node in (self.features or {}).items():
             if _series_has_sweep(node):
                 # Inside an embedded event condition included — a swept rolling.window /
-                # first_true.cooldown / lag.periods there is a sweep like any other.
+                # first_true.cooldown / lag.periods there is a sweep like any other, and so is
+                # a shared-axis reference.
                 raise ValueError(
-                    f"feature {name!r} must use scalar params (no list sweeps); features are "
-                    f"grouping variables for conditional analysis, not swept result axes"
+                    f"feature {name!r} must use scalar params (no list sweeps and no "
+                    f'{{"axis": …}} references); features are grouping variables for '
+                    f"conditional analysis, not swept result axes"
                 )
         return self
 
@@ -341,6 +348,11 @@ class Thesis(_Strict):
     # legal value below 2 targets (a basket of one is degenerate).
     target_mode: Literal["conjunction", "basket"] = "conjunction"
     data: DataSpec
+    # SHARED sweep axes: ``{"N": [20, 60]}`` declares one hypothesis axis that any number of
+    # entry params read via ``{"axis": "N"}`` (see ``dsl.nodes.AxisRef``) — recorded once in
+    # ``summary.params`` / ``cells[].params`` / the trades CSV, counted once toward the cap.
+    # Omit the field when nothing is shared (an empty dict refuses, like ``params.features``).
+    axes: dict[str, AxisValues] | None = None
     entry: Condition
     params: BacktestParams = PField(default_factory=BacktestParams)
 
@@ -473,6 +485,55 @@ class Thesis(_Strict):
         return self
 
     @model_validator(mode="after")
+    def _check_shared_axes(self) -> Thesis:
+        # Defined BEFORE ``_check_declared_grid`` / ``_check_sweep_axis_names``: after-validators
+        # run in definition order, and both of those fold the shared axes this one certifies.
+        axes = self.axes
+        if axes is not None and not axes:
+            raise ValueError(
+                "axes, when given, must be non-empty — omit the field entirely when no "
+                "parameter is shared"
+            )
+        # ``Iterable[object]`` like ``DataSpec._check_key_namespace``: the isinstance is what
+        # establishes these keys are strings, so it stays a live check.
+        axis_names: Iterable[object] = axes or {}
+        for name in axis_names:
+            if not isinstance(name, str) or not name or name != name.strip():
+                raise ValueError(
+                    f"shared axis name {name!r} must be a non-empty string with no surrounding "
+                    "whitespace — it labels a result column"
+                )
+        # Every reference must name a declared axis (the scan refuses otherwise, naming the
+        # site and the declared set).
+        sites = _iter_sweep_sites(self.entry, axes)
+        referenced = {site.level for site in sites if site.shared}
+        unreferenced = sorted((axes or {}).keys() - referenced)
+        if unreferenced:
+            raise ValueError(
+                f"shared axis(es) {unreferenced} are declared under 'axes' but never referenced "
+                f'by the entry condition ({{"axis": "<name>"}}) — an unreferenced axis moves '
+                "the dsl_hash without changing the measurement; remove it or reference it"
+            )
+        # Type-fit by SHALLOW re-validation, per shared site, per axis value: re-runs the field
+        # constraint (PosInt / Ge2 / Ge3 / NonNeg / FiniteFloat / UnitFloat) AND the node's own
+        # model validators (so ``rolling``'s min_count floor is checked against every value)
+        # while reusing the child instances by identity. Cost O(ref sites × axis length),
+        # bounded by the 64-cell cap.
+        for site in sites:
+            if not site.shared or site.values is None:
+                continue
+            for value in site.values:
+                try:
+                    type(site.node).model_validate({**dict(site.node), site.param: value})
+                except ValidationError as exc:
+                    first = exc.errors()[0]
+                    raise ValueError(
+                        f"shared axis {site.level!r} value {value!r} does not fit "
+                        f"{site.kind}.{site.param}: {first['msg']}"
+                    ) from None
+        return self
+
+    @model_validator(mode="after")
     def _check_declared_grid(self) -> Thesis:
         # The gate's search cap is structural: a declared grid above it fails the search cap in
         # EVERY cell under any legal thresholds (`settings` admits no looser ceiling), so no
@@ -481,7 +542,7 @@ class Thesis(_Strict):
         # prices the entire grid first (rotation nulls and per-cell panels over every combo ×
         # horizon × target) only to hand the gate a summary whose search cap fails every cell
         # in it. The engine owes an impossible exam no report.
-        size = declared_grid_size(self.entry, self.params.horizon)
+        size = declared_grid_size(self.entry, self.params.horizon, self.axes)
         if size > MAX_DECLARED_GRID:
             raise ValueError(
                 f"declared hypothesis grid is {size} (swept entry params × horizons) but the "
@@ -497,18 +558,21 @@ class Thesis(_Strict):
         # only AFTER a data load, surfacing as exit 4 (internal). Reproduce the SAME refusals here,
         # at parse time (exit 3), off the exact axis names the engine will assign. The runtime
         # checks stay as library-boundary backstops for a model_construct-built thesis.
-        names = _iter_sweep_axis_names(self.entry)
+        # Shared axes are in the folded list under their declared names (once each), so the
+        # reserved / duplicate / column scans below cover them with no new logic.
+        names = _iter_sweep_axis_names(self.entry, self.axes)
         seen: set[str] = set()
         for lvl in names:
             if lvl in RESERVED_SWEEP_LEVELS:
                 raise ValueError(
                     f"sweep axis name {lvl!r} is reserved (the engine names the target and horizon "
-                    f"axes itself); rename the swept constant's 'name'"
+                    f"axes itself); rename the swept constant's 'name' or the shared axis"
                 )
             if lvl in seen:
                 raise ValueError(
-                    f"duplicate sweep axis name {lvl!r}; each swept constant 'name' must be unique "
-                    f"and must not collide with a transform axis (e.g. 'ema_window')"
+                    f"duplicate sweep axis name {lvl!r}; each swept constant 'name' and shared "
+                    f"axis must be unique and must not collide with a transform axis (e.g. "
+                    f"'ema_window')"
                 )
             seen.add(lvl)
         features = (
@@ -521,7 +585,7 @@ class Thesis(_Strict):
             raise ValueError(
                 f"sweep axis name(s) {collisions} collide with reserved trade/feature columns "
                 f"(the trades frame's own fields plus the entry-time feature snapshots); rename "
-                f"the swept constant's 'name'"
+                f"the swept constant's 'name' or the shared axis"
             )
         return self
 

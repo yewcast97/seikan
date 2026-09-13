@@ -45,3 +45,36 @@ def test_package_surface_runs_a_thesis_end_to_end(tmp_path):
         "load_market_data",
         "resolve_data_files",
     }
+
+
+def test_list_entries_expands_shared_axes(tmp_path):
+    closes = (100 + np.random.RandomState(1).randn(200).cumsum()).tolist()
+    px = bars(tmp_path / "px.csv", closes)
+    doc = {
+        "name": "shared",
+        "data": {"targets": ["px"]},
+        "axes": {"N": [20, 60]},
+        "entry": {
+            "type": "threshold",
+            "left": {"type": "ema", "window": {"axis": "N"}, "input": {"type": "field"}},
+            "op": ">",
+            "right": {
+                "type": "rolling_agg",
+                "window": {"axis": "N"},
+                "agg": "mean",
+                "input": {"type": "field"},
+            },
+        },
+        "params": {"horizon": 5},
+    }
+    thesis = seikan.Thesis.model_validate(doc)
+    md = seikan.load_market_data(thesis.data, seikan.resolve_data_files(thesis, {"px": str(px)}))
+    listing = seikan.list_entries(thesis, md)
+    assert list(listing.entry_flags.columns) == ["entry[N=20]", "entry[N=60]"]
+    assert {row["N"] for row in listing.entries} == {20, 60}
+    assert list(listing.root_series.columns) == [
+        "ema(close,20)",
+        "rolling_agg(close,20,mean)",
+        "ema(close,60)",
+        "rolling_agg(close,60,mean)",
+    ]
