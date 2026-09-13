@@ -663,3 +663,89 @@ def test_repeat_compile_records_barely_sufficient_warning_once(tmp_path):
     compile_thesis(thesis, md)
     warnings = [w for w in md.report["join"]["warnings"] if w["code"] == "barely_sufficient"]
     assert len(warnings) == 1
+
+
+def test_render_series_event_nodes_and_render_condition_rule_table():
+    from seikan.dsl.schema import (
+        AndCondition,
+        BarsSinceEvent,
+        EventAgg,
+        EventValue,
+        FirstTrueCondition,
+        LagCondition,
+        Mask,
+        NotCondition,
+        OrCondition,
+        RollingCondition,
+        ThresholdCondition,
+        render_condition,
+    )
+
+    close = Field()
+    brk = FirstTrueCondition(
+        condition=ThresholdCondition(
+            left=close,
+            op=">",
+            right=Shift(input=RollingAgg(input=Field(column="high"), window=5, agg="max")),
+        )
+    )
+    assert render_condition(brk) == "first_true((close>shift(rolling_agg(high,5,max),1)))"
+    assert render_condition(FirstTrueCondition(condition=brk.condition, cooldown=3)) == (
+        "first_true((close>shift(rolling_agg(high,5,max),1)),3)"
+    )
+    a = ThresholdCondition(left=close, op=">", right=Constant(value=1.0))
+    b = ThresholdCondition(left=External(name="z"), op="<=", right=Constant(value=-0.5))
+    assert render_condition(AndCondition(conditions=[a, b])) == "and((close>1),(z<=-0.5))"
+    assert render_condition(OrCondition(conditions=[a, b])) == "or((close>1),(z<=-0.5))"
+    assert render_condition(NotCondition(condition=a)) == "not((close>1))"
+    assert render_condition(RollingCondition(window=5, agg="any", condition=a)) == (
+        "rolling(any,5,(close>1))"
+    )
+    assert (
+        render_condition(RollingCondition(window=5, agg="count", min_count=3, condition=a))
+        == "rolling(count,5,3,(close>1))"
+    )
+    assert render_condition(LagCondition(condition=a, periods=2)) == "lag((close>1),2)"
+    assert render_series(Mask(condition=a)) == "mask((close>1))"
+    assert render_series(BarsSinceEvent(event=brk)) == (
+        "bars_since_event(first_true((close>shift(rolling_agg(high,5,max),1))))"
+    )
+    assert render_series(EventValue(event=a, input=Field(column="high"))) == (
+        "event_value((close>1),high)"
+    )
+    assert render_series(EventAgg(event=a, input=Field(column="high"), agg="max")) == (
+        "event_agg((close>1),high,max)"
+    )
+
+
+def test_root_series_includes_embedded_condition_operands_in_order(tmp_path):
+    # Column order: the outer operand first, then its embedded conditions' operands, pre-order —
+    # each embedded threshold operand is a decision root the listing explains.
+    px = _bars(tmp_path / "px.csv", [100, 101, 102, 103, 104, 105, 106, 107])
+    lvl = {
+        "type": "shift",
+        "periods": 1,
+        "input": {
+            "type": "rolling_agg",
+            "input": {"type": "field", "column": "high"},
+            "window": 3,
+            "agg": "max",
+        },
+    }
+    brk = {
+        "type": "first_true",
+        "condition": {"type": "threshold", "left": {"type": "field"}, "op": ">", "right": lvl},
+    }
+    entry = {
+        "type": "threshold",
+        "left": {"type": "event_value", "event": brk, "input": {"type": "field", "column": "low"}},
+        "op": "<",
+        "right": {"type": "field"},
+    }
+    thesis = _thesis(entry)
+    rep = list_entries(thesis, load(thesis, {"target": px}))
+    assert list(rep.root_series.columns) == [
+        "event_value(first_true((close>shift(rolling_agg(high,3,max),1))),low)",
+        "close",
+        "shift(rolling_agg(high,3,max),1)",
+    ]

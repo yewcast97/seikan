@@ -391,3 +391,102 @@ def drawdown(arr: np.ndarray, window: int | None) -> np.ndarray:
         if np.isfinite(r):
             out[i] = r
     return out
+
+
+# ---- the event-anchor family -------------------------------------------------------------
+#
+# Independently authored against the spec in ``dsl.nodes``: the event is the tradable signal;
+# ``s(t)`` is the latest event bar <= t (current bar included, latest wins); before the first event
+# the anchor is absent while KNOWN; after a post-warmup hole it is absent and UNKNOWN until the
+# next defined event.
+
+
+def event_anchor(
+    sig: np.ndarray, init: np.ndarray, defined: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    n = sig.shape[0]
+    s_idx = np.full(n, -1, dtype=np.int64)
+    known = np.ones(n, dtype=np.bool_)
+    s = -1
+    k = True
+    for t in range(n):
+        if not init[t]:
+            s, k = -1, True
+        elif not defined[t]:
+            k = False
+        elif sig[t]:
+            s, k = t, True
+        s_idx[t] = s if k else -1
+        known[t] = k
+    return s_idx, known
+
+
+def bars_since_event(s_idx: np.ndarray) -> np.ndarray:
+    out = np.full(s_idx.shape[0], np.nan)
+    for t in range(s_idx.shape[0]):
+        if s_idx[t] >= 0:
+            out[t] = float(t - s_idx[t])
+    return out
+
+
+def event_value(x: np.ndarray, s_idx: np.ndarray) -> np.ndarray:
+    out = np.full(s_idx.shape[0], np.nan)
+    for t in range(s_idx.shape[0]):
+        s = s_idx[t]
+        if s >= 0 and math.isfinite(x[s]):
+            out[t] = x[s]
+    return out
+
+
+def event_agg(
+    sig: np.ndarray, init: np.ndarray, defined: np.ndarray, x: np.ndarray, agg: str
+) -> np.ndarray:
+    """``agg(x[s .. t])`` per bar, recomputed from scratch over the window each time (no running
+    state — the slow, obviously-correct form); a NaN anywhere in the window → NaN."""
+    s_idx, _known = event_anchor(sig, init, defined)
+    n = sig.shape[0]
+    out = np.full(n, np.nan)
+    for t in range(n):
+        s = s_idx[t]
+        if s < 0:
+            continue
+        win = x[s : t + 1]
+        if not np.all(np.isfinite(win)):
+            continue
+        if agg == "sum":
+            v = float(np.sum(win))
+        elif agg == "max":
+            v = float(np.max(win))
+        elif agg == "min":
+            v = float(np.min(win))
+        elif agg == "mean":
+            v = float(np.sum(win)) / len(win)
+        else:
+            raise ValueError(agg)
+        if math.isfinite(v):
+            out[t] = v
+    return out
+
+
+def mask_values(value: np.ndarray, init: np.ndarray, defined: np.ndarray) -> np.ndarray:
+    out = np.full(value.shape[0], np.nan)
+    for t in range(value.shape[0]):
+        if init[t] and defined[t]:
+            out[t] = 1.0 if value[t] else 0.0
+    return out
+
+
+def lag_channels(
+    value: np.ndarray, init: np.ndarray, defined: np.ndarray, periods: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """All three channels shifted back ``periods`` bars; leading bars value False, init False,
+    defined True."""
+    n = value.shape[0]
+    v = np.zeros(n, dtype=np.bool_)
+    i = np.zeros(n, dtype=np.bool_)
+    d = np.ones(n, dtype=np.bool_)
+    for t in range(periods, n):
+        v[t] = value[t - periods]
+        i[t] = init[t - periods]
+        d[t] = defined[t - periods]
+    return v, i, d

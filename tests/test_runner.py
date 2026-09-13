@@ -4253,3 +4253,192 @@ def test_pbo_scores_a_level_heavy_diff_outcome_end_to_end(tmp_path):
     pbo = res.summary["pbo"]
     assert pbo["reason"] is None
     assert 0.0 <= pbo["pbo"] <= 1.0 and np.isfinite(pbo["lambda_mean"])
+
+
+# ---- the event algebra end to end --------------------------------------------------------
+
+
+def _feed_thesis(tmp_path, feed_values, entry, *, horizon=1, **params) -> tuple[Thesis, dict]:
+    """A flat-price target plus one shared feed ``z`` holding ``feed_values`` (NaN allowed), and
+    a caller-supplied entry reading them; returns ``(thesis, files)``."""
+    n = len(feed_values)
+    idx = pd.date_range("2015-01-01", periods=n, freq="1D")
+    closes = np.full(n, 100.0)
+    df = pd.DataFrame(
+        {"open": closes, "high": closes + 1, "low": closes - 1, "close": closes, "volume": 1.0},
+        index=idx,
+    )
+    df.index.name = "datetime"
+    df.to_csv(tmp_path / "px.csv")
+    feed = pd.DataFrame({"z": pd.Series(feed_values, index=idx, dtype=float)})
+    feed.index.name = "datetime"
+    feed.to_csv(tmp_path / "z.csv")
+    thesis = Thesis.model_validate(
+        {
+            "name": "t",
+            "data": {"targets": ["target"], "external": {"z": {}}},
+            "entry": entry,
+            "params": {"horizon": horizon, **params},
+        }
+    )
+    return thesis, {"target": tmp_path / "px.csv", "z": tmp_path / "z.csv"}
+
+
+_Z = {"type": "external", "name": "z"}
+
+
+def _z_op(op, v):
+    return {"type": "threshold", "left": _Z, "op": op, "right": {"type": "constant", "value": v}}
+
+
+def test_breakout_retest_thesis_fires_at_the_planted_bar(tmp_path):
+    # Bars 0-5 flat at 100; bar 6 breaks out to 110 over the prior 5-bar high (100); bars 7-8 run
+    # with lows above 100; bar 9 dips to a low of 99.5 and closes at 101 — the RETEST of the
+    # RECORDED level 100, not of the moving 5-bar high (113 by then); bars 10-12 flat.
+    rows = [[100, 100, 100, 100]] * 6 + [
+        [110, 110, 110, 110],
+        [112, 112, 111, 112],
+        [113, 113, 112, 113],
+        [112, 112, 99.5, 101],
+        [101, 101, 101, 101],
+        [101, 101, 101, 101],
+        [101, 101, 101, 101],
+    ]
+    fld = lambda c: {"type": "field", "column": c}  # noqa: E731
+    lvl = {
+        "type": "shift",
+        "periods": 1,
+        "input": {"type": "rolling_agg", "input": fld("high"), "window": 5, "agg": "max"},
+    }
+    S = {
+        "type": "first_true",
+        "condition": {"type": "threshold", "left": fld("close"), "op": ">", "right": lvl},
+    }
+    L = {"type": "event_value", "event": S, "input": lvl}
+    entry = {
+        "type": "first_true",
+        "condition": {
+            "type": "and",
+            "conditions": [
+                {
+                    "type": "threshold",
+                    "left": {"type": "bars_since_event", "event": S},
+                    "op": ">=",
+                    "right": {"type": "constant", "value": 1.0},
+                },
+                {"type": "threshold", "left": fld("low"), "op": "<=", "right": L},
+                {"type": "threshold", "left": fld("close"), "op": ">=", "right": L},
+            ],
+        },
+    }
+    res = _ohlc_run(tmp_path / "px.csv", rows, entry, horizon=1)
+    closed = res.trades[~res.trades["is_open"]]
+    assert len(res.trades) == 1 and len(closed) == 1
+    assert int(closed["entry_bar"].iloc[0]) == 9
+    cell = res.summary["cells"][0]
+    assert cell["signal_coverage"]["target"]["n_undefined"] == 0
+    assert res.summary["sources"]["target"]["n_missing"] == 0
+
+
+def test_sources_panel_unchanged_for_event_nodes(tmp_path):
+    # An event node reads its input and its event condition's operands — no source of its own —
+    # so the raw-leaf panel lists exactly the leaves underneath, embedded condition included.
+    entry = {
+        "type": "threshold",
+        "left": {
+            "type": "event_value",
+            "event": _z_op(">", 1.0),
+            "input": {"type": "field", "column": "close"},
+        },
+        "op": "<=",
+        "right": {"type": "field", "column": "close"},
+    }
+    thesis, files = _feed_thesis(tmp_path, [0.0, 2.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0], entry)
+    s = run_backtest(thesis, load(thesis, files)).summary
+    assert set(s["sources"]["target"]["by_source"]) == {"field:close", "external:z"}
+
+
+def test_signal_coverage_counts_event_hole_between_events(tmp_path):
+    # z holes at bar 4 (post-warmup): the anchor is unknowable from bar 4 until the next defined
+    # event at bar 7, so bars 4-6 are undefined decision bars — ledgered, never silently False.
+    z = [0.0, 2.0, 0.0, 0.0, np.nan, 0.0, 0.0, 2.0, 0.0, 0.0]
+    entry = {
+        "type": "threshold",
+        "left": {"type": "bars_since_event", "event": _z_op(">", 1.0)},
+        "op": "<=",
+        "right": {"type": "constant", "value": 1.0},
+    }
+    thesis, files = _feed_thesis(tmp_path, z, entry)
+    res = run_backtest(thesis, load(thesis, files))
+    cell = res.summary["cells"][0]
+    assert cell["signal_coverage"]["target"]["n_undefined"] == 3
+    assert res.summary["sources"]["target"]["by_source"]["external:z"]["n_missing"] == 1
+    fired = sorted(int(b) for b in res.trades["entry_bar"])
+    assert fired == [1, 2, 7, 8]
+
+
+def test_event_node_sweep_inside_embedded_condition_is_a_grid_axis(tmp_path):
+    z = [0.0, 2.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0]
+    entry = {
+        "type": "threshold",
+        "left": {
+            "type": "bars_since_event",
+            "event": {"type": "first_true", "cooldown": [0, 5], "condition": _z_op(">", 1.0)},
+        },
+        "op": "==",
+        "right": {"type": "constant", "value": 0.0},
+    }
+    thesis, files = _feed_thesis(tmp_path, z, entry, horizon=[1, 2])
+    s = run_backtest(thesis, load(thesis, files)).summary
+    assert s["params"] == ["first_true_cooldown", "horizon"]
+    assert s["n_hypotheses_attempted"] == 4 == len(s["cells"])
+    by_cd = {
+        c["params"]["first_true_cooldown"]: c["outcome_coverage"]["target"]["n_attempted"]
+        for c in s["cells"]
+        if c["params"]["horizon"] == 1
+    }
+    # first_true(z > 1) fires at bars 1, 5 and 8 (bar 0 is an initialized False, so bar 1 is a
+    # real false→true edge); a cooldown of 5 after the fire at 1 suppresses bar 5 and leaves 8.
+    assert by_cd == {0: 3, 5: 2}
+
+
+def test_first_recovery_after_a_fresh_excursion_fires_on_rearm_only(tmp_path):
+    # The review's crossing-vs-re-arm case: z = [0, −2.5, −0.5, −1.2, −0.4, −2.6, −0.3]. A bare
+    # first_true(z > −1) fires at 2, 4 and 6 (every re-crossing); the thesis "first recovery
+    # above −1 after a FRESH excursion below −2" must fire at 2 and 6 only. The event algebra
+    # spells it: the arm S = first_true(z < −2); "z > −1 has not held on any bar since the arm,
+    # before this one" = shift(event_agg(S, mask(z > −1), max), 1) < 0.5.
+    z = [0.0, -2.5, -0.5, -1.2, -0.4, -2.6, -0.3, -0.2]
+    arm = {"type": "first_true", "condition": _z_op("<", -2.0)}
+    above = _z_op(">", -1.0)
+    entry = {
+        "type": "and",
+        "conditions": [
+            above,
+            {
+                "type": "threshold",
+                "left": {
+                    "type": "shift",
+                    "periods": 1,
+                    "input": {
+                        "type": "event_agg",
+                        "event": arm,
+                        "input": {"type": "mask", "condition": above},
+                        "agg": "max",
+                    },
+                },
+                "op": "<",
+                "right": {"type": "constant", "value": 0.5},
+            },
+        ],
+    }
+    thesis, files = _feed_thesis(tmp_path, z, entry)
+    res = run_backtest(thesis, load(thesis, files))
+    assert sorted(int(b) for b in res.trades["entry_bar"]) == [2, 6]
+    assert res.summary["cells"][0]["signal_coverage"]["target"]["n_undefined"] == 0
+    naive, files = _feed_thesis(tmp_path, z, {"type": "first_true", "condition": above})
+    assert sorted(int(b) for b in run_backtest(naive, load(naive, files)).trades["entry_bar"]) == [
+        2,
+        4,
+        6,
+    ]

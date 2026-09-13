@@ -18,6 +18,17 @@ of substituting a nearby question; no stamp moves and every emitted number is by
   (no stored theses or reports exist); from here on a new `None`-defaulted optional field is
   hash-safe like a new node type — it appears in the payload only when set — while a non-`None`
   default still moves every hash.
+- ADDED the event algebra: Series nodes `mask(condition)`, `bars_since_event(event)`,
+  `event_value(event, input)` and `event_agg(event, input, agg: sum|max|min|mean)`, and the
+  Condition node `lag(condition, periods)` (sweeps as `lag_periods`). An event is a condition's
+  tradable signal; `s(t)` is the latest event bar ≤ t (current bar included, latest wins); before
+  the first event a node is warmup, after a post-warmup hole in the event condition it reads NaN
+  while initialized (→ `signal_coverage`). `mask` is depth-transparent; the three event nodes
+  count one level over their input; an embedded condition adds no depth and its threshold operands
+  are depth-checked as roots of their own and listed by `--root-series-out`. Sweeps inside an
+  embedded condition register once, in engine order (the condition before the node's input).
+  `render_condition` joins `render_series` on the `dsl.schema` facade; `iter_condition_series`
+  now yields embedded-condition operands beside the outer ones.
 
 ## 3.0.0 — report schema 5, statistics 4, policy 3
 

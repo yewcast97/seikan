@@ -31,6 +31,7 @@ from seikan.dsl.traverse import (
     declared_grid_size,
     iter_condition_series,
     iter_external_names,
+    iter_series_depth_roots,
     series_cross_nodes,
 )
 
@@ -286,6 +287,8 @@ class BacktestParams(_Strict):
     def _check_features_scalar(self) -> BacktestParams:
         for name, node in (self.features or {}).items():
             if _series_has_sweep(node):
+                # Inside an embedded event condition included — a swept rolling.window /
+                # first_true.cooldown / lag.periods there is a sweep like any other.
                 raise ValueError(
                     f"feature {name!r} must use scalar params (no list sweeps); features are "
                     f"grouping variables for conditional analysis, not swept result axes"
@@ -522,23 +525,30 @@ class Thesis(_Strict):
     @model_validator(mode="after")
     def _check_series_nesting_depth(self) -> Thesis:
         # Operators may nest at most ``MAX_SERIES_NESTING`` (5) levels deep; deeper is rejected.
-        # binary_op/unary_op/shift are transparent (do not count as a level) — see _series_depth.
+        # binary_op/unary_op/shift/mask are transparent (do not count as a level) — see
+        # _series_depth. A Condition embedded in an event node is a decision, not a level: it adds
+        # nothing to the embedding node's depth and its operands are checked as roots of their own
+        # (``iter_condition_series`` yields them on the entry side; ``iter_series_depth_roots`` on
+        # the feature side).
+        tail = (
+            f"the maximum is {MAX_SERIES_NESTING} (each transform counts one level; "
+            "binary_op/unary_op/shift/mask are free; a condition embedded in an event node is "
+            "checked as its own root). Flatten or split the expression."
+        )
         for series in iter_condition_series(self.entry):
             depth = _series_depth(series)
             if depth > MAX_SERIES_NESTING:
                 raise ValueError(
-                    f"series {series.type!r} nests {depth} operator levels deep; the maximum is "
-                    f"{MAX_SERIES_NESTING} (each transform counts one level; "
-                    f"binary_op/unary_op/shift are free). Flatten or split the expression."
+                    f"series {series.type!r} nests {depth} operator levels deep; {tail}"
                 )
         for name, node in (self.params.features or {}).items():
-            depth = _series_depth(node)
-            if depth > MAX_SERIES_NESTING:
-                raise ValueError(
-                    f"feature {name!r} series {node.type!r} nests {depth} operator levels deep; "
-                    f"the maximum is {MAX_SERIES_NESTING} (each transform counts one level; "
-                    f"binary_op/unary_op/shift are free). Flatten or split the expression."
-                )
+            for root in iter_series_depth_roots(node):
+                depth = _series_depth(root)
+                if depth > MAX_SERIES_NESTING:
+                    raise ValueError(
+                        f"feature {name!r} series {root.type!r} nests {depth} operator levels "
+                        f"deep; {tail}"
+                    )
         return self
 
 

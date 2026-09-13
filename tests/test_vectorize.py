@@ -20,6 +20,7 @@ from seikan.compiler.data import MarketData
 from seikan.dsl.schema import (
     EMA,
     AndCondition,
+    BarsSinceEvent,
     BarsSinceExtremum,
     BinaryOp,
     Change,
@@ -28,15 +29,20 @@ from seikan.dsl.schema import (
     CrossDemean,
     CrossRank,
     Drawdown,
+    EventAgg,
+    EventValue,
     External,
     Field,
     FirstTrueCondition,
+    LagCondition,
+    Mask,
     NotCondition,
     OrCondition,
     Percentile,
     RollingAgg,
     RollingCondition,
     Runup,
+    Shift,
     ThresholdCondition,
     UnaryOp,
     ZScore,
@@ -167,7 +173,24 @@ def _ref_series(node, df) -> np.ndarray:
         with np.errstate(all="ignore"):
             out = fn(a, b)
         return np.where(np.isfinite(out), out, np.nan)  # every op sanitizes, like production
+    if t == "mask":
+        return ref.mask_values(*_ref_cond_channels(node.condition, df))
+    if t in _EVENT_NODES:
+        v, i, d = _ref_cond_channels(node.event, df)
+        s_idx, _known = ref.event_anchor(v & i & d, i, d)
+        if t == "bars_since_event":
+            return ref.bars_since_event(s_idx)
+        if t == "event_value":
+            return ref.event_value(_ref_series(node.input, df), s_idx)
+        return ref.event_agg(v & i & d, i, d, _ref_series(node.input, df), node.agg)
     raise NotImplementedError(t)
+
+
+_EVENT_NODES = ("bars_since_event", "event_value", "event_agg")
+
+
+def _ref_cond_channels(node, df) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    return _ref_cond(node, df), _ref_cond_init(node, df), _ref_cond_defined(node, df)
 
 
 #: Only always-finite leaves are unconditionally initialized: data leaves —
@@ -179,11 +202,20 @@ _LEAF_ALWAYS_INIT = ("constant", "calendar")
 def _ref_init(node, df) -> np.ndarray:
     """Latch-based init mask matching ``vectorize._latch``: always-finite leaves are always
     initialized; every other Series node is initialized once (and forever after) its value first
-    turns finite."""
+    turns finite. ``mask`` carries its condition's OWN latch; an event node additionally latches
+    where its anchor became unknowable after warmup (a post-warmup hole in the event condition
+    before the first event is a hole, not warmup)."""
     if node.type in _LEAF_ALWAYS_INIT:
         return np.ones(len(df), dtype=bool)
+    if node.type == "mask":
+        return _ref_cond_init(node.condition, df)
     values = _ref_series(node, df)
-    return np.maximum.accumulate((~np.isnan(values)).astype(np.int8)).astype(bool)
+    latch = np.maximum.accumulate((~np.isnan(values)).astype(np.int8)).astype(bool)
+    if node.type in _EVENT_NODES:
+        v, i, d = _ref_cond_channels(node.event, df)
+        _s, known = ref.event_anchor(v & i & d, i, d)
+        latch |= np.maximum.accumulate((i & ~known).astype(np.int8)).astype(bool)
+    return latch
 
 
 def _ref_first_true(
@@ -261,6 +293,8 @@ def _ref_cond(node, df) -> np.ndarray:
         init = _ref_cond_init(node.condition, df)
         defined = _ref_cond_defined(node.condition, df)
         return _ref_first_true(val, init, defined, int(node.cooldown))[0]
+    if t == "lag":
+        return ref.lag_channels(*_ref_cond_channels(node.condition, df), int(node.periods))[0]
     raise NotImplementedError(t)
 
 
@@ -277,6 +311,8 @@ def _ref_cond_init(node, df) -> np.ndarray:
         return ref.rolling_all(inner_init, node.window)
     if t == "first_true":
         return _ref_cond_init(node.condition, df)
+    if t == "lag":
+        return ref.lag_channels(*_ref_cond_channels(node.condition, df), int(node.periods))[1]
     raise NotImplementedError(t)
 
 
@@ -304,6 +340,8 @@ def _ref_cond_defined(node, df) -> np.ndarray:
         inner_init = _ref_cond_init(node.condition, df)
         inner_def = _ref_cond_defined(node.condition, df)
         out = _ref_first_true(val, inner_init, inner_def, int(node.cooldown))[1]
+    elif t == "lag":
+        out = ref.lag_channels(*_ref_cond_channels(node.condition, df), int(node.periods))[2]
     else:
         raise NotImplementedError(t)
     return out | ~init
@@ -1039,6 +1077,64 @@ def test_sweep_axis_names_match_collect_sweeps_order_exact():
             op=">",
             right=sc.Constant(value=1.0),
         ),
+        # The event-anchor family: the embedded condition's sweeps register BEFORE the input's,
+        # and a lag's periods after its inner condition — in engine order.
+        sc.ThresholdCondition(
+            left=sc.EventValue(
+                event=sc.FirstTrueCondition(
+                    cooldown=[2, 4],
+                    condition=sc.ThresholdCondition(
+                        left=sc.Percentile(window=[10, 20], input=c("close")),
+                        op=">",
+                        right=sc.Constant(value=[0.8, 0.9], name="hi"),
+                    ),
+                ),
+                input=sc.Shift(input=c("high"), periods=[1, 2]),
+            ),
+            op=">",
+            right=c("close"),
+        ),
+        sc.AndCondition(
+            conditions=[
+                sc.ThresholdCondition(
+                    left=sc.BarsSinceEvent(
+                        event=sc.LagCondition(
+                            periods=[1, 3],
+                            condition=sc.ThresholdCondition(
+                                left=sc.EMA(input=c("close"), window=[5, 8]),
+                                op=">",
+                                right=c("close"),
+                            ),
+                        )
+                    ),
+                    op=">=",
+                    right=sc.Constant(value=[1.0, 2.0], name="age"),
+                ),
+                sc.ThresholdCondition(
+                    left=sc.EventAgg(
+                        event=sc.RollingCondition(
+                            window=[3, 4],
+                            agg="any",
+                            condition=sc.ThresholdCondition(
+                                left=sc.Mask(
+                                    condition=sc.ThresholdCondition(
+                                        left=sc.Change(input=c("close"), periods=[2, 3]),
+                                        op="<",
+                                        right=sc.Constant(value=0.0),
+                                    )
+                                ),
+                                op=">",
+                                right=sc.Constant(value=0.5),
+                            ),
+                        ),
+                        input=sc.ZScore(input=c("close"), window=[10, 15]),
+                        agg="max",
+                    ),
+                    op=">",
+                    right=sc.Constant(value=[1.0, 1.5], name="zmax"),
+                ),
+            ]
+        ),
     ]
     for entry in trees:
         assert _iter_sweep_axis_names(entry) == [lvl for lvl, _ in vz.collect_sweeps(entry)]
@@ -1474,3 +1570,311 @@ def test_threshold_with_inf_operand_is_undefined():
     md2 = _hole_md([np.inf, 1.0, 3.0])
     _v, init2, _d = _chan(_x_gt(2.0), md2)
     np.testing.assert_array_equal(init2, [False, True, True])
+
+
+# ---- the event algebra: mask / lag / bars_since_event / event_value / event_agg ----------
+
+
+def _ev_fixture(seed: int = 5, n: int = 200, hole_at=()) -> pd.DataFrame:
+    rng = np.random.RandomState(seed)
+    idx = pd.date_range("2020-01-01", periods=n, freq="1D")
+    close = pd.Series(100 + rng.randn(n).cumsum(), index=idx)
+    z = pd.Series(rng.randn(n), index=idx)
+    for h in hole_at:
+        z.iloc[h] = np.nan
+    return pd.DataFrame(
+        {
+            "open": close,
+            "high": close * 1.01,
+            "low": close * 0.99,
+            "close": close,
+            "volume": 1000.0,
+            "_ext_z": z,
+        },
+        index=idx,
+    )
+
+
+def _z_gt(v):
+    return ThresholdCondition(left=External(name="z"), op=">", right=Constant(value=v))
+
+
+def _c_gt(v):
+    return ThresholdCondition(left=Field(column="close"), op=">", right=Constant(value=v))
+
+
+_EVENT = FirstTrueCondition(condition=_z_gt(1.0))
+
+
+def test_mask_parity():
+    df = _ev_fixture()
+    _assert_series(Mask(condition=_z_gt(0.0)), df, externals=("z",))
+    _assert_series(Mask(condition=_EVENT), df, externals=("z",))
+
+
+def test_lag_parity():
+    df = _ev_fixture(hole_at=(50, 51, 120))
+    for k in (1, 3):
+        _assert_cond(LagCondition(condition=_z_gt(0.0), periods=k), df, externals=("z",))
+        _assert_cond(
+            AndCondition(
+                conditions=[
+                    RollingCondition(
+                        window=4, agg="any", condition=LagCondition(condition=_z_gt(0.5))
+                    ),
+                    _c_gt(90.0),
+                ]
+            ),
+            df,
+            externals=("z",),
+        )
+
+
+def test_bars_since_event_parity():
+    df = _ev_fixture(hole_at=(70, 130))
+    _assert_series(BarsSinceEvent(event=_EVENT), df, externals=("z",))
+    _assert_series(BarsSinceEvent(event=_z_gt(1.5)), df, externals=("z",))
+
+
+def test_event_value_parity():
+    df = _ev_fixture(hole_at=(30,))
+    node = EventValue(
+        event=_EVENT, input=Shift(input=RollingAgg(input=Field(column="high"), window=5, agg="max"))
+    )
+    _assert_series(node, df, externals=("z",))
+
+
+@pytest.mark.parametrize("agg", ["sum", "max", "min", "mean"])
+def test_event_agg_parity(agg):
+    df = _ev_fixture(hole_at=(30, 90))
+    node = EventAgg(event=_EVENT, input=Change(input=Field(column="close"), kind="diff"), agg=agg)
+    _assert_series(node, df, externals=("z",))
+    _assert_series(
+        EventAgg(event=_z_gt(1.0), input=Mask(condition=_z_gt(0.0)), agg=agg), df, externals=("z",)
+    )
+
+
+def test_event_node_init_channel_parity():
+    # The reference init (the standard latch OR "anchor became unknowable post-warmup", and the
+    # condition's own latch for mask) must match the builder's init frame, hole cases included.
+    df = _ev_fixture(hole_at=(3, 4, 60))
+    md = _md(df, externals=("z",))
+    for node in (
+        Mask(condition=_z_gt(0.0)),
+        BarsSinceEvent(event=_z_gt(1.5)),
+        EventValue(event=_z_gt(1.5), input=Field(column="close")),
+        EventAgg(event=_z_gt(1.5), input=Field(column="close"), agg="sum"),
+    ):
+        got = vz.build_series(node, md)[1]["t"].to_numpy()
+        np.testing.assert_array_equal(got, _ref_init(node, df))
+
+
+def _ev_md(z, close=None):
+    n = len(z)
+    idx = pd.date_range("2021-01-01", periods=n, freq="1D")
+    c = pd.Series(np.asarray(close if close is not None else [100.0] * n, float), index=idx)
+    df = pd.DataFrame(
+        {"open": c, "high": c, "low": c, "close": c, "_ext_z": np.asarray(z, float)}, index=idx
+    )
+    return _md(df, externals=("z",))
+
+
+def _series3(node, md):
+    v, i = vz.build_series(node, md)
+    return v["t"].to_numpy(), i["t"].to_numpy()
+
+
+def test_mask_channels_warmup_hole_false_true():
+    md = _ev_md([np.nan, np.nan, 0.0, 2.0, np.nan, 0.0, 3.0])
+    v, i = _series3(Mask(condition=_z_gt(1.0)), md)
+    # warmup → NaN/not init; decided False → 0.0; decided True → 1.0; a post-warmup hole → NaN
+    # while INITIALIZED (so a threshold over it is undefined → the ledger)
+    np.testing.assert_array_equal(v, [np.nan, np.nan, 0.0, 1.0, np.nan, 0.0, 1.0])
+    np.testing.assert_array_equal(i, [False, False, True, True, True, True, True])
+    cond = ThresholdCondition(left=Mask(condition=_z_gt(1.0)), op=">", right=Constant(value=0.5))
+    np.testing.assert_array_equal(
+        vz.undefined_mask(cond, md)[:, 0], [False, False, False, False, True, False, False]
+    )
+
+
+def test_mask_init_is_the_conditions_own_latch():
+    # An `or` initializes when ANY branch does, so mask(or(...)) is initialized before either
+    # branch alone would latch a finite value — the condition's latch, not `_latch(values)`.
+    md = _ev_md([np.nan, 1.0, 1.0], close=[100.0, 100.0, 100.0])
+    cond = OrCondition(conditions=[_z_gt(0.5), _c_gt(50.0)])
+    _v, i = _series3(Mask(condition=cond), md)
+    ci = vz.build_condition(cond, md)[1]["t"].to_numpy()
+    np.testing.assert_array_equal(i, ci)
+    assert i.all()
+
+
+def test_lag_shifts_all_three_channels_and_leading_bars_are_warmup():
+    md = _ev_md([np.nan, 2.0, 0.0, np.nan, 2.0, 0.0])
+    v, i, d = (
+        f["t"].to_numpy()
+        for f in vz.build_condition(LagCondition(condition=_z_gt(1.0), periods=2), md)
+    )
+    np.testing.assert_array_equal(v, [False, False, False, True, False, False])
+    np.testing.assert_array_equal(i, [False, False, False, True, True, True])
+    # the hole at bar 3 moves with the decision it affects → undefined at bar 5
+    np.testing.assert_array_equal(d, [True, True, True, True, True, False])
+
+
+def test_lag_periods_beyond_length_never_initializes():
+    md = _ev_md([2.0, 2.0, 2.0])
+    _v, i, d = (
+        f["t"].to_numpy()
+        for f in vz.build_condition(LagCondition(condition=_z_gt(1.0), periods=3), md)
+    )
+    assert not i.any() and d.all()
+    assert not vz.signal(LagCondition(condition=_z_gt(1.0), periods=3), md).to_numpy().any()
+
+
+def test_bars_since_event_is_warmup_before_first_event_and_undefined_after_a_hole():
+    md = _ev_md([0.0, 0.0, 5.0, 0.0, np.nan, 0.0, 5.0, 0.0])
+    v, i = _series3(BarsSinceEvent(event=_z_gt(1.0)), md)
+    np.testing.assert_array_equal(v, [np.nan, np.nan, 0, 1, np.nan, np.nan, 0, 1])
+    np.testing.assert_array_equal(i, [False, False, True, True, True, True, True, True])
+    cond = ThresholdCondition(
+        left=BarsSinceEvent(event=_z_gt(1.0)), op=">=", right=Constant(value=0.0)
+    )
+    np.testing.assert_array_equal(vz.undefined_mask(cond, md)[:, 0], [0, 0, 0, 0, 1, 1, 0, 0])
+
+
+def test_event_hole_before_first_event_is_ledgered_not_warmup():
+    # A post-warmup hole in E before E ever fired: the plain value latch would read every bar as
+    # warmup and absorb the hole; the init channel latches on the unknowable anchor instead.
+    md = _ev_md([0.0, np.nan, 0.0, 0.0])
+    v, i = _series3(BarsSinceEvent(event=_z_gt(1.0)), md)
+    assert np.isnan(v).all()
+    np.testing.assert_array_equal(i, [False, True, True, True])
+
+
+def test_event_value_nan_input_at_event_stays_nan_until_next_event():
+    md = _ev_md([5.0, 0.0, 5.0, 0.0], close=[np.nan, 1.0, 2.0, 3.0])
+    v, _i = _series3(EventValue(event=_z_gt(1.0), input=Field(column="close")), md)
+    np.testing.assert_array_equal(v, [np.nan, np.nan, 2.0, 2.0])
+
+
+def test_event_agg_poisons_until_next_event():
+    md = _ev_md([5.0, 0.0, 0.0, 0.0, 5.0, 0.0], close=[1.0, 2.0, np.nan, 4.0, 5.0, 6.0])
+    v, _i = _series3(EventAgg(event=_z_gt(1.0), input=Field(column="close"), agg="sum"), md)
+    np.testing.assert_array_equal(v, [1.0, 3.0, np.nan, np.nan, 5.0, 11.0])
+
+
+def test_event_agg_mask_recipes():
+    # any / all / count of C since S — the three counting recipes over mask(C)
+    md = _ev_md([5.0, 0.0, 0.0, 5.0, 0.0, 0.0], close=[1.0, 9.0, 1.0, 9.0, 9.0, 1.0])
+    S = _z_gt(1.0)
+    C = _c_gt(5.0)
+    any_since = EventAgg(event=S, input=Mask(condition=C), agg="max")
+    all_since = EventAgg(event=S, input=Mask(condition=C), agg="min")
+    count_since = EventAgg(event=S, input=Mask(condition=C), agg="sum")
+    np.testing.assert_array_equal(_series3(any_since, md)[0], [0, 1, 1, 1, 1, 1])
+    np.testing.assert_array_equal(_series3(all_since, md)[0], [0, 0, 0, 1, 1, 0])
+    np.testing.assert_array_equal(_series3(count_since, md)[0], [0, 1, 1, 1, 2, 2])
+
+
+def test_event_and_input_at_the_same_bar():
+    # event and input both at t: the snapshot IS x[t] and bars_since_event is 0 — the current
+    # bar is included by definition (the exclusive forms are shift/lag).
+    md = _ev_md([0.0, 5.0, 0.0], close=[1.0, 7.0, 3.0])
+    assert _series3(EventValue(event=_z_gt(1.0), input=Field(column="close")), md)[0][1] == 7.0
+    assert _series3(BarsSinceEvent(event=_z_gt(1.0)), md)[0][1] == 0.0
+    assert (
+        _series3(EventAgg(event=_z_gt(1.0), input=Field(column="close"), agg="sum"), md)[0][1]
+        == 7.0
+    )
+
+
+def test_strict_ordering_recipe():
+    # The review's synthetic case: A and B first turn true TOGETHER at bar 2. `rolling(any, A, N)`
+    # includes the current bar and fires there; `rolling(any, lag(A, 1), N)` needs A on a PRIOR
+    # bar and does not.
+    md = _ev_md([0, 0, 1, 0, 0, 0, 1], close=[0, 0, 1, 1, 0, 1, 0])
+    A = _c_gt(0.5)
+    B = _z_gt(0.5)
+    loose = AndCondition(conditions=[RollingCondition(window=3, agg="any", condition=A), B])
+    strict = AndCondition(
+        conditions=[
+            RollingCondition(window=3, agg="any", condition=LagCondition(condition=A, periods=1)),
+            B,
+        ]
+    )
+    np.testing.assert_array_equal(np.flatnonzero(vz.signal(loose, md).to_numpy()[:, 0]), [2, 6])
+    np.testing.assert_array_equal(np.flatnonzero(vz.signal(strict, md).to_numpy()[:, 0]), [6])
+
+
+def test_event_condition_shared_by_several_nodes_is_built_once():
+    # Memo keys are the canonical JSON (nested conditions included), so an event condition shared
+    # by several nodes is built once and both nodes read the same channels.
+    md = _md(_ev_fixture(), externals=("z",))
+    ev = FirstTrueCondition(condition=_z_gt(0.5))
+    entry = AndCondition(
+        conditions=[
+            ThresholdCondition(left=BarsSinceEvent(event=ev), op=">=", right=Constant(value=1.0)),
+            ThresholdCondition(
+                left=EventValue(event=ev, input=Field(column="close")),
+                op="<",
+                right=Field(column="close"),
+            ),
+        ]
+    )
+    calls: list[str] = []
+    real = vz._build_condition
+
+    def spy(node, md_):
+        calls.append(node.model_dump_json())
+        return real(node, md_)
+
+    vz._build_condition = spy
+    try:
+        vz.signal(entry, md)
+    finally:
+        vz._build_condition = real
+    assert calls.count(ev.model_dump_json()) == 1
+
+
+def test_collect_sweeps_lag_periods_axis():
+    entry = AndCondition(
+        conditions=[
+            RollingCondition(
+                window=3, agg="any", condition=LagCondition(condition=_c_gt(1.0), periods=[1, 2])
+            ),
+            _c_gt(2.0),
+        ]
+    )
+    assert vz.collect_sweeps(entry) == [("lag_periods", [1, 2])]
+    combos = [combo for combo, _ in vz.iter_param_assignments(entry)]
+    assert combos == [{"lag_periods": 1}, {"lag_periods": 2}]
+
+
+def test_embedded_condition_sweeps_count_once_in_declared_grid():
+    from seikan.dsl.schema import declared_grid_size
+
+    # A swept cooldown inside the event condition and a swept input window are two axes, named
+    # in engine order (embedded condition first) and each counted ONCE by the grid-size walk —
+    # the embedded condition's sweeps are delegated to the condition walk, never double-counted.
+    ev = FirstTrueCondition(condition=_c_gt(1.0), cooldown=[0, 3])
+    single = ThresholdCondition(
+        left=EventValue(event=ev, input=EMA(input=Field(column="close"), window=[5, 10])),
+        op="<",
+        right=Field(column="close"),
+    )
+    assert vz.collect_sweeps(single) == [("first_true_cooldown", [0, 3]), ("ema_window", [5, 10])]
+    assert declared_grid_size(single, 1) == 4
+    # The SAME event condition written into two nodes is two OCCURRENCES of a swept param — two
+    # independent axes (`first_true_cooldown`, `first_true_cooldown_2`), exactly as two swept
+    # transform windows are today; a shared axis is what ties them (see the `axes` field).
+    entry = AndCondition(
+        conditions=[
+            ThresholdCondition(left=BarsSinceEvent(event=ev), op=">=", right=Constant(value=1.0)),
+            single,
+        ]
+    )
+    assert [lvl for lvl, _ in vz.collect_sweeps(entry)] == [
+        "first_true_cooldown",
+        "first_true_cooldown_2",
+        "ema_window",
+    ]
+    assert declared_grid_size(entry, 1) == 8

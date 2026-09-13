@@ -174,10 +174,10 @@ def list_entries(thesis: Thesis, md: MarketData) -> EntryListReport:
 
     The report also carries the per-bar evidence in two frames, and the CLI writes each one on its
     own flag. ``root_series`` holds every deduplicated root series node (each threshold operand
-    except bare constants, scalarized per combo — the value frames are already in the ``MarketData``
-    memos
-    from this function's own ``signal`` calls, or from a backtest that ran first, so no series is
-    ever built twice); ``seikan run --root-series-out`` writes it, because it
+    except bare constants — the operands of a Condition embedded in an event node included, since
+    each is a decision root of its own — scalarized per combo; the value frames are already in the
+    ``MarketData`` memos from this function's own ``signal`` calls, or from a backtest that ran
+    first, so no series is ever built twice); ``seikan run --root-series-out`` writes it, because it
     answers why a bar did or did not fire. ``entry_flags`` holds the 0/1 column per (combo ×
     target), and ``seikan run --entry-flags-out`` writes it. That the mask gets an output of its
     own is exactly the last-bar seam noted above: the runner drops a firing it cannot fill

@@ -2161,3 +2161,242 @@ def test_feed_named_target_is_not_marked_used_by_the_default_outcome():
     doc["data"] = {"targets": ["px"], "external": {"target": {}}}
     with pytest.raises(ValidationError, match="never referenced"):
         Thesis.model_validate(doc)
+
+
+# ---- the event algebra: mask / lag / bars_since_event / event_value / event_agg ----------
+
+_CLOSE_GT_0 = {
+    "type": "threshold",
+    "left": _FIELD_CLOSE,
+    "op": ">",
+    "right": {"type": "constant", "value": 0.0},
+}
+_LEVEL = {
+    "type": "shift",
+    "periods": 1,
+    "input": {
+        "type": "rolling_agg",
+        "input": {"type": "field", "column": "high"},
+        "window": 5,
+        "agg": "max",
+    },
+}
+_BREAK = {
+    "type": "first_true",
+    "condition": {"type": "threshold", "left": _FIELD_CLOSE, "op": ">", "right": _LEVEL},
+}
+# ema over the depth-5 chain — depth 6, one past the cap
+_D6 = {"type": "ema", "window": 3, "input": _D5}
+
+
+def _entry_over(left: dict, right: dict | None = None, op: str = ">") -> dict:
+    return {
+        "name": "x",
+        "data": {"targets": ["target"]},
+        "entry": {
+            "type": "threshold",
+            "left": left,
+            "op": op,
+            "right": right or {"type": "constant", "value": 0.0},
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    "node",
+    [
+        {"type": "mask", "condition": _CLOSE_GT_0},
+        {"type": "bars_since_event", "event": _BREAK},
+        {"type": "event_value", "event": _BREAK, "input": _LEVEL},
+        {
+            "type": "event_agg",
+            "event": _BREAK,
+            "input": {"type": "field", "column": "high"},
+            "agg": "max",
+        },
+    ],
+)
+def test_event_nodes_parse_and_roundtrip(node):
+    t = Thesis.model_validate(_entry_over(node))
+    assert Thesis.model_validate_json(t.model_dump_json()) == t
+    assert t.entry.left.type == node["type"]
+
+
+def test_lag_condition_parses_with_default_bounds_and_sweep():
+    from seikan.dsl.schema import LagCondition
+
+    base = {"name": "x", "data": {"targets": ["target"]}}
+    t = Thesis.model_validate({**base, "entry": {"type": "lag", "condition": _CLOSE_GT_0}})
+    assert isinstance(t.entry, LagCondition) and t.entry.periods == 1
+    with pytest.raises(ValidationError):
+        Thesis.model_validate(
+            {**base, "entry": {"type": "lag", "condition": _CLOSE_GT_0, "periods": 0}}
+        )
+    swept = Thesis.model_validate(
+        {
+            **base,
+            "entry": {"type": "lag", "condition": _CLOSE_GT_0, "periods": [1, 2, 3]},
+            "params": {"horizon": [1, 2]},
+        }
+    )
+    assert declared_grid_size(swept.entry, swept.params.horizon) == 6
+    from seikan.dsl.traverse import _iter_sweep_axis_names
+
+    assert _iter_sweep_axis_names(swept.entry) == ["lag_periods"]
+
+
+def test_json_schema_generates_under_the_mutual_recursion():
+    schema = Thesis.model_json_schema()
+    assert "Mask" in schema["$defs"] and "LagCondition" in schema["$defs"]
+    assert "EventAgg" in schema["$defs"] and "BarsSinceEvent" in schema["$defs"]
+
+
+def test_mask_is_depth_transparent():
+    from pydantic import TypeAdapter
+
+    from seikan.dsl.schema import Series
+    from seikan.dsl.traverse import _series_depth
+
+    mask_of_deep = {
+        "type": "mask",
+        "condition": {
+            "type": "threshold",
+            "left": _D5,
+            "op": ">",
+            "right": {"type": "constant", "value": 0.0},
+        },
+    }
+    assert _series_depth(TypeAdapter(Series).validate_python(mask_of_deep)) == 0
+    # a mask inside a chain costs nothing: ema(mask(...)) is depth 1
+    assert (
+        _series_depth(
+            TypeAdapter(Series).validate_python({"type": "ema", "window": 3, "input": mask_of_deep})
+        )
+        == 1
+    )
+    Thesis.model_validate(_entry_over(mask_of_deep))  # the embedded operand is exactly at the cap
+
+
+def test_event_nodes_count_one_level_over_input():
+    from pydantic import TypeAdapter
+
+    from seikan.dsl.schema import Series
+    from seikan.dsl.traverse import _series_depth
+
+    depth = lambda d: _series_depth(TypeAdapter(Series).validate_python(d))  # noqa: E731
+    assert depth({"type": "bars_since_event", "event": _BREAK}) == 1
+    # L = event_value(S, shift(rolling_agg(high))) — one over the depth-1 input
+    L = {"type": "event_value", "event": _BREAK, "input": _LEVEL}
+    assert depth(L) == 2
+    sigma = {
+        "type": "ema",
+        "window": 5,
+        "input": {
+            "type": "rolling_agg",
+            "window": 20,
+            "agg": "std",
+            "input": {"type": "change", "input": _FIELD_CLOSE, "kind": "log"},
+        },
+    }
+    assert depth(sigma) == 3
+    band = {"type": "binary_op", "left": L, "op": "*", "right": sigma}
+    assert depth(band) == 3
+    Thesis.model_validate(_entry_over(band))
+    with pytest.raises(ValidationError, match="'event_value' nests 6"):
+        Thesis.model_validate(_entry_over({"type": "event_value", "event": _BREAK, "input": _D5}))
+    with pytest.raises(ValidationError, match="'event_agg' nests 6"):
+        Thesis.model_validate(
+            _entry_over({"type": "event_agg", "event": _BREAK, "input": _D5, "agg": "sum"})
+        )
+
+
+def test_embedded_condition_operands_are_depth_checked_as_roots():
+    deep_cond = {
+        "type": "threshold",
+        "left": _D6,
+        "op": ">",
+        "right": {"type": "constant", "value": 0.0},
+    }
+    with pytest.raises(ValidationError, match=r"'ema' nests 6.*checked as its own root"):
+        Thesis.model_validate(_entry_over({"type": "mask", "condition": deep_cond}))
+    with pytest.raises(ValidationError, match="'ema' nests 6"):
+        Thesis.model_validate(_entry_over({"type": "bars_since_event", "event": deep_cond}))
+
+
+def test_feature_event_node_embedded_operands_are_depth_checked():
+    deep_cond = {
+        "type": "threshold",
+        "left": _D6,
+        "op": ">",
+        "right": {"type": "constant", "value": 0.0},
+    }
+    doc = _entry_over(_FIELD_CLOSE)
+    doc["params"] = {"features": {"age": {"type": "bars_since_event", "event": deep_cond}}}
+    with pytest.raises(ValidationError, match="feature 'age' series 'ema' nests 6"):
+        Thesis.model_validate(doc)
+
+
+def test_external_feed_discovery_through_event_nodes():
+    ext = {"type": "external", "name": "vix"}
+    ev = {"type": "threshold", "left": ext, "op": ">", "right": {"type": "constant", "value": 30.0}}
+    doc = _entry_over(
+        {"type": "bars_since_event", "event": ev}, {"type": "constant", "value": 3.0}, "<="
+    )
+    with pytest.raises(ValidationError, match="external feed\\(s\\) \\['vix'\\] not declared"):
+        Thesis.model_validate(doc)
+    doc["data"]["external"] = {"vix": {}}
+    Thesis.model_validate(doc)  # a feed used only inside the event condition counts as referenced
+    # ... and inside an event condition INSIDE a feature
+    feat = _entry_over(_FIELD_CLOSE)
+    feat["data"]["external"] = {"vix": {}}
+    feat["params"] = {"features": {"since_spike": {"type": "bars_since_event", "event": ev}}}
+    Thesis.model_validate(feat)
+
+
+def test_cross_node_inside_embedded_condition_requires_basket():
+    rank_cond = {
+        "type": "threshold",
+        "left": {"type": "cross_rank", "input": _FIELD_CLOSE},
+        "op": ">=",
+        "right": {"type": "constant", "value": 0.8},
+    }
+    doc = _entry_over(
+        {"type": "bars_since_event", "event": rank_cond}, {"type": "constant", "value": 3.0}, "<="
+    )
+    with pytest.raises(ValidationError, match="require target_mode='basket'"):
+        Thesis.model_validate(doc)
+    doc["data"]["targets"] = ["a", "b", "c"]
+    doc["target_mode"] = "basket"
+    Thesis.model_validate(doc)
+
+
+def test_feature_with_condition_side_sweep_inside_event_node_refuses():
+    doc = _entry_over(_FIELD_CLOSE)
+    doc["params"] = {
+        "features": {
+            "age": {
+                "type": "bars_since_event",
+                "event": {
+                    "type": "rolling",
+                    "window": [3, 5],
+                    "agg": "any",
+                    "condition": _CLOSE_GT_0,
+                },
+            }
+        }
+    }
+    with pytest.raises(ValidationError, match="feature 'age' must use scalar params"):
+        Thesis.model_validate(doc)
+    doc["params"]["features"]["age"]["event"]["window"] = 3
+    Thesis.model_validate(doc)
+
+
+def test_event_node_requires_a_condition_and_a_series_in_the_right_slots():
+    with pytest.raises(ValidationError):  # a Series where the event Condition goes
+        Thesis.model_validate(_entry_over({"type": "bars_since_event", "event": _FIELD_CLOSE}))
+    with pytest.raises(ValidationError):  # a Condition where the input Series goes
+        Thesis.model_validate(
+            _entry_over({"type": "event_value", "event": _BREAK, "input": _CLOSE_GT_0})
+        )
+    with pytest.raises(ValidationError):  # a Condition is still not a Series — mask is the bridge
+        Thesis.model_validate(_entry_over(_CLOSE_GT_0))

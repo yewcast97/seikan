@@ -1,11 +1,17 @@
 """The Series node vocabulary: swept numeric param aliases, the strict base model, the data
-leaves, every transform, the cross-sectional trio, the operator pair, and the ``Series`` union
-(defined HERE so its members' forward references rebuild against this namespace).
+leaves, every transform, the cross-sectional trio, the operator pair, the event-anchor family
+(which embeds a ``Condition``), and the ``Series`` union.
+
+The Series and Condition vocabularies are MUTUALLY recursive (a threshold reads Series operands;
+``mask``/``bars_since_event``/``event_value``/``event_agg`` read a Condition), so the models here
+are NOT rebuilt in this module: :mod:`seikan.dsl.conditions` rebuilds every Series and Condition
+model once both unions exist, and :mod:`seikan.dsl` imports it so nothing ever sees a half-built
+model.
 """
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import TYPE_CHECKING, Annotated, Literal
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, model_validator
 from pydantic import Field as PField
@@ -13,6 +19,11 @@ from pydantic import Field as PField
 from seikan.constants import (
     MAX_DECLARED_GRID,
 )
+
+if TYPE_CHECKING:
+    # Annotations are strings under ``from __future__ import annotations``; the runtime name is
+    # supplied to ``model_rebuild`` by ``seikan.dsl.conditions`` (see the module docstring).
+    from seikan.dsl.conditions import Condition
 
 
 def _distinct_sweep[T](values: list[T]) -> list[T]:
@@ -335,6 +346,72 @@ class UnaryOp(_Strict):
     op: Literal["abs", "log", "sign", "sqrt", "neg"]
 
 
+# ---- the event-anchor family: Series nodes that embed a Condition --------------------------
+#
+# Shared definition. The EVENT of a Condition E is its tradable signal ``value & init & defined``
+# (``compiler.vectorize.signal``). ``s(t)`` is the latest bar ``<= t`` at which E fired — the
+# current bar INCLUDED (``input[t]`` is knowable at ``t``; the exclusive forms are ``shift(·, 1)``
+# on the input or ``lag(E, 1)`` on the event). A new event REPLACES the old one (latest wins).
+# Before the first event the node is WARMUP (NaN, not initialized — a thesis whose event never
+# fires has no anchor, which is not a data hole). After a post-warmup hole in E — a bar E could not
+# decide — ``s(t)`` is UNKNOWN until the next defined event: the node reads NaN while initialized,
+# so a threshold over it is undefined and lands in ``signal_coverage``, never silently False. Every
+# node is a deterministic, causal function of E's history and the input series up to ``t`` — the
+# same class of signal-side state ``first_true``, ``ema`` and the expanding extrema already carry:
+# no fill, no P&L, no position, no future bar. ``compiler.nb`` (the event-anchor section) holds
+# the kernels; ``compiler.vectorize`` states the channel rules per node.
+#
+# The embedded Condition is a DECISION, not a transform level: it is invisible to the nesting-depth
+# count of the node that embeds it, and its own threshold operands are depth-checked as ROOTS of
+# their own (``traverse.iter_condition_series`` yields them beside the entry's outer operands, so
+# they also appear in ``--root-series-out``). Sweeps inside it register once, in engine order.
+
+
+class Mask(_Strict):
+    # The Condition as a Series: 1.0 where its tradable signal holds, 0.0 where it was decided
+    # False, NaN while warming or undecidable. Depth-TRANSPARENT (plumbing, like ``shift``): it
+    # converts a decision into a number and nothing else. The bridge every counting recipe rides —
+    # "at least K of A/B/C" is ``mask(A) + mask(B) + mask(C) >= K``, "breadth of a condition" is
+    # ``cross_agg(mask(C), mean)``, "any/all/count of C since S" is ``event_agg(S, mask(C),
+    # max|min|sum)``. Its ``init`` is the condition's OWN latch, so a hole at C's first initialized
+    # bar is ledgered rather than absorbed as warmup.
+    type: Literal["mask"] = "mask"
+    condition: Condition
+
+
+class BarsSinceEvent(_Strict):
+    # ``t − s(t)``: bars since the latest event (0 on the event bar). Streak length is
+    # ``bars_since_event(not(C))``; a session clock on intraday bars is
+    # ``bars_since_event(session_open)``. Counts ONE level (it has no Series child).
+    type: Literal["bars_since_event"] = "bars_since_event"
+    event: Condition
+
+
+class EventValue(_Strict):
+    # ``input[s(t)]``: the input's value AT the latest event — a recorded level, held until the
+    # next event (later holes in the input are irrelevant; a NaN input AT the event bar reads NaN
+    # until the next event — the anchor exists but the snapshot does not). The breakout-retest
+    # primitive: ``L = event_value(S, shift(rolling_agg(high, N, max), 1))`` is the level that WAS
+    # broken, not the moving one. Counts one level over ``input``.
+    type: Literal["event_value"] = "event_value"
+    event: Condition
+    input: Series
+
+
+class EventAgg(_Strict):
+    # ``agg(input[s(t) .. t])``: the input aggregated over the bars since the latest event, the
+    # event bar included — a resettable running aggregate. STRICT finite gate like ``rolling_agg``:
+    # one NaN input bar inside ``[s, t]`` poisons the aggregate until the next event; an overflow
+    # reads NaN. ``sum``/``max``/``min``/``mean`` (mean = sum / (t − s + 1)). Opening range is
+    # ``event_agg(session_open, high, max)``; VWAP since an event is
+    # ``event_agg(E, close × volume, sum) / event_agg(E, volume, sum)``; "C has held on any bar
+    # since S" is ``event_agg(S, mask(C), max) > 0``. Counts one level over ``input``.
+    type: Literal["event_agg"] = "event_agg"
+    event: Condition
+    input: Series
+    agg: Literal["sum", "max", "min", "mean"]
+
+
 Series = Annotated[
     Field
     | Constant
@@ -355,25 +432,14 @@ Series = Annotated[
     | CrossDemean
     | CrossAgg
     | BinaryOp
-    | UnaryOp,
+    | UnaryOp
+    | Mask
+    | BarsSinceEvent
+    | EventValue
+    | EventAgg,
     PField(discriminator="type"),
 ]
 
-
-# Forward references resolve against THIS module's namespace — the unions and their
-# members must rebuild where they are defined.
-EMA.model_rebuild()
-ZScore.model_rebuild()
-Percentile.model_rebuild()
-RollingAgg.model_rebuild()
-Drawdown.model_rebuild()
-Runup.model_rebuild()
-BarsSinceExtremum.model_rebuild()
-Change.model_rebuild()
-Shift.model_rebuild()
-RollingCorr.model_rebuild()
-CrossRank.model_rebuild()
-CrossDemean.model_rebuild()
-CrossAgg.model_rebuild()
-BinaryOp.model_rebuild()
-UnaryOp.model_rebuild()
+# No ``model_rebuild()`` here: the Series members that embed a ``Condition`` cannot resolve it from
+# this module, so every Series model is rebuilt from ``seikan.dsl.conditions`` once both unions
+# exist (see the module docstring).

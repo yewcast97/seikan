@@ -2195,3 +2195,10 @@ def test_concentration_refuses_a_target_dropped_from_the_by_target_panel():
     conc = _cell_checks(evaluate_gate(s))["concentration"]
     assert conc.met is False
     assert dropped in conc.detail
+
+
+def test_lag_omitted_periods_hashes_like_explicit_one():
+    lagged = {**_DSL, "entry": {"type": "lag", "condition": _DSL["entry"]}}
+    explicit = {**_DSL, "entry": {"type": "lag", "condition": _DSL["entry"], "periods": 1}}
+    assert canonical_dsl_hash(lagged) == canonical_dsl_hash(explicit)
+    assert canonical_dsl_hash(lagged) != canonical_dsl_hash(_DSL)

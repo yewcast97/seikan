@@ -39,8 +39,12 @@ def source_availability(thesis: Thesis, md: MarketData) -> dict[str, np.ndarray]
             arr = md.field(name).to_numpy(dtype=float)
         elif kind == "external":
             arr = md.external_values(name)
-        else:
+        elif kind == "days_since":
             arr = md.days_since_values(name)
+        else:
+            # ``series_source_leaves`` yields exactly three kinds; a fourth is a seikan bug, not a
+            # leaf to silently misread as a feed age.
+            raise ValueError(f"unknown source kind: {kind!r}")
         out[f"{kind}:{name}"] = np.isfinite(arr)
     return out
 

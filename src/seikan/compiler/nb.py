@@ -9,7 +9,10 @@ Two implementation styles, **no vectorbt**:
   use ``numpy.lib.stride_tricks.sliding_window_view`` (a window requires every bar finite, else
   NaN); elementwise ones use plain lag slicing. No Python time-loop.
 * **Numba** ``@njit`` for the genuinely sequential kernels — the EMA / EMA-z-score recurrences
-  (``alpha = 2/(window+1)``), ``bars_since_extremum``, and the ``first_true`` episode-entry latch.
+  (``alpha = 2/(window+1)``), ``bars_since_extremum``, the ``first_true`` episode-entry latch,
+  and the event-anchor family (``event_anchor`` — the latest-event index ``s(t)`` a Condition's
+  tradable signal defines — and ``event_agg``, the resettable running aggregate since it; the
+  ``bars_since_event`` / ``event_value`` / ``mask`` reads off those are plain numpy).
   These are scalar recurrences that don't vectorize; numba compiles the loop to machine code.
 
 The production surface is the 2D ``*_apply_nb`` form (rows × columns → rows × columns), applied per
@@ -577,6 +580,194 @@ def first_true_1d(
             seen_false = True
         prev = cur
     return out, defined_out
+
+
+# =============================================================================
+# The event-anchor family — Series reads off a Condition's tradable signal.
+#
+# Shared definition (``dsl.nodes``): the EVENT is the signal ``value & init & defined``; ``s(t)`` is
+# the latest bar <= t at which it fired, the current bar INCLUDED; latest wins. Before the first
+# event the anchor is warmup (``s = -1`` while ``known``); after a post-warmup HOLE in the
+# condition (``init & ~defined``) the anchor is UNKNOWN (``s = -1``, ``~known``) until the next
+# defined event — the callers turn that into "initialized but NaN", the ledgered form, never
+# silent warmup. Every kernel is a causal function of the inputs through ``t``.
+# =============================================================================
+
+
+@njit(cache=True)
+def event_anchor_1d(
+    sig: npt.NDArray[np.bool_], init: npt.NDArray[np.bool_], defined: npt.NDArray[np.bool_]
+) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.bool_]]:
+    """``(s_idx, known)`` per bar: the latest event index (−1 when there is none or it is
+    unknowable) and whether the anchor is KNOWN (False only after a post-warmup hole, until the
+    next defined event).
+
+    ``sig`` is the condition's tradable signal, ``init``/``defined`` its own channels. A warmup
+    bar resets to "no event yet" (``init`` is monotone, so this is defense in depth); a hole
+    drops the anchor into the unknown state; a defined event bar re-anchors and re-establishes
+    knowledge. A defined non-event bar after a hole stays unknown — whether an event fell inside
+    the hole is exactly what cannot be known."""
+    n = sig.shape[0]
+    s_idx = np.full(n, -1, dtype=np.int64)
+    known_out = np.ones(n, dtype=np.bool_)
+    s = -1
+    known = True
+    for t in range(n):
+        if not init[t]:
+            s = -1
+            known = True
+        elif not defined[t]:
+            known = False
+        elif sig[t]:
+            s = t
+            known = True
+        s_idx[t] = s if known else -1
+        known_out[t] = known
+    return s_idx, known_out
+
+
+@njit(cache=True)
+def event_anchor_apply_nb(
+    sig: npt.NDArray[np.bool_], init: npt.NDArray[np.bool_], defined: npt.NDArray[np.bool_]
+) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.bool_]]:
+    rows, cols = sig.shape
+    s_idx = np.empty((rows, cols), dtype=np.int64)
+    known = np.empty((rows, cols), dtype=np.bool_)
+    for j in range(cols):
+        s_idx[:, j], known[:, j] = event_anchor_1d(sig[:, j], init[:, j], defined[:, j])
+    return s_idx, known
+
+
+def bars_since_event_apply_nb(s_idx: npt.NDArray[np.int64]) -> npt.NDArray[np.float64]:
+    """``t − s(t)`` where the anchor is known and exists (0 on the event bar); NaN otherwise."""
+    s = np.asarray(s_idx, dtype=np.int64)
+    t = np.arange(s.shape[0], dtype=np.int64).reshape(-1, *([1] * (s.ndim - 1)))
+    return np.where(s >= 0, (t - s).astype(float), np.nan)
+
+
+def event_value_apply_nb(
+    arr: npt.NDArray[np.float64], s_idx: npt.NDArray[np.int64]
+) -> npt.NDArray[np.float64]:
+    """``x[s(t)]`` — the input's value AT the latest event, held until the next one; NaN where
+    there is no known anchor or the input was NaN on the event bar (a later hole in the input is
+    irrelevant: the snapshot was taken)."""
+    x = np.asarray(arr, dtype=float)
+    s = np.asarray(s_idx, dtype=np.int64)
+    if x.shape != s.shape:
+        raise ValueError(f"event_value shape mismatch: {x.shape} vs {s.shape}")
+    taken = np.take_along_axis(x, np.maximum(s, 0), axis=0)
+    return np.where((s >= 0) & np.isfinite(taken), taken, np.nan)
+
+
+@njit(cache=True)
+def event_agg_1d(
+    sig: npt.NDArray[np.bool_],
+    init: npt.NDArray[np.bool_],
+    defined: npt.NDArray[np.bool_],
+    x: npt.NDArray[np.float64],
+    mode: int,
+) -> npt.NDArray[np.float64]:
+    """``agg(x[s(t) .. t])`` — the running aggregate since the latest event, reset AT each event
+    (the event bar included). ``mode`` 0 = sum, 1 = max, 2 = min, 3 = mean (sum / (t − s + 1)).
+
+    STRICT finite gate, the ``rolling_agg`` rule: one NaN input bar inside ``[s, t]`` POISONS the
+    aggregate until the next event. A warmup bar carries no state; a hole bar drops the anchor
+    (nothing is emitted until the next defined event, and the hole bar itself never contributes).
+    Only finite results are emitted (an overflowed sum reads NaN)."""
+    n = sig.shape[0]
+    out = np.full(n, np.nan)
+    anchored = False
+    acc = 0.0
+    mx = 0.0
+    mn = 0.0
+    cnt = 0
+    poisoned = False
+    for t in range(n):
+        if not init[t]:
+            anchored = False
+            continue
+        if not defined[t]:
+            anchored = False
+            continue
+        if sig[t]:
+            anchored = True
+            acc = 0.0
+            mx = -np.inf
+            mn = np.inf
+            cnt = 0
+            poisoned = False
+        if not anchored or poisoned:
+            continue
+        v = x[t]
+        if not np.isfinite(v):
+            poisoned = True
+            continue
+        cnt += 1
+        acc += v
+        if v > mx:
+            mx = v
+        if v < mn:
+            mn = v
+        if mode == 0:
+            r = acc
+        elif mode == 1:
+            r = mx
+        elif mode == 2:
+            r = mn
+        else:
+            r = acc / cnt
+        if np.isfinite(r):
+            out[t] = r
+    return out
+
+
+@njit(cache=True)
+def _event_agg_apply(
+    sig: npt.NDArray[np.bool_],
+    init: npt.NDArray[np.bool_],
+    defined: npt.NDArray[np.bool_],
+    x: npt.NDArray[np.float64],
+    mode: int,
+) -> npt.NDArray[np.float64]:
+    out = np.empty_like(x)
+    for j in range(x.shape[1]):
+        out[:, j] = event_agg_1d(sig[:, j], init[:, j], defined[:, j], x[:, j], mode)
+    return out
+
+
+_EVENT_AGG_MODES = {"sum": 0, "max": 1, "min": 2, "mean": 3}
+
+
+def event_agg_apply_nb(
+    sig: npt.NDArray[np.bool_],
+    init: npt.NDArray[np.bool_],
+    defined: npt.NDArray[np.bool_],
+    arr: npt.NDArray[np.float64],
+    agg: str,
+) -> npt.NDArray[np.float64]:
+    """2-D ``event_agg_1d`` per column; ``agg`` is one of ``sum``/``max``/``min``/``mean``."""
+    mode = _EVENT_AGG_MODES.get(agg)
+    if mode is None:
+        raise ValueError(f"unknown event_agg agg: {agg!r}")
+    x = np.asarray(arr, dtype=float)
+    if not (x.shape == sig.shape == init.shape == defined.shape):
+        raise ValueError(f"event_agg shape mismatch: {x.shape} vs {sig.shape}")
+    return _event_agg_apply(
+        np.ascontiguousarray(sig, dtype=np.bool_),
+        np.ascontiguousarray(init, dtype=np.bool_),
+        np.ascontiguousarray(defined, dtype=np.bool_),
+        np.ascontiguousarray(x),
+        mode,
+    )
+
+
+def mask_apply_nb(
+    value: npt.NDArray[np.bool_], init: npt.NDArray[np.bool_], defined: npt.NDArray[np.bool_]
+) -> npt.NDArray[np.float64]:
+    """The condition as a number: 1.0 where its tradable signal holds, 0.0 where it was decided
+    False, NaN while warming (``~init``) or undecidable (``init & ~defined``)."""
+    decided = init & defined
+    return np.where(decided & value, 1.0, np.where(decided, 0.0, np.nan))
 
 
 # =============================================================================

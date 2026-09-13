@@ -1,5 +1,5 @@
-"""The condition vocabulary: threshold, the boolean combinators, rolling, first_true, and the
-``Condition`` union.
+"""The condition vocabulary: threshold, the boolean combinators, rolling, first_true, lag, and
+the ``Condition`` union — plus the ONE rebuild site for both vocabularies (see the bottom).
 """
 
 from __future__ import annotations
@@ -9,6 +9,7 @@ from typing import Annotated, Literal
 from pydantic import Field as PField
 from pydantic import model_validator
 
+from seikan.dsl import nodes
 from seikan.dsl.nodes import NonNegIntParam, PosInt, PosIntParam, Series, _Strict
 
 
@@ -81,22 +82,65 @@ class FirstTrueCondition(_Strict):
     cooldown: NonNegIntParam = 0
 
 
+class LagCondition(_Strict):
+    # The child's decision ``periods`` bars ago, all three channels shifted back together: value,
+    # init AND defined read ``[t − k]`` (a hole moves with the decision it affects), and the
+    # leading ``k`` bars are warmup (value False, init False, defined True). Backward-only
+    # (``periods >= 1``), so it can never read the future; a list sweeps as ``lag_periods``. The
+    # typed temporal primitive: strict ordering "A held on a PRIOR bar, then B now" is
+    # ``and(rolling(any, lag(A, 1), N), B)`` — where ``rolling(any, A, N)`` includes the current
+    # bar and fires when A and B first turn true together. A ``periods`` at or beyond the index
+    # length never initializes (not refusable at parse — the index is unknown there).
+    type: Literal["lag"] = "lag"
+    condition: Condition
+    periods: PosIntParam = 1
+
+
 Condition = Annotated[
     ThresholdCondition
     | AndCondition
     | OrCondition
     | NotCondition
     | RollingCondition
-    | FirstTrueCondition,
+    | FirstTrueCondition
+    | LagCondition,
     PField(discriminator="type"),
 ]
 
 
-# Forward references resolve against THIS module's namespace — the unions and their
-# members must rebuild where they are defined.
-ThresholdCondition.model_rebuild()
-AndCondition.model_rebuild()
-OrCondition.model_rebuild()
-NotCondition.model_rebuild()
-RollingCondition.model_rebuild()
-FirstTrueCondition.model_rebuild()
+# The ONE rebuild site for both vocabularies. Series and Condition are mutually recursive — every
+# threshold reads Series operands, and the event-anchor nodes (``mask`` / ``bars_since_event`` /
+# ``event_value`` / ``event_agg``) embed a Condition — so neither union can be completed in its
+# own module. Each model resolves ``Series`` from its own module's globals and ``Condition`` from
+# the namespace handed in here (``_types_namespace`` is explicit rather than frame-depth-relative,
+# so the resolution does not depend on where this module happens to be imported from).
+_NAMESPACE = {"Series": Series, "Condition": Condition}
+for _model in (
+    nodes.EMA,
+    nodes.ZScore,
+    nodes.Percentile,
+    nodes.RollingAgg,
+    nodes.Drawdown,
+    nodes.Runup,
+    nodes.BarsSinceExtremum,
+    nodes.Change,
+    nodes.Shift,
+    nodes.RollingCorr,
+    nodes.CrossRank,
+    nodes.CrossDemean,
+    nodes.CrossAgg,
+    nodes.BinaryOp,
+    nodes.UnaryOp,
+    nodes.Mask,
+    nodes.BarsSinceEvent,
+    nodes.EventValue,
+    nodes.EventAgg,
+    ThresholdCondition,
+    AndCondition,
+    OrCondition,
+    NotCondition,
+    RollingCondition,
+    FirstTrueCondition,
+    LagCondition,
+):
+    _model.model_rebuild(_types_namespace=_NAMESPACE)

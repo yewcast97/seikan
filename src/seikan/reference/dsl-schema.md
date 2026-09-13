@@ -355,14 +355,136 @@ Combinators:
   magnitude classics (Amihud illiquidity `|ret|/dollar-volume`, |surprise| conditioning); for a
   two-sided *condition* prefer `or(z > 2, z < -2)`. Also free for the nesting limit.
 
+### Event algebra (Series nodes that embed a Condition)
+
+The four nodes below turn a **Condition** into a Series by anchoring on its *events*. They close
+the substitution trap the plain transforms leave open: a "retest of the breakout level" is a
+retest of the level that WAS broken (recorded at the breakout), not of the moving 5-bar high;
+"any confirmation since the setup" counts from the setup bar, not from a fixed lookback.
+
+Definitions shared by every node:
+- The **event** of a Condition `E` is its tradable signal (`value & init & defined` — the same
+  firing rule the entry itself uses). `s(t)` is the latest bar `≤ t` at which `E` fired, the
+  **current bar included** (`input[t]` is knowable at `t`; for the exclusive forms wrap the input
+  in `shift(·, 1)` or the event in `lag(E, 1)`). A new event **replaces** the old one (latest wins).
+- Before the first event the node is **warmup** (NaN, not initialized): a thesis whose event never
+  fires has no anchor, which is not a data hole and fires nothing.
+- After a post-warmup **hole** in `E` (a bar `E` could not decide — a missing decision input) the
+  anchor is UNKNOWN until the next defined event: the node reads NaN while initialized, a threshold
+  over it is undefined, and the bars land in the cell's `signal_coverage` ledger (which the
+  checklist refuses) — never a silent False.
+- Every node is a deterministic, causal function of `E`'s history and the input through `t` —
+  the same class of signal-side state `first_true`, `ema` and the expanding extrema carry. No
+  fill, no P&L, no position, no future bar: observer purity is untouched.
+
+The nodes:
+- `{"type": "mask", "condition": <Condition>}` — the condition as a number: `1.0` where it holds,
+  `0.0` where it was decided False, NaN while warming or undecidable. Depth-transparent (like
+  `shift`). The bridge for every counting recipe: "at least 2 of A/B/C" is
+  `mask(A) + mask(B) + mask(C) >= 2`; breadth of a condition across a basket is
+  `cross_agg(mask(C), "mean")`.
+- `{"type": "bars_since_event", "event": <Condition>}` — `t − s(t)` (0 on the event bar). Streak
+  length is `bars_since_event(not(C))`. Counts one level (no Series child).
+- `{"type": "event_value", "event": <Condition>, "input": <Series>}` — `input[s(t)]`: the input's
+  value AT the latest event, held until the next one. A NaN input on the event bar reads NaN until
+  the next event; later holes in the input are irrelevant (the snapshot was taken). Counts one
+  level over `input`.
+- `{"type": "event_agg", "event": <Condition>, "input": <Series>, "agg": "sum|max|min|mean"}` —
+  the input aggregated over `[s(t), t]`, a resettable running aggregate (`mean` divides by
+  `t − s + 1`). Strict finite gate like `rolling_agg`: one NaN input bar inside the window poisons
+  the aggregate until the next event; an overflow reads NaN. Counts one level over `input`.
+
+An embedded Condition is a **decision, not a transform level**: it adds nothing to the embedding
+node's depth, and its own threshold operands are depth-checked as roots of their own — and
+listed by `--root-series-out` beside the entry's outer operands, since each is a reason a bar did
+or did not fire. A swept parameter inside an embedded condition (`rolling.window`,
+`first_true.cooldown`, `lag.periods`, a transform window, a named constant) is a grid axis like
+any other, registered once, in engine order (the embedded condition before the node's `input`).
+The same event condition written into several nodes is built once (the evaluation memo keys on
+the canonical JSON), but each occurrence of a swept parameter in it is a separate axis — tie them
+with a shared axis (see "Shared sweep axes") when they are one hypothesis.
+
+Recipes (JSON shorthand: `S`, `C`, `E` are Conditions, `x` a Series):
+- **Breakout, then retest of the recorded level** — the full document. `S` (the breakout: first
+  close above the prior 5-bar high) and `L` (THAT high, recorded at `S`) are spelled out in full
+  each time they appear — there are no references in the DSL, and the evaluation memo makes the
+  repetition free:
+  ```jsonc
+  {
+    "name": "breakout-retest",
+    "data": { "targets": ["px"] },
+    "entry": {
+      "type": "first_true",
+      "condition": { "type": "and", "conditions": [
+        { "type": "threshold", "op": ">=",
+          "left": { "type": "bars_since_event", "event": {
+            "type": "first_true", "condition": { "type": "threshold", "op": ">",
+              "left": { "type": "field", "column": "close" },
+              "right": { "type": "shift", "periods": 1, "input": { "type": "rolling_agg",
+                "input": { "type": "field", "column": "high" }, "window": 5, "agg": "max" } } } } },
+          "right": { "type": "constant", "value": 1 } },
+        { "type": "threshold", "op": "<=",
+          "left": { "type": "field", "column": "low" },
+          "right": { "type": "event_value",
+            "event": { "type": "first_true", "condition": { "type": "threshold", "op": ">",
+              "left": { "type": "field", "column": "close" },
+              "right": { "type": "shift", "periods": 1, "input": { "type": "rolling_agg",
+                "input": { "type": "field", "column": "high" }, "window": 5, "agg": "max" } } } },
+            "input": { "type": "shift", "periods": 1, "input": { "type": "rolling_agg",
+              "input": { "type": "field", "column": "high" }, "window": 5, "agg": "max" } } } },
+        { "type": "threshold", "op": ">=",
+          "left": { "type": "field", "column": "close" },
+          "right": { "type": "event_value",
+            "event": { "type": "first_true", "condition": { "type": "threshold", "op": ">",
+              "left": { "type": "field", "column": "close" },
+              "right": { "type": "shift", "periods": 1, "input": { "type": "rolling_agg",
+                "input": { "type": "field", "column": "high" }, "window": 5, "agg": "max" } } } },
+            "input": { "type": "shift", "periods": 1, "input": { "type": "rolling_agg",
+              "input": { "type": "field", "column": "high" }, "window": 5, "agg": "max" } } } }
+      ] }
+    },
+    "params": { "horizon": [5, 10] }
+  }
+  ```
+  On a fixture where bars 0-5 sit at 100, bar 6 breaks to 110, bars 7-8 run higher and bar 9 dips
+  to a low of 99.5 and closes at 101, this fires at bar 9 and nowhere else — the retest is of the
+  recorded 100, not of the moving 5-bar high (113 by then).
+- **Setup → confirm → invalidate**:
+  `first_true(and(confirm, event_agg(setup, mask(retest), max) > 0, not(event_agg(setup, mask(invalid), max) > 0)))`
+  — "since the setup, a retest has happened and no invalidation has".
+- **Any / all / at-least-K of `C` since `S`**: `event_agg(S, mask(C), max) > 0` /
+  `event_agg(S, mask(C), min) > 0` / `event_agg(S, mask(C), sum) >= K` (current bar included).
+- **Re-arm, not re-cross** — "first recovery above −1 after a FRESH excursion below −2":
+  `and(z > -1, shift(event_agg(first_true(z < -2), mask(z > -1), max), 1) < 0.5)` — the `shift`
+  reads "`z > -1` has not held on any bar since the arm, before this one". A bare
+  `first_true(z > -1)` fires on every re-crossing instead.
+- **Streak length**: `bars_since_event(not(C))` is the number of consecutive bars `C` has held.
+- **Previous swing high**: `event_value(E, shift(event_value(E, x), 1))` — the value recorded at
+  the event before the latest one.
+- **VWAP since an event**: `event_agg(E, close * volume, sum) / event_agg(E, volume, sum)`.
+- **Strict ordering** — "A held on a PRIOR bar, then B now": `and(rolling(any, lag(A, 1), N), B)`.
+  `rolling(any, A, N)` includes the current bar and fires when A and B first turn true together.
+- **Session window on intraday bars**: `session_open = change(calendar(day_of_month), 1, diff) != 0`
+  marks each day's first bar; `bars_since_event(session_open)` is the bar-of-session clock;
+  the opening range is `event_agg(session_open, high, max)` / `event_agg(session_open, low, min)`.
+- **Breadth of a condition** across a basket: `cross_agg(mask(C), mean)`.
+
+Not adopted, by decision: a `quorum` node (`mask(A) + mask(B) + mask(C) >= K` is the exact
+spelling), named sub-expression references (the memo makes a repeated subtree free, and a shared
+axis carries the identity that matters), and a looser `rolling(any)` over undecided bars
+(fail-closed by doctrine).
+
 **Nesting limit:** operators may nest at most **five levels** deep. Each transform (`ema`,
 `zscore`, `percentile`, `rolling_agg`, `drawdown`, `runup`, `bars_since_extremum`, `change`,
-`rolling_corr`, the cross-sectional nodes) counts one level, so a five-stage pipeline like
+`rolling_corr`, the cross-sectional nodes, and the event-anchor nodes `bars_since_event` /
+`event_value` / `event_agg`) counts one level, so a five-stage pipeline like
 `zscore(ema(percentile(change(rolling_agg(...)))))` is the deepest shape allowed and a sixth
-wrap is rejected at validation. `binary_op` / `unary_op` / `shift` are transparent (they don't
-count as a level), so `binary_op(ema(x), ema(y))` costs one level, not two; `rolling_corr`
-counts one level over its deeper child. Depth is a budget, not a goal — every extra level is
-another window a reader must audit, so prefer the shallowest expression that says the thesis.
+wrap is rejected at validation. `binary_op` / `unary_op` / `shift` / `mask` are transparent (they
+don't count as a level), so `binary_op(ema(x), ema(y))` costs one level, not two; `rolling_corr`
+counts one level over its deeper child. A Condition embedded in an event node is invisible to the
+count of the node that embeds it — its own operands are checked as roots. Depth is a budget, not a
+goal — every extra level is another window a reader must audit, so prefer the shallowest
+expression that says the thesis.
 
 ## Condition nodes
 
@@ -391,6 +513,13 @@ another window a reader must audit, so prefer the shallowest expression that say
   alternate rare-event exam, and nothing is lost by it because the cell's complete
   statistics (episode clusters, concentration, `rot_p`, `t_hac`, its coverage ledgers) are reported
   either way for you to read.
+- `{"type": "lag", "condition": <Condition>, "periods": k}` — the child's decision `k` bars ago
+  (default 1), all three channels shifted back together: value, init and defined read `[t − k]`,
+  so a hole moves with the decision it affects, and the leading `k` bars are warmup. Backward-only
+  (`k ≥ 1`); a list sweeps as `lag_periods`; a `k` at or beyond the index length never
+  initializes. The typed temporal primitive — strict ordering ("A on a PRIOR bar, then B now") is
+  `and(rolling(any, lag(A, 1), N), B)`, where `rolling(any, A, N)` alone fires when A and B first
+  turn true together. Pair it with the event algebra above (`lag(E, 1)` is the exclusive event).
 
 ### Thesis recipes (archetype-neutral engine)
 

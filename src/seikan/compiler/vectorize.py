@@ -46,6 +46,7 @@ from seikan.constants import RESERVED_SWEEP_LEVELS
 from seikan.dsl.schema import (
     EMA,
     AndCondition,
+    BarsSinceEvent,
     BarsSinceExtremum,
     BinaryOp,
     Calendar,
@@ -57,9 +58,13 @@ from seikan.dsl.schema import (
     CrossRank,
     DaysSince,
     Drawdown,
+    EventAgg,
+    EventValue,
     External,
     Field,
     FirstTrueCondition,
+    LagCondition,
+    Mask,
     NotCondition,
     OrCondition,
     Percentile,
@@ -199,6 +204,18 @@ def _transform_series(node: Series, resolve: _ParamResolver) -> Series:
             return BinaryOp(
                 left=_transform_series(lhs, resolve), right=_transform_series(rhs, resolve), op=op
             )
+        # The event-anchor family: the embedded condition resolves BEFORE the input, so a sweep
+        # inside it names its axis first — ``traverse._series_axis_names`` mirrors this order.
+        case Mask(condition=c):
+            return Mask(condition=_transform_condition(c, resolve))
+        case BarsSinceEvent(event=e):
+            return BarsSinceEvent(event=_transform_condition(e, resolve))
+        case EventValue(event=e, input=inp):
+            e_t = _transform_condition(e, resolve)
+            return EventValue(event=e_t, input=_transform_series(inp, resolve))
+        case EventAgg(event=e, input=inp, agg=agg):
+            e_t = _transform_condition(e, resolve)
+            return EventAgg(event=e_t, input=_transform_series(inp, resolve), agg=agg)
         case _:
             raise TypeError(f"unknown series node: {node!r}")
 
@@ -227,6 +244,9 @@ def _transform_condition(node: Condition, resolve: _ParamResolver) -> Condition:
             return FirstTrueCondition(
                 condition=inner_t, cooldown=resolve("first_true", "cooldown", cd)
             )
+        case LagCondition(condition=inner, periods=p):
+            inner_t = _transform_condition(inner, resolve)
+            return LagCondition(condition=inner_t, periods=resolve("lag", "periods", p))
         case _:
             raise TypeError(f"unknown condition node: {node!r}")
 
@@ -384,6 +404,11 @@ def _latch(values: np.ndarray) -> npt.NDArray[np.bool_]:
     return np.maximum.accumulate(np.isfinite(values).astype(np.int8), axis=0).astype(bool)
 
 
+def _latch_mask(flags: npt.NDArray[np.bool_]) -> npt.NDArray[np.bool_]:
+    """The boolean twin of :func:`_latch`: once a column's flag first turns True it stays True."""
+    return np.maximum.accumulate(flags.astype(np.int8), axis=0).astype(bool)
+
+
 def _all_true(md: MarketData) -> npt.NDArray[np.bool_]:
     return np.ones((len(md.index), len(md.targets)), dtype=bool)
 
@@ -505,6 +530,38 @@ def _build_series(node: Series, md: MarketData) -> tuple[pd.DataFrame, pd.DataFr
             # and pass a threshold as a decided True — an overflow must never fire a signal.
             arr = np.where(np.isfinite(arr), arr, np.nan)
             return _df(arr, md), _df(_latch(arr), md)
+        # ---- the event-anchor family (channel rules; the kernels are in ``nb``) ----
+        # mask:              warmup → NaN, not init | hole → NaN, init (ledger) | 1.0 / 0.0 decided
+        # bars_since_event:  warmup / no event yet → NaN, not init | hole in E → NaN, init, until
+        #                    the next event | 0 on the event bar | t − s after
+        # event_value:       as above; x[t] on the event bar (NaN input there → NaN until the next
+        #                    event) | x[s] held after (later holes in x irrelevant)
+        # event_agg:         as above; x[t] on the event bar | agg over [s, t] after; any NaN in
+        #                    the window poisons until the next event; overflow → NaN
+        case Mask(condition=c):
+            cv, ci, cd_ = condition_arrays(c, md)
+            arr = nb.mask_apply_nb(cv, ci, cd_)
+            # init is the condition's OWN latch — a superset of ``_latch(arr)`` — so a hole at
+            # C's first initialized bar is ledgered rather than absorbed as warmup.
+            return _df(arr, md), _df(ci, md)
+        case BarsSinceEvent() | EventValue() | EventAgg():
+            ev = node.event
+            cv, ci, cd_ = condition_arrays(ev, md)
+            sig = cv & ci & cd_
+            s_idx, known = nb.event_anchor_apply_nb(sig, ci, cd_)
+            if isinstance(node, BarsSinceEvent):
+                arr = nb.bars_since_event_apply_nb(s_idx)
+            elif isinstance(node, EventValue):
+                x = build_series(node.input, md)[0].to_numpy(dtype=float)
+                arr = nb.event_value_apply_nb(x, s_idx)
+            else:
+                x = build_series(node.input, md)[0].to_numpy(dtype=float)
+                arr = nb.event_agg_apply_nb(sig, ci, cd_, x, node.agg)
+            # The standard latch OR'd with "the anchor became unknowable after warmup": a hole in
+            # E BEFORE the first event (a domain NaN no raw-leaf panel sees) reads as a hole, never
+            # as silent warmup. Strictly more refusals than the plain latch, never fewer.
+            init = _latch(arr) | _latch_mask(ci & ~known)
+            return _df(arr, md), _df(init, md)
         case _:
             raise TypeError(f"unknown series node: {node!r}")
 
@@ -591,6 +648,20 @@ def _build_condition(
             )
             init = ci.to_numpy()
             return _df(value, md), ci, _df(_vacuous(defined, init), md)
+        case LagCondition(condition=inner, periods=p):
+            k = _scalarized(p)
+            cv, ci, cd_ = build_condition(inner, md)
+            v0, i0, d0 = cv.to_numpy(dtype=bool), ci.to_numpy(dtype=bool), cd_.to_numpy(dtype=bool)
+            # All three channels shift back together: the leading k bars are warmup (value False,
+            # init False, defined True — vacuous), and a hole moves with the decision it affects.
+            value = np.zeros_like(v0)
+            init = np.zeros_like(i0)
+            defined = np.ones_like(d0)
+            if k < v0.shape[0]:
+                value[k:] = v0[:-k]
+                init[k:] = i0[:-k]
+                defined[k:] = d0[:-k]
+            return _channels(value, init, defined, md)
         case _:
             raise TypeError(f"unknown condition node: {node!r}")
 

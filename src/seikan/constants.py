@@ -57,7 +57,10 @@ MAX_DECLARED_GRID = 64
 #: The ceiling on Series operator-nesting depth, enforced by ``dsl.schema.Thesis`` at PARSE time
 #: (exit 3) on both the entry tree and ``params.features``. Counted levels are the transforms
 #: (ema, zscore, percentile, rolling_agg, drawdown, runup, bars_since_extremum, change,
-#: rolling_corr, the cross-sectional nodes); ``binary_op``/``unary_op``/``shift`` are transparent
-#: plumbing. A STRUCTURAL bound like ``MAX_DECLARED_GRID`` — it bounds what the language can say
-#: (and what a reader must audit), never what any reported number means.
+#: rolling_corr, the cross-sectional nodes, and the event-anchor nodes ``bars_since_event`` /
+#: ``event_value`` / ``event_agg``); ``binary_op``/``unary_op``/``shift``/``mask`` are transparent
+#: plumbing, and a Condition embedded in an event node is a decision rather than a level — its
+#: threshold operands are checked as roots of their own. A STRUCTURAL bound like
+#: ``MAX_DECLARED_GRID`` — it bounds what the language can say (and what a reader must audit),
+#: never what any reported number means.
 MAX_SERIES_NESTING = 5
