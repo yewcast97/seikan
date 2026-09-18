@@ -2086,6 +2086,10 @@ TURTLE_REPORT: dict[str, JsonValue] = {
         "lot_size": "1",
         "liquidity": "'unlimited' (see turtle_roles.caveats.liquidity)",
         "commission": "0.0",
+        "pre_trade_risk": (
+            "who checks a buy before it is submitted: the kernel (the venue's risk engine is "
+            "bypassed; its account books still apply and are reconciled)"
+        ),
         "fill_conventions": "how every kind of fill was executed (the turtle_roles map)",
         "bars_per_year": "the annualization clock",
         "n_bars": "bars on the joined clock",

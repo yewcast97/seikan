@@ -259,6 +259,7 @@ class SimulationBlock(TypedDict):
     lot_size: int
     liquidity: str
     commission: float
+    pre_trade_risk: str
     fill_conventions: dict[str, str]
     bars_per_year: int
     n_bars: int

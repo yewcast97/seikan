@@ -36,6 +36,13 @@ from seikan.types.turtle import (
 #: The thesis parameters the simulation reads nothing from (the turtle owns its exit).
 THESIS_PARAMS_IGNORED = ["horizon", "outcome", "benchmark", "features"]
 
+PRE_TRADE_RISK = (
+    "the kernel: every buy is sized within the target's fixed budget before it is submitted; the "
+    "venue's own risk engine is bypassed (its pre-trade checks misread a resting sell stop as "
+    "uncovered exposure and would deny buys the ledger affords), while its account books stay "
+    "live and are reconciled against the ledger"
+)
+
 BENCHMARK_CONSTRUCTION = (
     "buy-and-hold of the index: starting_equity / open[0] units bought at the first bar's open, "
     "marked at every close; the bar before the first is the starting equity, like the strategy"
@@ -177,6 +184,7 @@ def report_sections(result: TurtleResult) -> ReportSections:
         "lot_size": 1,
         "liquidity": "unlimited",
         "commission": 0.0,
+        "pre_trade_risk": PRE_TRADE_RISK,
         "fill_conventions": {k: str(v) for k, v in TURTLE_FILL_CONVENTIONS.items()},
         "bars_per_year": c.bars_per_year,
         "n_bars": n,

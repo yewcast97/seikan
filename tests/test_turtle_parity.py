@@ -168,6 +168,26 @@ def test_a_stop_raised_at_the_print_is_live_during_the_same_bar(tmp_path):
     ]
 
 
+def test_a_pyramided_trade_stop_never_starves_the_next_add(tmp_path):
+    # X = 250 with a budget that leaves 13,150 of cash after two fills, against a third fill
+    # costing 13,000: the venue must not lock anything for the resting (moved) sell stop, or it
+    # would deny the buy the kernel's ledger affords.
+    result, c = _run(
+        tmp_path,
+        {"PX": worked_example_rows()},
+        first_true_above(50.0),
+        coefficients_doc(equity=38_400, risk_per_unit=0.0260417, stop_trigger="trade"),
+    )
+    _assert_parity(result, c)
+    run = result.cells[0].targets["PX"]
+    assert [(f.kind, f.shares, f.price) for f in run.fills[:3]] == [
+        ("entry", 250, 50.0),
+        ("add", 250, 51.0),
+        ("add", 250, 52.0),
+    ]
+    assert run.ledger["adds_skipped_budget"] == 0
+
+
 def test_budget_caps_the_entry_and_skips_an_unaffordable_add(tmp_path):
     rows = [
         *flat_rows(24, 49.9, 0.05),  # N = 0.1

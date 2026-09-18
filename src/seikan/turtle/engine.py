@@ -107,7 +107,7 @@ def engine_version() -> str:
 def run_cell(cell: EntryCell, data: SimulationData, c: TurtleCoefficients) -> CellRun:
     """Simulate one cell on a fresh venue and reconcile it."""
     from nautilus_trader.backtest import BacktestEngine
-    from nautilus_trader.config import BacktestEngineConfig, LoggerConfig
+    from nautilus_trader.config import BacktestEngineConfig, LoggerConfig, RiskEngineConfig
     from nautilus_trader.model import AccountType, Currency, Money, OmsType, TraderId, Venue
 
     from seikan.turtle.strategy import TurtleTargetConfig, TurtleTargetStrategy
@@ -120,6 +120,13 @@ def run_cell(cell: EntryCell, data: SimulationData, c: TurtleCoefficients) -> Ce
         config=BacktestEngineConfig(
             trader_id=TraderId("SEIKAN-001"),
             logging=LoggerConfig(bypass_logging=True),
+            # The kernel's per-target budgets are the pre-trade check: it never sizes a buy the
+            # target's cash cannot cover. The venue's risk engine is bypassed because its own
+            # pre-trade checks misread a resting sell stop — it locks balance for the shares a
+            # not-yet-updated position does not cover and counts the stop's notional against
+            # free cash when the next buy arrives — and would deny buys the ledger affords. The
+            # account's books stay live, and the reconciliation below holds them to the ledger.
+            risk_engine=RiskEngineConfig(bypass=True),
         )
     )
     engine.add_venue(

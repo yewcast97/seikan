@@ -638,7 +638,11 @@ where the event study merely censors, so each of those is exit 2 with the usual 
 a cash account, unlimited liquidity at every print and trigger (no partial fills, no slippage —
 the venue's own volume-based partials are switched off by construction), zero commission, the
 price grid, the bar-type label every clock is fed under and the REAL `bar_spacing`, the
-`first_eligible_bar`, and the fill conventions. Execution mechanics worth knowing: a market
+`first_eligible_bar`, the fill conventions, and `pre_trade_risk`: the KERNEL is the pre-trade
+check (a buy is sized within the target's budget before it is submitted) and the venue's risk
+engine is bypassed — its pre-trade checks misread a resting sell stop as uncovered exposure and
+would deny buys the ledger affords — while the venue's account books stay live and every cell's
+`reconciliation` holds them to the ledger. Execution mechanics worth knowing: a market
 order submitted when the venue processes a bar fills at that bar's CLOSE, so the command feeds
 one "opening print" per bar (a quote at the open, one nanosecond before the bar) and submits
 every buy and every close-mode sell at that print; the resting stop is placed or moved only at

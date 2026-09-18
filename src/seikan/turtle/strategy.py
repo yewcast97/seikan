@@ -278,12 +278,10 @@ class TurtleTargetStrategy(Strategy):
             self._resting_reason = want.reason
             if same_trigger and same_qty:
                 return
-            self.modify_order(
-                self._resting_coid,
-                quantity=None if same_qty else quantity,
-                trigger_price=None if same_trigger else trigger,
-            )
-            return
+            # Cancel and resubmit rather than modify: the venue's cash account locks balance on
+            # a MODIFIED sell stop (one unit of currency per share) and would later deny a buy
+            # the kernel's ledger affords, while a fresh submission locks nothing.
+            self.cancel_order(self._resting_coid)
         order = self.order_factory.stop_market(
             instrument_id=instrument.id,
             order_side=OrderSide.SELL,
