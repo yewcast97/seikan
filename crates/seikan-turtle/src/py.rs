@@ -623,8 +623,8 @@ impl PyMachine {
     }
 
     /// The one action to submit at the opening print of `bar`.
-    fn on_print(&mut self, bar: usize, open: f64) -> PyPrintAction {
-        self.inner.on_print(bar, open).into()
+    fn on_print(&mut self, bar: usize, open_price: f64) -> PyPrintAction {
+        self.inner.on_print(bar, open_price).into()
     }
 
     /// Report a fill (`kind` is `entry`, `add` or `exit`).
@@ -776,17 +776,17 @@ fn first_eligible_bar(atr_period: usize, exit_lookback: usize) -> usize {
 #[pyfunction]
 fn simulate_reference(
     coefficients: &PyCoefficients,
-    open: Vec<f64>,
-    high: Vec<f64>,
-    low: Vec<f64>,
-    close: Vec<f64>,
+    opens: Vec<f64>,
+    highs: Vec<f64>,
+    lows: Vec<f64>,
+    closes: Vec<f64>,
     fired: Vec<bool>,
 ) -> PyResult<PySimResult> {
     let bars = BarSeries {
-        open: &open,
-        high: &high,
-        low: &low,
-        close: &close,
+        open: &opens,
+        high: &highs,
+        low: &lows,
+        close: &closes,
     };
     sim::simulate(&coefficients.inner, bars, &fired)
         .map(PySimResult::from)

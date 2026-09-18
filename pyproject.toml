@@ -6,7 +6,7 @@ readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "yewcast97" }]
-requires-python = ">=3.13"
+requires-python = ">=3.13,<3.15"
 keywords = ["backtesting", "event-study", "statistics", "finance", "cli"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
@@ -32,6 +32,10 @@ dependencies = [
     # (SEIKAN_* env vars overridden by CLI flags).
     "pydantic>=2",
     "pydantic-settings>=2.5",
+    # The Turtle simulation (`stock-turtle-trade-long-only`) is executed by nautilus_trader's
+    # simulated exchange. 2.0 is the PyO3-only line; pinned exactly while it is a release
+    # candidate, and it is what caps requires-python below 3.15.
+    "nautilus_trader==2.0.0rc5",
 ]
 
 [project.urls]
@@ -42,23 +46,18 @@ Changelog = "https://github.com/yewcast97/seikan/blob/main/CHANGELOG.md"
 seikan = "seikan.cli:main"
 
 [build-system]
-# Pure-Python package (no compiled extensions); a plain setuptools backend is enough.
-requires = ["setuptools>=77"]
-build-backend = "setuptools.build_meta"
+# A mixed Rust/Python package: the Turtle kernel (`crates/seikan-turtle`) is compiled into the
+# `seikan._turtle` extension module by maturin, which also ships every non-Python file under
+# `src/seikan` (the agent-facing DSL reference `seikan schema --markdown` streams, the PEP 561
+# `py.typed` marker, the `_turtle.pyi` stub). Building from source needs a Rust toolchain.
+requires = ["maturin>=1.8,<2"]
+build-backend = "maturin"
 
-[tool.setuptools.packages.find]
-where = ["src"]
-
-# Ship the agent-facing DSL reference (`seikan schema --markdown` reads it out of the installed
-# package UNGUARDED, so a wheel without it does not answer `--markdown` quietly or emptily: the
-# FileNotFoundError falls through to the CLI's catch-all and the command exits 4 with an `internal`
-# error envelope on stdout — a packaging omission surfacing as a seikan bug) and the PEP 561
-# `py.typed` marker, which tells a downstream type checker that this package's own annotations are
-# the authority — without the marker mypy/pyright silently treat every `seikan.*` import as `Any`,
-# and a caller building against the DSL models or `serialize`'s writer signatures loses exactly
-# the contract surface those annotations exist to state.
-[tool.setuptools.package-data]
-"seikan" = ["reference/*.md", "py.typed"]
+[tool.maturin]
+manifest-path = "crates/seikan-turtle/Cargo.toml"
+python-source = "src"
+module-name = "seikan._turtle"
+features = ["extension-module"]
 
 [tool.pytest.ini_options]
 # Warnings are ERRORS: the engine's own numerics are warning-free by design (degenerate pools
@@ -72,6 +71,8 @@ dev = [
     "pytest>=9.0.3",
     "mypy>=1.14",
     "ruff>=0.9",
+    # `uv run maturin develop` rebuilds the extension in place after a Rust edit.
+    "maturin>=1.8,<2",
 ]
 
 # The `py.typed` marker above claims these annotations are authoritative, and a claim nothing checks
