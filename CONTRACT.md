@@ -66,6 +66,20 @@ seikan run <thesis.json>         full-grid event study + the per-cell checklist,
                                  (thesis_min_trades → --min-trades); env twin:
                                  SEIKAN_<KNOB> (SEIKAN_THESIS_MIN_TRADES). See the
                                  naming RULE under the sealed-policy paragraph below.
+seikan stock-turtle-trade-long-only <thesis.json> <coefficients.json>
+    --data KEY=PATH ...          a SIMULATION beside the event study: the thesis's entry firing
+    --data benchmark=PATH        is bought and managed under the long-only Turtle position
+    [--column KEY=COL ...]       rules (the second JSON's coefficients) on nautilus_trader's
+    --report-out <path>          simulated exchange, one cell per declared entry combo, and the
+    [--trades-out <path>]        performance report — every common metric, an index buy-and-
+    [--fills-out <path>]         hold benchmark — is written to the nominated file (REQUIRED).
+    [--equity-out <path>]        --data binds the thesis's keys exactly as `run` does AND the
+                                 reserved `benchmark` key — the index — ALWAYS, whatever the
+                                 thesis declares. Optional CSVs: --trades-out (one row per
+                                 round trip), --fills-out (every venue fill), --equity-out (the
+                                 equity and benchmark curves per bar, per cell). Silent on
+                                 success like `run`; an invalid coefficients document is exit 3
+                                 `coefficients_invalid`. See "the Turtle simulation" below.
 seikan hash <thesis.json|->      validate the thesis DSL and emit its canonical identity on
                                  stdout: `{name, dsl_hash, data_keys}` after the standard
                                  header. `dsl_hash` is `canonical_dsl_hash` (defaults
@@ -173,10 +187,11 @@ failed strict validation (`data_report` says exactly what and where — includin
 these particular bytes cannot honor) · **3** invalid request — an argparse usage error (INCLUDING a
 run that nominates no output at all, a `--data` mapping that does not answer the thesis's declared
 keys exactly, and a `--column` bound to a key the thesis never declares or to `benchmark`), an
-invalid thesis DSL or gate-threshold set, or an unusable nominated output path — empty, unwritable,
-named by two flags at once, or naming one of the run's own inputs — the last group checked before
-the O(grid × length) work rather than after it (`usage` / `dsl_invalid` / `thresholds_invalid`
-envelopes) · **4** internal error. Every seikan-DETECTED error prints a machine-readable JSON
+invalid thesis DSL or gate-threshold set, an invalid Turtle coefficients document, or an unusable
+nominated output path — empty, unwritable, named by two flags at once, or naming one of the run's
+own inputs — the last group checked before the O(grid × length) work rather than after it
+(`usage` / `dsl_invalid` / `thresholds_invalid` / `coefficients_invalid` envelopes) · **4**
+internal error. Every seikan-DETECTED error prints a machine-readable JSON
 envelope on stdout (`--help`/`--version` are conventional non-JSON exit 0, and a SIGINT is Python's
 default with no envelope); humans get one line on stderr. Nothing a checklist reports can move the
 exit code.
@@ -193,14 +208,17 @@ Every JSON document — the `run` report, `hash`, `check-data`, `describe`, `sch
 every error
 envelope — opens
 with the same top-level header `{seikan_version, report_schema_version, command}`
-(`report_schema_version` **5** — v5 REMOVED the legacy `stats_table`/`by_target`/`by_param`/
+(`report_schema_version` **6** — v6 ADDED the `stock-turtle-trade-long-only` document, the
+`coefficients_invalid` envelope type and the `turtle_*` sections of `seikan schema`, every `run`
+document byte-identical to v5 apart from the stamp; v5 REMOVED the legacy `stats_table`/`by_target`/`by_param`/
 `n_stats_rows` grid breakdown (a fired-pools-only duplicate of `cells[].by_target` whose rollups
 averaged per-cell means across horizons), the nominal `t_iid`/`p_iid` pair and the derivable
 `sharpe`/`firing_rate`, renamed the trades column `bars_held` → `horizon` (always present), and
 ADDED the integrity reads `rot_n_null` per panel and `pbo.n_splits_attempted`/`n_candidates_min`;
 every surviving number is byte-identical to v4 — the full history is in CHANGELOG.md); an error
 envelope then carries `error: {type, message, errors?}`
-with `type` ∈ {usage, data_invalid, dsl_invalid, thresholds_invalid, internal}. The `run` report —
+with `type` ∈ {usage, data_invalid, dsl_invalid, thresholds_invalid, coefficients_invalid,
+internal}. The `run` report —
 the file `--report-out` nominates, never stdout — has ONE FIXED layer order after the header, no
 variants, so a reader never has to discover which keys this particular invocation happened to
 produce: `identity` (`name`, `dsl_hash`, `data_digests` — one entry per data key the thesis
@@ -549,6 +567,118 @@ cross-run/cross-DSL search discipline is invisible to a stateless reporter — b
 layer (`dsl_hash`, the per-key `data_digests`, `summary.index_start`/`index_end`) makes every
 distinct exam visible so the caller can enforce its own budget. Deployment judgment is likewise the caller's.
 
+### the Turtle simulation (`stock-turtle-trade-long-only`)
+
+Everything above is the event study: an observer that measures a firing and never trades. This
+command is the ONE place seikan simulates, and it does so BESIDE the engine, never inside it: the
+thesis's per-(entry combo × target) tradable firing — `api.list_entries`, bit-identical to
+`--entry-flags-out` — is the entry signal of a long-only Turtle position system executed by
+nautilus_trader's simulated exchange, and the report describes what that simulation did over the
+provided bars. The frozen statistical mechanics, `run`'s documents and the checklist are untouched
+(`turtle/` imports the public API; nothing in `compiler/`, `analysis/` or `gate/` knows it
+exists). The rules themselves live once, in the Rust kernel `crates/seikan-turtle` (the
+`seikan._turtle` extension): the venue executes what the kernel decides, and a reference simulator
+in the same crate replays the same decisions with idealized fills — the suite holds the venue's
+fills to the reference's, fill for fill, so an execution drift can never pass as a rule.
+
+**The rules, as implemented** (the coefficients in brackets, with the rules' defaults):
+
+- **Entry.** The thesis fires on bar `t` while flat and past warmup → market buy at the opening
+  print of bar `t+1`, filled at that bar's open. `N_entry` is the Wilder ATR [`atr_period` 20]
+  at bar `t`; `X = floor(risk_per_unit [0.01] × budget / (stop_n [2] × N_entry))` shares, capped
+  at the print to what the target's cash affords (`entries.cash_capped`). The initial stop is
+  `P0 − stop_n × N_entry`. A firing while in position, before warmup (`max(atr_period,
+  exit_lookback) − 1`), on the final bar, or that sizes to zero shares is COUNTED in
+  `trades.entries.skipped`, never taken.
+- **Adds.** While `units < max_units [3]`, a close at or above `last_fill + add_step_n [0.5] ×
+  N_entry` buys another X shares at the next opening print, wherever it opens — there is no gap
+  guard, and an open below the level still fills (`adds.filled_below_level`). One add per bar;
+  the level re-anchors on the ACTUAL fill; every add is X, the first fill's size. An add that no
+  longer fits the cash is skipped whole (`adds.skipped.budget`) and re-arms at the next close.
+  After an add the stop is `max(stop, fill − stop_n × N_stop)`, `N_stop` the ATR current at the
+  add's signal bar [`stop_n_source` "current"] or the entry ATR ["entry"] — the stop never moves
+  down (`stop_holds`).
+- **Stop-loss and channel exit**, each `close` (default) or `trade` [`stop_trigger`,
+  `exit_trigger`]. The channel is the lowest low of the previous `exit_lookback` [20] COMPLETED
+  bars, the current bar excluded. Close mode: `close < stop` → `stop_close`, else `close <
+  channel` → `channel_close`, the whole position sold at the next opening print; and an opening
+  print below the stop with no exit pending sells at that open (`stop_gap`). Trade mode: ONE
+  sell stop rests at the venue one price increment below the higher applicable level
+  (`stop_trade` when the stop is the higher, else `channel_trade`); a bar trading through it
+  fills at the trigger, a print gapping through it fills at the open — the venue does both
+  itself. Whichever fires first closes the whole position. A position still open after the last
+  bar is MARKED at the last close (`end_of_data`, `is_open`), counted in `n_open`, excluded from
+  every trade statistic.
+- **Print precedence**: a pending exit → the close-mode gap-through stop → a pending entry or
+  add. The only order that ever rests through a bar is the sell stop, so an entry, an add and an
+  exit never conflict inside one bar.
+- **Budgets.** Each target is its own sub-account with a FIXED budget of `equity / n_targets`
+  (the sizing base and the cash cap); the venue holds one cash account of the whole equity and
+  the kernel never sizes beyond a budget, so the venue can never deny an order. The portfolio
+  curve is the sub-accounts summed bar by bar.
+
+**Coefficients.** The second positional is one strict JSON object (unknown keys, non-finite
+numbers, duplicate keys and coerced types refuse with `coefficients_invalid`): `equity`
+(REQUIRED) plus the bracketed knobs above, `bars_per_year` (252, the annualization clock),
+`currency` ("USD", a label) and `price_precision` (4: every price is quantized to that grid
+before the run, with the kernel's own rounding, so the venue and the reference agree bit for
+bit). The resolved set is stamped into `identity.coefficients` with its
+`coefficients_hash` (defaults filled, keys sorted), so a document that relied on a default and
+one that spelled it out are ONE coefficient set. `seikan schema` emits the document under
+`turtle_coefficients` (with its JSON Schema).
+
+**What the thesis contributes, and what it does not.** Only the firing: `params.horizon`,
+`params.outcome`, `params.benchmark` and `params.features` are ignored and stamped in
+`simulation.thesis_params_ignored`; `direction` must be `longonly` (a short-side alarm taken long
+is a different exam — exit 3). Targets must be OHLCV-shaped, must carry a price on every bar,
+and the bound `benchmark` file must cover the target clock exactly — a simulation needs a price
+where the event study merely censors, so each of those is exit 2 with the usual `data_report`.
+
+**The venue, stamped.** `simulation` says exactly how the exchange was set up: `SIM`, netting,
+a cash account, unlimited liquidity at every print and trigger (no partial fills, no slippage —
+the venue's own volume-based partials are switched off by construction), zero commission, the
+price grid, the bar-type label every clock is fed under and the REAL `bar_spacing`, the
+`first_eligible_bar`, and the fill conventions. Execution mechanics worth knowing: a market
+order submitted when the venue processes a bar fills at that bar's CLOSE, so the command feeds
+one "opening print" per bar (a quote at the open, one nanosecond before the bar) and submits
+every buy and every close-mode sell at that print; the resting stop is placed or moved only at
+print time or after a bar, never during a bar's replay (a command issued mid-replay applies only
+after it).
+
+**The report** (the file `--report-out` nominates, never stdout) has ONE fixed layer order after
+the header: `identity` (`name`, `dsl_hash`, `coefficients`, `coefficients_hash`, `data_digests`
+— every bound key, `benchmark` included — and `environment`, which adds `nautilus_trader` and
+`seikan_turtle`) → `data_report` (the loader's, plus the benchmark file's strict-read entry) →
+`outputs` → `simulation` → `targets` → `params` (the swept entry axes) → `n_cells` →
+`benchmark` (buy-and-hold of the index: `equity / open[0]` units from the first bar's open,
+marked at closes, its own metrics and periodic returns) → `cells` → `turtle_roles` (the claim,
+one honest caveat per over-trustable number, the fill conventions — verbatim from
+`contract.TURTLE_ROLES`, equality-checked at emission). Each cell — one per declared entry combo,
+in declaration order, NONE ranked, no best cell — carries `cell_id` and `params` (the
+entry-flags labels), a `portfolio` panel (`metrics`, `relative`, `periodic`, `trades`), a
+`by_target` panel per sub-account (`metrics`, `relative`, `trades`, `end_state`), nautilus's own
+`engine_stats` verbatim (NaN → null) and a `reconciliation` of the kernel's ledger against the
+venue's books (fill counts, cash change, closing cash — always `matched`: a mismatch is exit 4,
+never a report). `metrics` is one equity curve's description — simple bar returns against the
+previous bar (the bar before the first is the starting equity), sample standard deviations,
+risk-free zero, annualization by `bars_per_year`: total return, CAGR, volatility, Sharpe,
+Sortino, Calmar, the deepest drawdown with its peak/trough/recovery geometry, the bar-return
+moments, exposure. `relative` is the curve against the benchmark's bar returns: beta, per-bar and
+annualized alpha, correlation, tracking error, information ratio, excess return and CAGR, up/down
+capture. `trades` covers the CLOSED round trips (win rate, profit factor, expectancy, average and
+largest win/loss, bars held, units, adds, raw MAE/MFE against the entry price) beside the
+kernel's full ledger of what it did and declined to do. Every ratio with a zero denominator is
+null, never an infinity; the field dictionary is `seikan schema`'s `turtle_report`.
+
+**The CSVs**: `--trades-out`, one row per round trip (closed, then the open end-of-data mark);
+`--fills-out`, one row per venue fill with the kernel's state after it; `--equity-out`, one row
+per bar per cell with the equity and benchmark curves and the per-target position state. All
+three carry the swept entry axes as leading columns, exactly like `run`'s trades CSV;
+`seikan schema` emits `turtle_trades_csv` / `turtle_fills_csv` / `turtle_equity_csv`.
+
+nautilus_trader is used as an installed library (LGPL-3.0) and the Rust kernel links no
+nautilus code; seikan itself stays MIT.
+
 ### non-negotiable invariants
 
 - **The engine's statistical mechanics are frozen** (`compiler/` + `analysis/` — the EVENT-TIME
@@ -606,6 +736,11 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   re-shaped data is ONE document rather than a new one every time the data layer moves, with the
   locating facts stamped in `identity.data_digests` where they
   belong.
+- **The simulation consumes the engine and never changes it.** `stock-turtle-trade-long-only`
+  reads the entry mask through `api.list_entries` and runs beside `compiler/`, `analysis/` and
+  `gate/`; a `run` document is byte-identical with the simulation installed or not, and the
+  simulation's rules exist once, in the Rust kernel, with the venue's fills held to the kernel's
+  reference simulator by the suite.
 - **Statelessness**: no SQLite, no `$SEIKAN_HOME`, no config file. Thresholds come from `SEIKAN_*`
   env vars overridden by CLI flags, and the snapshot used is stamped into every report. The one
   on-disk artifact is numba's JIT cache (see dev commands — `NUMBA_CACHE_DIR` under a read-only
@@ -748,12 +883,28 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   statistical doctrine — what the checklist reads vs what is evidence-only, observer purity,
   sweep semantics — lives in these modules' own docstrings and module headers; read them before
   touching any of the three.
+- `turtle/` — the simulation package behind `stock-turtle-trade-long-only`: `coefficients`
+  (the strict, frozen coefficients document + `canonical_coefficients_hash`), `signals` (thesis →
+  one entry cell per combo, read off `api.list_entries`), `market` (admission: quantized OHLC,
+  the benchmark's exact clock cover, every hole refused; the nautilus instruments, bars and
+  opening prints), `strategy` (the nautilus strategy driving the kernel per target), `engine`
+  (one `BacktestEngine` per cell, the reconciliation), `metrics` (pure numpy/pandas performance
+  arithmetic) and `report` (the sections and the three CSV frames). nautilus_trader is imported
+  only inside the functions that need it, so `import seikan`, `run` and `schema` never load it.
+- `_turtle.pyi` / `crates/seikan-turtle` — the Rust kernel (`seikan._turtle`, built by maturin):
+  `WilderAtr` and `LowestLowChannel` in the nautilus indicator idiom, the `Machine` state
+  machine, `simulate_reference`; `types/turtle.py` declares the report's shapes.
 - `reference/dsl-schema.md` — the agent-facing DSL guide (`seikan schema --markdown`).
 
 ### dev commands
 
 ```bash
-uv sync                   # install (numpy/numba/scipy/pandas/pydantic only — no services)
+uv sync                   # install; builds the Rust kernel (a Rust toolchain, cargo >= 1.88,
+                          # is required) and pulls nautilus_trader — no services
+uv run maturin develop    # rebuild the kernel in place after a Rust edit
+cargo fmt --all --check   # the Rust side of the dev loop; run the cargo commands under
+uv run cargo clippy --workspace --all-targets --all-features -- -D warnings   # `uv run` so
+cargo test --workspace    # pyo3 finds the interpreter (the pure kernel tests need none)
 uv run ruff format --check src tests   # formatting is enforced, never a matter of taste
 uv run ruff check src tests            # lint
 uv run mypy                            # strict, over the whole package

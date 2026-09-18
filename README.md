@@ -5,6 +5,9 @@ trading/investment theses, built to be driven by other agents (or humans). You b
 DSL (JSON) and time series (strict CSV); seikan runs an observer-pure forward-return event
 study — entry condition + measurement horizon, no exit rule, no portfolio simulation — over
 **every parameter × horizon cell your sweep declares**, and writes one complete JSON report.
+Beside it, one simulation command takes the same thesis as an entry signal and runs the
+long-only Turtle position rules on nautilus_trader's simulated exchange (the rules in a Rust
+kernel), writing a performance report benchmarked against an index.
 
 ## What makes it different
 
@@ -34,7 +37,8 @@ study — entry condition + measurement horizon, no exit rule, no portfolio simu
 ## Install
 
 ```bash
-uv sync            # or: uv tool install .   (Python >= 3.13)
+uv sync            # or: uv tool install .   (Python 3.13 or 3.14, and a Rust toolchain:
+                   # the Turtle kernel is compiled by maturin; nautilus_trader is pulled in)
 ```
 
 ## Use
@@ -45,6 +49,8 @@ seikan hash thesis.json            # canonical identity + the exact data keys a 
 seikan check-data px.csv           # pre-flight a CSV against the strict data contract
 seikan describe px.csv             # pure data profiling — measures nothing
 seikan run thesis.json --data PX=px.csv --report-out report.json
+seikan stock-turtle-trade-long-only thesis.json turtle.json \
+    --data PX=px.csv --data benchmark=spy.csv --report-out turtle.json   # the simulation
 ```
 
 A minimal thesis:
@@ -75,7 +81,7 @@ Exit codes describe how far the RUN got, never how the evidence looked:
 |---|---|
 | 0 | the command completed — for `run`, every nominated output was written (the per-cell results live inside `gate.cells`; exit 0 is not a verdict) |
 | 2 | input data failed strict validation (see `data_report`) |
-| 3 | invalid request — a usage error, an invalid thesis DSL or threshold set, or an unusable output path |
+| 3 | invalid request — a usage error, an invalid thesis DSL, threshold set or Turtle coefficients document, or an unusable output path |
 | 4 | internal error |
 
 It declares two data keys — the target `PX`, and `benchmark`, which `params.benchmark: "market"`
@@ -86,6 +92,12 @@ invocation and are stamped into the report, so re-pulled or re-shaped data next 
 same exam under the same identity. This thesis declares a two-cell grid (one entry combo × two
 horizons), so the report carries two entries in `summary.cells`, each graded on its own.
 
+The Turtle simulation takes a second JSON of coefficients — `{"equity": 100000}` is a complete
+one, every other knob (`atr_period` 20, `add_step_n` 0.5, `max_units` 3, `stop_n` 2,
+`exit_lookback` 20, `risk_per_unit` 0.01, `stop_trigger`/`exit_trigger` `close`) defaulting to
+the rules — and always needs `--data benchmark=<index.csv>`, the index its report benchmarks
+against. It runs one simulation per declared entry combo and ranks none of them.
+
 ## Development
 
 ```bash
@@ -93,6 +105,8 @@ uv run ruff format --check src tests   # formatting is enforced
 uv run ruff check src tests            # lint
 uv run mypy                            # strict, over the whole package
 uv run pytest                          # the whole suite, zero skips
+cargo fmt --all --check && cargo test --workspace            # the Rust kernel
+uv run cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
 
 ## Where the depth lives

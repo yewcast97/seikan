@@ -7,6 +7,43 @@ semantics — `gate.POLICY_VERSION`). Each entry below names every stamp it move
 frozen statistic is only ever a correction, and it bumps `statistics_version`; anything that
 merely repackages code changes no number.
 
+## 5.0.0 — report schema 6, statistics 4, policy 3
+
+The Turtle simulation: one command that trades, beside the event study that never does. Every
+`run` document is byte-identical to 4.0.0 apart from the `report_schema_version` stamp.
+
+- ADDED `seikan stock-turtle-trade-long-only <thesis.json> <coefficients.json>`: the thesis's
+  entry firing (per declared entry combo × target, bit-identical to `--entry-flags-out`) is
+  bought and managed under the long-only Turtle position rules on nautilus_trader's simulated
+  exchange, and a performance report — equity-curve metrics, benchmark-relative metrics against
+  buy-and-hold of the bound index, round-trip statistics, the kernel's ledger, nautilus's own
+  statistics, a venue reconciliation — is written to `--report-out` (required), with optional
+  `--trades-out` (round trips), `--fills-out` (every fill) and `--equity-out` (the curves per
+  bar per cell). `--data` binds the thesis's keys as `run` does and must also bind the reserved
+  `benchmark` key. One cell per entry combo, in declaration order, none ranked.
+- ADDED the Rust kernel `crates/seikan-turtle`, compiled into the `seikan._turtle` extension by
+  maturin: `WilderAtr` and `LowestLowChannel` in the nautilus indicator idiom (registrable with
+  a strategy), the `Machine` state machine holding every rule, and `simulate_reference`, whose
+  idealized fills the suite holds the venue's fills to, fill for fill. The rules as implemented:
+  next-open entries sized `floor(risk_per_unit × budget / (stop_n × N_entry))` and capped by
+  the target's fixed budget (`equity / n_targets`), adds on a close `add_step_n × N_entry` above
+  the last fill (no gap guard; one per bar; skipped whole when unaffordable), the stop
+  `max(stop, fill − stop_n × N)` with `N` the current or the entry ATR (`stop_n_source`), the
+  channel over the previous `exit_lookback` completed bars, and `close` or `trade` triggers for
+  the stop and the channel (a resting sell stop one increment below the higher level; gapped
+  prints fill at the open).
+- ADDED the coefficients document (`turtle.coefficients.TurtleCoefficients`: strict, frozen,
+  `equity` required, the rules' defaults, `canonical_coefficients_hash`), the report shapes
+  (`types/turtle.py`), the emitted root `TurtleReportDocument`, the `coefficients_invalid`
+  envelope type, and the `seikan schema` sections `turtle_coefficients` (with the JSON Schema),
+  `turtle_report`, `turtle_trades_csv`, `turtle_fills_csv`, `turtle_equity_csv`, `turtle_roles`.
+- CHANGED the build: seikan is a mixed Rust/Python maturin project (`requires-python
+  >=3.13,<3.15`, a Rust toolchain to build from source); `nautilus_trader==2.0.0rc5` is a
+  dependency, imported only by the simulation command's own modules — `run`, `hash`,
+  `check-data`, `describe` and `schema` never load it.
+- `report_schema_version` 6 for the new document and envelope type; `statistics_version` 4 and
+  `policy_version` 3 unchanged — nothing in `compiler/`, `analysis/` or `gate/` moved.
+
 ## 4.0.0 — report schema 5, statistics 4, policy 3
 
 DSL expressiveness release: the entry vocabulary grows so a thesis can say what it means instead
