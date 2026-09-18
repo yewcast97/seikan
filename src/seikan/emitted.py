@@ -44,9 +44,10 @@ from typing import Literal, TypedDict
 
 from pydantic import ConfigDict, TypeAdapter, ValidationError, with_config
 
-from seikan.contract import DESCRIBE_ROLES, METRIC_ROLES
+from seikan.contract import DESCRIBE_ROLES, METRIC_ROLES, TURTLE_ROLES
 from seikan.serialize import json_safe
 from seikan.types import (
+    BenchmarkBlock,
     DataReport,
     FileProfile,
     GateSection,
@@ -55,6 +56,9 @@ from seikan.types import (
     RefusalStub,
     ReportIdentity,
     RunSummary,
+    SimulationBlock,
+    TurtleCell,
+    TurtleIdentity,
 )
 
 
@@ -117,6 +121,26 @@ class DescribeDocument(TypedDict):
     describe_roles: dict[str, JsonValue]
 
 
+@with_config(ConfigDict(extra="forbid"))
+class TurtleReportDocument(TypedDict):
+    """The ``stock-turtle-trade-long-only`` ``--report-out`` document, sections required, in
+    the fixed layer order."""
+
+    seikan_version: str
+    report_schema_version: int
+    command: Literal["stock-turtle-trade-long-only"]
+    identity: TurtleIdentity
+    data_report: DataReport
+    outputs: dict[str, OutputEntry]
+    simulation: SimulationBlock
+    targets: list[str]
+    params: list[str]
+    n_cells: int
+    benchmark: BenchmarkBlock
+    cells: list[TurtleCell]
+    turtle_roles: dict[str, JsonValue]
+
+
 # One adapter per document kind, built once at import — validation cost is a few milliseconds
 # against an O(grid × length) run. Keyed by the ``command`` header value ``cli._base_doc`` stamps.
 _ADAPTERS: dict[str, TypeAdapter[object]] = {
@@ -124,6 +148,7 @@ _ADAPTERS: dict[str, TypeAdapter[object]] = {
     "hash": TypeAdapter(HashDocument),
     "check-data": TypeAdapter(CheckDataDocument),
     "describe": TypeAdapter(DescribeDocument),
+    "stock-turtle-trade-long-only": TypeAdapter(TurtleReportDocument),
 }
 
 
@@ -163,6 +188,7 @@ def validate_summary(summary: RunSummary) -> None:
 _VERBATIM_BLOBS: dict[str, tuple[str, dict[str, JsonValue]]] = {
     "run": ("metric_roles", METRIC_ROLES),
     "describe": ("describe_roles", DESCRIBE_ROLES),
+    "stock-turtle-trade-long-only": ("turtle_roles", TURTLE_ROLES),
 }
 
 

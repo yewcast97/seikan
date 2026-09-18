@@ -28,6 +28,7 @@ from seikan.emitted import (
     HashDocument,
     ReportContractError,
     RunReportDocument,
+    TurtleReportDocument,
     validate_emitted,
     validate_summary,
 )
@@ -257,7 +258,13 @@ def test_document_roots_are_subsets_of_the_assembly_shape():
     # EmittedDocument is the all-NotRequired shape the builders write against; each command root
     # restates its sections as REQUIRED but may never invent a key the assembly shape lacks.
     assembly = set(typing.get_type_hints(EmittedDocument))
-    for root in (RunReportDocument, HashDocument, CheckDataDocument, DescribeDocument):
+    for root in (
+        RunReportDocument,
+        HashDocument,
+        CheckDataDocument,
+        DescribeDocument,
+        TurtleReportDocument,
+    ):
         assert set(typing.get_type_hints(root)) <= assembly, root.__name__
 
 
@@ -292,3 +299,40 @@ def test_report_fields_documents_every_declared_panel_field():
         hints = typing.get_type_hints(getattr(t, td_name))
         missing = [k for k in hints if k not in describe_text]
         assert not missing, f"{td_name} fields {missing} undocumented in DESCRIBE_REPORT"
+
+
+def test_turtle_report_documents_every_declared_field():
+    # The same pin for the turtle report's TypedDicts against contract.TURTLE_REPORT.
+    import json
+    import typing
+
+    from seikan import types as t
+    from seikan.contract import TURTLE_REPORT
+
+    text = json.dumps(TURTLE_REPORT)
+    for td_name in (
+        "TurtleIdentity",
+        "CoefficientsBlock",
+        "SimulationBlock",
+        "BenchmarkBlock",
+        "TurtleCell",
+        "PortfolioPanel",
+        "TargetPanel",
+        "TargetEndState",
+        "EngineStats",
+        "ReconciliationBlock",
+        "PerformanceMetrics",
+        "DrawdownBlock",
+        "ExposureBlock",
+        "RelativeMetrics",
+        "TradeStats",
+        "ExitCounts",
+        "EntryCounts",
+        "EntrySkips",
+        "AddCounts",
+        "AddSkips",
+        "PeriodicReturns",
+    ):
+        hints = typing.get_type_hints(getattr(t, td_name))
+        missing = [k for k in hints if k not in text]
+        assert not missing, f"{td_name} fields {missing} undocumented in TURTLE_REPORT"

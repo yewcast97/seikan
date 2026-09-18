@@ -20,6 +20,12 @@ from seikan.types.run import (
 from seikan.types.scalars import (
     JsonValue,
 )
+from seikan.types.turtle import (
+    BenchmarkBlock,
+    CoefficientsBlock,
+    SimulationBlock,
+    TurtleCell,
+)
 
 # ---- the emitted documents ----------------------------------------------------------------
 
@@ -87,6 +93,19 @@ class ReportIdentity(TypedDict):
     environment: dict[str, str]
 
 
+class TurtleIdentity(TypedDict):
+    """WHICH thesis, coefficients and bytes a ``stock-turtle-trade-long-only`` simulation ran
+    on — that report's ``identity`` layer, built by the CLI. No thresholds: the simulation has no
+    checklist."""
+
+    name: str
+    dsl_hash: str
+    coefficients: CoefficientsBlock
+    coefficients_hash: str
+    data_digests: dict[str, DataDigest]
+    environment: dict[str, str]
+
+
 class OutputEntry(TypedDict):
     """One file a run wrote — an entry of the report's ``outputs``, keyed in NOMINATION order.
 
@@ -124,11 +143,18 @@ class ErrorEnvelope(TypedDict):
     :class:`EmittedDocument`.
 
     ``type`` names the class the exit code reflects (``usage`` / ``dsl_invalid`` /
-    ``thresholds_invalid`` / ``data_invalid`` / ``internal``); ``errors`` rides only the two
-    pydantic-backed classes, which have structured records to carry.
+    ``thresholds_invalid`` / ``coefficients_invalid`` / ``data_invalid`` / ``internal``);
+    ``errors`` rides only the pydantic-backed classes, which have structured records to carry.
     """
 
-    type: Literal["usage", "data_invalid", "dsl_invalid", "thresholds_invalid", "internal"]
+    type: Literal[
+        "usage",
+        "data_invalid",
+        "dsl_invalid",
+        "thresholds_invalid",
+        "coefficients_invalid",
+        "internal",
+    ]
     message: str
     errors: NotRequired[list[ValidationRecord]]
 
@@ -150,14 +176,17 @@ class EmittedDocument(TypedDict):
     - ``check-data`` writes ``data_report``;
     - ``describe`` writes ``data_report`` → ``profiles`` → ``describe_roles``;
     - ``schema`` writes the static contract payloads (``dsl_json_schema`` through
-      ``describe_roles``);
+      ``turtle_roles``);
+    - ``stock-turtle-trade-long-only`` (``--report-out``) writes ``identity`` →
+      ``data_report`` → ``outputs`` → ``simulation`` → ``targets`` → ``params`` → ``n_cells`` →
+      ``benchmark`` → ``cells`` → ``turtle_roles``;
     - any failure writes ``error`` (and ``data_report`` too, on the exit-2 class).
     """
 
     seikan_version: str
     report_schema_version: int
     command: str | None
-    identity: NotRequired[ReportIdentity]
+    identity: NotRequired[ReportIdentity | TurtleIdentity]
     name: NotRequired[str]
     dsl_hash: NotRequired[str]
     data_keys: NotRequired[list[str]]
@@ -178,4 +207,16 @@ class EmittedDocument(TypedDict):
     exit_codes: NotRequired[dict[str, JsonValue]]
     metric_roles: NotRequired[dict[str, JsonValue]]
     describe_roles: NotRequired[dict[str, JsonValue]]
+    simulation: NotRequired[SimulationBlock]
+    targets: NotRequired[list[str]]
+    params: NotRequired[list[str]]
+    n_cells: NotRequired[int]
+    benchmark: NotRequired[BenchmarkBlock]
+    cells: NotRequired[list[TurtleCell]]
+    turtle_coefficients: NotRequired[dict[str, JsonValue]]
+    turtle_report: NotRequired[dict[str, JsonValue]]
+    turtle_trades_csv: NotRequired[dict[str, JsonValue]]
+    turtle_fills_csv: NotRequired[dict[str, JsonValue]]
+    turtle_equity_csv: NotRequired[dict[str, JsonValue]]
+    turtle_roles: NotRequired[dict[str, JsonValue]]
     error: NotRequired[ErrorEnvelope]

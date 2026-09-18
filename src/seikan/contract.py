@@ -1468,9 +1468,10 @@ EXIT_CODES: dict[str, JsonValue] = {
     "2": "input data failed strict validation (see data_report)",
     "3": (
         "invalid request — an argparse usage error (including a run that nominates no output), an "
-        "invalid thesis DSL or gate-threshold set, or an unusable nominated output path: one that "
-        "is empty, unwritable, named by two flags at once, or names one of the thesis's own input "
-        "CSVs (usage / dsl_invalid / thresholds_invalid envelope)"
+        "invalid thesis DSL or gate-threshold set, an invalid Turtle coefficients document, or an "
+        "unusable nominated output path: one that is empty, unwritable, named by two flags at "
+        "once, or names one of the run's own input files (usage / dsl_invalid / "
+        "thresholds_invalid / coefficients_invalid envelope)"
     ),
     "4": "internal error",
 }
@@ -1821,5 +1822,546 @@ DESCRIBE_REPORT: dict[str, JsonValue] = {
             "endpoint_missing} when the block refuses whole, and ratio_reason in "
             "{non_positive_endpoint} when only the ratio algebras refuse while diff lives"
         ),
+    },
+}
+
+
+# ---- the Turtle simulation (`stock-turtle-trade-long-only`) ----------------------------------
+
+#: How each kind of fill is executed — stamped into ``simulation.fill_conventions`` and into
+#: ``turtle_roles`` so a reader of either knows where every price came from.
+TURTLE_FILL_CONVENTIONS: dict[str, JsonValue] = {
+    "entry": (
+        "the thesis fires on bar t (the engine's own tradable signal) while flat and past warmup "
+        "→ a market buy at the opening print of bar t+1, filled at that bar's open; X = "
+        "floor(risk_per_unit × budget / (stop_n × N_entry)) shares, N_entry the ATR at bar t, "
+        "capped to what the target's cash affords"
+    ),
+    "add": (
+        "a close at or above last_fill + add_step_n × N_entry, while under max_units → another X "
+        "shares bought at the next opening print, wherever it opens (no gap guard; an open below "
+        "the level still fills); skipped whole when X shares no longer fit the cash, and re-armed "
+        "at the next close"
+    ),
+    "stop_close": (
+        "stop_trigger 'close': a close below the stop → the whole position sold at the next "
+        "opening print, at that open"
+    ),
+    "stop_gap": (
+        "stop_trigger 'close': an opening print below the stop with no exit pending → sold at "
+        "that open, no waiting for the close"
+    ),
+    "stop_trade": (
+        "stop_trigger 'trade': one sell stop rests at the venue one price increment below the "
+        "stop; a bar trading through it fills at the trigger, a print gapping through it fills "
+        "at the open"
+    ),
+    "channel_close": (
+        "exit_trigger 'close': a close below the lowest low of the previous exit_lookback "
+        "completed bars → sold at the next opening print"
+    ),
+    "channel_trade": (
+        "exit_trigger 'trade': the resting sell stop sits one increment below the channel when "
+        "the channel is the higher level; fills at the trigger, or at the open when gapped"
+    ),
+    "end_of_data": (
+        "a position still open after the last bar is MARKED at the last close — not a fill; it "
+        "is excluded from every trade statistic and counted in n_open"
+    ),
+}
+
+#: The role map stamped into every ``stock-turtle-trade-long-only`` report as ``turtle_roles``
+#: (and emitted identically by ``seikan schema``): the exact claim a simulation report makes,
+#: one honest sentence per number a reader is likely to over-trust, and the fill conventions.
+TURTLE_ROLES: dict[str, JsonValue] = {
+    "claim": (
+        "a SIMULATION, not an event study: the thesis's entry firing is bought and managed under "
+        "the long-only Turtle position rules on nautilus_trader's simulated exchange, with "
+        "unlimited liquidity, zero commission and every fill at an opening print or a stop "
+        "trigger. The report describes what that simulation did over the provided bars — one "
+        "cell per declared entry combo, every cell reported, none ranked, no best cell — and "
+        "certifies nothing about the future. exit 0 says only that the run finished and every "
+        "nominated output was written"
+    ),
+    "caveats": {
+        "equity_curve": (
+            "one path over one sample: a single realized sequence of fills, not a distribution; "
+            "every metric below is a description of that path"
+        ),
+        "cagr": (
+            "the compounding exponent is bars_per_year / n_bars — a coefficient the caller sets, "
+            "not a clock the engine reads; a short sample annualizes noise"
+        ),
+        "sharpe": (
+            "mean / sample std of bar returns × √bars_per_year, risk-free zero; bar returns of a "
+            "position-holding curve are autocorrelated and fat-tailed, so the ratio is neither "
+            "normal nor comparable across bar spacings"
+        ),
+        "sortino": "the downside deviation is the root mean square of the negative bar returns",
+        "calmar": "cagr over the deepest drawdown of one path — a two-number ratio of two extremes",
+        "max_drawdown": (
+            "measured on close-to-close equity marks, so an intrabar excursion below a close is "
+            "invisible to it"
+        ),
+        "alpha_beta": (
+            "an ordinary least-squares line through bar returns against the index's, alpha per "
+            "bar and × bars_per_year; over a curve that is flat most bars, beta describes the "
+            "in-market bars diluted by the flat ones"
+        ),
+        "information_ratio": (
+            "mean / std of the return difference to buy-and-hold × √bars_per_year — the "
+            "benchmark's own path is one sample too"
+        ),
+        "capture": (
+            "mean strategy return over the index's up (down) bars divided by the index's mean "
+            "over the same bars; null when the index never rose (fell)"
+        ),
+        "trade_stats": (
+            "closed round trips only; an open end-of-data position is marked, counted in n_open "
+            "and excluded; a handful of trips supports no rate or expectancy"
+        ),
+        "mae_mfe": (
+            "raw excursions of the held bars' lows and highs against the ENTRY price, the exit "
+            "bar included — marks, not attainable fills"
+        ),
+        "engine_stats": (
+            "nautilus_trader's own analyzer over the same run, verbatim: its Sharpe/Sortino "
+            "assume 252 periods, its PnL (total) is the account's cash change (an open position "
+            "reads as its cost), and its per-position rates count positions, not round trips"
+        ),
+        "benchmark": (
+            "buy-and-hold of the bound index from the first bar's open — a passive path with "
+            "100% exposure against a strategy that is flat between signals"
+        ),
+        "liquidity": (
+            "unlimited at every print and trigger: no partial fills, no slippage, no impact; the "
+            "venue's own volume-based partial fills are switched off by construction"
+        ),
+        "costs": "zero commission and zero fees; the account currency is a label",
+        "price_grid": (
+            "every price is quantized to price_precision decimals before the run; the entry "
+            "signal was computed by the event study on the unquantized data"
+        ),
+        "warmup": (
+            "no entry before bar max(atr_period, exit_lookback) − 1; earlier firings are "
+            "counted as entries.skipped.warmup, never taken"
+        ),
+        "sample_size": (
+            "the number of round trips is the effective sample; n_bars is the calendar, not the "
+            "evidence"
+        ),
+        "no_ranking": (
+            "cells are reported in declaration order with every declared combo present; "
+            "choosing among them, and the multiplicity of having looked, are the caller's"
+        ),
+    },
+    "fill_conventions": TURTLE_FILL_CONVENTIONS,
+}
+
+#: The coefficients document (`seikan schema` also emits its JSON Schema as
+#: ``turtle_coefficients.json_schema``).
+TURTLE_COEFFICIENTS: dict[str, JsonValue] = {
+    "command": (
+        "seikan stock-turtle-trade-long-only <thesis.json> <coefficients.json> --data KEY=PATH "
+        "... --data benchmark=PATH --report-out <path> [--trades-out] [--fills-out] "
+        "[--equity-out] [--column KEY=COL] [--pretty]"
+    ),
+    "document": (
+        "one JSON object, strict (unknown keys, non-finite numbers, duplicate keys and coerced "
+        "types all refuse with the exit-3 coefficients_invalid envelope); every omitted field "
+        "takes the rules' default, and the resolved set is stamped into identity.coefficients "
+        "with its canonical hash"
+    ),
+    "fields": {
+        "equity": "REQUIRED, > 0: total money; each target's budget is equity / n_targets",
+        "atr_period": "default 20: N is the Wilder ATR over this many bars",
+        "add_step_n": (
+            "default 0.5: add a unit each time the close is this many N above the last fill"
+        ),
+        "max_units": "default 3: the position cap in units of X shares",
+        "stop_n": "default 2.0: the stop sits this many N below the latest fill",
+        "exit_lookback": "default 20: exit below the lowest low of this many completed bars",
+        "risk_per_unit": (
+            "default 0.01: X = floor(risk_per_unit × budget / (stop_n × N_entry)) — the worked "
+            "example's $1,000 ÷ (2 × $2) = 250 shares"
+        ),
+        "stop_trigger": "default 'close' | 'trade': how the stop-loss fires (see fill_conventions)",
+        "exit_trigger": "default 'close' | 'trade': how the channel exit fires",
+        "stop_n_source": (
+            "default 'current' | 'entry': after an add, the stop uses the ATR current at the "
+            "add's signal bar (the literal reading of 'N is recalculated only for the stop') or "
+            "the entry ATR; add levels and X always use the entry ATR"
+        ),
+        "bars_per_year": "default 252: the annualization clock of the report's metrics",
+        "currency": "default 'USD': the simulated account's currency code (three capitals)",
+        "price_precision": (
+            "default 4 (0..9): decimals of the price grid every price is quantized to"
+        ),
+    },
+    "rules": {
+        "sizing": (
+            "each target runs its own sub-account with a FIXED budget of equity / n_targets: the "
+            "sizing base and the cash cap; the initial buy is capped to what the budget affords "
+            "(entries.cash_capped) and an add that no longer fits is skipped whole "
+            "(adds.skipped.budget)"
+        ),
+        "ladder": (
+            "add levels are anchored on the last ACTUAL fill: last_fill + add_step_n × N_entry; "
+            "one add per bar; every add is X shares — the first fill's size"
+        ),
+        "stop": (
+            "initial P0 − stop_n × N_entry; after an add max(stop, fill − stop_n × N_stop) — it "
+            "never moves down (stop_holds counts a held one)"
+        ),
+        "channel": (
+            "the lowest low of the previous exit_lookback COMPLETED bars, the current bar "
+            "excluded; whichever of stop and channel fires first closes the whole position"
+        ),
+        "signal": (
+            "the thesis's own tradable firing per (entry combo × target), bit-identical to "
+            "--entry-flags-out; a firing while in position, before warmup, on the final bar, or "
+            "that sizes to zero shares is counted, never taken; direction must be longonly; "
+            "params.horizon/outcome/benchmark/features are ignored (stamped in "
+            "simulation.thesis_params_ignored)"
+        ),
+    },
+}
+
+#: The ``stock-turtle-trade-long-only`` report's field dictionary — the output-side twin of the
+#: coefficients document, block by block in the report's layer order.
+TURTLE_REPORT: dict[str, JsonValue] = {
+    "layer_order": (
+        "seikan_version → report_schema_version → command → identity → data_report → outputs → "
+        "simulation → targets → params → n_cells → benchmark → cells → turtle_roles"
+    ),
+    "identity": {
+        "name": "the thesis's declared name",
+        "dsl_hash": "canonical_dsl_hash of the thesis — the same identity `seikan hash` emits",
+        "coefficients": {
+            "equity": "total money (required)",
+            "atr_period": "the N lookback",
+            "add_step_n": "the add step in N",
+            "max_units": "the unit cap",
+            "stop_n": "the stop distance in N",
+            "exit_lookback": "the channel lookback",
+            "risk_per_unit": "the sizing fraction",
+            "stop_trigger": "close | trade",
+            "exit_trigger": "close | trade",
+            "stop_n_source": "current | entry",
+            "bars_per_year": "the annualization clock",
+            "currency": "the account currency",
+            "price_precision": "the price grid's decimals",
+            "_": "the RESOLVED set, every field (see turtle_coefficients for the semantics)",
+        },
+        "coefficients_hash": (
+            "sha256 of the resolved coefficients (defaults filled, keys sorted) — omitted and "
+            "explicit defaults share one identity"
+        ),
+        "data_digests": (
+            "per bound key incl. benchmark: {path, column, sha256}, exactly as the run report"
+        ),
+        "environment": (
+            "python/numpy/pandas/scipy/numba plus nautilus_trader and seikan_turtle versions"
+        ),
+    },
+    "simulation": {
+        "engine": "'nautilus_trader'",
+        "engine_version": "the installed nautilus_trader distribution",
+        "kernel": "'seikan._turtle' — the Rust kernel that takes every decision",
+        "kernel_version": "the kernel's crate version",
+        "venue": "'SIM'",
+        "oms_type": (
+            "'NETTING': one position per instrument, adds increase it, the exit flattens it"
+        ),
+        "account_type": "'CASH': no borrowing; the kernel never sizes beyond a target's budget",
+        "currency": "the account currency (a label)",
+        "starting_equity": "coefficients.equity",
+        "n_targets": "the thesis's target count",
+        "budget_per_target": "starting_equity / n_targets",
+        "budget_mode": "'fixed': the budget neither grows with profits nor shrinks with losses",
+        "instruments": "target → the positional venue symbol it traded under (T0.SIM, …)",
+        "price_precision": "decimals of the price grid",
+        "price_increment": "10^-price_precision — the step a 'trade' trigger sits below its level",
+        "size_precision": "0: whole shares",
+        "lot_size": "1",
+        "liquidity": "'unlimited' (see turtle_roles.caveats.liquidity)",
+        "commission": "0.0",
+        "fill_conventions": "how every kind of fill was executed (the turtle_roles map)",
+        "bars_per_year": "the annualization clock",
+        "n_bars": "bars on the joined clock",
+        "index_start": "first bar stamp",
+        "index_end": "last bar stamp",
+        "bar_spacing": "{min,median,max}_seconds between consecutive bars — the real clock",
+        "first_eligible_bar": (
+            "max(atr_period, exit_lookback) − 1: the first bar an entry can be taken on"
+        ),
+        "thesis_params_ignored": "the thesis parameters the simulation reads nothing from",
+        "bar_type_label": (
+            "the label every clock is fed under ('1-DAY-LAST-EXTERNAL'; see bar_spacing)"
+        ),
+    },
+    "targets": "the thesis's targets in declaration order",
+    "params": "the swept entry axes (the cell key columns)",
+    "n_cells": "len(cells) == the declared entry combos",
+    "benchmark": {
+        "source": "the benchmark CSV's path",
+        "construction": "how the buy-and-hold curve is built",
+        "units": "starting_equity / open[0]",
+        "start_equity": "starting_equity",
+        "end_equity": "units × close[-1]",
+        "metrics": "the index's own PerformanceMetrics over the same bars",
+        "periodic": "the index's monthly and annual compounded returns",
+    },
+    "cells": {
+        "cell_id": "'entry' or 'entry[axis=value,...]' — the entry-flags column label",
+        "params": "the entry combo's axis values (identity is params + position)",
+        "portfolio": {
+            "metrics": (
+                "PerformanceMetrics of the whole account (every sub-account summed bar by bar)"
+            ),
+            "relative": "RelativeMetrics of the account's bar returns against the benchmark's",
+            "periodic": "monthly / annual compounded returns of the account",
+            "trades": "TradeStats pooled over every target's round trips",
+        },
+        "by_target": {
+            "metrics": "PerformanceMetrics of the target's sub-account (base = budget_per_target)",
+            "relative": "the sub-account against the benchmark",
+            "trades": "the target's own TradeStats",
+            "end_state": {
+                "shares": "shares held after the last bar",
+                "units": "units held",
+                "cash": "the sub-account's cash",
+                "market_value": "shares × last close",
+                "stop": "the stop in force, null when flat",
+                "add_level": "the next add level, null when flat",
+                "in_position": "shares > 0",
+            },
+        },
+        "engine_stats": {
+            "stats_pnls": "nautilus_trader's PnL statistics per currency (NaN → null)",
+            "stats_returns": "nautilus_trader's return statistics (252-period assumptions)",
+            "stats_general": "nautilus_trader's general statistics",
+        },
+        "reconciliation": {
+            "n_fills_ledger": "fills the kernel recorded",
+            "n_fills_engine": "filled orders the venue reports",
+            "cash_change_ledger": "Σ end cash − starting_equity per the kernel",
+            "cash_change_engine": "the venue's PnL (total) — its account's cash change",
+            "end_cash_ledger": "Σ per-target cash per the kernel",
+            "end_cash_account": "the venue account's closing total",
+            "matched": "always true — a mismatch never becomes a report (exit 4)",
+        },
+    },
+    "PerformanceMetrics": {
+        "start_equity": "the curve's base (the bar before the first)",
+        "end_equity": "the last mark",
+        "net_pnl": "end − start",
+        "total_return": "end / start − 1",
+        "cagr": "(end/start)^(bars_per_year/n_bars) − 1; null when end ≤ 0",
+        "annualized_volatility": "sample std of bar returns × √bars_per_year",
+        "sharpe": "mean / std × √bars_per_year, risk-free zero; null at zero std",
+        "sortino": "mean / downside deviation × √bars_per_year; null at zero downside",
+        "calmar": "cagr / |max_drawdown|; null when either is unavailable or zero",
+        "max_drawdown": "min over bars of equity / running peak − 1 (the start included), ≤ 0",
+        "drawdown": {
+            "peak_time": "stamp of the peak the deepest drawdown fell from (null: the start)",
+            "trough_time": "stamp of the deepest trough",
+            "recovery_time": "first stamp back at the peak (null: never)",
+            "bars_to_trough": "bars from the peak to the trough",
+            "bars_to_recovery": "bars from the trough to recovery (null: never)",
+            "longest_drawdown_bars": "the longest run of bars below the running peak",
+            "longest_drawdown_open": "whether that run is still open at the last bar",
+        },
+        "best_bar_return": "max bar return",
+        "worst_bar_return": "min bar return",
+        "mean_bar_return": "mean bar return",
+        "median_bar_return": "median bar return",
+        "skewness": "scipy population skewness of bar returns (null under 3 bars or zero std)",
+        "kurtosis": "Pearson kurtosis (normal = 3)",
+        "positive_bars_fraction": "bars with a positive return / n_bars",
+        "exposure": {
+            "bars_in_market": "bars with shares held",
+            "fraction_in_market": "bars_in_market / n_bars",
+            "mean_gross_exposure": "mean of market value / equity",
+            "max_gross_exposure": "max of market value / equity",
+        },
+        "n_bars": "bars in the curve",
+        "bars_per_year": "the annualization clock used",
+    },
+    "RelativeMetrics": {
+        "beta": "cov(strategy, benchmark) / var(benchmark) over bar returns (ddof 1)",
+        "alpha_bar": "mean(strategy) − beta × mean(benchmark), per bar",
+        "alpha_annualized": "alpha_bar × bars_per_year",
+        "correlation": "Pearson correlation of the bar returns",
+        "r2": "correlation²",
+        "tracking_error": "std(strategy − benchmark) × √bars_per_year",
+        "information_ratio": "mean(strategy − benchmark) / std(…) × √bars_per_year",
+        "excess_total_return": "total return minus the benchmark's",
+        "excess_cagr": "cagr minus the benchmark's (null when either is null)",
+        "up_capture": (
+            "mean strategy return over the benchmark's up bars / the benchmark's mean there"
+        ),
+        "down_capture": "the same over the benchmark's down bars",
+        "n_up_bars": "benchmark bars with a positive return",
+        "n_down_bars": "benchmark bars with a negative return",
+    },
+    "TradeStats": {
+        "n_round_trips": "closed positions (entry to exit)",
+        "n_open": "positions still open after the last bar",
+        "n_wins": "trips with pnl > 0",
+        "n_losses": "trips with pnl < 0",
+        "n_flat": "trips with pnl == 0",
+        "win_rate": "n_wins / n_round_trips",
+        "gross_profit": "Σ winning pnl",
+        "gross_loss": "Σ losing pnl (≤ 0)",
+        "net_pnl": "Σ pnl over closed trips",
+        "profit_factor": "gross_profit / |gross_loss|; null with no losses",
+        "expectancy": "mean pnl per trip",
+        "expectancy_ret": "mean of pnl / cost_basis per trip",
+        "avg_win": "mean winning pnl",
+        "avg_loss": "mean losing pnl",
+        "largest_win": "max pnl",
+        "largest_loss": "min pnl",
+        "win_loss_ratio": "avg_win / |avg_loss|",
+        "avg_bars_held": "mean exit_bar − entry_bar",
+        "median_bars_held": "median bars held",
+        "max_bars_held": "max bars held",
+        "avg_units_at_exit": "mean units held at exit",
+        "max_units_reached": "the largest unit count any trip reached",
+        "avg_adds_per_trip": "mean adds per trip",
+        "mean_mae": "mean adverse excursion vs the entry price (min low / P0 − 1)",
+        "mean_mfe": "mean favorable excursion vs the entry price (max high / P0 − 1)",
+        "exits": {
+            "stop_close": "exits by a close below the stop",
+            "stop_gap": "exits by an opening print below the stop (close mode)",
+            "stop_trade": "exits by the resting stop at the stop level",
+            "channel_close": "exits by a close below the channel",
+            "channel_trade": "exits by the resting stop at the channel level",
+            "end_of_data": "positions marked open at the last bar (== n_open)",
+        },
+        "entries": {
+            "taken": "entries filled",
+            "cash_capped": "entries whose size the budget reduced",
+            "skipped": {
+                "warmup": "firings before first_eligible_bar",
+                "in_position": "firings while already long",
+                "zero_size": "firings whose unit sized to zero shares",
+                "budget": "firings the budget could not afford at all",
+                "end_of_data": "firings on the final bar (no next open)",
+            },
+        },
+        "adds": {
+            "taken": "adds filled",
+            "filled_below_level": "adds whose open was below the add level",
+            "skipped": {"budget": "adds that no longer fit the cash"},
+        },
+        "stop_holds": "adds whose recomputed stop was lower than the stop in force (held)",
+    },
+    "PeriodicReturns": {
+        "monthly": "'YYYY-MM' → compounded return of the bars in that month",
+        "annual": "'YYYY' → compounded return of the bars in that year",
+    },
+    "conventions": {
+        "returns": "simple bar returns; the bar before the first is the starting equity",
+        "nulls": (
+            "every non-finite number serializes as null; a ratio with a zero denominator is null"
+        ),
+        "time": "ISO-8601 naive stamps, the CSV's own",
+        "ranking": "none: cells ride in declaration order, every declared combo present",
+    },
+}
+
+#: The ``--trades-out`` CSV of the turtle command: one row per round trip.
+TURTLE_TRADES_CSV: dict[str, JsonValue] = {
+    "command": (
+        "seikan stock-turtle-trade-long-only … --trades-out <out.csv> (always overwrites; "
+        "silent on success)"
+    ),
+    "rows": (
+        "one per ROUND TRIP — a position from its entry fill to its exit fill — over every cell "
+        "and target, closed trips first per target then the open end-of-data mark (is_open 1, "
+        "exit_reason end_of_data, exit_px the last close)"
+    ),
+    "columns": {
+        "<swept axes>": (
+            "one leading column per swept entry axis, in params order; absent when none"
+        ),
+        "target": "the target",
+        "entry_bar": "bar position of the entry fill (the print of the bar after the firing)",
+        "entry_time": "that bar's stamp",
+        "exit_bar": "bar position of the exit fill (or the last bar when open)",
+        "exit_time": "that bar's stamp",
+        "exit_reason": (
+            "stop_close | stop_gap | stop_trade | channel_close | channel_trade | end_of_data"
+        ),
+        "is_open": "1 for the end-of-data mark, else 0",
+        "entry_px": "the first fill's price (P0)",
+        "avg_entry_px": "cost_basis / shares",
+        "exit_px": "the exit fill's price (the last close when open)",
+        "unit_shares": "X — the first fill's size, repeated by every add",
+        "units": "units held at exit",
+        "shares": "shares held at exit",
+        "cost_basis": "Σ shares × fill price over the trip's buys",
+        "proceeds": "shares × exit_px",
+        "pnl": "proceeds − cost_basis",
+        "ret": "pnl / cost_basis",
+        "bars_held": "exit_bar − entry_bar",
+        "n_adds": "adds filled in the trip",
+        "adds_skipped_budget": "adds the cash could not cover during the trip",
+        "max_stop": "the stop in force at exit (the highest the trip reached)",
+        "mae": "min low over the held bars / entry_px − 1",
+        "mfe": "max high over the held bars / entry_px − 1",
+    },
+}
+
+#: The ``--fills-out`` CSV of the turtle command: one row per venue fill.
+TURTLE_FILLS_CSV: dict[str, JsonValue] = {
+    "command": (
+        "seikan stock-turtle-trade-long-only … --fills-out <out.csv> (always overwrites; silent "
+        "on success)"
+    ),
+    "rows": "one per venue fill, in fill order per target, over every cell",
+    "columns": {
+        "<swept axes>": "one leading column per swept entry axis; absent when none",
+        "target": "the target",
+        "bar": "the bar the fill belongs to",
+        "datetime": "that bar's stamp",
+        "at": "open (at the opening print) | trigger (the resting stop inside the bar)",
+        "kind": "entry | add | exit",
+        "reason": "the exit reason for an exit, empty otherwise",
+        "side": "buy | sell",
+        "shares": "shares filled",
+        "price": "the fill price",
+        "notional": "shares × price",
+        "cash_after": "the target's cash after the fill",
+        "shares_after": "shares held after the fill",
+        "units_after": "units held after the fill",
+        "stop_after": "the stop in force after the fill (empty when flat)",
+        "client_order_id": "the venue order id",
+    },
+}
+
+#: The ``--equity-out`` CSV of the turtle command: one row per bar per cell.
+TURTLE_EQUITY_CSV: dict[str, JsonValue] = {
+    "command": (
+        "seikan stock-turtle-trade-long-only … --equity-out <out.csv> (always overwrites; silent "
+        "on success)"
+    ),
+    "rows": (
+        "n_bars per cell, cells in declaration order (the leading axis columns tell them apart)"
+    ),
+    "columns": {
+        "<swept axes>": "one leading column per swept entry axis; absent when none",
+        "datetime": "the bar stamp",
+        "equity": "the account after the close: Σ cash + shares × close over the targets",
+        "benchmark": "the buy-and-hold curve at the same close",
+        "cash": "Σ cash",
+        "market_value": "Σ shares × close",
+        "gross_exposure": "market_value / equity",
+        "n_positions": "targets holding shares",
+        "shares[@<target>]": "shares held per target ('@<target>' only with several targets)",
+        "units[@<target>]": "units held per target",
+        "stop[@<target>]": "the stop in force per target (empty when flat)",
+        "add_level[@<target>]": "the next add level per target (empty when flat)",
     },
 }
