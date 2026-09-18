@@ -49,6 +49,16 @@ Subcommands:
   an index too short to measure anything. The market data itself is loaded exactly ONCE per run,
   after request validation, and the one materialized ``MarketData`` is shared by both compute
   paths.
+- ``seikan stock-turtle-trade-long-only <thesis.json> <coefficients.json> --data KEY=PATH ...
+  --report-out <path>`` — a SIMULATION beside the event study: the thesis's entry firing is
+  bought and managed under the long-only Turtle position rules (the second JSON's coefficients)
+  on nautilus_trader's simulated exchange, one cell per declared entry combo, and the
+  performance report — every common metric, an index buy-and-hold benchmark — is written to
+  the nominated file. ``--data`` binds the thesis's keys exactly as ``run`` does and MUST also
+  bind the reserved ``benchmark`` key (the index). Optional ``--trades-out`` (round trips),
+  ``--fills-out`` (every fill) and ``--equity-out`` (the curves per bar). Silent on success,
+  like ``run``; an invalid coefficients document is the exit-3 ``coefficients_invalid``
+  envelope.
 - ``seikan check-data <files...>`` — pre-flight the strict-CSV contract on data files alone.
 - ``seikan describe <files...>`` — profile data files (levels, changes, dispersion, range
   position, missingness): pure DESCRIPTION that measures nothing and supports no thesis. One JSON
@@ -110,10 +120,16 @@ from seikan.contract import (
     REPORT_FIELDS,
     ROOT_SERIES_CSV,
     TRADES_CSV,
+    TURTLE_COEFFICIENTS,
+    TURTLE_EQUITY_CSV,
+    TURTLE_FILLS_CSV,
+    TURTLE_REPORT,
+    TURTLE_ROLES,
+    TURTLE_TRADES_CSV,
 )
 from seikan.dataio import DataError, build_data_report, read_strict_csv
 from seikan.describe import DEFAULT_WINDOWS, describe_files
-from seikan.dsl.schema import Thesis
+from seikan.dsl.schema import BENCHMARK_KEY, Thesis
 from seikan.emitted import validate_emitted
 from seikan.gate import canonical_dsl_hash, evaluate_gate
 from seikan.serialize import (
@@ -125,6 +141,7 @@ from seikan.serialize import (
     write_trades_csv,
 )
 from seikan.settings import GateThresholds
+from seikan.turtle import TurtleCoefficients, TurtleRequestError, canonical_coefficients_hash
 from seikan.types import (
     DataReport,
     DslDocument,
@@ -151,13 +168,15 @@ EXIT_INTERNAL: Final = 4
 #: gate -> metric_roles), the ``outputs`` block naming the files a run wrote, and the error
 #: envelope ``{type, message, errors?}``. It is the one number that tells an agent whether the
 #: binary in front of it is the contract it is holding, so a reader-visible shape change bumps it
-#: rather than arriving silently. The revision history is in CHANGELOG.md; v5 (this build)
-#: REMOVED the legacy ``stats_table``/``by_target``/``by_param``/``n_stats_rows`` grid
-#: breakdown, the nominal ``t_iid``/``p_iid`` pair and the derivable ``sharpe``/``firing_rate``
-#: from the summary, renamed the trades column ``bars_held`` → ``horizon`` (always present),
-#: and ADDED the integrity reads ``rot_n_null`` (per panel) and ``pbo.n_splits_attempted`` /
-#: ``pbo.n_candidates_min``; every surviving number is byte-identical to v4.
-REPORT_SCHEMA_VERSION = 5
+#: rather than arriving silently. The revision history is in CHANGELOG.md; v6 (this build)
+#: ADDED the ``stock-turtle-trade-long-only`` document (identity → data_report → outputs →
+#: simulation → targets → params → n_cells → benchmark → cells → turtle_roles), the
+#: ``coefficients_invalid`` envelope type and the ``turtle_*`` sections of ``seikan schema``;
+#: every ``run`` document is byte-identical to v5 apart from this stamp.
+REPORT_SCHEMA_VERSION = 6
+
+#: The simulation subcommand's name — the ``command`` header value its documents carry.
+TURTLE_COMMAND = "stock-turtle-trade-long-only"
 
 
 #: Ceiling on the ``--windows`` list. A cap, not a knob: past it the request is a usage error,
@@ -334,6 +353,7 @@ def _parse_pairs(
     lower_value: bool,
     msg_not_pair: str,
     msg_dupe: str,
+    command: str = "run",
 ) -> dict[str, str]:
     """The shared ``KEY=VALUE`` pair parser behind ``--data`` and ``--column`` — the two flags
     address the SAME flat key namespace, and a caller who has learned one has learned the other.
@@ -351,28 +371,29 @@ def _parse_pairs(
     for item in raw or []:
         key, sep, value = item.partition("=")
         if not sep:
-            raise _UsageError(f"{flag} {item!r} {msg_not_pair}", "run")
+            raise _UsageError(f"{flag} {item!r} {msg_not_pair}", command)
         key = key.strip()
         value = value.strip().lower() if lower_value else value.strip()
         if not key or not value:
             raise _UsageError(
                 f"{flag} {item!r} needs both a key and a {value_word}, got "
                 f"{'an empty key' if not key else f'an empty {value_word}'}",
-                "run",
+                command,
             )
         if key in pairs:
             raise _UsageError(
                 f"{flag} names {key!r} twice ({pairs[key]!r} and {value!r}) — {msg_dupe}",
-                "run",
+                command,
             )
         pairs[key] = value
     return pairs
 
 
-def _parse_data_pairs(raw: list[str] | None) -> dict[str, str]:
+def _parse_data_pairs(raw: list[str] | None, command: str = "run") -> dict[str, str]:
     """``--data KEY=PATH`` pairs → ``{key: path}``, or a usage refusal."""
     return _parse_pairs(
         raw,
+        command=command,
         flag="--data",
         value_word="path",
         lower_value=False,
@@ -386,11 +407,12 @@ def _parse_data_pairs(raw: list[str] | None) -> dict[str, str]:
     )
 
 
-def _parse_column_pairs(raw: list[str] | None) -> dict[str, str]:
+def _parse_column_pairs(raw: list[str] | None, command: str = "run") -> dict[str, str]:
     """``--column KEY=COL`` pairs → ``{key: column}`` (column lowercased once, at the door), or a
     usage refusal."""
     return _parse_pairs(
         raw,
+        command=command,
         flag="--column",
         value_word="column",
         lower_value=True,
@@ -404,7 +426,9 @@ def _parse_column_pairs(raw: list[str] | None) -> dict[str, str]:
     )
 
 
-def _declared_input_paths(thesis_path: str, resolution: dict[str, str]) -> dict[Path, str]:
+def _declared_input_paths(
+    thesis_path: str, resolution: dict[str, str], extra: dict[str, str] | None = None
+) -> dict[Path, str]:
     """Every file this run READS, resolved, mapped to the name a refusal should quote it by.
 
     Read off the RESOLVED data mapping rather than off the loader's ``data_report`` because the
@@ -426,13 +450,19 @@ def _declared_input_paths(thesis_path: str, resolution: dict[str, str]) -> dict[
             found.setdefault(Path(raw).expanduser().resolve(), field)
 
     note(thesis_path, "the thesis file")
+    for label, path in (extra or {}).items():
+        note(path, label)
     for key, path in resolution.items():
         note(path, f"--data {key}")
     return found
 
 
 def _check_nominated_outputs(
-    nominated: list[tuple[str, str]], thesis_path: str, resolution: dict[str, str]
+    nominated: list[tuple[str, str]],
+    thesis_path: str,
+    resolution: dict[str, str],
+    command: str = "run",
+    extra_inputs: dict[str, str] | None = None,
 ) -> None:
     """Refuse a set of output nominations that cannot ALL be honored — before any compute.
 
@@ -454,23 +484,23 @@ def _check_nominated_outputs(
     about the data can make such a request answerable.
     """
     seen: dict[Path, str] = {}
-    inputs = _declared_input_paths(thesis_path, resolution)
+    inputs = _declared_input_paths(thesis_path, resolution, extra_inputs)
     for flag, raw in nominated:
         if not raw.strip():
-            raise _UsageError(f"{flag} needs a file path, got an empty string", "run")
+            raise _UsageError(f"{flag} needs a file path, got an empty string", command)
         resolved = Path(raw).expanduser().resolve()
         if resolved in seen:
             raise _UsageError(
                 f"{flag} and {seen[resolved]} both name {raw!r} — each output needs its own path, "
                 "or the later write silently destroys the earlier one",
-                "run",
+                command,
             )
         seen[resolved] = flag
         if resolved in inputs:
             raise _UsageError(
                 f"{flag} would overwrite {inputs[resolved]} ({raw!r}) — a run never writes over "
                 "its own input",
-                "run",
+                command,
             )
 
 
@@ -481,47 +511,51 @@ class _ThesisFileNotFoundError(FileNotFoundError):
 
 
 class _NonFiniteJsonError(ValueError):
-    """A ``NaN``/``Infinity`` literal in the thesis file. JSON proper has no such literals;
+    """A ``NaN``/``Infinity`` literal in an input document. JSON proper has no such literals;
     Python's decoder accepts them as an extension, which would admit a threshold that makes every
     comparison undecidable and a ``dsl_hash`` computed over a token no strict parser can read
-    back. A thesis with no recoverable identity is not a thesis."""
-
-
-def _reject_non_finite(literal: str) -> NoReturn:
-    raise _NonFiniteJsonError(
-        f"thesis contains the non-standard JSON literal {literal!r} — numeric values must be "
-        "finite (JSON has no NaN/Infinity; a non-finite threshold decides nothing)"
-    )
+    back. A document with no recoverable identity is not a document."""
 
 
 class _DuplicateJsonKeyError(ValueError):
-    """A repeated object key in the thesis file. Python's decoder silently keeps the LAST
+    """A repeated object key in an input document. Python's decoder silently keeps the LAST
     occurrence, so ``extra="forbid"`` never sees the shadowed spelling and the hash names a
     document whose earlier key the author may have believed was in force. Two claims under one
-    key is not a thesis."""
+    key is not a document."""
 
 
-def _refuse_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
-    obj: dict[str, object] = {}
-    for key, value in pairs:
-        if key in obj:
-            raise _DuplicateJsonKeyError(
-                f"thesis contains the JSON object key {key!r} more than once — a repeated key "
-                "silently discards its earlier value (last-key-wins), so which claim the "
-                "document makes would depend on the parser"
-            )
-        obj[key] = value
-    return obj
+def _strict_json(text: str, what: str) -> object:
+    """The ONE strict JSON parse: no non-finite literals, no duplicate object keys at any depth.
+    ``what`` names the document in the refusal (``thesis``, ``coefficients``)."""
+
+    def reject_non_finite(literal: str) -> NoReturn:
+        raise _NonFiniteJsonError(
+            f"{what} contains the non-standard JSON literal {literal!r} — numeric values must "
+            "be finite (JSON has no NaN/Infinity; a non-finite threshold decides nothing)"
+        )
+
+    def refuse_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        obj: dict[str, object] = {}
+        for key, value in pairs:
+            if key in obj:
+                raise _DuplicateJsonKeyError(
+                    f"{what} contains the JSON object key {key!r} more than once — a repeated "
+                    "key silently discards its earlier value (last-key-wins), so which claim "
+                    "the document makes would depend on the parser"
+                )
+            obj[key] = value
+        return obj
+
+    return json.loads(
+        text, parse_constant=reject_non_finite, object_pairs_hook=refuse_duplicate_keys
+    )
 
 
 def _parse_thesis_text(text: str) -> tuple[DslDocument, Thesis]:
-    """The ONE thesis parse: strict JSON (no non-finite literals, no duplicate object keys at any
-    depth) followed by DSL validation — shared by the file and stdin paths so the two cannot
-    drift."""
-    raw = json.loads(
-        text, parse_constant=_reject_non_finite, object_pairs_hook=_refuse_duplicate_keys
-    )
-    return raw, Thesis.model_validate(raw)
+    """The ONE thesis parse: strict JSON followed by DSL validation — shared by the file and
+    stdin paths so the two cannot drift."""
+    raw = _strict_json(text, "thesis")
+    return raw, Thesis.model_validate(raw)  # type: ignore[return-value]
 
 
 def _load_thesis(path: str) -> tuple[DslDocument, Thesis]:
@@ -530,6 +564,38 @@ def _load_thesis(path: str) -> tuple[DslDocument, Thesis]:
     except FileNotFoundError as exc:
         raise _ThesisFileNotFoundError(str(exc)) from exc
     return _parse_thesis_text(text)
+
+
+class _CoefficientsInvalidError(ValueError):
+    """An unusable Turtle coefficients document — missing file, malformed or non-strict JSON, or
+    a value the model refuses — captured for the exit-3 ``coefficients_invalid`` envelope, kept
+    apart from the thesis's ``dsl_invalid`` so a caller knows which of the two documents to fix.
+    The structured pydantic records, when there are any, ride ``.records``."""
+
+    def __init__(self, message: str, records: list[ValidationRecord] | None = None) -> None:
+        super().__init__(message)
+        self.records = records
+
+
+def _load_coefficients(path: str) -> tuple[dict[str, object], TurtleCoefficients]:
+    """The coefficients document: the same strict JSON parse as the thesis, then the model."""
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        raise _CoefficientsInvalidError(f"coefficients file not found: {exc}") from exc
+    try:
+        raw = _strict_json(text, "coefficients")
+    except (json.JSONDecodeError, _NonFiniteJsonError, _DuplicateJsonKeyError) as exc:
+        raise _CoefficientsInvalidError(f"coefficients are not strict JSON: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise _CoefficientsInvalidError("coefficients must be one JSON object")
+    try:
+        return raw, TurtleCoefficients.model_validate(raw)
+    except ValidationError as exc:
+        records = _validation_records(exc)
+        raise _CoefficientsInvalidError(
+            f"{len(records)} invalid coefficient{'' if len(records) == 1 else 's'}", records
+        ) from exc
 
 
 def _add_threshold_flags(p: argparse.ArgumentParser) -> None:
@@ -560,33 +626,60 @@ def _environment() -> dict[str, str]:
     }
 
 
-def _nominated_outputs(args: argparse.Namespace) -> list[tuple[str, str]]:
-    """The run's nominated (flag, path) list — `~` expanded ONCE for every consumer, presence
-    (never truthiness) deciding nomination, and the zero-output request refused before the
-    thesis file is even read."""
+def _turtle_environment() -> dict[str, str]:
+    """The numeric stack plus the two components the simulation runs on."""
+    from importlib.metadata import version
+
+    from seikan import _turtle
+
+    return {
+        **_environment(),
+        "nautilus_trader": version("nautilus_trader"),
+        "seikan_turtle": _turtle.version(),
+    }
+
+
+#: Each subcommand's output flags as (flag, argparse dest), in nomination order.
+_RUN_OUTPUTS = (
+    ("--report-out", "report_out"),
+    ("--trades-out", "trades_out"),
+    ("--root-series-out", "root_series_out"),
+    ("--entry-flags-out", "entry_flags_out"),
+)
+_TURTLE_OUTPUTS = (
+    ("--report-out", "report_out"),
+    ("--trades-out", "trades_out"),
+    ("--fills-out", "fills_out"),
+    ("--equity-out", "equity_out"),
+)
+
+
+def _nominate(
+    args: argparse.Namespace, flags: tuple[tuple[str, str], ...], command: str
+) -> list[tuple[str, str]]:
+    """A subcommand's nominated (flag, path) list — `~` expanded ONCE for every consumer,
+    presence (never truthiness) deciding nomination."""
     # `~` means the caller's home at EVERY consumer of a nominated path — the collision check,
     # the writability preflight, the write itself and the report's `outputs.path` stamp — so it
     # is expanded ONCE, here. Previously the collision check expanded while the preflight and the
     # writes took the spelling literally, so `--report-out '~/r.json'` was probed and written at
     # a literal `./~` directory the collision check never looked at.
-    for attr in ("report_out", "trades_out", "root_series_out", "entry_flags_out"):
+    for _flag, attr in flags:
         raw_path = getattr(args, attr)
         if raw_path:
             setattr(args, attr, str(Path(raw_path).expanduser()))
     # Nomination is tested on PRESENCE, not truthiness: argparse hands back None for a flag that
     # was never passed and "" for one passed empty, and those are different requests — the second
-    # asked for an output and named it unusably (refused in _check_nominated_outputs below), while
+    # asked for an output and named it unusably (refused in _check_nominated_outputs), while
     # collapsing them would let `--report-out ""` exit 0 having written no report at all.
-    nominated = [
-        (flag, path)
-        for flag, path in (
-            ("--report-out", args.report_out),
-            ("--trades-out", args.trades_out),
-            ("--root-series-out", args.root_series_out),
-            ("--entry-flags-out", args.entry_flags_out),
-        )
-        if path is not None
-    ]
+    del command
+    return [(flag, getattr(args, attr)) for flag, attr in flags if getattr(args, attr) is not None]
+
+
+def _nominated_outputs(args: argparse.Namespace) -> list[tuple[str, str]]:
+    """The run's nominated outputs, the zero-output request refused before the thesis file is
+    even read."""
+    nominated = _nominate(args, _RUN_OUTPUTS, "run")
     # A request that nominates no output is malformed whatever its thesis says, so refuse it before
     # reading a single file — the cheap refusal this CLI owes. (Consequence worth keeping: a
     # zero-flag run against a nonexistent thesis path is `usage`, never `dsl_invalid`.)
@@ -778,6 +871,111 @@ def _cmd_run(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _cmd_turtle(args: argparse.Namespace) -> int:
+    """The simulation: request validation in ``run``'s order, ONE load, the venue per cell, the
+    CSVs, then the report — written last, validated before any byte lands."""
+    command = TURTLE_COMMAND
+    nominated = _nominate(args, _TURTLE_OUTPUTS, command)
+    # The report is the one output this command exists for; the CSVs are companions to it.
+    if args.report_out is None:
+        raise _UsageError("--report-out is required", command)
+    raw, thesis = _load_thesis(args.thesis)
+    coefficients_raw, coefficients = _load_coefficients(args.coefficients)
+    mapping = _parse_data_pairs(args.data, command)
+    columns = _parse_column_pairs(args.column, command)
+    # The index is REQUIRED here whatever the thesis declares: the benchmark of a simulation is
+    # buy-and-hold of the bound index, not an outcome-measurement source.
+    benchmark_path = mapping.get(BENCHMARK_KEY)
+    if benchmark_path is None:
+        raise _UsageError(
+            f"--data {BENCHMARK_KEY}=PATH is required: the index the performance report "
+            "benchmarks against",
+            command,
+        )
+    if thesis.params.direction != "longonly":
+        raise _UsageError(
+            f"{command} trades LONG on the entry firing, but the thesis declares direction "
+            f"{thesis.params.direction!r}",
+            command,
+        )
+    thesis_keys = thesis.data_keys()
+    thesis_mapping = {k: v for k, v in mapping.items() if k != BENCHMARK_KEY or k in thesis_keys}
+    try:
+        files = resolve_data_files(thesis, thesis_mapping, columns)
+    except ValueError as exc:
+        raise _UsageError(str(exc), command) from exc
+    _check_nominated_outputs(
+        nominated,
+        args.thesis,
+        mapping,
+        command,
+        extra_inputs={"the coefficients file": args.coefficients},
+    )
+    for _flag, path in nominated:
+        _preflight_output(path, command)
+    md = load_market_data(thesis.data, files)  # DataError → exit 2 in main()
+
+    # The venue is imported here and nowhere earlier: `run`, `hash`, `schema` never pay for it.
+    from seikan.turtle.engine import run_turtle
+    from seikan.turtle.report import (
+        equity_frame,
+        fills_frame,
+        report_sections,
+        round_trips_frame,
+        write_csv,
+    )
+
+    try:
+        result = run_turtle(thesis, md, coefficients, benchmark_path)
+    except TurtleRequestError as exc:
+        raise _UsageError(str(exc), command) from exc
+    outputs: dict[str, OutputEntry] = {"report": {"path": args.report_out}}
+    if args.trades_out is not None:
+        outputs["trades"] = {
+            "path": args.trades_out,
+            "rows_written": write_csv(round_trips_frame(result), args.trades_out),
+        }
+    if args.fills_out is not None:
+        outputs["fills"] = {
+            "path": args.fills_out,
+            "rows_written": write_csv(fills_frame(result), args.fills_out),
+        }
+    if args.equity_out is not None:
+        outputs["equity"] = {
+            "path": args.equity_out,
+            "rows_written": write_csv(equity_frame(result), args.equity_out),
+        }
+    sections = report_sections(result)
+    data_report = result.data.data_report
+    digest_by_path = {f["path"]: f["sha256"] for f in data_report.get("files", [])}
+    doc = _base_doc(command)
+    doc["identity"] = {
+        "name": thesis.name,
+        "dsl_hash": canonical_dsl_hash(raw),
+        "coefficients": coefficients.model_dump(mode="json"),  # type: ignore[typeddict-item]
+        "coefficients_hash": canonical_coefficients_hash(coefficients_raw),
+        "data_digests": {
+            key: {"path": path, "column": columns.get(key), "sha256": digest_by_path.get(path)}
+            for key, path in mapping.items()
+        },
+        "environment": _turtle_environment(),
+    }
+    doc["data_report"] = data_report
+    doc["outputs"] = outputs
+    doc["simulation"] = sections.simulation
+    doc["targets"] = sections.targets
+    doc["params"] = sections.params
+    doc["n_cells"] = sections.n_cells
+    doc["benchmark"] = sections.benchmark
+    doc["cells"] = sections.cells
+    doc["turtle_roles"] = TURTLE_ROLES
+    # Written LAST, after every CSV landed, validated before the first byte (see _cmd_run).
+    text = _dumps(doc, args.pretty, validate_as=command)
+    with atomic_output(args.report_out) as tmp:
+        Path(tmp).write_text(text, encoding="utf-8")
+    return EXIT_OK
+
+
 def _cmd_hash(args: argparse.Namespace) -> int:
     # The identity a caller otherwise computes by importing `api.canonical_dsl_hash`: validate the
     # DSL document and emit its canonical hash plus `data_keys` — the EXACT key set a `run`'s
@@ -908,6 +1106,17 @@ def _cmd_schema(args: argparse.Namespace) -> int:
     doc["exit_codes"] = EXIT_CODES
     doc["metric_roles"] = METRIC_ROLES
     doc["describe_roles"] = DESCRIBE_ROLES
+    # The simulation's contract, after the event study's: the coefficients document (with its
+    # JSON Schema), the report dictionary, its three CSVs, and the role map its reports stamp.
+    doc["turtle_coefficients"] = {
+        **TURTLE_COEFFICIENTS,
+        "json_schema": TurtleCoefficients.model_json_schema(),
+    }
+    doc["turtle_report"] = TURTLE_REPORT
+    doc["turtle_trades_csv"] = TURTLE_TRADES_CSV
+    doc["turtle_fills_csv"] = TURTLE_FILLS_CSV
+    doc["turtle_equity_csv"] = TURTLE_EQUITY_CSV
+    doc["turtle_roles"] = TURTLE_ROLES
     _emit(doc, args.pretty)
     return EXIT_OK
 
@@ -1002,6 +1211,43 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_pretty(p, "indent the report file and any JSON error envelope")
     _add_threshold_flags(p)
     p.set_defaults(func=_cmd_run)
+
+    p = sub.add_parser(
+        TURTLE_COMMAND,
+        help="simulate the thesis's entry firing under the long-only Turtle position rules on "
+        "nautilus_trader and write the performance report (silent on success)",
+    )
+    p.add_argument("thesis", help="path to the thesis DSL JSON (the entry signal)")
+    p.add_argument("coefficients", help="path to the Turtle coefficients JSON (equity required)")
+    p.add_argument(
+        "--data",
+        action="append",
+        default=None,
+        metavar="KEY=PATH",
+        help="locate one series the thesis declares, exactly as for `run`, PLUS the reserved "
+        "'benchmark' key: the index (OHLCV) the report benchmarks against; repeat per key",
+    )
+    p.add_argument(
+        "--column",
+        action="append",
+        default=None,
+        metavar="KEY=COL",
+        help="read one series out of a named CSV column, exactly as for `run`",
+    )
+    p.add_argument(
+        "--report-out",
+        default=None,
+        help="write the performance report to this file (required; always overwritten)",
+    )
+    p.add_argument("--trades-out", default=None, help="write the round trips to this CSV")
+    p.add_argument("--fills-out", default=None, help="write every venue fill to this CSV")
+    p.add_argument(
+        "--equity-out",
+        default=None,
+        help="write the per-bar equity and benchmark curves (per cell) to this CSV",
+    )
+    _add_pretty(p, "indent the report file and any JSON error envelope")
+    p.set_defaults(func=_cmd_turtle)
 
     p = sub.add_parser(
         "hash",
@@ -1110,6 +1356,17 @@ def main(argv: list[str] | None = None) -> int:
             {"type": "thresholds_invalid", "message": str(exc), "errors": exc.records},
             EXIT_REQUEST,
             f"seikan: invalid gate thresholds ({exc})\n",
+            pretty=getattr(args, "pretty", False),
+        )
+    except _CoefficientsInvalidError as exc:
+        envelope: ErrorEnvelope = {"type": "coefficients_invalid", "message": str(exc)}
+        if exc.records is not None:
+            envelope["errors"] = exc.records
+        return _fail(
+            command,
+            envelope,
+            EXIT_REQUEST,
+            f"seikan: invalid turtle coefficients ({exc})\n",
             pretty=getattr(args, "pretty", False),
         )
     except (
