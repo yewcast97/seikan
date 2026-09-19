@@ -1,13 +1,11 @@
 """The Turtle simulation behind ``seikan stock-turtle-trade-long-only``.
 
-A separate simulation package beside the observer-pure event study: it consumes the engine's
-entry mask (``api.list_entries``) as the entry signal and runs the long-only Turtle position
-rules on nautilus_trader's simulated exchange, with the rules themselves implemented once in the
-Rust kernel (``seikan._turtle``). Nothing here touches ``compiler/``, ``analysis/`` or ``gate/``.
-
-Importing this package never imports nautilus_trader: the modules that need it (``market``'s
-builders, ``strategy``, ``engine``) import it inside the functions that use it, so ``seikan
-run`` and ``seikan schema`` never pay for the venue.
+A separate simulation package beside the observer-pure event study: it consumes the event
+study's entry mask (``api.list_entries``) as the entry signal and hands every (cell × target)
+to seikan's own Rust engine (``seikan._turtle``), which holds the long-only Turtle rules, prices
+every fill under the coefficients' cost model and keeps the only set of books. Python admits
+the data, translates the thesis, computes the performance arithmetic and assembles the report.
+Nothing here touches ``compiler/``, ``analysis/`` or ``gate/``.
 """
 
 from seikan.turtle.coefficients import TurtleCoefficients, canonical_coefficients_hash

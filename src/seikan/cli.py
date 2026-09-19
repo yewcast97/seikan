@@ -52,8 +52,9 @@ Subcommands:
 - ``seikan stock-turtle-trade-long-only <thesis.json> <coefficients.json> --data KEY=PATH ...
   --report-out <path>`` — a SIMULATION beside the event study: the thesis's entry firing is
   bought and managed under the long-only Turtle position rules (the second JSON's coefficients)
-  on nautilus_trader's simulated exchange, one cell per declared entry combo, and the
-  performance report — every common metric, an index buy-and-hold benchmark — is written to
+  on seikan's own simulation engine under a stated cost model, one cell per declared entry
+  combo, and the performance report — every common metric, an index buy-and-hold benchmark,
+  the cost attribution — is written to
   the nominated file. ``--data`` binds the thesis's keys exactly as ``run`` does and MUST also
   bind the reserved ``benchmark`` key (the index). Optional ``--trades-out`` (round trips),
   ``--fills-out`` (every fill) and ``--equity-out`` (the curves per bar). Silent on success,
@@ -168,12 +169,13 @@ EXIT_INTERNAL: Final = 4
 #: gate -> metric_roles), the ``outputs`` block naming the files a run wrote, and the error
 #: envelope ``{type, message, errors?}``. It is the one number that tells an agent whether the
 #: binary in front of it is the contract it is holding, so a reader-visible shape change bumps it
-#: rather than arriving silently. The revision history is in CHANGELOG.md; v6 (this build)
-#: ADDED the ``stock-turtle-trade-long-only`` document (identity → data_report → outputs →
-#: simulation → targets → params → n_cells → benchmark → cells → turtle_roles), the
-#: ``coefficients_invalid`` envelope type and the ``turtle_*`` sections of ``seikan schema``;
-#: every ``run`` document is byte-identical to v5 apart from this stamp.
-REPORT_SCHEMA_VERSION = 6
+#: rather than arriving silently. The revision history is in CHANGELOG.md; v7 (this build)
+#: MOVED the ``stock-turtle-trade-long-only`` document onto seikan's own engine with a stated cost
+#: model — the coefficients gained ``costs``, the cells lost the venue's ``engine_stats`` /
+#: ``reconciliation``, the ``simulation`` block describes the engine, and every trade/fill/
+#: equity output itemizes commission, slippage, shock and impact; every ``run`` document is
+#: byte-identical to v6 apart from this stamp.
+REPORT_SCHEMA_VERSION = 7
 
 #: The simulation subcommand's name — the ``command`` header value its documents carry.
 TURTLE_COMMAND = "stock-turtle-trade-long-only"
@@ -627,16 +629,10 @@ def _environment() -> dict[str, str]:
 
 
 def _turtle_environment() -> dict[str, str]:
-    """The numeric stack plus the two components the simulation runs on."""
-    from importlib.metadata import version
-
+    """The numeric stack plus the engine the simulation ran on."""
     from seikan import _turtle
 
-    return {
-        **_environment(),
-        "nautilus_trader": version("nautilus_trader"),
-        "seikan_turtle": _turtle.version(),
-    }
+    return {**_environment(), "seikan_turtle": _turtle.version()}
 
 
 #: Each subcommand's output flags as (flag, argparse dest), in nomination order.
@@ -872,8 +868,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
 
 def _cmd_turtle(args: argparse.Namespace) -> int:
-    """The simulation: request validation in ``run``'s order, ONE load, the venue per cell, the
-    CSVs, then the report — written last, validated before any byte lands."""
+    """The simulation: request validation in ``run``'s order, ONE load, the engine per cell and
+    target, the CSVs, then the report — written last, validated before any byte lands."""
     command = TURTLE_COMMAND
     nominated = _nominate(args, _TURTLE_OUTPUTS, command)
     # The report is the one output this command exists for; the CSVs are companions to it.
@@ -915,7 +911,8 @@ def _cmd_turtle(args: argparse.Namespace) -> int:
         _preflight_output(path, command)
     md = load_market_data(thesis.data, files)  # DataError → exit 2 in main()
 
-    # The venue is imported here and nowhere earlier: `run`, `hash`, `schema` never pay for it.
+    # The simulation package is imported here and nowhere earlier: `run`, `hash`, `schema`
+    # never pay for it.
     from seikan.turtle.engine import run_turtle
     from seikan.turtle.report import (
         equity_frame,
@@ -1215,7 +1212,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser(
         TURTLE_COMMAND,
         help="simulate the thesis's entry firing under the long-only Turtle position rules on "
-        "nautilus_trader and write the performance report (silent on success)",
+        "seikan's own engine, under a stated cost model, and write the performance report "
+        "(silent on success)",
     )
     p.add_argument("thesis", help="path to the thesis DSL JSON (the entry signal)")
     p.add_argument("coefficients", help="path to the Turtle coefficients JSON (equity required)")
@@ -1240,7 +1238,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="write the performance report to this file (required; always overwritten)",
     )
     p.add_argument("--trades-out", default=None, help="write the round trips to this CSV")
-    p.add_argument("--fills-out", default=None, help="write every venue fill to this CSV")
+    p.add_argument("--fills-out", default=None, help="write every fill to this CSV")
     p.add_argument(
         "--equity-out",
         default=None,

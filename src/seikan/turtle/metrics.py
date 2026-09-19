@@ -19,6 +19,7 @@ from scipy import stats as sp_stats
 from seikan import _turtle
 from seikan.types.turtle import (
     AddCounts,
+    CostsPaid,
     DrawdownBlock,
     EntryCounts,
     ExitCounts,
@@ -219,15 +220,35 @@ def excursions(trip: _turtle.RoundTrip, high: np.ndarray, low: np.ndarray) -> tu
     return lo / trip.entry_px - 1.0, hi / trip.entry_px - 1.0
 
 
+def costs_block(commission: float, slippage: float, shock: float, impact: float) -> CostsPaid:
+    """The four cost buckets with their sum."""
+    return {
+        "commission": commission,
+        "slippage": slippage,
+        "shock": shock,
+        "impact": impact,
+        "total": commission + slippage + shock + impact,
+    }
+
+
 def trade_stats(
     trips: list[_turtle.RoundTrip],
     n_open: int,
     ledger: dict[str, int],
     excursion_pairs: list[tuple[float, float]],
 ) -> TradeStats:
-    """Round-trip statistics over the CLOSED trips plus the ledger's counts."""
+    """Round-trip statistics over the CLOSED trips plus the ledger's counts. ``pnl`` reads are
+    net of commission; ``costs`` sums the trips' four buckets and ``turnover`` their gross
+    notional both ways, so ``cost_bps_of_turnover`` is the cost per unit traded."""
     pnl = np.array([t.pnl for t in trips], dtype=float)
     rets = np.array([t.pnl / t.cost_basis for t in trips], dtype=float)
+    costs = costs_block(
+        float(sum(t.commission for t in trips)),
+        float(sum(t.slippage for t in trips)),
+        float(sum(t.shock for t in trips)),
+        float(sum(t.impact for t in trips)),
+    )
+    turnover = float(sum(t.cost_basis + t.proceeds for t in trips))
     held = np.array([t.exit_bar - t.entry_bar for t in trips], dtype=float)
     units = np.array([t.units for t in trips], dtype=float)
     adds = np.array([t.n_adds for t in trips], dtype=float)
@@ -274,6 +295,10 @@ def trade_stats(
         "gross_profit": gross_profit,
         "gross_loss": gross_loss,
         "net_pnl": float(pnl.sum()) if n else 0.0,
+        "gross_pnl": float(sum(t.gross_pnl for t in trips)) if n else 0.0,
+        "costs": costs,
+        "turnover": turnover,
+        "cost_bps_of_turnover": None if turnover == 0.0 else costs["total"] / turnover * 1e4,
         "profit_factor": None if gross_loss == 0.0 else gross_profit / abs(gross_loss),
         "expectancy": _mean_or_none(pnl),
         "expectancy_ret": _mean_or_none(rets),

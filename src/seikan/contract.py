@@ -1833,40 +1833,47 @@ DESCRIBE_REPORT: dict[str, JsonValue] = {
 TURTLE_FILL_CONVENTIONS: dict[str, JsonValue] = {
     "entry": (
         "the thesis fires on bar t (the engine's own tradable signal) while flat and past warmup "
-        "→ a market buy at the opening print of bar t+1, filled at that bar's open; X = "
+        "→ a market buy at the opening print of bar t+1: reference = that bar's open, filled at "
+        "reference + slippage + impact stepped UP to the grid and charged the commission; X = "
         "floor(risk_per_unit × budget / (stop_n × N_entry)) shares, N_entry the ATR at bar t, "
-        "capped to what the target's cash affords"
+        "sized down to the largest count whose all-in cash-out (notional at the fill price plus "
+        "commission) fits the target's cash (entries.cash_capped)"
     ),
     "add": (
         "a close at or above last_fill + add_step_n × N_entry, while under max_units → another X "
         "shares bought at the next opening print, wherever it opens (no gap guard; an open below "
-        "the level still fills); skipped whole when X shares no longer fit the cash, and re-armed "
-        "at the next close"
+        "the level still fills), priced like an entry; skipped whole when X shares' all-in "
+        "cash-out no longer fits the cash, and re-armed at the next close"
     ),
     "stop_close": (
         "stop_trigger 'close': a close below the stop → the whole position sold at the next "
-        "opening print, at that open"
+        "opening print: reference = that open, filled at reference − slippage − impact stepped "
+        "DOWN to the grid, charged the commission (the sell fee included)"
     ),
     "stop_gap": (
         "stop_trigger 'close': an opening print below the stop with no exit pending → sold at "
-        "that open, no waiting for the close"
+        "that open exactly like a stop_close fill, no waiting for the close"
     ),
     "stop_trade": (
-        "stop_trigger 'trade': one sell stop rests at the venue one price increment below the "
-        "stop; a bar trading through it fills at the trigger, a print gapping through it fills "
-        "at the open"
+        "stop_trigger 'trade': one sell stop rests one price increment below the stop; a bar "
+        "trading through it fills at reference = the trigger, moved toward the bar's low by "
+        "stop_shock × (trigger − low), less slippage and impact, stepped down to the grid; a "
+        "print gapping through it fills at the open like a market sell with NO shock term — the "
+        "discontinuity at the gap boundary is deliberate, the open being the first print a "
+        "triggered order can get"
     ),
     "channel_close": (
         "exit_trigger 'close': a close below the lowest low of the previous exit_lookback "
-        "completed bars → sold at the next opening print"
+        "completed bars → sold at the next opening print, priced like stop_close"
     ),
     "channel_trade": (
         "exit_trigger 'trade': the resting sell stop sits one increment below the channel when "
-        "the channel is the higher level; fills at the trigger, or at the open when gapped"
+        "the channel is the higher level; fills like stop_trade (shocked at the trigger, or at "
+        "the open when gapped)"
     ),
     "end_of_data": (
-        "a position still open after the last bar is MARKED at the last close — not a fill; it "
-        "is excluded from every trade statistic and counted in n_open"
+        "a position still open after the last bar is MARKED at the last close — not a fill, no "
+        "exit cost; it is excluded from every trade statistic and counted in n_open"
     ),
 }
 
@@ -1876,12 +1883,13 @@ TURTLE_FILL_CONVENTIONS: dict[str, JsonValue] = {
 TURTLE_ROLES: dict[str, JsonValue] = {
     "claim": (
         "a SIMULATION, not an event study: the thesis's entry firing is bought and managed under "
-        "the long-only Turtle position rules on nautilus_trader's simulated exchange, with "
-        "unlimited liquidity, zero commission and every fill at an opening print or a stop "
-        "trigger. The report describes what that simulation did over the provided bars — one "
-        "cell per declared entry combo, every cell reported, none ranked, no best cell — and "
-        "certifies nothing about the future. exit 0 says only that the run finished and every "
-        "nominated output was written"
+        "the long-only Turtle position rules on seikan's own simulated venue (the Rust engine "
+        "seikan._turtle), every fill priced at an opening print or a stop trigger under the "
+        "STATED cost model — commission, slippage, market impact, stop shock — with unlimited "
+        "size at the modelled price. The report describes what that simulation did over the "
+        "provided bars — one cell per declared entry combo, every cell reported, none ranked, no "
+        "best cell — and certifies nothing about the future. exit 0 says only that the run "
+        "finished and every nominated output was written"
     ),
     "caveats": {
         "equity_curve": (
@@ -1924,27 +1932,40 @@ TURTLE_ROLES: dict[str, JsonValue] = {
             "raw excursions of the held bars' lows and highs against the ENTRY price, the exit "
             "bar included — marks, not attainable fills"
         ),
-        "engine_stats": (
-            "nautilus_trader's own analyzer over the same run, verbatim: its Sharpe/Sortino "
-            "assume 252 periods, its PnL (total) is the account's cash change (an open position "
-            "reads as its cost), and its per-position rates count positions, not round trips"
-        ),
         "benchmark": (
-            "buy-and-hold of the bound index from the first bar's open — a passive path with "
-            "100% exposure against a strategy that is flat between signals"
+            "buy-and-hold of the bound index from the first bar's open — a passive, FRICTIONLESS "
+            "path with 100% exposure against a strategy that is flat between signals and pays "
+            "the cost model"
+        ),
+        "costs": (
+            "a STATED assumption, not a measurement: the commission schedule, the bps / N "
+            "slippage, the square-root impact law and the stop shock are the caller's "
+            "coefficients (identity.coefficients.costs); stop_shock is an ignorance prior over "
+            "where inside [low, trigger] a stop filled and by far the largest default cost — "
+            "sweep it; impact reads N as its volatility proxy; slippage, shock and impact sit "
+            "inside the fill prices (and so inside gross_pnl), commission is the one cost "
+            "debited separately; marks and the end-of-data trip carry no liquidation cost"
+        ),
+        "cost_attribution": (
+            "the four buckets are attribution AT THE FILL REFERENCES — per round trip, "
+            "Σ sells × reference − Σ buys × reference == pnl + commission + slippage + shock + "
+            "impact — never 'what a frictionless run would have made': costed fills re-anchor "
+            "the stop, the add levels and the sizes, so a frictionless run takes a different "
+            "path; trades.costs sums the CLOSED trips, costs_paid every fill of the run"
         ),
         "liquidity": (
-            "unlimited at every print and trigger: no partial fills, no slippage, no impact; the "
-            "venue's own volume-based partial fills are switched off by construction"
+            "unlimited size at the modelled price: every order fills whole at its reference "
+            "moved by the cost model; the square-root impact term is the only size effect, and "
+            "only when enabled; no partial fills, no participation cap, no queue"
         ),
-        "costs": "zero commission and zero fees; the account currency is a label",
         "price_grid": (
-            "every price is quantized to price_precision decimals before the run; the entry "
-            "signal was computed by the event study on the unquantized data"
+            "every price is quantized to price_precision decimals before the run, and every "
+            "costed fill moves whole grid steps against the account; the entry signal was "
+            "computed by the event study on the unquantized data"
         ),
         "warmup": (
             "no entry before bar max(atr_period, exit_lookback) − 1; earlier firings are "
-            "counted as entries.skipped.warmup, never taken"
+            "counted as entries.skipped.warmup, never taken; no cost knob moves that bar"
         ),
         "sample_size": (
             "the number of round trips is the effective sample; n_bars is the calendar, not the "
@@ -1997,11 +2018,67 @@ TURTLE_COEFFICIENTS: dict[str, JsonValue] = {
         "price_precision": (
             "default 4 (0..9): decimals of the price grid every price is quantized to"
         ),
+        "costs": {
+            "_": (
+                "the cost model every fill is priced under; every field optional; the defaults "
+                "are a liquid US-equity retail-pro account"
+            ),
+            "commission": {
+                "per_share": "default 0.005: currency per share, every fill",
+                "min_per_order": "default 1.0: the floor per fill",
+                "bps": "default 0: basis points of the notional, every fill (percentage brokers)",
+                "sell_bps": (
+                    "default 0: basis points of the notional on sells only, never capped (a "
+                    "stamp duty or SEC §31-style fee)"
+                ),
+                "cap_bps": (
+                    "default 100: the cap per fill in basis points of the notional (IBKR's "
+                    "'max 1% of trade value'); null leaves fills uncapped"
+                ),
+                "_": (
+                    "per fill: c = per_share × shares + bps/1e4 × notional; c = max(c, "
+                    "min_per_order); c = min(c, cap_bps/1e4 × notional); sells add "
+                    "sell_bps/1e4 × notional; notional = shares × fill price"
+                ),
+            },
+            "slippage": {
+                "bps": (
+                    "default 5: adverse, basis points of the reference price on every fill — "
+                    "at an opening print the open IS the print, so this is auction-participation "
+                    "uncertainty, not spread crossing"
+                ),
+                "n_fraction": (
+                    "default 0: adverse, a fraction of N (the Turtle-native 'slippage in N'), "
+                    "additive"
+                ),
+            },
+            "impact": {
+                "coefficient": (
+                    "default 0 (off): square-root market impact per share = coefficient × N × "
+                    "sqrt(shares / ADV), in units of N (N ≈ 1.6 × daily σ on a random walk, so "
+                    "a σ-calibrated Y scales by ≈ 0.6); > 0 requires a volume column on every "
+                    "target, finite and positive on every bar (exit 2 otherwise)"
+                ),
+                "adv_window": (
+                    "default 20: bars in the average volume; must not exceed max(atr_period, "
+                    "exit_lookback) when impact is enabled, so the rules' warmup covers it"
+                ),
+            },
+            "stop_shock": (
+                "default 0.5 (0..1): the fraction of the bar's adverse continuation beyond a "
+                "stop's trigger that a stop hit inside the bar gives up — 0 fills at the trigger, "
+                "1 at the bar's low; 0.5 is the ignorance midpoint, 0.25 a liquid-large-cap "
+                "setting, a sweep over {0, 0.25, 0.5, 1} the stress test; a stop the open gaps "
+                "through references the open with no shock term"
+            ),
+        },
     },
     "rules": {
         "sizing": (
             "each target runs its own sub-account with a FIXED budget of equity / n_targets: the "
-            "sizing base and the cash cap; the initial buy is capped to what the budget affords "
+            "sizing base and the cash cap; a buy of q shares fits when its all-in cash-out "
+            "(notional at the fill price plus commission) is within a billionth of a share of "
+            "the cash; the initial buy is sized down to the largest q that fits "
             "(entries.cash_capped) and an add that no longer fits is skipped whole "
             "(adds.skipped.budget)"
         ),
@@ -2011,11 +2088,20 @@ TURTLE_COEFFICIENTS: dict[str, JsonValue] = {
         ),
         "stop": (
             "initial P0 − stop_n × N_entry; after an add max(stop, fill − stop_n × N_stop) — it "
-            "never moves down (stop_holds counts a held one)"
+            "never moves down (stop_holds counts a held one); costed fills sit above the open, "
+            "so the ladder and the stop sit higher than a frictionless run's"
         ),
         "channel": (
             "the lowest low of the previous exit_lookback COMPLETED bars, the current bar "
             "excluded; whichever of stop and channel fires first closes the whole position"
+        ),
+        "execution": (
+            "references are on the price grid (a quantized open, a price_below trigger); a fill "
+            "is the reference moved by the adverse distance in WHOLE grid steps against the "
+            "account (buys up, sells down); with every cost at zero a fill is its reference bit "
+            "for bit; nothing a fill is priced with is decided on look-ahead — the open, N and "
+            "the ADV are known at the print, and a stop fill reads the bar's low as the fill "
+            "model's assumption about the path after the trigger was touched"
         ),
         "signal": (
             "the thesis's own tradable firing per (entry combo × target), bit-identical to "
@@ -2051,6 +2137,11 @@ TURTLE_REPORT: dict[str, JsonValue] = {
             "bars_per_year": "the annualization clock",
             "currency": "the account currency",
             "price_precision": "the price grid's decimals",
+            "costs": (
+                "the resolved cost model: commission {per_share, min_per_order, bps, sell_bps, "
+                "cap_bps}, slippage {bps, n_fraction}, impact {coefficient, adv_window}, "
+                "stop_shock"
+            ),
             "_": "the RESOLVED set, every field (see turtle_coefficients for the semantics)",
         },
         "coefficients_hash": (
@@ -2060,37 +2151,24 @@ TURTLE_REPORT: dict[str, JsonValue] = {
         "data_digests": (
             "per bound key incl. benchmark: {path, column, sha256}, exactly as the run report"
         ),
-        "environment": (
-            "python/numpy/pandas/scipy/numba plus nautilus_trader and seikan_turtle versions"
-        ),
+        "environment": "python/numpy/pandas/scipy/numba plus the seikan_turtle engine version",
     },
     "simulation": {
-        "engine": "'nautilus_trader'",
-        "engine_version": "the installed nautilus_trader distribution",
-        "kernel": "'seikan._turtle' — the Rust kernel that takes every decision",
-        "kernel_version": "the kernel's crate version",
-        "venue": "'SIM'",
-        "oms_type": (
-            "'NETTING': one position per instrument, adds increase it, the exit flattens it"
-        ),
-        "account_type": "'CASH': no borrowing; the kernel never sizes beyond a target's budget",
+        "engine": "'seikan._turtle' — the Rust engine: the rules, the execution, the books",
+        "engine_version": "the engine's crate version",
         "currency": "the account currency (a label)",
         "starting_equity": "coefficients.equity",
         "n_targets": "the thesis's target count",
         "budget_per_target": "starting_equity / n_targets",
         "budget_mode": "'fixed': the budget neither grows with profits nor shrinks with losses",
-        "instruments": "target → the positional venue symbol it traded under (T0.SIM, …)",
         "price_precision": "decimals of the price grid",
         "price_increment": "10^-price_precision — the step a 'trade' trigger sits below its level",
-        "size_precision": "0: whole shares",
-        "lot_size": "1",
-        "liquidity": "'unlimited' (see turtle_roles.caveats.liquidity)",
-        "commission": "0.0",
-        "pre_trade_risk": (
-            "who checks a buy before it is submitted: the kernel (the venue's risk engine is "
-            "bypassed; its account books still apply and are reconciled)"
+        "lot_size": "1 (whole shares)",
+        "liquidity": (
+            "'unlimited' | 'sqrt_impact' (when costs.impact is enabled) — see "
+            "turtle_roles.caveats.liquidity"
         ),
-        "fill_conventions": "how every kind of fill was executed (the turtle_roles map)",
+        "fill_conventions": "how every kind of fill was executed and priced (the turtle_roles map)",
         "bars_per_year": "the annualization clock",
         "n_bars": "bars on the joined clock",
         "index_start": "first bar stamp",
@@ -2100,16 +2178,13 @@ TURTLE_REPORT: dict[str, JsonValue] = {
             "max(atr_period, exit_lookback) − 1: the first bar an entry can be taken on"
         ),
         "thesis_params_ignored": "the thesis parameters the simulation reads nothing from",
-        "bar_type_label": (
-            "the label every clock is fed under ('1-DAY-LAST-EXTERNAL'; see bar_spacing)"
-        ),
     },
     "targets": "the thesis's targets in declaration order",
     "params": "the swept entry axes (the cell key columns)",
     "n_cells": "len(cells) == the declared entry combos",
     "benchmark": {
         "source": "the benchmark CSV's path",
-        "construction": "how the buy-and-hold curve is built",
+        "construction": "how the buy-and-hold curve is built (frictionless)",
         "units": "starting_equity / open[0]",
         "start_equity": "starting_equity",
         "end_equity": "units × close[-1]",
@@ -2126,6 +2201,7 @@ TURTLE_REPORT: dict[str, JsonValue] = {
             "relative": "RelativeMetrics of the account's bar returns against the benchmark's",
             "periodic": "monthly / annual compounded returns of the account",
             "trades": "TradeStats pooled over every target's round trips",
+            "costs_paid": "CostsPaid over EVERY fill of every target (the cash fact)",
         },
         "by_target": {
             "metrics": "PerformanceMetrics of the target's sub-account (base = budget_per_target)",
@@ -2139,22 +2215,19 @@ TURTLE_REPORT: dict[str, JsonValue] = {
                 "stop": "the stop in force, null when flat",
                 "add_level": "the next add level, null when flat",
                 "in_position": "shares > 0",
+                "costs_paid": "CostsPaid over every fill of the target (the cash fact)",
             },
         },
-        "engine_stats": {
-            "stats_pnls": "nautilus_trader's PnL statistics per currency (NaN → null)",
-            "stats_returns": "nautilus_trader's return statistics (252-period assumptions)",
-            "stats_general": "nautilus_trader's general statistics",
-        },
-        "reconciliation": {
-            "n_fills_ledger": "fills the kernel recorded",
-            "n_fills_engine": "filled orders the venue reports",
-            "cash_change_ledger": "Σ end cash − starting_equity per the kernel",
-            "cash_change_engine": "the venue's PnL (total) — its account's cash change",
-            "end_cash_ledger": "Σ per-target cash per the kernel",
-            "end_cash_account": "the venue account's closing total",
-            "matched": "always true — a mismatch never becomes a report (exit 4)",
-        },
+    },
+    "CostsPaid": {
+        "commission": "Σ commission charged",
+        "slippage": "Σ slippage attributed (bps + N-fraction terms and the grid rounding)",
+        "shock": "Σ stop shock attributed (stop fills inside a bar)",
+        "impact": "Σ market impact attributed",
+        "total": (
+            "their sum — what the same fills would have been worth more at their reference "
+            "prices, net of commission (see turtle_roles.caveats.cost_attribution)"
+        ),
     },
     "PerformanceMetrics": {
         "start_equity": "the curve's base (the bar before the first)",
@@ -2218,7 +2291,11 @@ TURTLE_REPORT: dict[str, JsonValue] = {
         "win_rate": "n_wins / n_round_trips",
         "gross_profit": "Σ winning pnl",
         "gross_loss": "Σ losing pnl (≤ 0)",
-        "net_pnl": "Σ pnl over closed trips",
+        "net_pnl": "Σ pnl over closed trips (net of commission)",
+        "gross_pnl": "Σ (proceeds − cost_basis) over closed trips, at the fill prices",
+        "costs": "CostsPaid summed over the CLOSED trips",
+        "turnover": "Σ (cost_basis + proceeds) over closed trips — gross notional both ways",
+        "cost_bps_of_turnover": "costs.total / turnover × 1e4; null with no trips",
         "profit_factor": "gross_profit / |gross_loss|; null with no losses",
         "expectancy": "mean pnl per trip",
         "expectancy_ret": "mean of pnl / cost_basis per trip",
@@ -2245,19 +2322,19 @@ TURTLE_REPORT: dict[str, JsonValue] = {
         },
         "entries": {
             "taken": "entries filled",
-            "cash_capped": "entries whose size the budget reduced",
+            "cash_capped": "entries whose size the cash reduced (commission included)",
             "skipped": {
                 "warmup": "firings before first_eligible_bar",
                 "in_position": "firings while already long",
                 "zero_size": "firings whose unit sized to zero shares",
-                "budget": "firings the budget could not afford at all",
+                "budget": "firings the cash could not afford at all",
                 "end_of_data": "firings on the final bar (no next open)",
             },
         },
         "adds": {
             "taken": "adds filled",
             "filled_below_level": "adds whose open was below the add level",
-            "skipped": {"budget": "adds that no longer fit the cash"},
+            "skipped": {"budget": "adds whose all-in cost no longer fit the cash"},
         },
         "stop_holds": "adds whose recomputed stop was lower than the stop in force (held)",
     },
@@ -2272,6 +2349,10 @@ TURTLE_REPORT: dict[str, JsonValue] = {
         ),
         "time": "ISO-8601 naive stamps, the CSV's own",
         "ranking": "none: cells ride in declaration order, every declared combo present",
+        "costs": (
+            "two denominators, both stated: costs_paid sums EVERY fill (open positions "
+            "included), trades.costs the CLOSED trips only"
+        ),
     },
 }
 
@@ -2305,9 +2386,14 @@ TURTLE_TRADES_CSV: dict[str, JsonValue] = {
         "unit_shares": "X — the first fill's size, repeated by every add",
         "units": "units held at exit",
         "shares": "shares held at exit",
-        "cost_basis": "Σ shares × fill price over the trip's buys",
-        "proceeds": "shares × exit_px",
-        "pnl": "proceeds − cost_basis",
+        "cost_basis": "Σ shares × fill price over the trip's buys (gross)",
+        "proceeds": "shares × exit_px (gross)",
+        "gross_pnl": "proceeds − cost_basis",
+        "commission": "commission over every fill of the trip (the exit included)",
+        "slippage": "slippage attributed over every fill",
+        "shock": "stop shock attributed (the exit fill)",
+        "impact": "market impact attributed over every fill",
+        "pnl": "gross_pnl − commission (net)",
         "ret": "pnl / cost_basis",
         "bars_held": "exit_bar − entry_bar",
         "n_adds": "adds filled in the trip",
@@ -2318,13 +2404,13 @@ TURTLE_TRADES_CSV: dict[str, JsonValue] = {
     },
 }
 
-#: The ``--fills-out`` CSV of the turtle command: one row per venue fill.
+#: The ``--fills-out`` CSV of the turtle command: one row per fill.
 TURTLE_FILLS_CSV: dict[str, JsonValue] = {
     "command": (
         "seikan stock-turtle-trade-long-only … --fills-out <out.csv> (always overwrites; silent "
         "on success)"
     ),
-    "rows": "one per venue fill, in fill order per target, over every cell",
+    "rows": "one per fill, in fill order per target, over every cell",
     "columns": {
         "<swept axes>": "one leading column per swept entry axis; absent when none",
         "target": "the target",
@@ -2335,13 +2421,17 @@ TURTLE_FILLS_CSV: dict[str, JsonValue] = {
         "reason": "the exit reason for an exit, empty otherwise",
         "side": "buy | sell",
         "shares": "shares filled",
-        "price": "the fill price",
+        "reference": "the price an ideal market would have filled at (the open, or the trigger)",
+        "price": "the fill price, on the grid",
         "notional": "shares × price",
+        "commission": "the commission charged",
+        "slippage": "slippage attributed (currency)",
+        "shock": "stop shock attributed (currency; stop fills inside a bar only)",
+        "impact": "market impact attributed (currency)",
         "cash_after": "the target's cash after the fill",
         "shares_after": "shares held after the fill",
         "units_after": "units held after the fill",
         "stop_after": "the stop in force after the fill (empty when flat)",
-        "client_order_id": "the venue order id",
     },
 }
 
@@ -2363,6 +2453,10 @@ TURTLE_EQUITY_CSV: dict[str, JsonValue] = {
         "market_value": "Σ shares × close",
         "gross_exposure": "market_value / equity",
         "n_positions": "targets holding shares",
+        "commission_cum": "Σ commission paid through this bar's fills",
+        "slippage_cum": "Σ slippage attributed through this bar",
+        "shock_cum": "Σ stop shock attributed through this bar",
+        "impact_cum": "Σ market impact attributed through this bar",
         "shares[@<target>]": "shares held per target ('@<target>' only with several targets)",
         "units[@<target>]": "units held per target",
         "stop[@<target>]": "the stop in force per target (empty when flat)",

@@ -1,5 +1,6 @@
 """Shared inputs for the turtle tests: explicit OHLC bar files, the rules' worked example, the
-smallest theses that fire on a chosen bar, and coefficient documents."""
+smallest theses that fire on a chosen bar, and coefficient documents — frictionless by default,
+so the rules' worked-example numbers hold, with the realistic cost model one call away."""
 
 from __future__ import annotations
 
@@ -15,6 +16,7 @@ __all__ = [
     "coefficients_doc",
     "first_true_above",
     "flat_rows",
+    "frictionless",
     "thesis_doc",
     "worked_example_rows",
     "write_bars",
@@ -82,5 +84,24 @@ def thesis_doc(targets: list[str], entry: dict, **params: object) -> dict:
     }
 
 
+def frictionless(**overrides: object) -> dict:
+    """Every cost switched off, every field spelled so a new default can never drift in;
+    ``overrides`` replace whole sub-blocks (``commission=…``) or ``stop_shock``."""
+    return {
+        "commission": {
+            "per_share": 0.0,
+            "min_per_order": 0.0,
+            "bps": 0.0,
+            "sell_bps": 0.0,
+            "cap_bps": None,
+        },
+        "slippage": {"bps": 0.0, "n_fraction": 0.0},
+        "impact": {"coefficient": 0.0, "adv_window": 20},
+        "stop_shock": 0.0,
+        **overrides,
+    }
+
+
 def coefficients_doc(**overrides: object) -> dict:
-    return {"equity": 100_000.0, **overrides}
+    """A frictionless coefficients document over $100,000; ``costs=`` swaps the cost model."""
+    return {"equity": 100_000.0, "costs": frictionless(), **overrides}

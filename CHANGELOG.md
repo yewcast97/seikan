@@ -7,6 +7,55 @@ semantics — `gate.POLICY_VERSION`). Each entry below names every stamp it move
 frozen statistic is only ever a correction, and it bumps `statistics_version`; anything that
 merely repackages code changes no number.
 
+## 6.0.0 — report schema 7, statistics 4, policy 3
+
+The Turtle simulation moves onto seikan's own engine and gains a trade-cost model. Every `run`
+document is byte-identical to 5.0.0 apart from the `report_schema_version` stamp.
+
+- REMOVED the `nautilus_trader` dependency and everything that existed only to drive it: the
+  per-target strategy, the opening-print quote injection, the risk-engine bypass, the venue
+  reconciliation, the cells' `engine_stats` / `reconciliation` blocks and the `nautilus_trader`
+  environment stamp. `requires-python` is `>=3.13` again (the `<3.15` cap was the venue's).
+- CHANGED the Rust crate `crates/seikan-turtle` from a rule kernel driven by an external venue
+  into the WHOLE simulation engine: the rules and the books (`machine`), execution under a cost
+  model (`execution`, `costs`), the price grid's step arithmetic (`price`), the indicators
+  (`WilderAtr`, `LowestLowChannel`, new `AverageVolume`) and the bar loop (`sim`). With every
+  cost at zero the engine's fills reproduce the previous venue's bit for bit (verified fill for
+  fill over the worked example under all eight mode combinations, a 300-bar random walk under
+  each, and a two-target run). The Python surface of `seikan._turtle` shrinks to `simulate`,
+  `Coefficients`, `CostModel`, `Fill`, `RoundTrip`, `Ledger`, `SimResult`, `quantize` and
+  `version`; the step-driven `Machine`, the indicators, `simulate_reference`, `unit_shares`,
+  `price_below` and `first_eligible_bar` left the bindings (their tests are Rust tests). Typed
+  errors: input and coefficient problems raise `ValueError`, a broken bookkeeping invariant
+  `RuntimeError`.
+- ADDED the coefficients' `costs` block (every field optional; the defaults are a liquid
+  US-equity retail-pro account): `commission` {`per_share` 0.005, `min_per_order` 1.0, `bps` 0,
+  `sell_bps` 0, `cap_bps` 100 | null}, `slippage` {`bps` 5, `n_fraction` 0}, `impact`
+  {`coefficient` 0 — the square-root law `coefficient × N × sqrt(shares / ADV)`, needs volume
+  and `adv_window` ≤ max(atr_period, exit_lookback) when enabled; `adv_window` 20} and
+  `stop_shock` 0.5 (a stop hit inside a bar fills `stop_shock` of the way from its trigger to
+  the bar's low; a gapped stop references the open). Every fill is its on-grid reference moved
+  by the adverse distance in whole grid steps against the account and charged the commission;
+  buys are sized down to the largest count whose all-in cash-out (notional plus commission)
+  fits the cash, and an add that does not fit whole is skipped (the one fit predicate — within a
+  billionth of a share of the cash — replaces the add check's `cash × (1 + 1e-12)` form, with
+  no observable effect on real inputs). Marks and the buy-and-hold benchmark stay frictionless.
+- ADDED the cost attribution everywhere a number is reported: round trips carry `commission`,
+  `slippage`, `shock`, `impact` and `gross_pnl` beside the net `pnl`; `trades` gains
+  `gross_pnl`, `costs`, `turnover` and `cost_bps_of_turnover` over the closed trips; every
+  `end_state` and `portfolio` panel gains `costs_paid` over every fill; the fills CSV gains
+  `reference` and the four buckets (and drops `client_order_id`), the trades CSV the four
+  buckets and `gross_pnl`, the equity CSV the cumulative `commission_cum` / `slippage_cum` /
+  `shock_cum` / `impact_cum`. The attribution identity, per round trip: `Σ sells × reference −
+  Σ buys × reference == pnl + commission + slippage + shock + impact`.
+- CHANGED the report's `simulation` block to describe the engine (`engine` `seikan._turtle`,
+  its version, `liquidity` `unlimited` | `sqrt_impact`, the fill conventions restated with their
+  cost arithmetic); `turtle_roles` gained the `costs` and `cost_attribution` caveats and lost
+  `engine_stats`. Because the resolved coefficients now carry `costs`, every existing document's
+  `coefficients_hash` VALUE moves once (no stored reports exist).
+- `report_schema_version` 7 for the moved document; `statistics_version` 4 and `policy_version`
+  3 unchanged — nothing in `compiler/`, `analysis/` or `gate/` moved.
+
 ## 5.0.0 — report schema 6, statistics 4, policy 3
 
 The Turtle simulation: one command that trades, beside the event study that never does. Every

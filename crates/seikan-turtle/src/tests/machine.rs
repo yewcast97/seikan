@@ -2,15 +2,11 @@
 //! trigger mode, the gap rule, sizing caps, warmup/in-position/end-of-data skips, the
 //! stop-never-down guard and the channel's current-bar exclusion.
 
-use crate::coefficients::{Coefficients, NSource, Trigger, first_eligible_bar, unit_shares};
-use crate::machine::{ExitReason, FillKind, Machine};
+use crate::coefficients::{NSource, Trigger, first_eligible_bar, unit_shares};
+use crate::machine::{ExitReason, Fill, FillKind, Machine, PrintAction};
 use crate::price::price_below;
-use crate::sim::{FillAt, SimResult, simulate};
-use crate::tests::{Bars, close_to, coefficients, worked_example};
-
-fn run(c: &Coefficients, b: &Bars) -> SimResult {
-    simulate(c, b.series(), &b.fired).expect("simulation runs")
-}
+use crate::sim::{FillAt, SimResult};
+use crate::tests::{Bars, Lcg, close_to, coefficients, run, worked_example};
 
 /// (bar, kind, shares, price, at, reason) — one row per reference fill.
 type FillRow = (
@@ -92,6 +88,11 @@ fn worked_example_close_mode() {
     assert_eq!(trip.exit_reason, ExitReason::StopClose);
     assert!(close_to(trip.cost_basis, 250.0 * (50.0 + 51.0 + 52.0)));
     assert!(close_to(trip.pnl, 750.0 * 47.0 - 38_250.0));
+    assert!(close_to(trip.gross_pnl, trip.pnl));
+    assert_eq!(
+        (trip.commission, trip.slippage, trip.shock, trip.impact),
+        (0.0, 0.0, 0.0, 0.0)
+    );
     assert!(close_to(trip.max_stop, 48.0));
     assert!(close_to(
         r.cash[b.len() - 1],
@@ -398,25 +399,90 @@ fn one_add_per_bar_and_the_cap() {
     assert_eq!(r.ledger.exits_stop_close + r.ledger.exits_channel_close, 0);
 }
 
+fn free_fill(kind: FillKind, shares: u64, price: f64) -> Fill {
+    Fill {
+        bar: 0,
+        kind,
+        shares,
+        price,
+        commission: 0.0,
+        slippage: 0.0,
+        shock: 0.0,
+        impact: 0.0,
+    }
+}
+
 #[test]
 fn fill_bookkeeping_refuses_impossible_reports() {
     let mut m = Machine::new(coefficients()).unwrap();
-    assert!(
-        m.on_fill(crate::machine::Fill {
-            bar: 0,
-            kind: FillKind::Entry,
-            shares: 1,
-            price: 1.0
-        })
-        .is_err()
+    assert!(m.on_fill(free_fill(FillKind::Entry, 1, 1.0)).is_err());
+    assert!(m.on_fill(free_fill(FillKind::Exit, 1, 1.0)).is_err());
+}
+
+#[test]
+fn the_frictionless_size_search_is_the_sizing_division() {
+    // Under a frictionless cash-out the largest affordable size must be exactly the guarded
+    // division `floor(cash / open + 1e-9)` the rules state, on inputs away from the boundary.
+    let mut rng = Lcg::new(3);
+    for _ in 0..500 {
+        let open = (rng.range(1.0, 500.0) * 100.0).round() / 100.0;
+        let q_true = rng.range(1.0, 3000.0).floor();
+        let cash = q_true * open + rng.range(0.001, 0.999) * open;
+        let mut c = coefficients();
+        c.atr_period = 1;
+        c.exit_lookback = 1;
+        c.risk_per_unit = 1.0;
+        c.stop_n = 1e-3; // X = 1000 × budget: always more than the cash affords
+        c.budget = cash;
+        let mut m = Machine::new(c).unwrap();
+        m.on_bar(0, open, Some(1.0), Some(open - 1.0), true, false);
+        let action = m.on_print(1, open, &|q| q as f64 * open);
+        let expected = ((cash / open) + 1e-9).floor() as u64;
+        assert_eq!(expected, q_true as u64);
+        assert_eq!(
+            action,
+            PrintAction::Buy {
+                shares: expected,
+                kind: FillKind::Entry
+            }
+        );
+        assert_eq!(m.ledger().entries_cash_capped, 1);
+    }
+}
+
+#[test]
+fn a_commission_that_does_not_fit_drops_one_share() {
+    // 20 shares @ 50 fit $1,000 exactly; a $1 minimum commission means only 19 fit all in.
+    let mut c = coefficients();
+    c.atr_period = 1;
+    c.exit_lookback = 1;
+    c.risk_per_unit = 1.0;
+    c.stop_n = 0.01;
+    c.budget = 1_000.0;
+    let mut m = Machine::new(c).unwrap();
+    m.on_bar(0, 50.0, Some(1.0), Some(49.0), true, false);
+    let with_min = |q: u64| q as f64 * 50.0 + 1.0;
+    assert_eq!(
+        m.on_print(1, 50.0, &with_min),
+        PrintAction::Buy {
+            shares: 19,
+            kind: FillKind::Entry
+        }
     );
-    assert!(
-        m.on_fill(crate::machine::Fill {
-            bar: 0,
-            kind: FillKind::Exit,
-            shares: 1,
-            price: 1.0
-        })
-        .is_err()
+    // A whole unit that does not fit all in is skipped whole, never partially filled.
+    let mut m = Machine::new(coefficients()).unwrap();
+    m.on_bar(19, 50.0, Some(2.0), Some(48.0), true, false);
+    assert_eq!(
+        m.on_print(20, 50.0, &|q| q as f64 * 50.0),
+        PrintAction::Buy {
+            shares: 250,
+            kind: FillKind::Entry
+        }
     );
+    m.on_fill(free_fill(FillKind::Entry, 250, 50.0)).unwrap();
+    m.on_bar(20, 51.0, Some(2.0), Some(48.0), false, false);
+    let too_dear = |q: u64| q as f64 * 51.0 + 90_000.0;
+    assert_eq!(m.on_print(21, 51.0, &too_dear), PrintAction::Hold);
+    assert_eq!(m.ledger().adds_skipped_budget, 1);
+    assert_eq!(m.position().unwrap().adds_skipped_budget, 1);
 }

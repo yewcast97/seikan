@@ -236,7 +236,7 @@ def test_run_writes_complete_report_and_exits_0(tmp_path, capsys):
     code, doc = _run_report(capsys, tmp_path, ["run", str(thesis), *_target(px)])
     assert code == 0  # the run completed; the exit code is not a verdict
     assert doc["command"] == "run" and doc["seikan_version"]
-    assert doc["report_schema_version"] == 6
+    assert doc["report_schema_version"] == 7
     ident = doc["identity"]
     assert "command" not in ident and "report_schema_version" not in ident  # they live at top level
     assert ident["name"] == "cli-e2e"
@@ -2598,7 +2598,7 @@ def test_check_data_pass_and_fail(tmp_path, capsys):
     # the uniform header rides check-data too (the lone non-error command whose header would
     # otherwise go unpinned)
     assert doc["command"] == "check-data"
-    assert doc["report_schema_version"] == 6 and doc["seikan_version"]
+    assert doc["report_schema_version"] == 7 and doc["seikan_version"]
 
     bad = tmp_path / "bad.csv"
     bad.write_text("datetime,close\n2021-01-02,100\n2021-01-01,101\n", encoding="utf-8")
@@ -2630,7 +2630,7 @@ def test_schema_emits_self_serve_reference(capsys):
     assert by_field["thesis_max_concentration"]["default"] == 0.6
     assert all("choices" not in t for t in doc["thresholds"])  # no enumerated profile knob
     assert "gate_profiles" not in doc  # there is no profile system, under this or any other key
-    assert doc["report_schema_version"] == 6
+    assert doc["report_schema_version"] == 7
     assert "ISO-8601" in doc["csv_format"]["timestamp_format"]
 
 
@@ -2939,7 +2939,7 @@ def test_usage_errors_emit_exit_3_envelopes(capsys):
         assert set(doc["error"]) == {"type", "message"}
         assert doc["error"]["type"] == "usage" and doc["error"]["message"]
         assert doc["command"] == expected_command
-        assert doc["report_schema_version"] == 6 and doc["seikan_version"]
+        assert doc["report_schema_version"] == 7 and doc["seikan_version"]
 
 
 def test_help_and_version_are_conventional_non_json_exit_0(capsys):

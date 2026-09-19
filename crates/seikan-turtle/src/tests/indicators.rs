@@ -1,4 +1,4 @@
-use crate::indicators::{LowestLowChannel, WilderAtr};
+use crate::indicators::{AverageVolume, LowestLowChannel, WilderAtr};
 use crate::tests::close_to;
 
 /// Faith's HO03H table (The Original Turtle Trading Rules, ch. 3): high, low, close, TR, N.
@@ -88,4 +88,21 @@ fn lowest_low_channel_covers_the_last_lookback_lows_including_the_newest() {
     assert_eq!((ch.count(), ch.lookback()), (7, 3));
     ch.reset();
     assert!(ch.value().is_none() && ch.count() == 0);
+}
+
+#[test]
+fn average_volume_is_the_mean_of_the_window_once_full() {
+    let mut adv = AverageVolume::new(3);
+    assert!(!adv.has_inputs() && !adv.initialized() && adv.window() == 3);
+    adv.update_raw(100.0);
+    adv.update_raw(200.0);
+    assert!(adv.has_inputs() && adv.value().is_none());
+    adv.update_raw(300.0);
+    assert!(adv.initialized());
+    assert!(close_to(adv.value().unwrap(), 200.0));
+    adv.update_raw(400.0);
+    assert!(close_to(adv.value().unwrap(), 300.0));
+    assert_eq!(adv.count(), 4);
+    adv.reset();
+    assert!(adv.value().is_none() && adv.count() == 0);
 }

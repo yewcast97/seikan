@@ -93,7 +93,7 @@ def test_document_layers_header_and_profile_shape(tmp_path, capsys):
         "profiles",
         "describe_roles",
     ]
-    assert doc["report_schema_version"] == 6
+    assert doc["report_schema_version"] == 7
     assert doc["command"] == "describe" and doc["seikan_version"]
     assert doc["data_report"]["ok"] is True
     profile = doc["profiles"][0]

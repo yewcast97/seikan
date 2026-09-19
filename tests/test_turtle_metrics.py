@@ -96,9 +96,33 @@ def test_periodic_returns_compound_within_each_period():
 
 
 class _Trip:
-    def __init__(self, entry_bar, exit_bar, entry_px, pnl, cost, units, n_adds):
+    """A round trip by its numbers: ``pnl`` is net; the exit proceeds and gross pnl follow from
+    the cost basis and the commission, and the other cost buckets are attribution only."""
+
+    def __init__(
+        self,
+        entry_bar,
+        exit_bar,
+        entry_px,
+        pnl,
+        cost,
+        units,
+        n_adds,
+        commission=0.0,
+        slippage=0.0,
+        shock=0.0,
+        impact=0.0,
+    ):
         self.entry_bar, self.exit_bar, self.entry_px = entry_bar, exit_bar, entry_px
         self.pnl, self.cost_basis, self.units, self.n_adds = pnl, cost, units, n_adds
+        self.commission, self.slippage, self.shock, self.impact = (
+            commission,
+            slippage,
+            shock,
+            impact,
+        )
+        self.gross_pnl = pnl + commission
+        self.proceeds = cost + self.gross_pnl
 
 
 def _ledger(**overrides):
@@ -114,9 +138,9 @@ def _ledger(**overrides):
 
 def test_trade_stats_over_closed_trips():
     trips = [
-        _Trip(0, 4, 10.0, 200.0, 1000.0, 3, 2),
-        _Trip(6, 8, 10.0, -100.0, 500.0, 1, 0),
-        _Trip(9, 12, 10.0, 0.0, 400.0, 2, 1),
+        _Trip(0, 4, 10.0, 200.0, 1000.0, 3, 2, commission=4.0, slippage=3.0, shock=2.0, impact=1.0),
+        _Trip(6, 8, 10.0, -100.0, 500.0, 1, 0, commission=2.0),
+        _Trip(9, 12, 10.0, 0.0, 400.0, 2, 1, slippage=0.5),
     ]
     ledger = _ledger(entries=3, adds=3, exits_stop_close=2, exits_channel_close=1, stop_holds=1)
     t = metrics.trade_stats(trips, 1, ledger, [(-0.02, 0.05), (-0.03, 0.01), (-0.01, 0.02)])
@@ -129,6 +153,13 @@ def test_trade_stats_over_closed_trips():
     )
     assert t["win_rate"] == pytest.approx(1 / 3)
     assert (t["gross_profit"], t["gross_loss"], t["net_pnl"]) == (200.0, -100.0, 100.0)
+    assert t["gross_pnl"] == pytest.approx(106.0)  # net plus the 6.0 of commission
+    assert t["costs"] == {
+        "commission": 6.0, "slippage": 3.5, "shock": 2.0, "impact": 1.0, "total": 12.5,
+    }  # fmt: skip
+    proceeds = (1000 + 204) + (500 - 98) + (400 + 0)
+    assert t["turnover"] == pytest.approx(1900.0 + proceeds)
+    assert t["cost_bps_of_turnover"] == pytest.approx(12.5 / (1900.0 + proceeds) * 1e4)
     assert t["profit_factor"] == 2.0 and t["expectancy"] == pytest.approx(100 / 3)
     assert t["expectancy_ret"] == pytest.approx((0.2 - 0.2 + 0.0) / 3)
     assert (t["avg_win"], t["avg_loss"], t["largest_win"], t["largest_loss"]) == (
@@ -153,6 +184,8 @@ def test_trade_stats_with_no_trips_is_all_null_counts_zero():
     t = metrics.trade_stats([], 0, _ledger(entries_skipped_warmup=2), [])
     assert t["n_round_trips"] == 0 and t["win_rate"] is None and t["profit_factor"] is None
     assert t["expectancy"] is None and t["max_units_reached"] == 0 and t["net_pnl"] == 0.0
+    assert t["gross_pnl"] == 0.0 and t["costs"]["total"] == 0.0
+    assert t["turnover"] == 0.0 and t["cost_bps_of_turnover"] is None
     assert t["entries"]["skipped"]["warmup"] == 2
 
 

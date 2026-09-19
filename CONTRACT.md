@@ -69,10 +69,12 @@ seikan run <thesis.json>         full-grid event study + the per-cell checklist,
 seikan stock-turtle-trade-long-only <thesis.json> <coefficients.json>
     --data KEY=PATH ...          a SIMULATION beside the event study: the thesis's entry firing
     --data benchmark=PATH        is bought and managed under the long-only Turtle position
-    [--column KEY=COL ...]       rules (the second JSON's coefficients) on nautilus_trader's
-    --report-out <path>          simulated exchange, one cell per declared entry combo, and the
-    [--trades-out <path>]        performance report — every common metric, an index buy-and-
-    [--fills-out <path>]         hold benchmark — is written to the nominated file (REQUIRED).
+    [--column KEY=COL ...]       rules (the second JSON's coefficients) on seikan's own Rust
+    --report-out <path>          engine under a STATED cost model (commission, slippage, market
+    [--trades-out <path>]        impact, stop shock), one cell per declared entry combo, and the
+    [--fills-out <path>]         performance report — every common metric, an index buy-and-
+                                 hold benchmark, the cost attribution — is written to the
+                                 nominated file (REQUIRED).
     [--equity-out <path>]        --data binds the thesis's keys exactly as `run` does AND the
                                  reserved `benchmark` key — the index — ALWAYS, whatever the
                                  thesis declares. Optional CSVs: --trades-out (one row per
@@ -208,9 +210,12 @@ Every JSON document — the `run` report, `hash`, `check-data`, `describe`, `sch
 every error
 envelope — opens
 with the same top-level header `{seikan_version, report_schema_version, command}`
-(`report_schema_version` **6** — v6 ADDED the `stock-turtle-trade-long-only` document, the
-`coefficients_invalid` envelope type and the `turtle_*` sections of `seikan schema`, every `run`
-document byte-identical to v5 apart from the stamp; v5 REMOVED the legacy `stats_table`/`by_target`/`by_param`/
+(`report_schema_version` **7** — v7 MOVED the `stock-turtle-trade-long-only` document onto
+seikan's own engine with a stated cost model: the coefficients gained `costs`, the cells lost the
+external venue's `engine_stats` / `reconciliation`, `simulation` describes the engine, and every
+trade/fill/equity output itemizes commission, slippage, shock and impact — every `run` document
+byte-identical to v6 apart from the stamp; v6 ADDED the `stock-turtle-trade-long-only` document,
+the `coefficients_invalid` envelope type and the `turtle_*` sections of `seikan schema`; v5 REMOVED the legacy `stats_table`/`by_target`/`by_param`/
 `n_stats_rows` grid breakdown (a fired-pools-only duplicate of `cells[].by_target` whose rollups
 averaged per-cell means across horizons), the nominal `t_iid`/`p_iid` pair and the derivable
 `sharpe`/`firing_rate`, renamed the trades column `bars_held` → `horizon` (always present), and
@@ -572,57 +577,108 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
 Everything above is the event study: an observer that measures a firing and never trades. This
 command is the ONE place seikan simulates, and it does so BESIDE the engine, never inside it: the
 thesis's per-(entry combo × target) tradable firing — `api.list_entries`, bit-identical to
-`--entry-flags-out` — is the entry signal of a long-only Turtle position system executed by
-nautilus_trader's simulated exchange, and the report describes what that simulation did over the
-provided bars. The frozen statistical mechanics, `run`'s documents and the checklist are untouched
-(`turtle/` imports the public API; nothing in `compiler/`, `analysis/` or `gate/` knows it
-exists). The rules themselves live once, in the Rust kernel `crates/seikan-turtle` (the
-`seikan._turtle` extension): the venue executes what the kernel decides, and a reference simulator
-in the same crate replays the same decisions with idealized fills — the suite holds the venue's
-fills to the reference's, fill for fill, so an execution drift can never pass as a rule.
+`--entry-flags-out` — is the entry signal of a long-only Turtle position system run by seikan's
+OWN simulation engine, the Rust crate `crates/seikan-turtle` compiled into the `seikan._turtle`
+extension, and the report describes what that simulation did over the provided bars. The frozen
+statistical mechanics, `run`'s documents and the checklist are untouched (`turtle/` imports the
+public API; nothing in `compiler/`, `analysis/` or `gate/` knows it exists). The engine holds
+the rules, prices every fill under a STATED cost model and keeps the only set of books; Python
+admits the data, translates the thesis, computes the performance arithmetic and assembles the
+report. With every cost at zero the engine's fills are the rules' own numbers bit for bit (the
+suite pins the worked example under every trigger mode), and no cost knob moves a rule quantity
+— not warmup, not sizing, not a level.
 
 **The rules, as implemented** (the coefficients in brackets, with the rules' defaults):
 
 - **Entry.** The thesis fires on bar `t` while flat and past warmup → market buy at the opening
-  print of bar `t+1`, filled at that bar's open. `N_entry` is the Wilder ATR [`atr_period` 20]
-  at bar `t`; `X = floor(risk_per_unit [0.01] × budget / (stop_n [2] × N_entry))` shares, capped
-  at the print to what the target's cash affords (`entries.cash_capped`). The initial stop is
-  `P0 − stop_n × N_entry`. A firing while in position, before warmup (`max(atr_period,
-  exit_lookback) − 1`), on the final bar, or that sizes to zero shares is COUNTED in
-  `trades.entries.skipped`, never taken.
+  print of bar `t+1`, referenced at that bar's open. `N_entry` is the Wilder ATR [`atr_period`
+  20] at bar `t`; `X = floor(risk_per_unit [0.01] × budget / (stop_n [2] × N_entry))` shares,
+  sized down at the print to the largest count whose ALL-IN cash-out — notional at the fill
+  price plus commission — fits the target's cash (`entries.cash_capped`). The initial stop is
+  `P0 − stop_n × N_entry`, `P0` the actual fill. A firing while in position, before warmup
+  (`max(atr_period, exit_lookback) − 1`), on the final bar, or that sizes to zero shares is
+  COUNTED in `trades.entries.skipped`, never taken.
 - **Adds.** While `units < max_units [3]`, a close at or above `last_fill + add_step_n [0.5] ×
   N_entry` buys another X shares at the next opening print, wherever it opens — there is no gap
   guard, and an open below the level still fills (`adds.filled_below_level`). One add per bar;
-  the level re-anchors on the ACTUAL fill; every add is X, the first fill's size. An add that no
-  longer fits the cash is skipped whole (`adds.skipped.budget`) and re-arms at the next close.
-  After an add the stop is `max(stop, fill − stop_n × N_stop)`, `N_stop` the ATR current at the
-  add's signal bar [`stop_n_source` "current"] or the entry ATR ["entry"] — the stop never moves
-  down (`stop_holds`).
+  the level re-anchors on the ACTUAL fill; every add is X, the first fill's size. An add whose
+  whole unit no longer fits the cash all in is skipped whole (`adds.skipped.budget`) and re-arms
+  at the next close. After an add the stop is `max(stop, fill − stop_n × N_stop)`, `N_stop` the
+  ATR current at the add's signal bar [`stop_n_source` "current"] or the entry ATR ["entry"] —
+  the stop never moves down (`stop_holds`).
 - **Stop-loss and channel exit**, each `close` (default) or `trade` [`stop_trigger`,
   `exit_trigger`]. The channel is the lowest low of the previous `exit_lookback` [20] COMPLETED
   bars, the current bar excluded. Close mode: `close < stop` → `stop_close`, else `close <
   channel` → `channel_close`, the whole position sold at the next opening print; and an opening
   print below the stop with no exit pending sells at that open (`stop_gap`). Trade mode: ONE
-  sell stop rests at the venue one price increment below the higher applicable level
-  (`stop_trade` when the stop is the higher, else `channel_trade`); a bar trading through it
-  fills at the trigger, a print gapping through it fills at the open — the venue does both
-  itself. Whichever fires first closes the whole position. A position still open after the last
-  bar is MARKED at the last close (`end_of_data`, `is_open`), counted in `n_open`, excluded from
-  every trade statistic.
+  sell stop rests one price increment below the higher applicable level (`stop_trade` when the
+  stop is the higher, else `channel_trade`); a bar trading through it fills at the trigger
+  (shocked, see below), a print gapping through it fills at the open. Whichever fires first
+  closes the whole position. A position still open after the last bar is MARKED at the last
+  close (`end_of_data`, `is_open`), counted in `n_open`, excluded from every trade statistic,
+  and charged no exit cost.
 - **Print precedence**: a pending exit → the close-mode gap-through stop → a pending entry or
   add. The only order that ever rests through a bar is the sell stop, so an entry, an add and an
   exit never conflict inside one bar.
 - **Budgets.** Each target is its own sub-account with a FIXED budget of `equity / n_targets`
-  (the sizing base and the cash cap); the venue holds one cash account of the whole equity and
-  the kernel never sizes beyond a budget, so the venue can never deny an order. The portfolio
-  curve is the sub-accounts summed bar by bar.
+  (the sizing base and the cash cap); the engine never sizes a buy the cash cannot cover all in.
+  The portfolio curve is the sub-accounts summed bar by bar.
+
+**Execution and the cost model** [`costs`, every field optional; the defaults are a liquid
+US-equity retail-pro account]. Every reference price is ON the price grid — a quantized open,
+or a `price_below` trigger — and a fill is that reference moved by the adverse distance in
+WHOLE grid steps against the account (buys up, sells down), then charged the commission on the
+resulting notional. Nothing a fill is priced with is decided on look-ahead: the open, `N` (the
+ATR in force during the bar, i.e. after the previous bar) and the `ADV` are known at the print;
+a stop fill additionally reads the bar's LOW as the fill model's assumption about the path after
+the trigger was touched — a fill-model input, never a decision input.
+
+- **Commission per fill** [`costs.commission`]: `c = per_share [0.005] × shares + bps [0]/1e4 ×
+  notional`; `c = max(c, min_per_order [1.0])`; `c = min(c, cap_bps [100]/1e4 × notional)` when
+  a cap is set (`null` uncaps); sells add `sell_bps [0]/1e4 × notional`, a stamp duty or
+  SEC §31-style fee the cap never applies to. `notional = shares × fill price`.
+- **Slippage per share** [`costs.slippage`], adverse on every fill: `reference × bps [5]/1e4 +
+  n_fraction [0] × N`. At an opening print the open IS the print, so `bps` models
+  auction-participation uncertainty, not spread crossing; `n_fraction` is the Turtle-native
+  "slippage in N", additive.
+- **Market impact per share** [`costs.impact`], opt-in: `coefficient [0] × N × sqrt(shares /
+  ADV)` — the square-root law `Y·σ·√(Q/ADV)` with `N` standing in for σ so the price cancels
+  (`N` ≈ 1.6 × daily σ on a random walk, so a σ-calibrated `Y` scales by ≈ 0.6). A positive
+  coefficient REQUIRES a volume column on every target, finite and strictly positive on every
+  bar (exit 2 otherwise; without impact the volume is never read), and `adv_window [20] ≤
+  max(atr_period, exit_lookback)` (`coefficients_invalid` otherwise), so the ADV is initialized
+  by the rules' first eligible bar and warmup stays the rules'.
+- **Stop shock** [`costs.stop_shock` 0.5, in 0..1]: a resting stop hit INSIDE a bar fills at
+  `trigger − stop_shock × (trigger − low)` before slippage and impact — 0 is the ideal fill at
+  the trigger, 1 the bar's low. 0.5 is the ignorance midpoint over where inside `[low, trigger]`
+  a stop-market order filled, the default because a stop-exit system's honest error is on the
+  pessimistic side (0.25 is a liquid-large-cap setting; a sweep over {0, 0.25, 0.5, 1} is the
+  stress test). It is by far the largest default cost, and it is booked in its own bucket. A
+  stop the OPEN gaps through references the open with NO shock term — the open being the first
+  print a triggered order can get; the discontinuity at the gap boundary is deliberate.
+- **Attribution**, four buckets per fill: `commission`; `shock = shock_per_share × shares`
+  (stop fills inside a bar only); `impact = impact_per_share × shares`; `slippage = |price −
+  reference| × shares − shock − impact` (the bps and N-fraction terms plus the grid rounding).
+  Per round trip, to float tolerance, `Σ sells × reference − Σ buys × reference == pnl +
+  commission + slippage + shock + impact`: an attribution AT THE FILL REFERENCES, never "what a
+  frictionless run would have made" — costed fills sit above the open, so the ladder, the stop
+  and the sizes differ and a frictionless run takes a different path.
+- **Cash and pnl.** Buys debit `shares × price + commission`, sells credit `shares × price −
+  commission`. A buy of `q` shares FITS when its all-in cash-out is within a billionth of a
+  share (priced at the open) of the cash — the one predicate entries (sized down by a binary
+  search over a strictly increasing cash-out) and adds (whole unit or skipped) share; with every
+  cost at zero it is exactly the rules' `floor(cash / open + 1e-9)`. Round trips keep
+  `cost_basis` / `proceeds` GROSS, carry the four buckets and `gross_pnl = proceeds −
+  cost_basis`; `pnl = gross_pnl − commission` is NET — slippage, shock and impact are already
+  inside the fill prices. Marks (`equity`, the end-of-data trip) carry no liquidation cost, and
+  the buy-and-hold benchmark is frictionless (a reference path, said so in its `construction`).
 
 **Coefficients.** The second positional is one strict JSON object (unknown keys, non-finite
 numbers, duplicate keys and coerced types refuse with `coefficients_invalid`): `equity`
 (REQUIRED) plus the bracketed knobs above, `bars_per_year` (252, the annualization clock),
-`currency` ("USD", a label) and `price_precision` (4: every price is quantized to that grid
-before the run, with the kernel's own rounding, so the venue and the reference agree bit for
-bit). The resolved set is stamped into `identity.coefficients` with its
+`currency` ("USD", a label), `price_precision` (4: every price is quantized to that grid before
+the run, with the engine's own rounding, so every level, trigger and fill shares one grid) and
+the nested `costs` block. The resolved set is stamped into `identity.coefficients` with its
 `coefficients_hash` (defaults filled, keys sorted), so a document that relied on a default and
 one that spelled it out are ONE coefficient set. `seikan schema` emits the document under
 `turtle_coefficients` (with its JSON Schema).
@@ -634,54 +690,47 @@ is a different exam — exit 3). Targets must be OHLCV-shaped, must carry a pric
 and the bound `benchmark` file must cover the target clock exactly — a simulation needs a price
 where the event study merely censors, so each of those is exit 2 with the usual `data_report`.
 
-**The venue, stamped.** `simulation` says exactly how the exchange was set up: `SIM`, netting,
-a cash account, unlimited liquidity at every print and trigger (no partial fills, no slippage —
-the venue's own volume-based partials are switched off by construction), zero commission, the
-price grid, the bar-type label every clock is fed under and the REAL `bar_spacing`, the
-`first_eligible_bar`, the fill conventions, and `pre_trade_risk`: the KERNEL is the pre-trade
-check (a buy is sized within the target's budget before it is submitted) and the venue's risk
-engine is bypassed — its pre-trade checks misread a resting sell stop as uncovered exposure and
-would deny buys the ledger affords — while the venue's account books stay live and every cell's
-`reconciliation` holds them to the ledger. Execution mechanics worth knowing: a market
-order submitted when the venue processes a bar fills at that bar's CLOSE, so the command feeds
-one "opening print" per bar (a quote at the open, one nanosecond before the bar) and submits
-every buy and every close-mode sell at that print; the resting stop is placed or moved only at
-print time or after a bar, never during a bar's replay (a command issued mid-replay applies only
-after it).
+**The engine, stamped.** `simulation` says exactly what ran: `engine` (`seikan._turtle`) and
+its version, the account currency, the starting equity and the fixed per-target budgets, the
+price grid, whole-share lots, `liquidity` (`unlimited` — every order fills whole at its
+reference moved by the cost model — or `sqrt_impact` when impact is enabled, the only size
+effect; there are no partial fills, no participation cap, no queue), the fill conventions
+verbatim, the REAL `bar_spacing`, the `first_eligible_bar`, and the ignored thesis parameters.
 
 **The report** (the file `--report-out` nominates, never stdout) has ONE fixed layer order after
-the header: `identity` (`name`, `dsl_hash`, `coefficients`, `coefficients_hash`, `data_digests`
-— every bound key, `benchmark` included — and `environment`, which adds `nautilus_trader` and
-`seikan_turtle`) → `data_report` (the loader's, plus the benchmark file's strict-read entry) →
-`outputs` → `simulation` → `targets` → `params` (the swept entry axes) → `n_cells` →
-`benchmark` (buy-and-hold of the index: `equity / open[0]` units from the first bar's open,
-marked at closes, its own metrics and periodic returns) → `cells` → `turtle_roles` (the claim,
-one honest caveat per over-trustable number, the fill conventions — verbatim from
-`contract.TURTLE_ROLES`, equality-checked at emission). Each cell — one per declared entry combo,
-in declaration order, NONE ranked, no best cell — carries `cell_id` and `params` (the
-entry-flags labels), a `portfolio` panel (`metrics`, `relative`, `periodic`, `trades`), a
-`by_target` panel per sub-account (`metrics`, `relative`, `trades`, `end_state`), nautilus's own
-`engine_stats` verbatim (NaN → null) and a `reconciliation` of the kernel's ledger against the
-venue's books (fill counts, cash change, closing cash — always `matched`: a mismatch is exit 4,
-never a report). `metrics` is one equity curve's description — simple bar returns against the
-previous bar (the bar before the first is the starting equity), sample standard deviations,
-risk-free zero, annualization by `bars_per_year`: total return, CAGR, volatility, Sharpe,
-Sortino, Calmar, the deepest drawdown with its peak/trough/recovery geometry, the bar-return
-moments, exposure. `relative` is the curve against the benchmark's bar returns: beta, per-bar and
-annualized alpha, correlation, tracking error, information ratio, excess return and CAGR, up/down
-capture. `trades` covers the CLOSED round trips (win rate, profit factor, expectancy, average and
-largest win/loss, bars held, units, adds, raw MAE/MFE against the entry price) beside the
-kernel's full ledger of what it did and declined to do. Every ratio with a zero denominator is
-null, never an infinity; the field dictionary is `seikan schema`'s `turtle_report`.
+the header: `identity` (`name`, `dsl_hash`, `coefficients` — the resolved set, `costs`
+included — `coefficients_hash`, `data_digests` — every bound key, `benchmark` included — and
+`environment`, which adds `seikan_turtle`) → `data_report` (the loader's, plus the benchmark
+file's strict-read entry) → `outputs` → `simulation` → `targets` → `params` (the swept entry
+axes) → `n_cells` → `benchmark` (buy-and-hold of the index: `equity / open[0]` units from the
+first bar's open, marked at closes, its own metrics and periodic returns) → `cells` →
+`turtle_roles` (the claim, one honest caveat per over-trustable number, the fill conventions —
+verbatim from `contract.TURTLE_ROLES`, equality-checked at emission). Each cell — one per
+declared entry combo, in declaration order, NONE ranked, no best cell — carries `cell_id` and
+`params` (the entry-flags labels), a `portfolio` panel (`metrics`, `relative`, `periodic`,
+`trades`, `costs_paid`) and a `by_target` panel per sub-account (`metrics`, `relative`,
+`trades`, `end_state` with its own `costs_paid`). `metrics` is one equity curve's description —
+simple bar returns against the previous bar (the bar before the first is the starting equity),
+sample standard deviations, risk-free zero, annualization by `bars_per_year`: total return,
+CAGR, volatility, Sharpe, Sortino, Calmar, the deepest drawdown with its peak/trough/recovery
+geometry, the bar-return moments, exposure. `relative` is the curve against the benchmark's bar
+returns: beta, per-bar and annualized alpha, correlation, tracking error, information ratio,
+excess return and CAGR, up/down capture. `trades` covers the CLOSED round trips (win rate,
+profit factor, expectancy, average and largest win/loss, bars held, units, adds, raw MAE/MFE
+against the entry price, `gross_pnl` beside the net `net_pnl`, the four cost buckets summed as
+`costs`, the gross `turnover` and `cost_bps_of_turnover`) beside the engine's full ledger of
+what it did and declined to do. Two cost denominators coexist and both are stated: `costs_paid`
+sums EVERY fill of the run (open positions included — the cash fact), `trades.costs` the closed
+trips only. Every ratio with a zero denominator is null, never an infinity; the field
+dictionary is `seikan schema`'s `turtle_report`.
 
-**The CSVs**: `--trades-out`, one row per round trip (closed, then the open end-of-data mark);
-`--fills-out`, one row per venue fill with the kernel's state after it; `--equity-out`, one row
-per bar per cell with the equity and benchmark curves and the per-target position state. All
-three carry the swept entry axes as leading columns, exactly like `run`'s trades CSV;
-`seikan schema` emits `turtle_trades_csv` / `turtle_fills_csv` / `turtle_equity_csv`.
-
-nautilus_trader is used as an installed library (LGPL-3.0) and the Rust kernel links no
-nautilus code; seikan itself stays MIT.
+**The CSVs**: `--trades-out`, one row per round trip (closed, then the open end-of-data mark;
+`gross_pnl`, `commission`, `slippage`, `shock`, `impact` beside the net `pnl`); `--fills-out`,
+one row per fill with its `reference`, its price, the four buckets and the engine's books after
+it; `--equity-out`, one row per bar per cell with the equity and benchmark curves, the
+cumulative cost buckets and the per-target position state. All three carry the swept entry
+axes as leading columns, exactly like `run`'s trades CSV; `seikan schema` emits
+`turtle_trades_csv` / `turtle_fills_csv` / `turtle_equity_csv`.
 
 ### non-negotiable invariants
 
@@ -743,8 +792,8 @@ nautilus code; seikan itself stays MIT.
 - **The simulation consumes the engine and never changes it.** `stock-turtle-trade-long-only`
   reads the entry mask through `api.list_entries` and runs beside `compiler/`, `analysis/` and
   `gate/`; a `run` document is byte-identical with the simulation installed or not, and the
-  simulation's rules exist once, in the Rust kernel, with the venue's fills held to the kernel's
-  reference simulator by the suite.
+  simulation's rules exist once, in the Rust engine, whose frictionless fills the suite holds to
+  the rules' own worked numbers and whose cost model never moves a rule quantity.
 - **Statelessness**: no SQLite, no `$SEIKAN_HOME`, no config file. Thresholds come from `SEIKAN_*`
   env vars overridden by CLI flags, and the snapshot used is stamped into every report. The one
   on-disk artifact is numba's JIT cache (see dev commands — `NUMBA_CACHE_DIR` under a read-only
@@ -888,27 +937,29 @@ nautilus code; seikan itself stays MIT.
   sweep semantics — lives in these modules' own docstrings and module headers; read them before
   touching any of the three.
 - `turtle/` — the simulation package behind `stock-turtle-trade-long-only`: `coefficients`
-  (the strict, frozen coefficients document + `canonical_coefficients_hash`), `signals` (thesis →
-  one entry cell per combo, read off `api.list_entries`), `market` (admission: quantized OHLC,
-  the benchmark's exact clock cover, every hole refused; the nautilus instruments, bars and
-  opening prints), `strategy` (the nautilus strategy driving the kernel per target), `engine`
-  (one `BacktestEngine` per cell, the reconciliation), `metrics` (pure numpy/pandas performance
-  arithmetic) and `report` (the sections and the three CSV frames). nautilus_trader is imported
-  only inside the functions that need it, so `import seikan`, `run` and `schema` never load it.
-- `_turtle.pyi` / `crates/seikan-turtle` — the Rust kernel (`seikan._turtle`, built by maturin):
-  `WilderAtr` and `LowestLowChannel` in the nautilus indicator idiom, the `Machine` state
-  machine, `simulate_reference`; `types/turtle.py` declares the report's shapes.
+  (the strict, frozen coefficients document with its nested `costs` model +
+  `canonical_coefficients_hash`), `signals` (thesis → one entry cell per combo, read off
+  `api.list_entries`), `market` (admission: quantized OHLC, the benchmark's exact clock cover,
+  the volume when impact reads it, every hole refused), `engine` (one `seikan._turtle.simulate`
+  run per cell × target; the result shapes), `metrics` (pure numpy/pandas performance
+  arithmetic, the cost reads) and `report` (the sections and the three CSV frames).
+- `_turtle.pyi` / `crates/seikan-turtle` — the Rust simulation engine (`seikan._turtle`, built
+  by maturin): `coefficients` (the rules), `costs` (the commission schedule, slippage, impact,
+  stop shock), `price` (the grid and its step arithmetic), `indicators` (`WilderAtr`,
+  `LowestLowChannel`, `AverageVolume`), `machine` (the rules and the books), `execution` (how an
+  order becomes a fill) and `sim` (the bar loop); Python sees `simulate`, `Coefficients`,
+  `CostModel` and the result classes; `types/turtle.py` declares the report's shapes.
 - `reference/dsl-schema.md` — the agent-facing DSL guide (`seikan schema --markdown`).
 
 ### dev commands
 
 ```bash
-uv sync                   # install; builds the Rust kernel (a Rust toolchain, cargo >= 1.88,
-                          # is required) and pulls nautilus_trader — no services
-uv run maturin develop    # rebuild the kernel in place after a Rust edit
+uv sync                   # install; builds the Rust engine (a Rust toolchain, cargo >= 1.88,
+                          # is required) — no services
+uv run maturin develop    # rebuild the engine in place after a Rust edit
 cargo fmt --all --check   # the Rust side of the dev loop; run the cargo commands under
 uv run cargo clippy --workspace --all-targets --all-features -- -D warnings   # `uv run` so
-cargo test --workspace    # pyo3 finds the interpreter (the pure kernel tests need none)
+cargo test --workspace    # pyo3 finds the interpreter (the pure engine tests need none)
 uv run ruff format --check src tests   # formatting is enforced, never a matter of taste
 uv run ruff check src tests            # lint
 uv run mypy                            # strict, over the whole package
@@ -978,6 +1029,13 @@ honest workaround today:
 - **Reference universes and member weights.** A cross-section is always the declared targets:
   a rank against an OUTSIDE universe is supplied as a feed of breakpoints; a weighted mean is
   the exact composition `cross_agg(x·w, mean) / cross_agg(w, mean)`.
+
+What the Turtle simulation's cost model does NOT model, deferred with the 6.0.0 engine release
+(2026-09-19), each a stated caveat today rather than a silent omission: partial fills and
+participation caps (every order fills whole; impact is the only size effect), borrow and
+financing (long-only, cash account), dividends and corporate actions (the CSV's prices are the
+prices), taxes, and the intrabar path (a stop fill's `stop_shock` is an ignorance prior over
+`[low, trigger]`, not a path model).
 
 Two pieces of CALLER discipline worth naming without legislating: a report is a FILE artifact —
 reference it by path and identity (`dsl_hash`, `data_digests`), never re-type its numbers through

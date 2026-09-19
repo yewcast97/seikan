@@ -6,8 +6,9 @@ DSL (JSON) and time series (strict CSV); seikan runs an observer-pure forward-re
 study — entry condition + measurement horizon, no exit rule, no portfolio simulation — over
 **every parameter × horizon cell your sweep declares**, and writes one complete JSON report.
 Beside it, one simulation command takes the same thesis as an entry signal and runs the
-long-only Turtle position rules on nautilus_trader's simulated exchange (the rules in a Rust
-kernel), writing a performance report benchmarked against an index.
+long-only Turtle position rules on seikan's own Rust engine under a stated trade-cost model
+(commission, slippage, market impact, stop shock), writing a performance report benchmarked
+against an index.
 
 ## What makes it different
 
@@ -37,8 +38,8 @@ kernel), writing a performance report benchmarked against an index.
 ## Install
 
 ```bash
-uv sync            # or: uv tool install .   (Python 3.13 or 3.14, and a Rust toolchain:
-                   # the Turtle kernel is compiled by maturin; nautilus_trader is pulled in)
+uv sync            # or: uv tool install .   (Python 3.13+, and a Rust toolchain: the Turtle
+                   # engine is compiled by maturin)
 ```
 
 ## Use
@@ -95,8 +96,13 @@ horizons), so the report carries two entries in `summary.cells`, each graded on 
 The Turtle simulation takes a second JSON of coefficients — `{"equity": 100000}` is a complete
 one, every other knob (`atr_period` 20, `add_step_n` 0.5, `max_units` 3, `stop_n` 2,
 `exit_lookback` 20, `risk_per_unit` 0.01, `stop_trigger`/`exit_trigger` `close`) defaulting to
-the rules — and always needs `--data benchmark=<index.csv>`, the index its report benchmarks
-against. It runs one simulation per declared entry combo and ranks none of them.
+the rules and `costs` to a liquid US-equity retail-pro account (`commission` $0.005/share, $1
+minimum, 1% cap; `slippage` 5 bps; `impact` off — the square-root law, volume-driven, opt-in;
+`stop_shock` 0.5, a stop hit inside a bar fills halfway to the bar's low) — and always needs
+`--data benchmark=<index.csv>`, the index its report benchmarks against. Every fill's
+commission, slippage, shock and impact are itemized in the report and the CSVs; with every cost
+at zero the fills are the rules' own numbers. It runs one simulation per declared entry combo and
+ranks none of them.
 
 ## Development
 

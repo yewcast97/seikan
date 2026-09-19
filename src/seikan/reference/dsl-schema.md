@@ -859,7 +859,7 @@ correct for them.
 
 The report is a FILE you nominate: `--report-out <path>` (always overwritten). A successful run
 prints **nothing** on stdout — only an error ever emits a JSON envelope there — so read the report
-off disk, not off the pipe. It is `report_schema_version` **6**, in a FIXED layer order (there are
+off disk, not off the pipe. It is `report_schema_version` **7**, in a FIXED layer order (there are
 no layering variants to branch on):
 
 `seikan_version` / `report_schema_version` / `command` (the header every seikan JSON document
@@ -1562,16 +1562,20 @@ The one command that trades. `seikan stock-turtle-trade-long-only <thesis.json>
 <coefficients.json> --data KEY=PATH ... --data benchmark=PATH --report-out <path>` takes the SAME
 thesis document as `run` and uses only its entry firing (per entry combo × target, bit-identical to
 `--entry-flags-out`; `params.horizon`/`outcome`/`benchmark`/`features` are ignored, `direction` must
-be `longonly`) as the entry signal of a long-only Turtle position system run on nautilus_trader's
-simulated exchange. The second JSON is the coefficients document — `{"equity": 100000}` is complete;
-`atr_period` (20), `add_step_n` (0.5), `max_units` (3), `stop_n` (2), `exit_lookback` (20),
-`risk_per_unit` (0.01), `stop_trigger` / `exit_trigger` (`close` | `trade`), `stop_n_source`
-(`current` | `entry`), `bars_per_year` (252), `currency` (`USD`), `price_precision` (4) default to
-the rules; unknown keys refuse (`coefficients_invalid`). `--data` binds the thesis's keys exactly as
-`run` does and MUST also bind `benchmark`, the index the report's buy-and-hold benchmark is built
-from. The report (`command` `"stock-turtle-trade-long-only"`, the same header) has the fixed layer
-order `identity` → `data_report` → `outputs` → `simulation` → `targets` → `params` → `n_cells` →
-`benchmark` → `cells` → `turtle_roles`, one cell per declared entry combo, none ranked; `seikan
-schema` documents it under `turtle_coefficients`, `turtle_report`, `turtle_trades_csv`,
-`turtle_fills_csv`, `turtle_equity_csv` and `turtle_roles`, and `CONTRACT.md`'s "the Turtle
-simulation" section states the rules as implemented.
+be `longonly`) as the entry signal of a long-only Turtle position system run on seikan's own Rust
+engine under a stated trade-cost model. The second JSON is the coefficients document —
+`{"equity": 100000}` is complete; `atr_period` (20), `add_step_n` (0.5), `max_units` (3), `stop_n`
+(2), `exit_lookback` (20), `risk_per_unit` (0.01), `stop_trigger` / `exit_trigger` (`close` |
+`trade`), `stop_n_source` (`current` | `entry`), `bars_per_year` (252), `currency` (`USD`),
+`price_precision` (4) default to the rules, and `costs` defaults to a liquid US-equity retail-pro
+account (`commission` {`per_share` 0.005, `min_per_order` 1, `bps` 0, `sell_bps` 0, `cap_bps` 100},
+`slippage` {`bps` 5, `n_fraction` 0}, `impact` {`coefficient` 0 — off; needs volume when on,
+`adv_window` 20}, `stop_shock` 0.5); unknown keys refuse (`coefficients_invalid`). `--data` binds
+the thesis's keys exactly as `run` does and MUST also bind `benchmark`, the index the report's
+buy-and-hold benchmark is built from. The report (`command` `"stock-turtle-trade-long-only"`, the
+same header) has the fixed layer order `identity` → `data_report` → `outputs` → `simulation` →
+`targets` → `params` → `n_cells` → `benchmark` → `cells` → `turtle_roles`, one cell per declared
+entry combo, none ranked; `seikan schema` documents it under `turtle_coefficients`,
+`turtle_report`, `turtle_trades_csv`, `turtle_fills_csv`, `turtle_equity_csv` and `turtle_roles`,
+and `CONTRACT.md`'s "the Turtle simulation" section states the rules, the execution model and the
+cost attribution as implemented.

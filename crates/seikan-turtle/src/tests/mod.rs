@@ -1,14 +1,17 @@
-//! Unit tests for the kernel: the price grid, the indicators (Faith's own N table), the state
-//! machine (the worked example from the rules, every skip and precedence case) and the reference
-//! simulator's identities.
+//! Unit tests for the engine: the price grid, the indicators (Faith's own N table), the state
+//! machine (the worked example from the rules, every skip and precedence case), the cost model,
+//! the execution arithmetic and the simulator's identities.
 
+mod costs;
+mod execution;
 mod indicators;
 mod machine;
 mod price;
 mod sim;
 
 use crate::coefficients::{Coefficients, NSource, Trigger};
-use crate::sim::BarSeries;
+use crate::costs::{Commission, CostModel, Impact, Slippage};
+use crate::sim::{BarSeries, SimResult, simulate};
 
 /// The rules' defaults over a $100,000 single-target budget.
 pub(crate) fn coefficients() -> Coefficients {
@@ -27,6 +30,28 @@ pub(crate) fn coefficients() -> Coefficients {
     }
 }
 
+/// A liquid US-equity retail-pro account: the coefficients document's defaults.
+pub(crate) fn realistic_costs() -> CostModel {
+    CostModel {
+        commission: Commission {
+            per_share: 0.005,
+            min_per_order: 1.0,
+            bps: 0.0,
+            sell_bps: 0.0,
+            cap_bps: Some(100.0),
+        },
+        slippage: Slippage {
+            bps: 5.0,
+            n_fraction: 0.0,
+        },
+        impact: Impact {
+            coefficient: 0.0,
+            adv_window: 20,
+        },
+        stop_shock: 0.5,
+    }
+}
+
 /// Explicit OHLC bars plus the firing flags, built bar by bar.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Bars {
@@ -34,6 +59,7 @@ pub(crate) struct Bars {
     pub high: Vec<f64>,
     pub low: Vec<f64>,
     pub close: Vec<f64>,
+    pub volume: Option<Vec<f64>>,
     pub fired: Vec<bool>,
 }
 
@@ -56,12 +82,19 @@ impl Bars {
         self
     }
 
+    /// A constant volume on every bar.
+    pub fn with_volume(&mut self, volume: f64) -> &mut Self {
+        self.volume = Some(vec![volume; self.len()]);
+        self
+    }
+
     pub fn series(&self) -> BarSeries<'_> {
         BarSeries {
             open: &self.open,
             high: &self.high,
             low: &self.low,
             close: &self.close,
+            volume: self.volume.as_deref(),
         }
     }
 
@@ -87,6 +120,39 @@ pub(crate) fn worked_example() -> Bars {
     b
 }
 
+/// Run frictionless — the rules alone.
+pub(crate) fn run(c: &Coefficients, b: &Bars) -> SimResult {
+    simulate(c, &CostModel::FRICTIONLESS, b.series(), &b.fired).expect("simulation runs")
+}
+
+/// Run under a cost model.
+pub(crate) fn run_with(c: &Coefficients, costs: &CostModel, b: &Bars) -> SimResult {
+    simulate(c, costs, b.series(), &b.fired).expect("simulation runs")
+}
+
 pub(crate) fn close_to(a: f64, b: f64) -> bool {
     (a - b).abs() <= 1e-9 * a.abs().max(b.abs()).max(1.0)
+}
+
+/// A tiny deterministic generator for property tests (no `rand` dependency).
+pub(crate) struct Lcg(u64);
+
+impl Lcg {
+    pub fn new(seed: u64) -> Self {
+        Self(seed)
+    }
+
+    /// A float in `[0, 1)`.
+    pub fn unit(&mut self) -> f64 {
+        self.0 = self
+            .0
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        (self.0 >> 11) as f64 / (1u64 << 53) as f64
+    }
+
+    /// A float in `[lo, hi)`.
+    pub fn range(&mut self, lo: f64, hi: f64) -> f64 {
+        lo + (hi - lo) * self.unit()
+    }
 }

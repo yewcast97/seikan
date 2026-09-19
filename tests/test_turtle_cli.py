@@ -1,6 +1,6 @@
 """``seikan stock-turtle-trade-long-only`` end to end through ``main``: the worked example's
-report and CSVs, the fixed layer order, silence on success (at the file-descriptor level, where
-the venue logs), every refusal tier, and the schema's new sections."""
+report and CSVs (frictionless, the rules' own numbers; then under the realistic defaults), the
+fixed layer order, silence on success, every refusal tier, and the schema's turtle sections."""
 
 from __future__ import annotations
 
@@ -88,22 +88,24 @@ def test_the_worked_example_end_to_end(inputs, capfd):
         )
     )
     captured = capfd.readouterr()
-    assert code == 0 and captured.out == ""  # silent at the fd level: the venue logs nothing
+    assert code == 0 and captured.out == ""  # silent at the fd level
     doc = json.loads(report.read_text(encoding="utf-8"))
     assert list(doc) == LAYERS
-    assert doc["report_schema_version"] == REPORT_SCHEMA_VERSION == 6
+    assert doc["report_schema_version"] == REPORT_SCHEMA_VERSION == 7
     assert doc["command"] == TURTLE_COMMAND
     validate_emitted(TURTLE_COMMAND, doc)
     ident = doc["identity"]
     assert ident["name"] == "turtle-probe" and len(ident["dsl_hash"]) == 64
     assert len(ident["coefficients_hash"]) == 64
     assert ident["coefficients"]["equity"] == 100000.0 and ident["coefficients"]["max_units"] == 3
-    assert len(ident["coefficients"]) == 13
+    assert len(ident["coefficients"]) == 14
+    assert ident["coefficients"]["costs"]["stop_shock"] == 0.0  # the fixture is frictionless
     assert set(ident["data_digests"]) == {"PX", "benchmark"}
     assert all(
         len(v["sha256"]) == 64 and v["column"] is None for v in ident["data_digests"].values()
     )
-    assert {"nautilus_trader", "seikan_turtle", "numpy"} <= set(ident["environment"])
+    assert {"seikan_turtle", "numpy"} <= set(ident["environment"])
+    assert "nautilus_trader" not in ident["environment"]
     assert doc["data_report"]["ok"] and [f["role"] for f in doc["data_report"]["files"]] == [
         "target:PX",
         "benchmark",
@@ -115,13 +117,15 @@ def test_the_worked_example_end_to_end(inputs, capfd):
         "equity": {"path": str(equity), "rows_written": 31},
     }
     assert doc["simulation"]["n_bars"] == 31 and doc["simulation"]["starting_equity"] == 100000.0
+    assert doc["simulation"]["engine"] == "seikan._turtle"
     assert doc["targets"] == ["PX"] and doc["params"] == [] and doc["n_cells"] == 1
     assert doc["benchmark"]["units"] == pytest.approx(100000 / 99.0)
     cell = doc["cells"][0]
     assert cell["cell_id"] == "entry" and cell["portfolio"]["metrics"]["end_equity"] == 97000.0
     assert cell["portfolio"]["trades"]["exits"]["stop_close"] == 1
     assert cell["by_target"]["PX"]["trades"]["n_round_trips"] == 1
-    assert cell["reconciliation"]["matched"] is True
+    assert cell["portfolio"]["costs_paid"]["total"] == 0.0 and "reconciliation" not in cell
+    assert "nautilus" not in report.read_text(encoding="utf-8")
     assert doc["turtle_roles"]["fill_conventions"]["entry"].startswith("the thesis fires")
     t = pd.read_csv(trades)
     assert len(t) == 1 and t.loc[0, "pnl"] == -3000.0 and t.loc[0, "exit_reason"] == "stop_close"
@@ -202,6 +206,17 @@ def test_a_column_bound_to_the_benchmark_refuses(inputs, capsys):
         ('{"equity": "100000"}', "1 invalid coefficient", True),
         ("{}", "1 invalid coefficient", True),
         ('{"equity": 1, "max_units": 0, "stop_n": -1}', "2 invalid coefficients", True),
+        ('{"equity": 1, "costs": {"stop_shock": 2}}', "1 invalid coefficient", True),
+        (
+            '{"equity": 1, "costs": {"commission": {"per_share": -0.01}}}',
+            "1 invalid coefficient",
+            True,
+        ),
+        (
+            '{"equity": 1, "costs": {"impact": {"coefficient": 0.5, "adv_window": 30}}}',
+            "1 invalid coefficient",
+            True,
+        ),
     ],
 )
 def test_invalid_coefficients_are_their_own_envelope(inputs, capsys, text, fragment, has_records):
@@ -295,6 +310,31 @@ def test_swept_cells_ride_side_by_side(inputs, capsys):
     assert len(e) == 62 and list(e.columns)[:2] == ["level", "datetime"]
 
 
+def test_the_realistic_defaults_end_to_end(inputs, capsys):
+    coef = inputs["dir"] / "defaults.json"
+    coef.write_text(json.dumps({"equity": 100000}), encoding="utf-8")
+    report, fills = inputs["dir"] / "r.json", inputs["dir"] / "f.csv"
+    code, _ = _run(
+        capsys, _argv(inputs, "--report-out", str(report), "--fills-out", str(fills), coef=coef)
+    )
+    assert code == 0
+    doc = json.loads(report.read_text(encoding="utf-8"))
+    validate_emitted(TURTLE_COMMAND, doc)
+    costs = doc["identity"]["coefficients"]["costs"]
+    assert costs["commission"]["per_share"] == 0.005 and costs["slippage"]["bps"] == 5.0
+    assert costs["stop_shock"] == 0.5 and costs["impact"]["coefficient"] == 0.0
+    port = doc["cells"][0]["portfolio"]
+    trades = port["trades"]
+    # Costed buys fill above the open, so the ladder and the exit differ from the frictionless
+    # path: what holds is the cost identity, never a comparison with the frictionless equity.
+    assert port["costs_paid"]["total"] > 0.0 and trades["net_pnl"] < trades["gross_pnl"]
+    assert trades["net_pnl"] == pytest.approx(trades["gross_pnl"] - trades["costs"]["commission"])
+    assert port["metrics"]["end_equity"] == pytest.approx(100000.0 + trades["net_pnl"])
+    f = pd.read_csv(fills)
+    assert (f["commission"] > 0).all() and (f["slippage"] > 0).all()
+    assert f["price"].tolist()[0] > 50.0 and f["reference"].tolist()[0] == 50.0
+
+
 def test_schema_carries_the_turtle_sections_last(capsys):
     code, doc = _run(capsys, ["schema"])
     assert code == 0
@@ -311,5 +351,7 @@ def test_schema_carries_the_turtle_sections_last(capsys):
     assert keys.index("turtle_coefficients") == keys.index("describe_roles") + 1
     assert doc["turtle_coefficients"]["json_schema"]["required"] == ["equity"]
     assert "add_gap" not in json.dumps(doc["turtle_coefficients"])
+    assert "stop_shock" in json.dumps(doc["turtle_coefficients"]["json_schema"])
+    assert "shock" in doc["turtle_fills_csv"]["columns"] and "nautilus" not in json.dumps(doc)
     assert "coefficients_invalid" in doc["exit_codes"]["3"]
     assert doc["turtle_roles"]["claim"].startswith("a SIMULATION")

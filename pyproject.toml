@@ -1,12 +1,12 @@
 [project]
 name = "seikan"
-version = "5.0.0"
+version = "6.0.0"
 description = "Stateless CLI statistical reporter: observer-pure forward-return event studies with a per-cell checklist, over strict CSV data."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "yewcast97" }]
-requires-python = ">=3.13,<3.15"
+requires-python = ">=3.13"
 keywords = ["backtesting", "event-study", "statistics", "finance", "cli"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
@@ -16,6 +16,7 @@ classifiers = [
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Office/Business :: Financial :: Investment",
     "Topic :: Scientific/Engineering :: Information Analysis",
     "Typing :: Typed",
@@ -32,10 +33,6 @@ dependencies = [
     # (SEIKAN_* env vars overridden by CLI flags).
     "pydantic>=2",
     "pydantic-settings>=2.5",
-    # The Turtle simulation (`stock-turtle-trade-long-only`) is executed by nautilus_trader's
-    # simulated exchange. 2.0 is the PyO3-only line; pinned exactly while it is a release
-    # candidate, and it is what caps requires-python below 3.15.
-    "nautilus_trader==2.0.0rc5",
 ]
 
 [project.urls]
@@ -46,10 +43,10 @@ Changelog = "https://github.com/yewcast97/seikan/blob/main/CHANGELOG.md"
 seikan = "seikan.cli:main"
 
 [build-system]
-# A mixed Rust/Python package: the Turtle kernel (`crates/seikan-turtle`) is compiled into the
-# `seikan._turtle` extension module by maturin, which also ships every non-Python file under
-# `src/seikan` (the agent-facing DSL reference `seikan schema --markdown` streams, the PEP 561
-# `py.typed` marker, the `_turtle.pyi` stub). Building from source needs a Rust toolchain.
+# A mixed Rust/Python package: the Turtle simulation engine (`crates/seikan-turtle`) is compiled
+# into the `seikan._turtle` extension module by maturin, which also ships every non-Python file
+# under `src/seikan` (the agent-facing DSL reference `seikan schema --markdown` streams, the PEP
+# 561 `py.typed` marker, the `_turtle.pyi` stub). Building from source needs a Rust toolchain.
 requires = ["maturin>=1.8,<2"]
 build-backend = "maturin"
 
@@ -71,7 +68,7 @@ dev = [
     "pytest>=9.0.3",
     "mypy>=1.14",
     "ruff>=0.9",
-    # `uv run maturin develop` rebuilds the extension in place after a Rust edit.
+    # `uv run maturin develop` rebuilds the engine in place after a Rust edit.
     "maturin>=1.8,<2",
 ]
 

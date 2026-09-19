@@ -79,6 +79,22 @@ class RelativeMetrics(TypedDict):
     n_down_bars: int
 
 
+# ---- costs ----------------------------------------------------------------------------------
+
+
+class CostsPaid(TypedDict):
+    """The four cost buckets summed, in the account currency: over every fill of a run
+    (``end_state.costs_paid`` / ``portfolio.costs_paid``, the cash fact) or over the closed round
+    trips (``trades.costs``). ``total`` is their sum — what the same fills would have been worth
+    more at their reference prices, net of commission."""
+
+    commission: float
+    slippage: float
+    shock: float
+    impact: float
+    total: float
+
+
 # ---- trades ---------------------------------------------------------------------------------
 
 
@@ -116,9 +132,10 @@ class AddCounts(TypedDict):
 
 
 class TradeStats(TypedDict):
-    """Round-trip statistics over CLOSED trips plus the kernel's ledger counts —
+    """Round-trip statistics over CLOSED trips plus the engine's ledger counts —
     ``turtle.metrics.trade_stats``. An open end-of-data position is counted in ``n_open`` and
-    ``exits.end_of_data`` and enters no other statistic."""
+    ``exits.end_of_data`` and enters no other statistic. ``pnl``-based reads are NET of
+    commission; ``gross_pnl`` is proceeds − cost_basis at the fill prices."""
 
     n_round_trips: int
     n_open: int
@@ -129,6 +146,10 @@ class TradeStats(TypedDict):
     gross_profit: float
     gross_loss: float
     net_pnl: float
+    gross_pnl: float
+    costs: CostsPaid
+    turnover: float
+    cost_bps_of_turnover: float | None
     profit_factor: float | None
     expectancy: float | None
     expectancy_ret: float | None
@@ -169,6 +190,7 @@ class TargetEndState(TypedDict):
     stop: float | None
     add_level: float | None
     in_position: bool
+    costs_paid: CostsPaid
 
 
 class TargetPanel(TypedDict):
@@ -187,28 +209,7 @@ class PortfolioPanel(TypedDict):
     relative: RelativeMetrics
     periodic: PeriodicReturns
     trades: TradeStats
-
-
-class EngineStats(TypedDict):
-    """nautilus_trader's own statistics for the cell, verbatim (NaN → null; the wall-clock
-    fields are never carried)."""
-
-    stats_pnls: dict[str, dict[str, float | None]]
-    stats_returns: dict[str, float | None]
-    stats_general: dict[str, float | None]
-
-
-class ReconciliationBlock(TypedDict):
-    """The kernel's ledger against the venue's books — always ``matched``: a mismatch never
-    becomes a report (it is the exit-4 class)."""
-
-    n_fills_ledger: int
-    n_fills_engine: int
-    cash_change_ledger: float
-    cash_change_engine: float
-    end_cash_ledger: float
-    end_cash_account: float
-    matched: bool
+    costs_paid: CostsPaid
 
 
 class TurtleCell(TypedDict):
@@ -218,8 +219,6 @@ class TurtleCell(TypedDict):
     params: dict[str, ParamValue]
     portfolio: PortfolioPanel
     by_target: dict[str, TargetPanel]
-    engine_stats: EngineStats
-    reconciliation: ReconciliationBlock
 
 
 # ---- run-level blocks -----------------------------------------------------------------------
@@ -238,28 +237,19 @@ class BenchmarkBlock(TypedDict):
 
 
 class SimulationBlock(TypedDict):
-    """How the venue was set up and what every number is denominated in."""
+    """How the engine was set up and what every number is denominated in."""
 
     engine: str
     engine_version: str
-    kernel: str
-    kernel_version: str
-    venue: str
-    oms_type: str
-    account_type: str
     currency: str
     starting_equity: float
     n_targets: int
     budget_per_target: float
     budget_mode: str
-    instruments: dict[str, str]
     price_precision: int
     price_increment: float
-    size_precision: int
     lot_size: int
     liquidity: str
-    commission: float
-    pre_trade_risk: str
     fill_conventions: dict[str, str]
     bars_per_year: int
     n_bars: int
@@ -268,7 +258,33 @@ class SimulationBlock(TypedDict):
     bar_spacing: BarSpacing
     first_eligible_bar: int
     thesis_params_ignored: list[str]
-    bar_type_label: str
+
+
+class CommissionBlock(TypedDict):
+    per_share: float
+    min_per_order: float
+    bps: float
+    sell_bps: float
+    cap_bps: float | None
+
+
+class SlippageBlock(TypedDict):
+    bps: float
+    n_fraction: float
+
+
+class ImpactBlock(TypedDict):
+    coefficient: float
+    adv_window: int
+
+
+class CoefficientsCostsBlock(TypedDict):
+    """The resolved cost model (``turtle.coefficients.Costs``)."""
+
+    commission: CommissionBlock
+    slippage: SlippageBlock
+    impact: ImpactBlock
+    stop_shock: float
 
 
 class CoefficientsBlock(TypedDict):
@@ -287,3 +303,4 @@ class CoefficientsBlock(TypedDict):
     bars_per_year: int
     currency: str
     price_precision: int
+    costs: CoefficientsCostsBlock

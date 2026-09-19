@@ -1,24 +1,33 @@
-//! The Turtle rule coefficients, validated once, and the unit-sizing arithmetic.
+//! The Turtle rule coefficients, validated once, and the unit-sizing arithmetic. The rules only:
+//! the cost model is a separate value ([`crate::costs::CostModel`]) the machine never sees.
 
 use std::fmt;
 
+use crate::error::Error;
+
 /// When a price-triggered rule fires: on the bar's CLOSE (executed at the next opening print)
-/// or on a TRADE through the level (a resting stop order at the venue).
+/// or on a TRADE through the level (a resting stop order).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Trigger {
+    /// Decided at the close, executed at the next opening print.
     Close,
+    /// A resting sell stop through the level.
     Trade,
 }
 
 impl Trigger {
-    pub fn parse(text: &str) -> Result<Self, String> {
+    /// Parse the lowercase name.
+    pub fn parse(text: &str) -> Result<Self, Error> {
         match text {
             "close" => Ok(Self::Close),
             "trade" => Ok(Self::Trade),
-            other => Err(format!("trigger must be 'close' or 'trade', got {other:?}")),
+            other => Err(Error::Coefficients(format!(
+                "trigger must be 'close' or 'trade', got {other:?}"
+            ))),
         }
     }
 
+    /// The lowercase name.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Close => "close",
@@ -31,21 +40,25 @@ impl Trigger {
 /// signal bar ("N is not recalculated for sizing, only for the stop").
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NSource {
+    /// The entry ATR.
     Entry,
+    /// The ATR current at the add's signal bar.
     Current,
 }
 
 impl NSource {
-    pub fn parse(text: &str) -> Result<Self, String> {
+    /// Parse the lowercase name.
+    pub fn parse(text: &str) -> Result<Self, Error> {
         match text {
             "entry" => Ok(Self::Entry),
             "current" => Ok(Self::Current),
-            other => Err(format!(
+            other => Err(Error::Coefficients(format!(
                 "stop_n_source must be 'entry' or 'current', got {other:?}"
-            )),
+            ))),
         }
     }
 
+    /// The lowercase name.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Entry => "entry",
@@ -70,8 +83,11 @@ pub struct Coefficients {
     pub exit_lookback: usize,
     /// Fraction of the budget risked per unit between the fill and the initial stop.
     pub risk_per_unit: f64,
+    /// How the stop-loss fires.
     pub stop_trigger: Trigger,
+    /// How the channel exit fires.
     pub exit_trigger: Trigger,
+    /// Which N sets the stop after an add.
     pub stop_n_source: NSource,
     /// Decimal places of the instrument's price grid (increment `10^-price_precision`).
     pub price_precision: u32,
@@ -81,38 +97,40 @@ pub struct Coefficients {
 
 impl Coefficients {
     /// Refuse a coefficient set the rules cannot be run under.
-    pub fn validate(&self) -> Result<(), String> {
-        let positive = |name: &str, v: f64| -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), Error> {
+        let positive = |name: &str, v: f64| -> Result<(), Error> {
             if v.is_finite() && v > 0.0 {
                 Ok(())
             } else {
-                Err(format!("{name} must be a finite number > 0, got {v}"))
+                Err(Error::Coefficients(format!(
+                    "{name} must be a finite number > 0, got {v}"
+                )))
             }
         };
         if self.atr_period == 0 {
-            return Err("atr_period must be >= 1".into());
+            return Err(Error::Coefficients("atr_period must be >= 1".into()));
         }
         if self.exit_lookback == 0 {
-            return Err("exit_lookback must be >= 1".into());
+            return Err(Error::Coefficients("exit_lookback must be >= 1".into()));
         }
         if self.max_units == 0 {
-            return Err("max_units must be >= 1".into());
+            return Err(Error::Coefficients("max_units must be >= 1".into()));
         }
         positive("add_step_n", self.add_step_n)?;
         positive("stop_n", self.stop_n)?;
         positive("risk_per_unit", self.risk_per_unit)?;
         if self.risk_per_unit > 1.0 {
-            return Err(format!(
+            return Err(Error::Coefficients(format!(
                 "risk_per_unit must be <= 1, got {}",
                 self.risk_per_unit
-            ));
+            )));
         }
         positive("budget", self.budget)?;
         if self.price_precision > 9 {
-            return Err(format!(
+            return Err(Error::Coefficients(format!(
                 "price_precision must be <= 9, got {}",
                 self.price_precision
-            ));
+            )));
         }
         Ok(())
     }

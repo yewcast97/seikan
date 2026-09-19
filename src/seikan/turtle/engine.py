@@ -1,29 +1,53 @@
-"""One nautilus_trader backtest per cell, and the run's orchestration.
+"""One engine run per (cell × target), and the run's orchestration.
 
-Every cell (entry combo) gets a fresh ``BacktestEngine``: one venue (``SIM``, netting, a cash
-account holding the whole equity), one ``Equity`` instrument and one strategy per target, the
-bars and opening prints of every target added in declaration order. After the run the venue's
-own books are reconciled against the kernel's ledger — fill counts, realized pnl, end cash — and
-a mismatch is a seikan bug (``RuntimeError``, the exit-4 class), never a result.
+Every cell (entry combo) runs each target through the Rust engine (``seikan._turtle.simulate``)
+on its own sub-account with a fixed budget of ``equity / n_targets``; the portfolio is the
+sub-accounts summed bar by bar. The engine keeps the only set of books, prices every fill under
+the coefficients' cost model and reports every fill, round trip and per-bar sample back here.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
-
-import numpy as np
 
 from seikan import _turtle
 from seikan.api import MarketData
 from seikan.dsl.schema import Thesis
 from seikan.turtle.coefficients import TurtleCoefficients
-from seikan.turtle.market import VENUE, SimulationData, instrument_for, preflight, venue_data
+from seikan.turtle.market import QuantizedBars, SimulationData, preflight
 from seikan.turtle.signals import EntryCell, entry_cells
-from seikan.turtle.strategy import FillRecord, TargetSamples
 
-#: The reconciliation tolerance, as a fraction of the starting equity.
-RECONCILE_TOLERANCE = 1e-6
+
+@dataclass(frozen=True)
+class TargetSamples:
+    """The per-bar samples the engine takes after each close (plain lists, JSON-exact)."""
+
+    equity: list[float]
+    cash: list[float]
+    shares: list[int]
+    units: list[int]
+    stop: list[float]
+    add_level: list[float]
+    atr: list[float]
+    channel: list[float]
+    commission_cum: list[float]
+    slippage_cum: list[float]
+    shock_cum: list[float]
+    impact_cum: list[float]
+
+
+@dataclass(frozen=True)
+class CostsPaid:
+    """The cost buckets over EVERY fill of a run (the cash fact, open positions included)."""
+
+    commission: float
+    slippage: float
+    shock: float
+    impact: float
+
+    @property
+    def total(self) -> float:
+        return self.commission + self.slippage + self.shock + self.impact
 
 
 @dataclass(frozen=True)
@@ -31,12 +55,12 @@ class TargetRun:
     """One target's simulation inside a cell."""
 
     target: str
-    instrument_id: str
-    fills: list[FillRecord]
+    fills: list[_turtle.Fill]
     trips: list[_turtle.RoundTrip]
     open_trip: _turtle.RoundTrip | None
     ledger: dict[str, int]
     samples: TargetSamples
+    costs_paid: CostsPaid
     end_cash: float
     end_shares: int
     end_units: int
@@ -45,28 +69,11 @@ class TargetRun:
 
 
 @dataclass(frozen=True)
-class Reconciliation:
-    """The kernel's ledger against the venue's books for one cell: the fill count, the cash
-    change over the run (the venue's ``PnL (total)`` is its account's cash change, so an open
-    position counts as its cost on both sides) and the closing cash balance."""
-
-    n_fills_ledger: int
-    n_fills_engine: int
-    cash_change_ledger: float
-    cash_change_engine: float
-    end_cash_ledger: float
-    end_cash_account: float
-    matched: bool
-
-
-@dataclass(frozen=True)
 class CellRun:
     """One cell's complete simulation."""
 
     cell: EntryCell
     targets: dict[str, TargetRun]
-    engine_stats: dict[str, Any]
-    reconciliation: Reconciliation
 
 
 @dataclass(frozen=True)
@@ -81,7 +88,7 @@ class TurtleResult:
 
 
 def kernel_coefficients(c: TurtleCoefficients, budget: float) -> _turtle.Coefficients:
-    """The kernel's coefficient set for one target with cash budget ``budget``."""
+    """The engine's rule coefficients for one target with cash budget ``budget``."""
     return _turtle.Coefficients(
         atr_period=c.atr_period,
         add_step_n=c.add_step_n,
@@ -97,153 +104,94 @@ def kernel_coefficients(c: TurtleCoefficients, budget: float) -> _turtle.Coeffic
     )
 
 
-def engine_version() -> str:
-    """The installed nautilus_trader distribution's version."""
-    from importlib.metadata import version
+def kernel_costs(c: TurtleCoefficients) -> _turtle.CostModel:
+    """The engine's cost model from the coefficients' ``costs`` block."""
+    k = c.costs
+    return _turtle.CostModel(
+        per_share=k.commission.per_share,
+        min_per_order=k.commission.min_per_order,
+        bps=k.commission.bps,
+        sell_bps=k.commission.sell_bps,
+        cap_bps=k.commission.cap_bps,
+        slippage_bps=k.slippage.bps,
+        slippage_n_fraction=k.slippage.n_fraction,
+        impact_coefficient=k.impact.coefficient,
+        adv_window=k.impact.adv_window,
+        stop_shock=k.stop_shock,
+    )
 
-    return version("nautilus_trader")
+
+def engine_version() -> str:
+    """The engine's version (the ``seikan-turtle`` crate version)."""
+    return _turtle.version()
+
+
+def run_target(
+    target: str,
+    bars: QuantizedBars,
+    fired: list[bool],
+    kernel: _turtle.Coefficients,
+    costs: _turtle.CostModel,
+) -> TargetRun:
+    """Run one target through the engine and shape its result."""
+    res = _turtle.simulate(
+        kernel,
+        costs,
+        bars.open.tolist(),
+        bars.high.tolist(),
+        bars.low.tolist(),
+        bars.close.tolist(),
+        None if bars.volume is None else bars.volume.tolist(),
+        fired,
+    )
+    n_bars = len(bars.close)
+    if len(res.equity) != n_bars:
+        raise RuntimeError(f"{target}: {len(res.equity)} bars sampled of {n_bars} fed")
+    samples = TargetSamples(
+        equity=res.equity,
+        cash=res.cash,
+        shares=res.shares,
+        units=res.units,
+        stop=res.stop,
+        add_level=res.add_level,
+        atr=res.atr,
+        channel=res.channel,
+        commission_cum=res.commission_cum,
+        slippage_cum=res.slippage_cum,
+        shock_cum=res.shock_cum,
+        impact_cum=res.impact_cum,
+    )
+    last = n_bars - 1
+    return TargetRun(
+        target=target,
+        fills=list(res.fills),
+        trips=list(res.trips),
+        open_trip=res.open_trip,
+        ledger=res.ledger.to_dict(),
+        samples=samples,
+        costs_paid=CostsPaid(
+            commission=res.commission_cum[last],
+            slippage=res.slippage_cum[last],
+            shock=res.shock_cum[last],
+            impact=res.impact_cum[last],
+        ),
+        end_cash=res.cash[last],
+        end_shares=res.shares[last],
+        end_units=res.units[last],
+        end_stop=None if res.open_trip is None else res.stop[last],
+        end_add_level=None if res.open_trip is None else res.add_level[last],
+    )
 
 
 def run_cell(cell: EntryCell, data: SimulationData, c: TurtleCoefficients) -> CellRun:
-    """Simulate one cell on a fresh venue and reconcile it."""
-    from nautilus_trader.backtest import BacktestEngine
-    from nautilus_trader.config import BacktestEngineConfig, LoggerConfig, RiskEngineConfig
-    from nautilus_trader.model import AccountType, Currency, Money, OmsType, TraderId, Venue
-
-    from seikan.turtle.strategy import TurtleTargetConfig, TurtleTargetStrategy
-
+    """Simulate one cell: every target on its own sub-account."""
     targets = list(data.targets)
-    budget = c.equity / len(targets)
-    kernel = kernel_coefficients(c, budget)
-    currency = Currency.from_str(c.currency)
-    engine = BacktestEngine(
-        config=BacktestEngineConfig(
-            trader_id=TraderId("SEIKAN-001"),
-            logging=LoggerConfig(bypass_logging=True),
-            # The kernel's per-target budgets are the pre-trade check: it never sizes a buy the
-            # target's cash cannot cover. The venue's risk engine is bypassed because its own
-            # pre-trade checks misread a resting sell stop — it locks balance for the shares a
-            # not-yet-updated position does not cover and counts the stop's notional against
-            # free cash when the next buy arrives — and would deny buys the ledger affords. The
-            # account's books stay live, and the reconciliation below holds them to the ledger.
-            risk_engine=RiskEngineConfig(bypass=True),
-        )
-    )
-    engine.add_venue(
-        venue=Venue(VENUE),
-        oms_type=OmsType.NETTING,
-        account_type=AccountType.CASH,
-        base_currency=currency,
-        starting_balances=[Money(c.equity, currency)],
-        bar_execution=True,
-        bar_adaptive_high_low_ordering=False,
-        reject_stop_orders=False,
-        allow_cash_borrowing=False,
-        support_contingent_orders=False,
-        use_reduce_only=False,
-        use_random_ids=False,
-    )
-    strategies: list[TurtleTargetStrategy] = []
-    for i, target in enumerate(targets):
-        instrument = instrument_for(i, c.currency, c.price_precision)
-        engine.add_instrument(instrument)
-        strategy = TurtleTargetStrategy(
-            TurtleTargetConfig(
-                order_id_tag=f"{i:03d}",
-                target=target,
-                instrument=instrument,
-                bars=data.targets[target],
-                ts_ns=data.ts_ns,
-                fired=cell.fired[target],
-                kernel=kernel,
-            )
-        )
-        engine.add_strategy(strategy)
-        strategies.append(strategy)
-        engine.add_data(venue_data(instrument, data.targets[target], data.ts_ns))
-    try:
-        engine.run()
-        result = engine.get_result()
-        fills_report = engine.generate_order_fills_report()
-        account = engine.generate_account_report(Venue(VENUE))
-    finally:
-        engine.dispose()
-    problems = [p for s in strategies for p in s.problems]
-    if problems:
-        # The venue logs and swallows a handler failure; the strategies record theirs, and a
-        # recorded one is a seikan bug (the exit-4 class), never a result.
-        raise RuntimeError(f"the simulation broke an invariant: {problems[0]}")
-    n_bars = len(data.index)
-    runs: dict[str, TargetRun] = {}
-    for strategy in strategies:
-        target = strategy.settings.target
-        last_close = float(data.targets[target].close[n_bars - 1])
-        machine = strategy.machine
-        if len(strategy.samples.equity) != n_bars:
-            raise RuntimeError(
-                f"{target}: {len(strategy.samples.equity)} bars sampled of {n_bars} fed"
-            )
-        runs[target] = TargetRun(
-            target=target,
-            instrument_id=str(strategy.settings.instrument.id),
-            fills=list(strategy.fills),
-            trips=list(machine.closed),
-            open_trip=machine.finish(n_bars - 1, last_close),
-            ledger=machine.ledger.to_dict(),
-            samples=strategy.samples,
-            end_cash=machine.cash,
-            end_shares=machine.shares,
-            end_units=machine.units,
-            end_stop=machine.stop,
-            end_add_level=machine.add_level,
-        )
-    stats = {
-        "stats_pnls": dict(result.stats_pnls),
-        "stats_returns": dict(result.stats_returns),
-        "stats_general": dict(result.stats_general),
+    kernel = kernel_coefficients(c, c.equity / len(targets))
+    costs = kernel_costs(c)
+    runs = {
+        t: run_target(t, data.targets[t], cell.fired[t].tolist(), kernel, costs) for t in targets
     }
-    reconciliation = _reconcile(runs, stats, account, len(fills_report), c)
-    return CellRun(cell=cell, targets=runs, engine_stats=stats, reconciliation=reconciliation)
-
-
-def _reconcile(
-    runs: dict[str, TargetRun],
-    stats: dict[str, Any],
-    account: Any,
-    n_fills_engine: int,
-    c: TurtleCoefficients,
-) -> Reconciliation:
-    n_fills_ledger = sum(len(r.fills) for r in runs.values())
-    end_cash_ledger = float(sum(r.end_cash for r in runs.values()))
-    cash_change_ledger = end_cash_ledger - c.equity
-    pnls = stats["stats_pnls"].get(c.currency, {})
-    cash_change_engine = float(pnls.get("PnL (total)", float("nan")))
-    end_cash_account = float(account["total"].iloc[-1]) if len(account) else float("nan")
-    tolerance = RECONCILE_TOLERANCE * c.equity
-    matched = (
-        n_fills_ledger == n_fills_engine
-        and _close(cash_change_ledger, cash_change_engine, tolerance)
-        and _close(end_cash_ledger, end_cash_account, tolerance)
-    )
-    rec = Reconciliation(
-        n_fills_ledger=n_fills_ledger,
-        n_fills_engine=n_fills_engine,
-        cash_change_ledger=cash_change_ledger,
-        cash_change_engine=cash_change_engine,
-        end_cash_ledger=end_cash_ledger,
-        end_cash_account=end_cash_account,
-        matched=matched,
-    )
-    if not matched:
-        raise RuntimeError(
-            "the venue's books do not reconcile with the kernel's ledger — a seikan bug, not an "
-            f"input problem: {rec}"
-        )
-    return rec
-
-
-def _close(a: float, b: float, tolerance: float) -> bool:
-    return bool(np.isfinite(a) and np.isfinite(b) and abs(a - b) <= tolerance)
+    return CellRun(cell=cell, targets=runs)
 
 
 def run_turtle(

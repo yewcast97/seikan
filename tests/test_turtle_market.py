@@ -1,5 +1,5 @@
-"""The simulation's data admission: quantization, the benchmark clock, every refusal, and the
-nautilus_trader objects built from the admitted arrays."""
+"""The simulation's data admission: quantization, the benchmark clock, the volume the impact law
+needs, and every refusal."""
 
 from __future__ import annotations
 
@@ -11,22 +11,25 @@ from seikan import _turtle
 from seikan.dataio import DataError
 from seikan.dsl.schema import Thesis
 from seikan.turtle import TurtleCoefficients, preflight
-from seikan.turtle import market as market_module
 from tests._helpers import load
 from tests._turtle_helpers import (
     coefficients_doc,
     first_true_above,
     flat_rows,
+    frictionless,
     thesis_doc,
     worked_example_rows,
     write_bars,
 )
 
 COEF = TurtleCoefficients.model_validate(coefficients_doc())
+IMPACT = TurtleCoefficients.model_validate(
+    coefficients_doc(costs=frictionless(impact={"coefficient": 0.5, "adv_window": 20}))
+)
 
 
-def _md(tmp_path, rows=None, **params):
-    px = write_bars(tmp_path / "px.csv", rows or worked_example_rows())
+def _md(tmp_path, rows=None, volume=1000.0, **params):
+    px = write_bars(tmp_path / "px.csv", rows or worked_example_rows(), volume=volume)
     thesis = Thesis.model_validate(thesis_doc(["PX"], first_true_above(50.0), **params))
     return thesis, load(thesis, {"PX": str(px)})
 
@@ -49,11 +52,16 @@ def test_preflight_quantizes_and_extends_the_data_report(tmp_path):
     raw = md.close["PX"].to_numpy()
     assert np.array_equal(data.targets["PX"].close, [_turtle.quantize(float(v), 4) for v in raw])
     assert data.benchmark.open[0] == _turtle.quantize(49.5 * 1.234_567_89, 4)
-    assert data.ts_ns[1] - data.ts_ns[0] == 86_400 * 10**9
-    assert data.ts_ns[0] == pd.Timestamp("2020-01-01").value
+    assert data.index[0] == pd.Timestamp("2020-01-01") and len(data.index) == 31
     roles = [f["role"] for f in data.data_report["files"]]
     assert roles == ["target:PX", "benchmark"] and data.data_report["ok"]
     assert data.benchmark_path == str(bench)
+    # Volume is carried only when the cost model reads it.
+    assert data.targets["PX"].volume is None
+    with_impact = preflight(md, str(bench), IMPACT)
+    assert with_impact.targets["PX"].volume is not None
+    assert set(with_impact.targets["PX"].volume.tolist()) == {1000.0}
+    assert with_impact.benchmark.volume is None
 
 
 def test_a_benchmark_the_thesis_declared_is_not_reported_twice(tmp_path):
@@ -126,19 +134,32 @@ def test_too_few_bars_refuse(tmp_path):
     assert "at least 21" in info.value.report["errors"][0]["message"]
 
 
-def test_nautilus_objects_are_built_on_the_grid(tmp_path):
-    _thesis, md = _md(tmp_path)
+def test_impact_needs_a_volume_column(tmp_path):
+    _thesis, md = _md(tmp_path, volume=None)
     bench = write_bars(tmp_path / "idx.csv", worked_example_rows())
-    data = preflight(md, str(bench), COEF)
-    instrument = market_module.instrument_for(0, "USD", 4)
-    assert str(instrument.id) == "T0.SIM" and instrument.price_precision == 4
-    assert str(instrument.price_increment) == "0.0001" and instrument.size_precision == 0
-    assert str(market_module.bar_type_for(instrument)) == "T0.SIM-1-DAY-LAST-EXTERNAL"
-    items = market_module.venue_data(instrument, data.targets["PX"], data.ts_ns)
-    assert len(items) == 2 * len(data.index)
-    print_, bar = items[0], items[1]
-    assert print_.ts_init == bar.ts_init - market_module.OPEN_PRINT_OFFSET_NS
-    assert float(print_.bid_price) == float(print_.ask_price) == float(bar.open) == 49.5
-    assert int(print_.bid_size) == int(bar.volume) == market_module.UNLIMITED_LIQUIDITY
-    assert [float(b.close) for b in items[1::2]][24:28] == [50.0, 51.0, 52.0, 52.5]
-    assert market_module.instrument_symbol(3) == "T3"
+    assert preflight(md, str(bench), COEF).targets["PX"].volume is None  # unread: admitted
+    with pytest.raises(DataError) as info:
+        preflight(md, str(bench), IMPACT)
+    assert _codes(info.value) == ["spec_data_mismatch"]
+    assert "volume" in info.value.report["errors"][0]["message"]
+
+
+def test_impact_refuses_missing_and_non_positive_volume(tmp_path):
+    rows = worked_example_rows()
+    px = write_bars(tmp_path / "px.csv", rows)
+    text = px.read_text(encoding="utf-8").splitlines()
+    hole = text[5].split(",")
+    hole[5] = ""  # one volume cell blank
+    text[5] = ",".join(hole)
+    zero = text[7].split(",")
+    zero[5] = "0"  # one zero-volume bar
+    text[7] = ",".join(zero)
+    px.write_text("\n".join(text) + "\n", encoding="utf-8")
+    thesis = Thesis.model_validate(thesis_doc(["PX"], first_true_above(50.0)))
+    md = load(thesis, {"PX": str(px)})
+    bench = write_bars(tmp_path / "idx.csv", rows)
+    assert preflight(md, str(bench), COEF).data_report["ok"]  # prices are whole: admitted
+    with pytest.raises(DataError) as info:
+        preflight(md, str(bench), IMPACT)
+    assert _codes(info.value) == ["nan_fraction", "integrity"]
+    assert all(e["column"] == "PX" for e in info.value.report["errors"])

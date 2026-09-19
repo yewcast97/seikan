@@ -1,27 +1,28 @@
 //! The PyO3 bindings: the `seikan._turtle` extension module (feature `python`).
 //!
-//! Thin wrappers over the kernel types. Enumerations cross the boundary as their lowercase
-//! string names (`"close"`/`"trade"`, `"entry"`/`"add"`/`"exit"`, the exit reasons), optional
-//! numbers as `None`, and the indicators gain `handle_bar(bar)`, which reads a nautilus_trader
-//! `Bar` through its `high`/`low`/`close` attributes (anything `float()` accepts), so a strategy
-//! can register them as bar-driven indicators without this crate linking any nautilus code.
+//! Thin wrappers over the engine: the rule coefficients and the cost model are built with
+//! keyword arguments (enumerations as their lowercase names), `simulate` runs one target and
+//! returns plain data classes whose optional numbers cross as `None`. An `Error::Bookkeeping`
+//! maps to `RuntimeError` (a seikan bug), every other error to `ValueError`.
 
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
-use crate::coefficients::{self, Coefficients, NSource, Trigger};
-use crate::indicators::{LowestLowChannel, WilderAtr};
-use crate::machine::{Fill, FillKind, Ledger, Machine, PrintAction, RoundTrip, StopOrder};
+use crate::coefficients::{Coefficients, NSource, Trigger};
+use crate::costs::{Commission, CostModel, Impact, Slippage};
+use crate::error::Error;
+use crate::machine::{Ledger, RoundTrip};
 use crate::price;
 use crate::sim::{self, BarSeries, SimFill, SimResult};
 
-fn value_error(message: String) -> PyErr {
-    PyValueError::new_err(message)
-}
-
-fn attr_f64(bar: &Bound<'_, PyAny>, name: &str) -> PyResult<f64> {
-    bar.getattr(name)?.extract::<f64>()
+impl From<Error> for PyErr {
+    fn from(error: Error) -> Self {
+        match error {
+            Error::Bookkeeping(_) => PyRuntimeError::new_err(error.to_string()),
+            Error::Coefficients(_) | Error::Input(_) => PyValueError::new_err(error.to_string()),
+        }
+    }
 }
 
 // ---- coefficients -------------------------------------------------------------------------
@@ -64,13 +65,13 @@ impl PyCoefficients {
             stop_n,
             exit_lookback,
             risk_per_unit,
-            stop_trigger: Trigger::parse(stop_trigger).map_err(value_error)?,
-            exit_trigger: Trigger::parse(exit_trigger).map_err(value_error)?,
-            stop_n_source: NSource::parse(stop_n_source).map_err(value_error)?,
+            stop_trigger: Trigger::parse(stop_trigger)?,
+            exit_trigger: Trigger::parse(exit_trigger)?,
+            stop_n_source: NSource::parse(stop_n_source)?,
             price_precision,
             budget,
         };
-        inner.validate().map_err(value_error)?;
+        inner.validate()?;
         Ok(Self { inner })
     }
 
@@ -129,239 +130,115 @@ impl PyCoefficients {
     }
 }
 
-// ---- indicators ---------------------------------------------------------------------------
+// ---- the cost model -----------------------------------------------------------------------
 
-/// Wilder's average true range — the Turtle N.
-#[pyclass(name = "WilderAtr", module = "seikan._turtle")]
-pub struct PyWilderAtr {
-    inner: WilderAtr,
+/// The trade-cost model (validated at construction).
+#[pyclass(
+    name = "CostModel",
+    module = "seikan._turtle",
+    frozen,
+    skip_from_py_object
+)]
+#[derive(Clone)]
+pub struct PyCostModel {
+    inner: CostModel,
 }
 
 #[pymethods]
-impl PyWilderAtr {
+impl PyCostModel {
     #[new]
-    fn new(period: usize) -> PyResult<Self> {
-        if period == 0 {
-            return Err(value_error("period must be >= 1".into()));
-        }
-        Ok(Self {
-            inner: WilderAtr::new(period),
-        })
+    #[pyo3(signature = (*, per_share, min_per_order, bps, sell_bps, cap_bps, slippage_bps,
+        slippage_n_fraction, impact_coefficient, adv_window, stop_shock))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        per_share: f64,
+        min_per_order: f64,
+        bps: f64,
+        sell_bps: f64,
+        cap_bps: Option<f64>,
+        slippage_bps: f64,
+        slippage_n_fraction: f64,
+        impact_coefficient: f64,
+        adv_window: usize,
+        stop_shock: f64,
+    ) -> PyResult<Self> {
+        let inner = CostModel {
+            commission: Commission {
+                per_share,
+                min_per_order,
+                bps,
+                sell_bps,
+                cap_bps,
+            },
+            slippage: Slippage {
+                bps: slippage_bps,
+                n_fraction: slippage_n_fraction,
+            },
+            impact: Impact {
+                coefficient: impact_coefficient,
+                adv_window,
+            },
+            stop_shock,
+        };
+        inner.validate()?;
+        Ok(Self { inner })
     }
 
     #[getter]
-    fn name(&self) -> String {
-        format!("WilderAtr({})", self.inner.period())
+    fn per_share(&self) -> f64 {
+        self.inner.commission.per_share
     }
     #[getter]
-    fn period(&self) -> usize {
-        self.inner.period()
+    fn min_per_order(&self) -> f64 {
+        self.inner.commission.min_per_order
     }
     #[getter]
-    fn count(&self) -> usize {
-        self.inner.count()
+    fn bps(&self) -> f64 {
+        self.inner.commission.bps
     }
     #[getter]
-    fn initialized(&self) -> bool {
-        self.inner.initialized()
+    fn sell_bps(&self) -> f64 {
+        self.inner.commission.sell_bps
     }
     #[getter]
-    fn has_inputs(&self) -> bool {
-        self.inner.has_inputs()
+    fn cap_bps(&self) -> Option<f64> {
+        self.inner.commission.cap_bps
     }
-    /// The current N, or NaN before initialization.
     #[getter]
-    fn value(&self) -> f64 {
-        self.inner.value().unwrap_or(f64::NAN)
+    fn slippage_bps(&self) -> f64 {
+        self.inner.slippage.bps
+    }
+    #[getter]
+    fn slippage_n_fraction(&self) -> f64 {
+        self.inner.slippage.n_fraction
+    }
+    #[getter]
+    fn impact_coefficient(&self) -> f64 {
+        self.inner.impact.coefficient
+    }
+    #[getter]
+    fn adv_window(&self) -> usize {
+        self.inner.impact.adv_window
+    }
+    #[getter]
+    fn stop_shock(&self) -> f64 {
+        self.inner.stop_shock
     }
 
-    fn update_raw(&mut self, high: f64, low: f64, close: f64) {
-        self.inner.update_raw(high, low, close);
-    }
-
-    /// Update from an object exposing `high`, `low` and `close` (a nautilus_trader `Bar`).
-    fn handle_bar(&mut self, bar: &Bound<'_, PyAny>) -> PyResult<()> {
-        let (high, low, close) = (
-            attr_f64(bar, "high")?,
-            attr_f64(bar, "low")?,
-            attr_f64(bar, "close")?,
-        );
-        self.inner.update_raw(high, low, close);
-        Ok(())
-    }
-
-    fn reset(&mut self) {
-        self.inner.reset();
+    /// Whether market impact is modelled (a volume series is then required).
+    fn impact_enabled(&self) -> bool {
+        self.inner.impact.enabled()
     }
 
     fn __repr__(&self) -> String {
-        format!(
-            "{}(value={}, count={})",
-            self.name(),
-            self.value(),
-            self.count()
-        )
-    }
-}
-
-/// The lowest low of the last `lookback` bars handled (the newest included).
-#[pyclass(name = "LowestLowChannel", module = "seikan._turtle")]
-pub struct PyLowestLowChannel {
-    inner: LowestLowChannel,
-}
-
-#[pymethods]
-impl PyLowestLowChannel {
-    #[new]
-    fn new(lookback: usize) -> PyResult<Self> {
-        if lookback == 0 {
-            return Err(value_error("lookback must be >= 1".into()));
-        }
-        Ok(Self {
-            inner: LowestLowChannel::new(lookback),
-        })
-    }
-
-    #[getter]
-    fn name(&self) -> String {
-        format!("LowestLowChannel({})", self.inner.lookback())
-    }
-    #[getter]
-    fn lookback(&self) -> usize {
-        self.inner.lookback()
-    }
-    #[getter]
-    fn count(&self) -> usize {
-        self.inner.count()
-    }
-    #[getter]
-    fn initialized(&self) -> bool {
-        self.inner.initialized()
-    }
-    #[getter]
-    fn has_inputs(&self) -> bool {
-        self.inner.has_inputs()
-    }
-    /// The channel level, or NaN before initialization.
-    #[getter]
-    fn value(&self) -> f64 {
-        self.inner.value().unwrap_or(f64::NAN)
-    }
-
-    fn update_raw(&mut self, low: f64) {
-        self.inner.update_raw(low);
-    }
-
-    /// Update from an object exposing `low` (a nautilus_trader `Bar`).
-    fn handle_bar(&mut self, bar: &Bound<'_, PyAny>) -> PyResult<()> {
-        self.inner.update_raw(attr_f64(bar, "low")?);
-        Ok(())
-    }
-
-    fn reset(&mut self) {
-        self.inner.reset();
-    }
-
-    fn __repr__(&self) -> String {
-        format!(
-            "{}(value={}, count={})",
-            self.name(),
-            self.value(),
-            self.count()
-        )
+        format!("CostModel({:?})", self.inner)
     }
 }
 
 // ---- data classes -------------------------------------------------------------------------
 
-/// The one sell stop to keep resting at the venue.
-#[pyclass(
-    name = "StopOrder",
-    module = "seikan._turtle",
-    frozen,
-    get_all,
-    skip_from_py_object
-)]
-#[derive(Clone)]
-pub struct PyStopOrder {
-    trigger: f64,
-    shares: u64,
-    reason: String,
-}
-
-impl From<StopOrder> for PyStopOrder {
-    fn from(o: StopOrder) -> Self {
-        Self {
-            trigger: o.trigger,
-            shares: o.shares,
-            reason: o.reason.as_str().to_string(),
-        }
-    }
-}
-
-#[pymethods]
-impl PyStopOrder {
-    fn __repr__(&self) -> String {
-        format!(
-            "StopOrder(trigger={}, shares={}, reason={:?})",
-            self.trigger, self.shares, self.reason
-        )
-    }
-}
-
-/// What to submit at an opening print: `kind` is `hold`, `buy` or `sell`; `intent` names the
-/// fill kind of a buy (`entry`/`add`); `reason` names a sell's exit reason.
-#[pyclass(
-    name = "PrintAction",
-    module = "seikan._turtle",
-    frozen,
-    get_all,
-    skip_from_py_object
-)]
-#[derive(Clone)]
-pub struct PyPrintAction {
-    kind: String,
-    shares: u64,
-    intent: Option<String>,
-    reason: Option<String>,
-}
-
-impl From<PrintAction> for PyPrintAction {
-    fn from(a: PrintAction) -> Self {
-        match a {
-            PrintAction::Hold => Self {
-                kind: "hold".into(),
-                shares: 0,
-                intent: None,
-                reason: None,
-            },
-            PrintAction::Buy { shares, kind } => Self {
-                kind: "buy".into(),
-                shares,
-                intent: Some(kind.as_str().into()),
-                reason: None,
-            },
-            PrintAction::Sell { shares, reason } => Self {
-                kind: "sell".into(),
-                shares,
-                intent: Some(FillKind::Exit.as_str().into()),
-                reason: Some(reason.as_str().into()),
-            },
-        }
-    }
-}
-
-#[pymethods]
-impl PyPrintAction {
-    fn __repr__(&self) -> String {
-        format!(
-            "PrintAction(kind={:?}, shares={}, intent={:?}, reason={:?})",
-            self.kind, self.shares, self.intent, self.reason
-        )
-    }
-}
-
-/// One reference-simulator fill: `at` is `open` or `trigger`.
+/// One venue fill with the machine's state after it: `kind` is `entry`/`add`/`exit`, `at` is
+/// `open` or `trigger`, `reason` names an exit's reason.
 #[pyclass(
     name = "Fill",
     module = "seikan._turtle",
@@ -375,8 +252,17 @@ pub struct PyFill {
     kind: String,
     shares: u64,
     price: f64,
+    reference: f64,
+    commission: f64,
+    slippage: f64,
+    shock: f64,
+    impact: f64,
     at: String,
     reason: Option<String>,
+    cash_after: f64,
+    shares_after: u64,
+    units_after: u32,
+    stop_after: Option<f64>,
 }
 
 impl From<&SimFill> for PyFill {
@@ -386,8 +272,17 @@ impl From<&SimFill> for PyFill {
             kind: f.fill.kind.as_str().into(),
             shares: f.fill.shares,
             price: f.fill.price,
+            reference: f.reference,
+            commission: f.fill.commission,
+            slippage: f.fill.slippage,
+            shock: f.fill.shock,
+            impact: f.fill.impact,
             at: f.at.as_str().into(),
             reason: f.reason.map(str::to_string),
+            cash_after: f.cash_after,
+            shares_after: f.shares_after,
+            units_after: f.units_after,
+            stop_after: f.stop_after,
         }
     }
 }
@@ -423,6 +318,11 @@ pub struct PyRoundTrip {
     shares: u64,
     cost_basis: f64,
     proceeds: f64,
+    commission: f64,
+    slippage: f64,
+    shock: f64,
+    impact: f64,
+    gross_pnl: f64,
     pnl: f64,
     n_adds: u32,
     adds_skipped_budget: u32,
@@ -443,6 +343,11 @@ impl From<&RoundTrip> for PyRoundTrip {
             shares: t.shares,
             cost_basis: t.cost_basis,
             proceeds: t.proceeds,
+            commission: t.commission,
+            slippage: t.slippage,
+            shock: t.shock,
+            impact: t.impact,
+            gross_pnl: t.gross_pnl,
             pnl: t.pnl,
             n_adds: t.n_adds,
             adds_skipped_budget: t.adds_skipped_budget,
@@ -560,7 +465,7 @@ impl PyLedger {
     }
 }
 
-/// A reference-simulator run: fills, round trips, the ledger and per-bar samples (lists).
+/// One target's run: fills, round trips, the ledger and per-bar samples (lists).
 #[pyclass(
     name = "SimResult",
     module = "seikan._turtle",
@@ -582,6 +487,10 @@ pub struct PySimResult {
     add_level: Vec<f64>,
     atr: Vec<f64>,
     channel: Vec<f64>,
+    commission_cum: Vec<f64>,
+    slippage_cum: Vec<f64>,
+    shock_cum: Vec<f64>,
+    impact_cum: Vec<f64>,
     first_eligible_bar: usize,
 }
 
@@ -600,164 +509,21 @@ impl From<SimResult> for PySimResult {
             add_level: r.add_level,
             atr: r.atr,
             channel: r.channel,
+            commission_cum: r.commission_cum,
+            slippage_cum: r.slippage_cum,
+            shock_cum: r.shock_cum,
+            impact_cum: r.impact_cum,
             first_eligible_bar: r.first_eligible_bar,
         }
     }
 }
 
-// ---- the machine --------------------------------------------------------------------------
-
-/// The long-only Turtle state machine for one target.
-#[pyclass(name = "Machine", module = "seikan._turtle")]
-pub struct PyMachine {
-    inner: Machine,
-}
-
-#[pymethods]
-impl PyMachine {
-    #[new]
-    fn new(coefficients: &PyCoefficients) -> PyResult<Self> {
-        Ok(Self {
-            inner: Machine::new(coefficients.inner.clone()).map_err(value_error)?,
-        })
-    }
-
-    /// The one action to submit at the opening print of `bar`.
-    fn on_print(&mut self, bar: usize, open_price: f64) -> PyPrintAction {
-        self.inner.on_print(bar, open_price).into()
-    }
-
-    /// Report a fill (`kind` is `entry`, `add` or `exit`).
-    fn on_fill(&mut self, bar: usize, kind: &str, shares: u64, price: f64) -> PyResult<()> {
-        let kind = FillKind::parse(kind).map_err(value_error)?;
-        self.inner
-            .on_fill(Fill {
-                bar,
-                kind,
-                shares,
-                price,
-            })
-            .map_err(value_error)
-    }
-
-    /// The close of `bar`, with the indicator values after it.
-    #[pyo3(signature = (bar, close, n=None, channel=None, fired=false, last_bar=false))]
-    fn on_bar(
-        &mut self,
-        bar: usize,
-        close: f64,
-        n: Option<f64>,
-        channel: Option<f64>,
-        fired: bool,
-        last_bar: bool,
-    ) {
-        self.inner.on_bar(bar, close, n, channel, fired, last_bar);
-    }
-
-    /// After the last bar: the open position marked at `last_close`, if any.
-    fn finish(&self, last_bar: usize, last_close: f64) -> Option<PyRoundTrip> {
-        self.inner
-            .finish(last_bar, last_close)
-            .as_ref()
-            .map(PyRoundTrip::from)
-    }
-
-    /// Cash plus the position marked at `close`.
-    fn equity(&self, close: f64) -> f64 {
-        self.inner.equity(close)
-    }
-
-    /// The sell stop to keep resting at the venue from now on, if any.
-    fn resting(&self) -> Option<PyStopOrder> {
-        self.inner.resting().map(PyStopOrder::from)
-    }
-
-    #[getter]
-    fn cash(&self) -> f64 {
-        self.inner.cash()
-    }
-    #[getter]
-    fn shares(&self) -> u64 {
-        self.inner.shares()
-    }
-    #[getter]
-    fn units(&self) -> u32 {
-        self.inner.units()
-    }
-    #[getter]
-    fn in_position(&self) -> bool {
-        self.inner.in_position()
-    }
-    #[getter]
-    fn stop(&self) -> Option<f64> {
-        self.inner.stop()
-    }
-    #[getter]
-    fn add_level(&self) -> Option<f64> {
-        self.inner.add_level()
-    }
-    #[getter]
-    fn last_fill(&self) -> Option<f64> {
-        self.inner.position().map(|p| p.last_fill_px)
-    }
-    #[getter]
-    fn entry_px(&self) -> Option<f64> {
-        self.inner.position().map(|p| p.entry_px)
-    }
-    #[getter]
-    fn n_entry(&self) -> Option<f64> {
-        self.inner.position().map(|p| p.n_entry)
-    }
-    #[getter]
-    fn channel(&self) -> Option<f64> {
-        self.inner.channel()
-    }
-    #[getter]
-    fn pending(&self) -> &'static str {
-        self.inner.pending().as_str()
-    }
-    #[getter]
-    fn first_eligible_bar(&self) -> usize {
-        self.inner.first_eligible_bar()
-    }
-    #[getter]
-    fn ledger(&self) -> PyLedger {
-        PyLedger::from(self.inner.ledger())
-    }
-    #[getter]
-    fn closed(&self) -> Vec<PyRoundTrip> {
-        self.inner.closed().iter().map(PyRoundTrip::from).collect()
-    }
-
-    fn __repr__(&self) -> String {
-        format!(
-            "Machine(cash={}, shares={}, units={}, pending={:?})",
-            self.inner.cash(),
-            self.inner.shares(),
-            self.inner.units(),
-            self.inner.pending().as_str()
-        )
-    }
-}
-
 // ---- functions ----------------------------------------------------------------------------
 
-/// The kernel's version (the crate version).
+/// The engine's version (the crate version).
 #[pyfunction]
 fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
-}
-
-/// Shares per unit: `floor(risk_per_unit × budget / (stop_n × n))`.
-#[pyfunction]
-fn unit_shares(risk_per_unit: f64, budget: f64, stop_n: f64, n: f64) -> u64 {
-    coefficients::unit_shares(risk_per_unit, budget, stop_n, n)
-}
-
-/// The highest grid price strictly below `level` at `precision` decimals.
-#[pyfunction]
-fn price_below(level: f64, precision: u32) -> f64 {
-    price::price_below(level, precision)
 }
 
 /// Round `price` to `precision` decimals.
@@ -766,20 +532,19 @@ fn quantize(price: f64, precision: u32) -> f64 {
     price::quantize(price, precision)
 }
 
-/// `max(atr_period, exit_lookback) - 1`.
+/// Run one target over quantized OHLC sequences (and the volume, needed only when impact is
+/// enabled) with the per-bar firing flags.
 #[pyfunction]
-fn first_eligible_bar(atr_period: usize, exit_lookback: usize) -> usize {
-    coefficients::first_eligible_bar(atr_period, exit_lookback)
-}
-
-/// Run the reference simulator over quantized OHLC sequences and the per-bar firing flags.
-#[pyfunction]
-fn simulate_reference(
+#[pyo3(signature = (coefficients, costs, opens, highs, lows, closes, volumes, fired))]
+#[allow(clippy::too_many_arguments)]
+fn simulate(
     coefficients: &PyCoefficients,
+    costs: &PyCostModel,
     opens: Vec<f64>,
     highs: Vec<f64>,
     lows: Vec<f64>,
     closes: Vec<f64>,
+    volumes: Option<Vec<f64>>,
     fired: Vec<bool>,
 ) -> PyResult<PySimResult> {
     let bars = BarSeries {
@@ -787,30 +552,22 @@ fn simulate_reference(
         high: &highs,
         low: &lows,
         close: &closes,
+        volume: volumes.as_deref(),
     };
-    sim::simulate(&coefficients.inner, bars, &fired)
-        .map(PySimResult::from)
-        .map_err(value_error)
+    Ok(sim::simulate(&coefficients.inner, &costs.inner, bars, &fired)?.into())
 }
 
 #[pymodule]
 #[pyo3(name = "_turtle")]
 fn seikan_turtle(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(version, m)?)?;
-    m.add_function(wrap_pyfunction!(unit_shares, m)?)?;
-    m.add_function(wrap_pyfunction!(price_below, m)?)?;
     m.add_function(wrap_pyfunction!(quantize, m)?)?;
-    m.add_function(wrap_pyfunction!(first_eligible_bar, m)?)?;
-    m.add_function(wrap_pyfunction!(simulate_reference, m)?)?;
+    m.add_function(wrap_pyfunction!(simulate, m)?)?;
     m.add_class::<PyCoefficients>()?;
-    m.add_class::<PyWilderAtr>()?;
-    m.add_class::<PyLowestLowChannel>()?;
-    m.add_class::<PyStopOrder>()?;
-    m.add_class::<PyPrintAction>()?;
+    m.add_class::<PyCostModel>()?;
     m.add_class::<PyFill>()?;
     m.add_class::<PyRoundTrip>()?;
     m.add_class::<PyLedger>()?;
     m.add_class::<PySimResult>()?;
-    m.add_class::<PyMachine>()?;
     Ok(())
 }

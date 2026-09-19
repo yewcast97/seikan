@@ -5,18 +5,25 @@ emission."""
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
 
 from seikan import _turtle, dataio
 from seikan.contract import TURTLE_FILL_CONVENTIONS
-from seikan.serialize import atomic_output, json_safe
-from seikan.turtle.engine import CellRun, TargetRun, TurtleResult, engine_version
-from seikan.turtle.market import BAR_TYPE_SPEC, VENUE, instrument_symbol
+from seikan.serialize import atomic_output
+from seikan.turtle.engine import (
+    CellRun,
+    TargetRun,
+    TurtleResult,
+    engine_version,
+    kernel_coefficients,
+)
 from seikan.turtle.metrics import (
     bar_returns,
+    cagr,
+    costs_block,
     excursions,
     performance,
     periodic,
@@ -26,8 +33,8 @@ from seikan.turtle.metrics import (
 )
 from seikan.types.turtle import (
     BenchmarkBlock,
+    CostsPaid,
     PortfolioPanel,
-    ReconciliationBlock,
     SimulationBlock,
     TargetPanel,
     TurtleCell,
@@ -36,16 +43,10 @@ from seikan.types.turtle import (
 #: The thesis parameters the simulation reads nothing from (the turtle owns its exit).
 THESIS_PARAMS_IGNORED = ["horizon", "outcome", "benchmark", "features"]
 
-PRE_TRADE_RISK = (
-    "the kernel: every buy is sized within the target's fixed budget before it is submitted; the "
-    "venue's own risk engine is bypassed (its pre-trade checks misread a resting sell stop as "
-    "uncovered exposure and would deny buys the ledger affords), while its account books stay "
-    "live and are reconciled against the ledger"
-)
-
 BENCHMARK_CONSTRUCTION = (
     "buy-and-hold of the index: starting_equity / open[0] units bought at the first bar's open, "
-    "marked at every close; the bar before the first is the starting equity, like the strategy"
+    "marked at every close, frictionless (a reference path, not a traded one); the bar before the "
+    "first is the starting equity, like the strategy"
 )
 
 
@@ -75,15 +76,17 @@ def _benchmark(result: TurtleResult) -> _Benchmark:
     units = c.equity / float(b.open[0])
     equity = units * b.close
     returns = bar_returns(equity, c.equity)
-    n = len(equity)
-    growth = performance_cagr(c.equity, float(equity[-1]), n, c.bars_per_year)
+    growth = cagr(c.equity, float(equity[-1]), len(equity), c.bars_per_year)
     return _Benchmark(units=units, equity=equity, returns=returns, cagr=growth)
 
 
-def performance_cagr(start: float, end: float, n: int, bars_per_year: int) -> float | None:
-    from seikan.turtle.metrics import cagr
-
-    return cagr(start, end, n, bars_per_year)
+def _paid(runs: list[TargetRun]) -> CostsPaid:
+    return costs_block(
+        float(sum(r.costs_paid.commission for r in runs)),
+        float(sum(r.costs_paid.slippage for r in runs)),
+        float(sum(r.costs_paid.shock for r in runs)),
+        float(sum(r.costs_paid.impact for r in runs)),
+    )
 
 
 def _target_panel(
@@ -111,6 +114,7 @@ def _target_panel(
             "stop": run.end_stop,
             "add_level": run.end_add_level,
             "in_position": run.end_shares > 0,
+            "costs_paid": _paid([run]),
         },
     }
 
@@ -138,12 +142,12 @@ def _portfolio_panel(cell: CellRun, result: TurtleResult, bench: _Benchmark) -> 
         "relative": relative(returns, bench.returns, c.bars_per_year, metrics["cagr"], bench.cagr),
         "periodic": periodic(returns, result.data.index),
         "trades": trade_stats(trips, n_open, sum_ledgers([r.ledger for r in runs]), pairs),
+        "costs_paid": _paid(runs),
     }
 
 
 def _cell_section(cell: CellRun, result: TurtleResult, bench: _Benchmark) -> TurtleCell:
     budget = result.budget_per_target
-    rec: ReconciliationBlock = asdict(cell.reconciliation)  # type: ignore[assignment]
     return {
         "cell_id": cell.cell.cell_id,
         "params": dict(cell.cell.params),
@@ -152,8 +156,6 @@ def _cell_section(cell: CellRun, result: TurtleResult, bench: _Benchmark) -> Tur
             target: _target_panel(run, result, bench, budget)
             for target, run in cell.targets.items()
         },
-        "engine_stats": json_safe(cell.engine_stats),
-        "reconciliation": rec,
     }
 
 
@@ -165,35 +167,25 @@ def report_sections(result: TurtleResult) -> ReportSections:
     n = len(data.index)
     targets = list(data.targets)
     simulation: SimulationBlock = {
-        "engine": "nautilus_trader",
+        "engine": "seikan._turtle",
         "engine_version": engine_version(),
-        "kernel": "seikan._turtle",
-        "kernel_version": _turtle.version(),
-        "venue": VENUE,
-        "oms_type": "NETTING",
-        "account_type": "CASH",
         "currency": c.currency,
         "starting_equity": c.equity,
         "n_targets": len(targets),
         "budget_per_target": result.budget_per_target,
         "budget_mode": "fixed",
-        "instruments": {t: f"{instrument_symbol(i)}.{VENUE}" for i, t in enumerate(targets)},
         "price_precision": c.price_precision,
         "price_increment": 10.0**-c.price_precision,
-        "size_precision": 0,
         "lot_size": 1,
-        "liquidity": "unlimited",
-        "commission": 0.0,
-        "pre_trade_risk": PRE_TRADE_RISK,
+        "liquidity": "sqrt_impact" if c.costs.impact.coefficient > 0 else "unlimited",
         "fill_conventions": {k: str(v) for k, v in TURTLE_FILL_CONVENTIONS.items()},
         "bars_per_year": c.bars_per_year,
         "n_bars": n,
         "index_start": data.index[0].isoformat(),
         "index_end": data.index[-1].isoformat(),
         "bar_spacing": dataio.bar_spacing(data.index),
-        "first_eligible_bar": _turtle.first_eligible_bar(c.atr_period, c.exit_lookback),
+        "first_eligible_bar": kernel_coefficients(c, result.budget_per_target).first_eligible_bar(),
         "thesis_params_ignored": list(THESIS_PARAMS_IGNORED),
-        "bar_type_label": BAR_TYPE_SPEC,
     }
     all_in = np.ones(n, dtype=bool)
     benchmark: BenchmarkBlock = {
@@ -249,6 +241,11 @@ def round_trips_frame(result: TurtleResult) -> pd.DataFrame:
                         "shares": t.shares,
                         "cost_basis": t.cost_basis,
                         "proceeds": t.proceeds,
+                        "gross_pnl": t.gross_pnl,
+                        "commission": t.commission,
+                        "slippage": t.slippage,
+                        "shock": t.shock,
+                        "impact": t.impact,
                         "pnl": t.pnl,
                         "ret": t.pnl / t.cost_basis,
                         "bars_held": t.exit_bar - t.entry_bar,
@@ -276,6 +273,11 @@ def round_trips_frame(result: TurtleResult) -> pd.DataFrame:
         "shares",
         "cost_basis",
         "proceeds",
+        "gross_pnl",
+        "commission",
+        "slippage",
+        "shock",
+        "impact",
         "pnl",
         "ret",
         "bars_held",
@@ -289,7 +291,7 @@ def round_trips_frame(result: TurtleResult) -> pd.DataFrame:
 
 
 def fills_frame(result: TurtleResult) -> pd.DataFrame:
-    """One row per venue fill over every cell."""
+    """One row per fill over every cell, with the engine's books right after it."""
     index = result.data.index
     rows = []
     for cell in result.cells:
@@ -305,15 +307,19 @@ def fills_frame(result: TurtleResult) -> pd.DataFrame:
                         "at": f.at,
                         "kind": f.kind,
                         "reason": f.reason,
-                        "side": f.side,
+                        "side": "sell" if f.kind == "exit" else "buy",
                         "shares": f.shares,
+                        "reference": f.reference,
                         "price": f.price,
                         "notional": f.shares * f.price,
+                        "commission": f.commission,
+                        "slippage": f.slippage,
+                        "shock": f.shock,
+                        "impact": f.impact,
                         "cash_after": f.cash_after,
                         "shares_after": f.shares_after,
                         "units_after": f.units_after,
                         "stop_after": f.stop_after,
-                        "client_order_id": f.client_order_id,
                     }
                 )
     columns = [
@@ -326,20 +332,25 @@ def fills_frame(result: TurtleResult) -> pd.DataFrame:
         "reason",
         "side",
         "shares",
+        "reference",
         "price",
         "notional",
+        "commission",
+        "slippage",
+        "shock",
+        "impact",
         "cash_after",
         "shares_after",
         "units_after",
         "stop_after",
-        "client_order_id",
     ]
     return pd.DataFrame(rows, columns=columns)
 
 
 def equity_frame(result: TurtleResult) -> pd.DataFrame:
-    """One row per bar per cell: the portfolio curve beside the benchmark's, with the per-target
-    position state (``@<target>`` suffixed when several targets run)."""
+    """One row per bar per cell: the portfolio curve beside the benchmark's, the cumulative cost
+    buckets, and the per-target position state (``@<target>`` suffixed when several targets
+    run)."""
     index = result.data.index
     bench = _benchmark(result)
     targets = list(result.data.targets)
@@ -362,6 +373,10 @@ def equity_frame(result: TurtleResult) -> pd.DataFrame:
             "gross_exposure": market_value / equity,
             "n_positions": np.count_nonzero(shares > 0, axis=0),
         }
+        for bucket in ("commission_cum", "slippage_cum", "shock_cum", "impact_cum"):
+            columns[bucket] = np.sum(
+                [np.asarray(getattr(r.samples, bucket), dtype=float) for r in runs], axis=0
+            )
         for t, r in zip(targets, runs, strict=True):
             suffix = f"@{t}" if multi else ""
             columns[f"shares{suffix}"] = r.samples.shares

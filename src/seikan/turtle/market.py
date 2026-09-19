@@ -1,20 +1,16 @@
 """Strict frames → the simulation's inputs.
 
-Two jobs. :func:`preflight` turns a loaded :class:`~seikan.api.MarketData` plus the benchmark
-CSV into :class:`SimulationData`: every price quantized ONCE to the coefficient's grid (the
-kernel's own rounding, the same the venue applies), the benchmark read through the same strict
-reader and required to cover the target clock exactly, and every hole refused — a simulation
-needs a price on every bar, so what the event study merely censors is exit 2 here. The
-nautilus_trader builders then make the venue's objects out of those arrays: positional
-instruments (target names may hold characters an instrument id may not), bars with unlimited
-volume, and one opening print per bar one nanosecond before it, so a market order submitted at
-that print fills at the bar's open.
+:func:`preflight` turns a loaded :class:`~seikan.api.MarketData` plus the benchmark CSV into
+:class:`SimulationData`: every price quantized ONCE to the coefficient's grid (the engine's own
+rounding, so the fills, the levels and the report all hold the same grid values), the benchmark
+read through the same strict reader and required to cover the target clock exactly, the volume
+admitted only when the cost model's market impact needs it, and every hole refused — a simulation
+needs a price on every bar, so what the event study merely censors is exit 2 here.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -24,36 +20,26 @@ from seikan.api import MarketData
 from seikan.turtle.coefficients import TurtleCoefficients
 from seikan.types import DataIssue, DataReport, FileReportEntry
 
-#: The venue every simulated instrument trades on.
-VENUE = "SIM"
-#: The bar volume and print sizes handed to the venue: liquidity never runs out at the quoted
-#: price, so a market order fills whole at the open and a stop fills whole at its trigger.
-UNLIMITED_LIQUIDITY = 10**9
-#: The opening print sits this many nanoseconds before its bar's stamp.
-OPEN_PRINT_OFFSET_NS = 1
-#: The bar-type label under which every clock is fed (external bars are opaque to the venue;
-#: the report stamps the real spacing).
-BAR_TYPE_SPEC = "1-DAY-LAST-EXTERNAL"
-
 _OHLC = ("open", "high", "low", "close")
 
 
 @dataclass(frozen=True)
 class QuantizedBars:
-    """One instrument's OHLC on the price grid (float64 arrays over the joined index)."""
+    """One instrument's OHLC on the price grid (float64 arrays over the joined index), plus the
+    raw volume when the cost model reads it (``None`` otherwise)."""
 
     open: np.ndarray
     high: np.ndarray
     low: np.ndarray
     close: np.ndarray
+    volume: np.ndarray | None = None
 
 
 @dataclass(frozen=True)
 class SimulationData:
-    """Everything a cell's backtest consumes, target by target, plus the benchmark."""
+    """Everything a cell's simulation consumes, target by target, plus the benchmark."""
 
     index: pd.DatetimeIndex
-    ts_ns: np.ndarray
     precision: int
     targets: dict[str, QuantizedBars]
     benchmark: QuantizedBars
@@ -63,15 +49,9 @@ class SimulationData:
 
 
 def quantize_array(values: np.ndarray, precision: int) -> np.ndarray:
-    """Round every price with the kernel's own rounding (half away from zero) so the reference
-    simulator, the venue's ``Price`` and the report all hold the same grid values."""
+    """Round every price with the engine's own rounding (half away from zero) so the fills, the
+    levels and the report all hold the same grid values."""
     return np.array([_turtle.quantize(float(v), precision) for v in values], dtype=float)
-
-
-def index_ns(index: pd.DatetimeIndex) -> np.ndarray:
-    """The bar stamps as nanoseconds since the epoch (naive stamps read as UTC)."""
-    stamps: np.ndarray = index.values.astype("datetime64[ns]").astype("int64")
-    return stamps
 
 
 def _refuse(report: DataReport, issues: list[DataIssue], message: str) -> None:
@@ -86,6 +66,45 @@ def _base_report(md: MarketData) -> DataReport:
         return md.report
     # A hand-built MarketData carries no report; the refusal payload is honestly partial.
     return {"ok": True, "files": [], "join": None, "errors": []}
+
+
+def _volume_issues(md: MarketData) -> list[DataIssue]:
+    """Market impact divides by an average volume: every target must carry a volume column that
+    is finite and strictly positive on every bar."""
+    if md.volume is None:
+        return [
+            {
+                "code": "spec_data_mismatch",
+                "message": "costs.impact is enabled, so every target needs a volume column (the "
+                "average volume the impact law divides by), but the data carries none",
+            }
+        ]
+    issues: list[DataIssue] = []
+    for target in md.targets:
+        v = md.volume[target].to_numpy(dtype=float)
+        holes = int(np.count_nonzero(~np.isfinite(v)))
+        if holes:
+            issues.append(
+                {
+                    "code": "nan_fraction",
+                    "message": f"target {target!r} has {holes} missing volume cells over the "
+                    "joined bars; market impact needs a volume on every bar",
+                    "column": target,
+                    "value": float(holes),
+                }
+            )
+        zeros = int(np.count_nonzero(np.isfinite(v) & (v <= 0.0)))
+        if zeros:
+            issues.append(
+                {
+                    "code": "integrity",
+                    "message": f"target {target!r} has {zeros} bars with non-positive volume; "
+                    "market impact needs a positive average volume on every bar",
+                    "column": target,
+                    "value": float(zeros),
+                }
+            )
+    return issues
 
 
 def preflight(
@@ -126,6 +145,9 @@ def preflight(
                     "value": float(holes),
                 }
             )
+    reads_volume = coefficients.costs.impact.coefficient > 0
+    if reads_volume:
+        issues.extend(_volume_issues(md))
     frame, file_report = dataio.read_strict_csv(
         benchmark_path, role="benchmark", expected_shape="ohlcv"
     )
@@ -171,12 +193,15 @@ def preflight(
         _refuse(report, issues, issues[0]["message"])
     aligned = frame.reindex(md.index)
     precision = coefficients.price_precision
-    targets = {
-        t: QuantizedBars(
-            *(quantize_array(md.field(col)[t].to_numpy(dtype=float), precision) for col in _OHLC)
+    targets: dict[str, QuantizedBars] = {}
+    for t in md.targets:
+        o, h, lo, c = (
+            quantize_array(md.field(col)[t].to_numpy(dtype=float), precision) for col in _OHLC
         )
-        for t in md.targets
-    }
+        volume = None
+        if reads_volume and md.volume is not None:
+            volume = md.volume[t].to_numpy(dtype=float)
+        targets[t] = QuantizedBars(o, h, lo, c, volume=volume)
     benchmark = QuantizedBars(
         *(quantize_array(aligned[col].to_numpy(dtype=float), precision) for col in _OHLC)
     )
@@ -194,81 +219,9 @@ def preflight(
         _refuse(report, issues, issues[0]["message"])
     return SimulationData(
         index=md.index,
-        ts_ns=index_ns(md.index),
         precision=precision,
         targets=targets,
         benchmark=benchmark,
         benchmark_path=benchmark_path,
         data_report=report,
     )
-
-
-# ---- nautilus_trader objects ---------------------------------------------------------------
-
-
-def instrument_symbol(position: int) -> str:
-    """The positional symbol a target trades under (``T0``, ``T1``, …): the report always speaks
-    in target names, the venue never sees one."""
-    return f"T{position}"
-
-
-def instrument_for(position: int, currency: str, precision: int) -> Any:
-    """The nautilus ``Equity`` for the target at ``position``: whole shares, a grid of
-    ``10^-precision``."""
-    from nautilus_trader.model import Currency, Equity, InstrumentId, Price, Quantity, Symbol
-
-    symbol = instrument_symbol(position)
-    return Equity(
-        instrument_id=InstrumentId.from_str(f"{symbol}.{VENUE}"),
-        raw_symbol=Symbol(symbol),
-        currency=Currency.from_str(currency),
-        price_precision=precision,
-        price_increment=Price.from_str(f"{10.0**-precision:.{precision}f}"),
-        ts_event=0,
-        ts_init=0,
-        lot_size=Quantity.from_int(1),
-    )
-
-
-def bar_type_for(instrument: Any) -> Any:
-    from nautilus_trader.model import BarType
-
-    return BarType.from_str(f"{instrument.id}-{BAR_TYPE_SPEC}")
-
-
-def venue_data(instrument: Any, bars: QuantizedBars, ts_ns: np.ndarray) -> list[Any]:
-    """The venue's data for one instrument: a bar per stamp (unlimited volume) and, one
-    nanosecond before each, the opening print — a quote at the open with unlimited size on both
-    sides, so a market order submitted at the print fills whole at the open and a resting stop
-    the print gaps through fills at the open too."""
-    from nautilus_trader.model import Bar, Quantity, QuoteTick
-
-    bar_type = bar_type_for(instrument)
-    size = Quantity.from_int(UNLIMITED_LIQUIDITY)
-    out: list[Any] = []
-    for t, ts in enumerate(ts_ns.tolist()):
-        open_px = instrument.make_price(float(bars.open[t]))
-        out.append(
-            QuoteTick(
-                instrument.id,
-                open_px,
-                open_px,
-                size,
-                size,
-                ts - OPEN_PRINT_OFFSET_NS,
-                ts - OPEN_PRINT_OFFSET_NS,
-            )
-        )
-        out.append(
-            Bar(
-                bar_type=bar_type,
-                open=open_px,
-                high=instrument.make_price(float(bars.high[t])),
-                low=instrument.make_price(float(bars.low[t])),
-                close=instrument.make_price(float(bars.close[t])),
-                volume=size,
-                ts_event=ts,
-                ts_init=ts,
-            )
-        )
-    return out

@@ -1,6 +1,6 @@
 [package]
 name = "seikan-turtle"
-description = "The Turtle position-management kernel behind `seikan stock-turtle-trade-long-only`: Wilder ATR, lowest-low channel, the long-only state machine and its reference simulator."
+description = "The Turtle simulation engine behind `seikan stock-turtle-trade-long-only`: Wilder ATR, lowest-low channel, the long-only state machine, execution under a trade-cost model, and the bar loop that drives them."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,7 +10,7 @@ publish = false
 
 [lib]
 name = "seikan_turtle"
-# rlib: `cargo test` and any Rust consumer link the pure kernel without Python;
+# rlib: `cargo test` and any Rust consumer link the pure engine without Python;
 # cdylib: maturin builds the `seikan._turtle` extension module from the same crate.
 crate-type = ["cdylib", "rlib"]
 
@@ -19,7 +19,7 @@ pyo3 = { version = "0.29", features = ["abi3-py313"], optional = true }
 
 [features]
 default = []
-# The PyO3 bindings (`src/py.rs`). Off by default so the kernel compiles and tests with no
+# The PyO3 bindings (`src/py.rs`). Off by default so the engine compiles and tests with no
 # Python interpreter; maturin enables `extension-module`, which implies it.
 python = ["dep:pyo3"]
 extension-module = ["python", "pyo3/extension-module"]
