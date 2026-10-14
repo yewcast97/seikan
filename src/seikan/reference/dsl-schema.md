@@ -304,8 +304,31 @@ leaves the cell unmet — guard a z-score of a series that can sit flat (a rate 
 with `and(rolling_agg(x, N, "std") > 0, …)`. "Equal" means bit-identical: a spread built from
 decimal levels that move in lockstep (`y1 − y2`) carries residue at the operands' scale, which is
 variation as far as any kernel can tell. Every window with any variation is computed as before,
-bit for bit; the EW pair differs from its plain recurrence only on the steps where a rounded
-update left its exact interval or a held input's deviation is carried.
+bit for bit, while its variances and, for `rolling_corr`, their product are normal doubles
+(below); the EW pair differs from its plain recurrence only on the steps where a rounded update
+left its exact interval or a held input's deviation is carried, and the EW z-score where its
+plain recurrence left the normal range (below).
+
+A window variance that OVERFLOWS (deviations past ~1.3e154, where `(x − mean) / inf` would read a
+finite 0) reads NaN in a `std`, a `zscore` (`mean_type: "sma"`) and a `rolling_corr`, undecidable
+like `x / 0`. One that falls BELOW the normal double range (deviations under ~1.5e-154) is a
+precision loss ordinary data reaches — an `ema` of a change decays geometrically through it over a
+held stretch — whose squares lose their bits (a z-score past its bound `√(w−1)`) or vanish into the
+`0.0` an all-equal window owns. Such a VARYING window is recomputed on its values lifted by
+`2**600` (exact) in the same summation order, so it reads the value the direct form has in an
+unbounded exponent range: a `std` under the smallest subnormal floors there — `std > 0` holds on
+every varying window, exactly where its SMA z-score is defined — and `rolling_corr` takes the
+product of two normal variances the same way, so `rolling_corr(x, x)` is exactly 1 at 1e80, at
+1e-85 and on subnormal values as at 1. The EW `zscore` keeps its variance in a recurrence, which
+runs lifted by `2**600` (exact) once that variance nears the range, so it too reads the recurrence's
+value in an unbounded exponent range: past its warmup (and short of an overflow its recurrence
+carries forward) it is defined on every window `std > 0` admits, at its value — never NaN there,
+nor collapsed toward 0 off a floored variance, nor past its bound `√((1−α)/α)`. Only a held input's
+decay is left out of reach, a z exact arithmetic has sent under `2**-158/α` by then: its variance
+and carried deviation are floored at the smallest subnormal there, sign kept (decided, imprecise
+in magnitude). Every window whose variances and, for `rolling_corr`, their product are normal
+doubles, and every EW z-score whose plain recurrence stays in that range, is computed as before,
+bit for bit.
 
 - `ema` (input, exactly one of `window` / `alpha`) — exponentially weighted mean of any Series,
   seeded at the first finite value, NaN-skipping. `window` sets `alpha = 2/(window+1)` with a
@@ -365,7 +388,11 @@ update left its exact interval or a held input's deviation is carried.
 - `rolling_corr` (`left`, `right`, `window` ≥ 3) — trailing-window Pearson correlation of two
   Series. Per-target TIME-axis only (ranking across the targets at a bar is `cross_rank`, basket
   mode). NaN unless the whole window
-  is finite in BOTH inputs AND both window stds > 0 (zero-variance → NaN, never ±1). Counts as one
+  is finite in BOTH inputs AND both window stds > 0 (zero-variance → NaN, never ±1). Scale-safe:
+  a leg whose variance fell below the normal range is lifted and the product of two variances
+  taken in an unbounded exponent range, so `rolling_corr(x, x)` is exactly 1 at 1e80, 1e-85 and
+  on subnormal values as at 1; a leg whose variance overflowed (deviations past ~1.3e154) is
+  NaN. Counts as one
   operator level with two children. Recipe for "corr(stock daily return, Δ option EOD IV30)":
   declare the IV feed in `data.external`, then
   `rolling_corr(change(close), change(iv30, kind="diff"), window)`.

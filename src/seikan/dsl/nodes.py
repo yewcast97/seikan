@@ -372,7 +372,10 @@ class RollingCorr(_Strict):
     # mode). ``window`` >= 3 (corr of 2 points
     # is always ±1 — degenerate). NaN unless the whole window is finite in BOTH inputs AND both
     # window stds > 0 (zero-variance → NaN, never ±1 — an exactly constant window counts as zero
-    # variance whatever its computed variance rounds to) — the standard NaN-gating contract.
+    # variance whatever its computed variance rounds to) — the standard NaN-gating contract — and
+    # neither window variance overflowed (deviations past ~1.3e154 → NaN); a leg whose variance
+    # fell below the normal range is lifted and the variance product taken scale-safely
+    # (``nb._lifted_windows``, ``nb._sqrt_product``: corr(x, x) is 1 at 1e80 and 1e-160 too).
     # Counts as ONE operator level with TWO children. Recipe for "corr(stock daily return,
     # Δ option EOD IV30)": declare the IV feed in ``data.external``, then
     # ``rolling_corr(change(close), change(iv30, kind="diff"), window)`` —

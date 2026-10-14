@@ -574,9 +574,10 @@ METRIC_ROLES_DOC: dict[str, JsonValue] = {
         "alpha + beta·mean_bench == mean_ret_raw is a reader's to re-check, and the question it "
         "answers — is the excess mean alpha, or beta ≠ 1 riding market drift — is one the two "
         "leg means alone cannot; null fields with n and a reason when unbenchmarked "
-        "(no_paired_observations), below 3 pairs, or over a constant bench leg; a one-regressor "
-        "attribution, never a factor model, and the overlapping rows inflate the fit exactly as "
-        "they inflate every row-level read)",
+        "(no_paired_observations), below 3 pairs, over a constant bench leg, or past the "
+        "double range (not_representable); a one-regressor attribution, never a factor model, "
+        "and the overlapping rows inflate the fit exactly as they inflate every row-level "
+        "read)",
         "episode_stats beyond the two fields the checklist reads (n, max_cluster_share_abs): "
         "n_clusters, the earliest entry, and the cluster-mass profile are a regime-clustering "
         "diagnostic",
@@ -963,9 +964,11 @@ METRIC_ROLES_DOC: dict[str, JsonValue] = {
             "precisely as they inflate every row-level statistic (no HAC correction is applied "
             "to the regression — it is attribution, not inference), so r2 and beta are "
             "descriptions of this pool, never factor loadings; null fields with n and a reason "
-            "when unbenchmarked, below three pairs, or over a (near-)constant bench leg; over a "
-            "(near-)constant raw leg beta is exactly 0.0, alpha the raw leg's mean and r2 null "
-            "(nothing to explain)."
+            "when unbenchmarked, below three pairs, over a (near-)constant bench leg, or when "
+            "the bench variance is not a normal double or beta or alpha leaves the double range "
+            "(not_representable); over a (near-)constant raw leg beta is exactly 0.0, alpha the "
+            "raw leg's mean and r2 null (nothing to explain), and r2 alone is null off a raw "
+            "variance that is not a normal double."
         ),
         "episode_profile": (
             "The episode-deduplicated TWIN of the row-level statistics: the same frozen "
@@ -1045,7 +1048,11 @@ REPORT_FIELDS: dict[str, JsonValue] = {
         "nulls": (
             "every non-finite number serializes as null; a target with no closed rows carries "
             "n=0 and null statistics BY CONSTRUCTION — null means 'no evidence', never 'zero' "
-            "(the evidence blocks additionally carry a `reason` string when null)"
+            "(the evidence blocks additionally carry a `reason` string when null); no statistic "
+            "is a finite number read off a sum, mean, quantile or variance that overflowed, nor "
+            "off a variance (or the power of one a moment divides by) below the normal double "
+            "range — x/inf is not 0, and a subnormal variance has lost its bits: such a share, "
+            "ratio, std, t, shape moment, Sharpe, quantile, tail mean or rank read is null too"
         ),
         "units": (
             "every return-valued field (mean_ret, ret, mae, mfe, pre_ret, ci_lo/ci_hi, cvar_5, "
@@ -1165,8 +1172,9 @@ REPORT_FIELDS: dict[str, JsonValue] = {
             "{n, beta, alpha, r2, reason} — per-window OLS attribution of the raw leg on the "
             "bench leg over PAIRED rows: alpha + beta·mean_ret_bench == mean_ret_raw exactly; "
             "alpha in outcome units per h-bar window, never annualized; null fields + reason "
-            "when unbenchmarked (no_paired_observations), below 3 pairs, or over a "
-            "(near-)constant bench leg; beta 0.0 and r2 null over a (near-)constant raw leg "
+            "when unbenchmarked (no_paired_observations), below 3 pairs, over a "
+            "(near-)constant bench leg, or past the double range (not_representable); beta 0.0 "
+            "and r2 null over a (near-)constant raw leg "
             "(evidence-only)"
         ),
         "by_target.win_loss_ratio / std_ret / skewness / kurtosis / tail_ratio / cvar_5": (

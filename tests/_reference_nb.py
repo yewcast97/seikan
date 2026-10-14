@@ -5,7 +5,12 @@ Plain NumPy/Python-loop ports of the vectorized/numba kernels, independent of th
 ``sliding_window_view``/``njit`` implementations, so drift between the two is caught by the parity
 tests in ``tests/test_nb_kernels.py``. A window or cross-section whose values are ALL EQUAL has
 exact answers — mean the value, std / deviations 0.0, z-score and correlation undefined (NaN) —
-whatever the floating-point mean of a constant decimal window rounds to.
+whatever the floating-point mean of a constant decimal window rounds to. A window variance that
+overflowed is NaN wherever it is divided by or reported; a VARYING window whose variance fell below
+the normal range (subnormal, or 0.0) is recomputed on its values lifted by ``2**_LIFT`` — exact —
+its std floored at the smallest subnormal; the correlation's variance PRODUCT of two normal
+variances is taken in an unbounded exponent range (:func:`_sqrt_product`); and the EW z-score's
+recurrence runs in a frame lifted by a power of two once its variance nears that range.
 """
 
 from __future__ import annotations
@@ -49,6 +54,13 @@ def rolling_any(arr: np.ndarray, window: int) -> np.ndarray:
 # ---- Transform kernels -----------------------------------------------------
 
 
+#: The smallest positive NORMAL double: a window variance below it has lost significant bits.
+_MIN_NORMAL = 2.0**-1022
+#: The power of two such a VARYING window is lifted by: scaling up never rounds, and every lifted
+#: variance is a normal double again.
+_LIFT = 600
+
+
 def zscore_sma(arr: np.ndarray, window: int) -> np.ndarray:
     n = arr.shape[0]
     out = np.full(n, np.nan, dtype=np.float64)
@@ -70,15 +82,19 @@ def zscore_sma(arr: np.ndarray, window: int) -> np.ndarray:
         # Two-pass centered variance (population), matching the production kernel: the one-pass
         # E[x²] − E[x]² form loses the mantissa to cancellation at large input levels.
         ss = 0.0
-        for j in range(i - window + 1, i + 1):
-            d = arr[j] - mean
-            ss += d * d
+        with np.errstate(over="ignore", invalid="ignore"):
+            for j in range(i - window + 1, i + 1):
+                d = arr[j] - mean
+                ss += d * d
         var = ss / cnt
-        if var <= 0.0:
-            continue
         x = arr[i]
-        if np.isnan(x):
-            continue
+        if var < _MIN_NORMAL:  # a VARYING window whose squared deviations underflowed: lift it
+            vals = [math.ldexp(v, _LIFT) for v in arr[i - window + 1 : i + 1]]
+            mean = sum(vals) / cnt
+            var = sum((v - mean) * (v - mean) for v in vals) / cnt
+            x = vals[-1]
+        if not (_MIN_NORMAL <= var < math.inf):
+            continue  # an overflowed variance
         z = (x - mean) / math.sqrt(var)
         if np.isfinite(z):
             out[i] = z
@@ -96,11 +112,21 @@ def zscore_ema(arr: np.ndarray, window: int) -> np.ndarray:
     return _zscore_ema_west(arr, alpha, window)
 
 
+#: The EW recurrence's frame: lifted by ``2**_LIFT`` (at most twice) once the variance is under
+#: ``2**-600`` with the input, mean and deviation under ``2**-300``; lowered once an input passes
+#: ``2**400`` in it.
+_EW_LIFT_VAR = 2.0**-600
+_EW_LIFT_AT = 2.0**-300
+_EW_LOWER_AT = 2.0**400
+
+
 def _zscore_ema_west(arr: np.ndarray, alpha: float, warmup: int) -> np.ndarray:
     """The West recurrence with the exact-interval rules, written out step by step: the mean's
     convex update stays between the old mean and the input; on a repeated input whose update
     cannot move the stored mean (absorbed, or landing on the input) the deviation is tracked on
-    its own and shrinks by (1 − alpha) per repeat, as it does in exact arithmetic."""
+    its own and shrinks by (1 − alpha) per repeat, as it does in exact arithmetic. Where the
+    variance would leave the normal range the whole state is carried scaled by a power of two
+    (exact), so the steps are the plain ones in an unbounded exponent range."""
     n = arr.shape[0]
     out = np.full(n, np.nan, dtype=np.float64)
     if warmup < 1 or not (0.0 < alpha <= 1.0):
@@ -110,30 +136,54 @@ def _zscore_ema_west(arr: np.ndarray, alpha: float, warmup: int) -> np.ndarray:
     seen = 0
     last = np.nan
     dev = None  # tracked deviation while a repeated input pins the stored mean
+    scale = 0  # the state is held times 2**scale
     for i in range(n):
-        x = arr[i]
-        if np.isnan(x):
+        raw = arr[i]
+        if np.isnan(raw):
             continue
+        while scale > 0 and abs(raw) > math.ldexp(_EW_LOWER_AT, -scale):
+            scale -= _LIFT
+            mean = math.ldexp(mean, -_LIFT)
+            var = math.ldexp(var, -2 * _LIFT)
+            dev = None if dev is None else math.ldexp(dev, -_LIFT)
+        x = math.ldexp(raw, scale) if scale else raw
         if np.isnan(mean):
             mean, var, dev = x, 0.0, None
-        elif dev is not None and x == last:
+        elif dev is not None and raw == last:
             var = (1.0 - alpha) * (var + alpha * dev * dev)
             dev_next = (1.0 - alpha) * dev
-            # exact arithmetic never reaches zero: the smallest subnormal, sign kept
-            var = var if var != 0.0 else 5e-324
+            # exact arithmetic never reaches zero below alpha 1: the smallest subnormal, sign kept
+            var = var if var != 0.0 or alpha == 1.0 else 5e-324
             dev = dev_next if dev_next != 0.0 else math.copysign(5e-324, dev)
         else:
             d = x - mean
             step = mean + alpha * d
             step = min(max(step, min(mean, x)), max(mean, x))
-            var = (1.0 - alpha) * (var + alpha * d * d)
-            dev = (1.0 - alpha) * d if (x == last and d != 0.0 and step in (mean, x)) else None
+            moved_var = (1.0 - alpha) * (var + alpha * d * d)
+            # nor once the input has varied: an update that underflowed floors the same way
+            if moved_var == 0.0 and alpha < 1.0 and (var > 0.0 or d != 0.0):
+                moved_var = 5e-324
+            var = moved_var
+            dev = (1.0 - alpha) * d if (raw == last and d != 0.0 and step in (mean, x)) else None
+            if dev == 0.0:  # a carried deviation that underflowed: floored, sign kept
+                dev = math.copysign(5e-324, d)
             mean = step
-        last = x
+        last = raw
         seen += 1
+        r = (x - mean) if dev is None else dev
+        if (
+            scale < 2 * _LIFT
+            and var < _EW_LIFT_VAR
+            and max(abs(x), abs(mean), abs(r)) < _EW_LIFT_AT
+        ):
+            scale += _LIFT
+            mean = math.ldexp(mean, _LIFT)
+            var = math.ldexp(var, 2 * _LIFT)
+            dev = None if dev is None else math.ldexp(dev, _LIFT)
+            r = math.ldexp(r, _LIFT)
         if seen < warmup or var <= 0.0 or not np.isfinite(var):
             continue
-        z = ((x - mean) if dev is None else dev) / math.sqrt(var)
+        z = r / math.sqrt(var)
         if np.isfinite(z):
             out[i] = z
     return out
@@ -192,7 +242,17 @@ def rolling_agg(arr: np.ndarray, window: int, agg: str) -> np.ndarray:
             out[i] = vals[0] if constant else vals.mean()
         else:  # std, population
             m = vals.mean()
-            out[i] = 0.0 if constant else math.sqrt(max(float(np.mean((vals - m) ** 2)), 0.0))
+            with np.errstate(over="ignore", invalid="ignore"):
+                var = float(np.mean((vals - m) ** 2))
+            if constant:
+                out[i] = 0.0
+            elif var < _MIN_NORMAL:  # VARYING, its squared deviations underflowed: lift it
+                lifted = np.ldexp(vals, _LIFT)
+                lvar = float(np.mean((lifted - lifted.mean()) ** 2))
+                out[i] = max(math.ldexp(math.sqrt(lvar), -_LIFT), 5e-324)
+            elif var < math.inf:
+                out[i] = math.sqrt(var)
+            # else: an overflowed variance — NaN
     return out
 
 
@@ -377,7 +437,13 @@ def _cross_value(vals: list[float], agg: str) -> float:
         if constant:
             return 0.0
         mu = sum(vals) / len(vals)
-        return math.sqrt(sum((x - mu) ** 2 for x in vals) / len(vals))
+        var = sum((x - mu) * (x - mu) for x in vals) / len(vals)
+        if var < _MIN_NORMAL:  # a VARYING row whose squared deviations underflowed: lift it
+            lifted = [math.ldexp(x, _LIFT) for x in vals]
+            mu = sum(lifted) / len(lifted)
+            lvar = sum((x - mu) * (x - mu) for x in lifted) / len(lifted)
+            return max(math.ldexp(math.sqrt(lvar), -_LIFT), 5e-324)
+        return math.sqrt(var) if var < math.inf else math.nan  # NaN: an overflowed variance
     if agg == "frac_positive":
         return sum(1.0 for x in vals if x > 0.0) / len(vals)
     raise ValueError(agg)
@@ -387,8 +453,18 @@ def rolling_corr_ref(left: np.ndarray, right: np.ndarray, window: int) -> np.nda
     """Row-loop reference for the trailing-window Pearson correlation of two 1D series.
 
     Population moments (ddof=0), NaN unless the whole window is finite in BOTH inputs AND both
-    windows vary (neither constant, both window stds > 0) — matches ``nb.rolling_corr_apply_nb``.
+    windows vary (neither constant) AND neither variance overflowed — a leg whose variance fell
+    below the normal range is lifted by ``2**_LIFT`` first — matches ``nb.rolling_corr_apply_nb``.
     """
+
+    def moments(a: np.ndarray, b: np.ndarray) -> tuple[float, float, float]:
+        with np.errstate(over="ignore", invalid="ignore"):
+            ma, mb = a.mean(), b.mean()
+            va = float(np.mean((a - ma) ** 2))
+            vb = float(np.mean((b - mb) ** 2))
+            cov = float(np.mean((a - ma) * (b - mb)))
+        return va, vb, cov
+
     n = left.shape[0]
     out = np.full(n, np.nan, dtype=np.float64)
     if window < 3 or window > n:
@@ -400,14 +476,31 @@ def rolling_corr_ref(left: np.ndarray, right: np.ndarray, window: int) -> np.nda
             continue
         if len(set(a.tolist())) == 1 or len(set(b.tolist())) == 1:
             continue
-        ma, mb = a.mean(), b.mean()
-        va = float(np.mean((a - ma) ** 2))
-        vb = float(np.mean((b - mb) ** 2))
-        if va <= 0.0 or vb <= 0.0:
+        va, vb, cov = moments(a, b)
+        if va < _MIN_NORMAL or vb < _MIN_NORMAL:  # a VARYING leg's squares underflowed: lift it
+            a = np.ldexp(a, _LIFT) if va < _MIN_NORMAL else a
+            b = np.ldexp(b, _LIFT) if vb < _MIN_NORMAL else b
+            va, vb, cov = moments(a, b)
+        if not (_MIN_NORMAL <= va < math.inf and _MIN_NORMAL <= vb < math.inf):
             continue
-        cov = float(np.mean((a - ma) * (b - mb)))
-        out[i] = cov / math.sqrt(va * vb)
+        r = cov / _sqrt_product(va, vb)
+        if math.isfinite(r):
+            out[i] = r
     return out
+
+
+def _sqrt_product(a: float, b: float) -> float:
+    """``sqrt(a·b)`` for NORMAL ``a, b > 0`` in an unbounded exponent range: while the product is
+    not a normal double, a factor of four moves out of (or into) BOTH factors — exact, as scaling
+    a normal double by a power of two never rounds — and its root ``2**k`` is put back after the
+    square root."""
+    k = 0
+    while not (_MIN_NORMAL <= a * b < math.inf):
+        if a * b > 1.0:  # overflowed
+            a, b, k = a / 4.0, b / 4.0, k + 2
+        else:  # fell below the normal range
+            a, b, k = a * 4.0, b * 4.0, k - 2
+    return math.ldexp(math.sqrt(a * b), k)
 
 
 def expanding(arr: np.ndarray, agg: str) -> np.ndarray:

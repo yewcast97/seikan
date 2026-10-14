@@ -161,6 +161,26 @@ def test_edge_ratio_arithmetic_and_refusals():
     assert edge_ratio(mae_holed, mfe_holed) == pytest.approx(0.03 / 0.02)
 
 
+def test_ratio_reads_refuse_an_overflowed_operand():
+    # Finite returns whose SUM overflows: `x / inf` was a FINITE 0.0 — a win/loss ratio, a
+    # profit factor and an edge ratio of exactly zero, a reader takes at face value. An operand
+    # past the double range is no evidence: NaN → null.
+    rets = np.array([1.0, -1e308, -1e308])  # the loss mass (and so its mean) overflows to -inf
+    with np.errstate(over="ignore", invalid="ignore"):
+        assert np.isnan(pool_moments(rets)["win_loss_ratio"])
+        assert np.isnan(profit_factor(rets))
+        assert np.isnan(edge_ratio(np.array([-1e308, -1e308]), np.array([1.0, 1.0])))
+        # |p95 / p05| where p05 interpolates across ±1.7e308 and overflows to +inf
+        tail = np.array([-1.7e308] + [1.7e308] * 9)
+        assert np.isinf(np.percentile(tail, 5.0))  # the premise
+        assert np.isnan(pool_moments(tail)["tail_ratio"])
+        # cvar_5 tails off the same p05: `v <= inf` took the WHOLE pool's mean, +2.3e307 — a
+        # positive "lower tail" where the true one is −1e308
+        gap = np.array([-1e308, 8e307, 9e307])
+        assert np.isinf(np.percentile(gap, 5.0))  # the premise
+        assert np.isnan(pool_moments(gap)["cvar_5"])
+
+
 def test_empty_pool_moments_are_complete():
     # The all-NaN record and a populated pool answer the SAME key set: an empty pool is a full
     # row of nulls, never a shorter document — the null-not-missing doctrine at the pool level.
@@ -344,6 +364,18 @@ def test_bucket_monotonicity_needs_three_buckets():
 def test_bucket_monotonicity_constant_means_is_none():
     # a degenerate cell (all bucket means equal) has no rank signal — None, and no scipy warning
     assert _bucket_monotonicity(_recs([0.01, 0.01, 0.01, 0.01])) is None
+
+
+def test_bucket_monotonicity_of_an_overflowed_bucket_mean_is_none():
+    # A populated bucket whose return sum overflowed reads mean = inf (or NaN off inf − inf),
+    # which ranked it above every finite bucket (rho 0.4 here) whatever its true place. Its place
+    # is unknown, and so is the rank signal — dropping it would read the rest's rho 1.0 as if
+    # the bucket were empty. An EMPTY bucket still just drops out.
+    for overflowed in (float("inf"), float("-inf"), float("nan")):
+        assert _bucket_monotonicity(_recs([0.01, overflowed, 0.02, 0.03])) is None
+    empty = {"bucket": "e", "n": 0, "mean_ret": float("nan"), "hit_rate": float("nan")}
+    mono = _bucket_monotonicity([*_recs([0.01, 0.02]), empty, *_recs([0.03])])
+    assert mono == {"rho": 1.0, "sign": 1}
 
 
 def test_bucket_monotonicity_json_safe():
@@ -719,6 +751,14 @@ def test_tail_p_tolerance_counts_near_ties_as_ties():
     tol = np.array([2e-16, 5.0, 2e-16, 2e-16])
     assert _tail_p(1.0, null, 2e-16, tol) == (pytest.approx(3.0 / 4.0), 3)
     assert _tail_p(1.0, null, 0.0, np.zeros(4)) == _tail_p(1.0, null)
+
+
+def test_tail_p_of_an_overflowed_observed_mean_is_nan_never_the_floor():
+    # An observed mean past the double range sat above every finite null value: the p FLOOR,
+    # the strongest evidence the rotation can give, minted from an overflow. No observation: NaN.
+    for observed in (float("inf"), float("-inf")):
+        p, n_null = _tail_p(observed, np.array([0.1, 0.2, 0.3]))
+        assert np.isnan(p) and n_null == 3
 
 
 def test_rotation_den_is_an_exact_count():
@@ -1526,6 +1566,14 @@ def test_concentration_hand_computed():
     assert np.isnan(concentration(np.array([]))["top_share_abs"])
 
 
+def test_concentration_of_an_overflowed_mass_is_nan_never_a_passing_zero():
+    # 100 returns of 3e306: the top-5 mass (1.5e307) is finite, the total overflows, and the
+    # share read 0.0 — "no concentration", which the ceiling check passed. NaN refuses instead.
+    with np.errstate(over="ignore"):
+        out = concentration(np.full(100, 3e306))
+    assert out["n_top"] == 5 and np.isnan(out["top_share_abs"])
+
+
 def test_episode_stats_overlapping_vs_disjoint():
     day = pd.Timedelta(days=1)
     base = pd.Timestamp("2021-01-01")
@@ -1596,6 +1644,29 @@ def test_episode_stats_mass_hhi_hand_computed():
     assert out["effective_n_clusters"] == pytest.approx(2.0)
     zero = episode_stats(frame.assign(ret=[0.0, 0.0]))
     assert np.isnan(zero["mass_hhi"]) and np.isnan(zero["effective_n_clusters"])
+
+
+def test_episode_shares_of_an_overflowed_mass_are_nan_never_a_passing_zero():
+    # Two disjoint episodes of 1e308 each: the total |return| mass overflows, and every share
+    # read `x / inf = 0.0` — a max_cluster_share_abs of zero, which the one-episode ceiling
+    # passes. No share of an overflowed total exists: NaN, which the checklist refuses.
+    day = pd.Timedelta(days=1)
+    base = pd.Timestamp("2021-03-01")
+    frame = pd.DataFrame(
+        {
+            "entry_time": [base, base + 20 * day],
+            "exit_time": [base + 5 * day, base + 25 * day],
+            "ret": [1e308, 1e308],
+        }
+    )
+    with np.errstate(over="ignore"):
+        out = episode_stats(frame)
+        ledger = episode_ledger(frame)
+    assert out["n_clusters"] == 2
+    for key in ("largest_cluster_share_abs", "max_cluster_share_abs", "mass_hhi"):
+        assert np.isnan(out[key]), key
+    assert np.isnan(out["effective_n_clusters"])
+    assert [np.isnan(e["share_abs"]) for e in ledger["entries"]] == [True, True]
 
 
 def test_overlap_clusters_chain_merge_vs_greedy_count():
@@ -1807,6 +1878,31 @@ def test_episode_profile_streaks_walk_time_order_and_zero_breaks_both():
     prof = episode_profile(trades)
     assert prof["n_episodes"] == 7
     assert prof["max_win_streak"] == 2 and prof["max_loss_streak"] == 3
+
+
+def test_episode_profile_reads_nothing_off_an_overflowed_episode_mean():
+    # One episode of two overlapping 1.2e308 rows: its true mean is 1.2e308, but its row SUM
+    # overflowed and its mean read inf. The profit factor (6.0 here) and the quantiles were read
+    # WITHOUT it — the pool filters drop a non-finite value — the worst return beside it, and the
+    # hit rate and the win streak off its overflowed sign. Its value and sign are unknown, so
+    # every read over the episode means is null and it breaks both streaks (2, not 3).
+    day = pd.Timedelta(days=1)
+    base = pd.Timestamp("2021-03-01")
+    starts = [0, 1, 20, 40, 60, 80]
+    trades = pd.DataFrame(
+        {
+            "entry_time": [base + d * day for d in starts],
+            "exit_time": [base + (d + 5) * day for d in starts],
+            "ret": [1.2e308, 1.2e308, 1.0, 2.0, -1.0, 3.0],
+        }
+    )
+    with np.errstate(over="ignore"):
+        prof = episode_profile(trades)
+    assert prof["n_episodes"] == 5
+    for key in ("hit_rate", "mean_ret", "profit_factor", "worst_ret", "best_ret"):
+        assert np.isnan(prof[key]), key
+    assert all(np.isnan(v) for v in prof["ret_quantiles"].values())
+    assert prof["max_win_streak"] == 2 and prof["max_loss_streak"] == 1
 
 
 def test_episode_profile_merges_across_targets_exactly_like_episode_stats():
@@ -2073,6 +2169,62 @@ def test_benchmark_regression_constant_decimal_legs_are_degenerate_exactly():
     assert flat_raw["alpha"] == float(np.mean(np.full(5, 0.007))) and np.isnan(flat_raw["r2"])
 
 
+@pytest.mark.parametrize("k", [500, 262, -262, -500])
+def test_benchmark_regression_variance_product_out_of_range_is_exact(k):
+    # Both legs scaled by 2**k: every moment scales exactly, so beta and r2 keep their bits and
+    # alpha scales exactly — while the variance PRODUCT under r2 sits near 2**(4k), outside the
+    # double range. The direct form read r2 = NaN above it (inf / inf), an r2 off in its 9th
+    # digit in the subnormal range (k = -262), and raised ZeroDivisionError out of the run once
+    # the product underflowed to 0.0 (k = -500).
+    rng = np.random.RandomState(4)
+    raw = rng.randn(30)
+    bench = 0.5 * raw + rng.randn(30)
+    s = 2.0**k
+    base = benchmark_regression(raw, bench)
+    assert base["reason"] is None and 0.0 < base["r2"] < 1.0
+    assert benchmark_regression(raw * s, bench * s) == {**base, "alpha": base["alpha"] * s}
+
+
+def test_benchmark_regression_out_of_range_moments_decline_never_a_false_fit():
+    # A bench leg past ~1e154 overflows its variance: `beta = cov / inf` read a FINITE 0.0 — a
+    # fit that never happened, the raw mean as alpha beside it. A beta past the double range (a
+    # wide raw leg on a narrow bench) read inf with reason None. Both decline, saying why.
+    rng = np.random.RandomState(4)
+    raw = rng.randn(30)
+    bench = 0.5 * raw + rng.randn(30)
+    with np.errstate(over="ignore", invalid="ignore"):
+        for r, b in ((raw, bench * 1e160), (raw * 1e300, bench * 1e-10)):
+            assert benchmark_regression(r, b) == {
+                "n": 30,
+                "beta": None,
+                "alpha": None,
+                "r2": None,
+                "reason": "not_representable",
+            }
+
+
+def test_benchmark_regression_subnormal_variances_decline_never_a_false_fit():
+    # Legs of ~1e-161 square into the SUBNORMAL range: the variance product underflowed to 0.0
+    # and r2 raised ZeroDivisionError out of the run — and taken in an unbounded exponent range
+    # instead, the lost bits would read r2 = 2.0 for 0.99. A bench variance not a normal double
+    # (subnormal, or 0.0 off a VARYING leg — which read as "no_benchmark_variation") is no
+    # divisor: not_representable. A raw leg's alone nulls r2, while beta and alpha — never
+    # divided by it — keep their exactly scaled bits.
+    rng = np.random.RandomState(152)
+    raw = rng.randn(8)
+    bench = 0.99 * raw + 0.05 * rng.randn(8)
+    declined = {"n": 8, "beta": None, "alpha": None, "r2": None, "reason": "not_representable"}
+    s = 2.0**-536
+    assert benchmark_regression(raw * s, bench * s) == declined
+    vanishing = np.array([0.0, 1.0, 2.0, 0.0, 1.0, 2.0, 0.0, 3.0]) * 1e-170
+    assert benchmark_regression(raw, vanishing) == declined
+    fit = benchmark_regression(raw, bench)
+    assert 0.99 < fit["r2"] < 1.0
+    tiny_raw = benchmark_regression(raw * s, bench)
+    assert np.isnan(tiny_raw["r2"]) and tiny_raw["reason"] is None
+    assert (tiny_raw["beta"], tiny_raw["alpha"]) == (fit["beta"] * s, fit["alpha"] * s)
+
+
 # ---- timing_summary: path-timing medians (evidence-only) ---------------------
 
 
@@ -2264,6 +2416,57 @@ def test_constant_pool_bootstrap_is_degenerate_exactly(c):
     assert ci["ci_lo"] == ci["ci_hi"] == pool_moments(rets)["mean_ret"] and ci["boot_se"] == 0.0
 
 
+def test_varying_pool_whose_variance_leaves_the_range_has_null_dispersion_never_zero():
+    # Deviations of ~1e-170 square below the smallest subnormal: a VARYING pool's computed
+    # variance is exactly 0.0 and std_ret / boot_se read 0.0 — the answer reserved for an
+    # all-equal pool (or bit-identical draws). At 2**-536 the squares are SUBNORMAL and the
+    # variance has lost its bits (std_ret read 5.88e-162 for a pool whose std is 5.68e-162). An
+    # overflowed one read inf. None is a dispersion: NaN → null.
+    tiny = np.array([0.0, 1e-170, 2e-170, 3e-170])
+    assert np.isnan(pool_moments(tiny)["std_ret"])
+    assert np.isnan(baseline_summary(tiny)["std_ret"])
+    ci = episode_bootstrap_ci(np.arange(10) * 1e-170, np.arange(10) * 10, 5)
+    assert ci["reason"] is None and ci["ci_lo"] < ci["ci_hi"]
+    assert np.isnan(ci["boot_se"])
+    v = np.random.RandomState(0).standard_t(4, 200)
+    assert np.isnan(pool_moments(v * 2.0**-536)["std_ret"])
+    assert np.isnan(baseline_summary(v * 2.0**-536)["std_ret"])
+    with np.errstate(over="ignore", invalid="ignore"):
+        assert np.isnan(pool_moments(np.array([1e200, -1e200, 3e200]))["std_ret"])
+    # the all-equal pool keeps its exact 0.0 at the same scale, and a normal variance its bits
+    assert pool_moments(np.full(4, 1e-170))["std_ret"] == 0.0
+    std = pool_moments(v)["std_ret"]
+    assert pool_moments(v * 2.0**-500)["std_ret"] == std * 2.0**-500
+
+
+def test_bootstrap_se_of_overflowed_draws_is_null_never_a_degenerate_zero():
+    # Twelve returns near 1e308: every resampled mean's episode sum overflows, so every draw is
+    # +inf — and `inf == inf` passed the bit-identical-draws test: boot_se 0.0, a degenerate
+    # distribution, beside a null interval. Draws past the double range have no spread: null.
+    with np.errstate(over="ignore", invalid="ignore"):
+        ci = episode_bootstrap_ci(np.linspace(0.5e308, 1e308, 12), np.arange(12) * 10, 5)
+    assert ci["n_episodes"] == 12 and np.isnan(ci["ci_lo"]) and np.isnan(ci["ci_hi"])
+    assert np.isnan(ci["boot_se"])
+
+
+@pytest.mark.parametrize("sign", [1.0, -1.0])
+def test_bootstrap_interval_over_an_overflowed_episode_is_null_never_one_sided(sign):
+    # ONE episode's two rows sum past the double range and seven are ordinary: every draw that
+    # resamples it is ±inf and ranks at one end, so the percentile read one FINITE bound over
+    # draws that left the range (ci_lo −0.28125 above, ci_hi 1.34375 below) beside a null one. A
+    # quantile of such draws is no interval: both bounds null, like boot_se.
+    rets = np.array([1.2e308, 1.2e308, 1.0, -2.0, 0.5, 3.0, -1.0, 2.0, 0.25])
+    rets[:2] *= sign
+    bars = np.array([0, 1, 20, 40, 60, 80, 100, 120, 140])
+    with np.errstate(over="ignore"):
+        ci = episode_bootstrap_ci(rets, bars, 5)
+    assert ci["n_episodes"] == 8 and ci["n_boot"] > 0 and ci["reason"] is None
+    assert np.isnan(ci["ci_lo"]) and np.isnan(ci["ci_hi"]) and np.isnan(ci["boot_se"])
+    # the same pool one episode short of the overflow keeps a finite, ordered interval
+    ok = episode_bootstrap_ci(rets[2:], bars[2:], 5)
+    assert ok["n_episodes"] == 7 and ok["ci_lo"] < ok["ci_hi"] and ok["boot_se"] > 0.0
+
+
 def test_degenerate_bootstrap_distribution_has_exactly_zero_se():
     # A pool that varies, but whose episodes all carry the same (sum, count): every draw's mean
     # is the same bits, so the distribution is degenerate — an SE of rounding residue (~3e-17,
@@ -2366,6 +2569,47 @@ def test_newey_west_near_constant_pool_is_null():
     t, se = newey_west_mean(rets, np.arange(6), h=2)
     assert np.isnan(t) and np.isnan(se)
     assert pool_moments(rets)["std_ret"] > 0.0  # genuinely non-constant: std stays as computed
+
+
+def test_newey_west_overflowed_long_run_variance_is_null_never_a_zero_t():
+    # Returns past ~1e154 overflow the long-run variance: `mean / inf` read a FINITE t of 0.0
+    # beside an infinite SE — "no edge" minted from an overflow. Below the ceiling the direct
+    # form is untouched: a power-of-two scale reproduces t exactly and scales the SE exactly.
+    rets = np.random.RandomState(3).randn(40)
+    bars = np.arange(40) * 10
+    with np.errstate(over="ignore", invalid="ignore"):
+        t, se = newey_west_mean(rets * 2.0**520, bars, 5)
+    assert np.isnan(t) and np.isnan(se)
+    t0, se0 = newey_west_mean(rets, bars, 5)
+    assert newey_west_mean(rets * 2.0**500, bars, 5) == (t0, se0 * 2.0**500)
+
+
+def test_newey_west_underflowed_variance_is_null_never_a_crash():
+    # Returns of ±3e-162 square into the bottom of the subnormal range: the long-run variance
+    # over n = 20 rounded down to an SE of exactly 0.0, and `mean / se` raised ZeroDivisionError
+    # out of the run. At 2**-520 the variance stayed subnormal-nonzero and t read off its lost
+    # bits (-1.1031486149 for -1.1031486153). Below the normal range: no estimate, (NaN, NaN).
+    t, se = newey_west_mean(np.array([3e-162, -3e-162] * 10), np.arange(20) * 10, 5)
+    assert np.isnan(t) and np.isnan(se)
+    rets = np.random.RandomState(3).randn(40)
+    t, se = newey_west_mean(rets * 2.0**-520, np.arange(40) * 10, 5)
+    assert np.isnan(t) and np.isnan(se)
+
+
+def test_pool_moments_shape_reads_off_an_out_of_range_variance_power_are_null():
+    # skewness = m3 / m2**1.5 and kurtosis = m4 / m2**2: at a 2**-266 scale (~1e-80) m2**2 and m4
+    # are SUBNORMAL — kurtosis read 3.7180340 for 3.7172188 — and at 2**-350 m2**1.5 is too
+    # (skewness -0.1399959974 for -0.1399960027). A moment read off lost bits is null; while
+    # the power stays normal every bit survives the power-of-two scale.
+    v = np.random.RandomState(0).standard_t(4, 200)
+    base = pool_moments(v)
+    near = pool_moments(v * 2.0**-266)
+    assert near["skewness"] == base["skewness"] and np.isnan(near["kurtosis"])
+    far = pool_moments(v * 2.0**-350)
+    assert np.isnan(far["skewness"]) and np.isnan(far["kurtosis"])
+    assert far["std_ret"] == base["std_ret"] * 2.0**-350  # the variance itself is still normal
+    big = pool_moments(v * 2.0**250)
+    assert (big["skewness"], big["kurtosis"]) == (base["skewness"], base["kurtosis"])
 
 
 def test_pool_moments_exact_constant_pool_moments_are_null():
@@ -2500,6 +2744,45 @@ def test_cscv_split_score_nulls_dispersion_below_rounding():
     for mode in ("conjunction", "basket"):
         assert np.isnan(_split_scores(moments, refs, extrema, mode, np.array([0, 1]))).all()
         assert np.isfinite(_split_scores(moments, refs, extrema, mode, np.array([0, 2]))).all()
+
+
+def test_cscv_split_score_of_an_overflowed_sd_is_nan_never_zero():
+    # Basket pooling through the exact cross-term expansion: two members with one observation
+    # each in block 0 (X and Y) and a 0.0 in block 1, so each column's own mean is half its
+    # block-0 value. Every expansion term and the rounding floor's sum stay finite, but their
+    # total — the pooled sum of squares (X − Y)²/2 — overflows: sd = inf and `mean / inf` scored
+    # a FINITE 0.0 Sharpe that entered the split's ranking. NaN drops it from the split instead.
+    from seikan.analysis._cscv import _split_scores
+
+    x, y = 1.3e154, -1.2e154
+
+    def member(v):
+        return [[1.0, 1.0], [v / 2, -v / 2], [v * v / 4, v * v / 4]]
+
+    moments = np.array([[member(x), member(y)]])
+    refs = np.array([[x / 2, y / 2]])
+    extrema = np.array([[[[x, 0.0], [x, 0.0]], [[y, 0.0], [y, 0.0]]]])
+    with np.errstate(over="ignore"):
+        score = _split_scores(moments, refs, extrema, "basket", np.array([0]))
+    assert np.isnan(score).all()
+
+
+def test_cscv_split_score_of_a_subnormal_variance_is_nan_never_a_sharpe():
+    # Returns of ~1e-161 square into the SUBNORMAL range, where the rounding floor the split's
+    # sum of squares is tested against has itself underflowed to 0.0: the Sharpe was read off a
+    # variance that had lost its bits — 0.13804 for 0.13853. While the variance stays normal the
+    # power-of-two scale keeps every bit of the score.
+    from seikan.analysis._cscv import _split_scores
+
+    r = np.random.RandomState(8).randn(40)
+    b = np.repeat(np.arange(4), 10)
+    blocks = np.array([0, 2])
+    for mode in ("conjunction", "basket"):
+        score = _split_scores(*_split_tensors(r, b), mode, blocks)
+        assert np.isfinite(score).all()
+        scaled = _split_scores(*_split_tensors(r * 2.0**-500, b), mode, blocks)
+        np.testing.assert_array_equal(scaled, score)
+        assert np.isnan(_split_scores(*_split_tensors(r * 2.0**-535, b), mode, blocks)).all()
 
 
 def test_cscv_near_constant_split_pool_is_never_ranked():

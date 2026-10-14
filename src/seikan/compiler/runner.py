@@ -903,7 +903,11 @@ def _cells_panel(
             # carried the pool is exactly what an industry report needs, and is never a
             # per-member verdict.
             prc = pooled_per_cell.get(combo_key, _MISSING_RELIABILITY)
+            # An OVERFLOWED total has no shares either: every member's would read x / inf = 0.0 —
+            # a perfectly spread basket the ceiling passes. NaN joins the zero-mass rule below.
             total_mass = sum(mass_by_target.values())
+            if not np.isfinite(total_mass):
+                total_mass = _NAN
             # A full decomposition over every declared member, NEVER ranked — the raw material
             # of the "not one name" ceiling. Zero total mass → NaN shares, which the checklist
             # refuses rather than waves through (the empty-pool concentration precedent).

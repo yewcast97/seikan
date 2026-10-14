@@ -114,6 +114,67 @@ def test_rolling_agg_flat_window_std_is_zero():
     assert np.nanmax(np.abs(rolling_agg_1d(arr, 10, "std"))) == 0.0
 
 
+def _rtol(got, want):
+    """Parity at ANY scale — ``_assert``'s atol would pass every value under 1e-9."""
+    np.testing.assert_allclose(got, want, rtol=1e-14, atol=0.0, equal_nan=True)
+
+
+@pytest.mark.parametrize("k", [536, 565, 1000])
+def test_varying_window_whose_variance_underflows_reads_its_exact_std_never_zero(k):
+    # Below the normal range a window's squared deviations underflow: at 2**-536 they land in the
+    # SUBNORMAL range — the std of (1, 3, 2)·2**-536 read 3.85e-162 where it is 3.63e-162 — and
+    # from ~2**-540 down they vanish, the VARYING window's std reading the exact 0.0 an all-equal
+    # window owns (`std > 0` decided False on moving data). Lifted by a power of two the moments
+    # are computed in range, so the std is the unscaled one times 2**-k, every bit.
+    x = np.array([1.0, 3.0, 2.0, 5.0])
+    s = 2.0**-k
+    want = rolling_agg_1d(x, 3, "std") * s
+    np.testing.assert_array_equal(rolling_agg_1d(x * s, 3, "std"), want)
+    _rtol(ref.rolling_agg(x * s, 3, "std"), want)
+    row = x[None, :3]
+    want_row = nb.cross_agg_apply_nb(row, "std", 2) * s
+    np.testing.assert_array_equal(nb.cross_agg_apply_nb(row * s, "std", 2), want_row)
+    _rtol(ref.cross_agg_ref(row * s, "std", 2), want_row)
+    # the all-equal window keeps its exact 0.0 at the same scale
+    flat = np.full(4, s)
+    np.testing.assert_array_equal(rolling_agg_1d(flat, 3, "std"), [np.nan, np.nan, 0.0, 0.0])
+    np.testing.assert_array_equal(nb.cross_agg_apply_nb(flat[None, :3], "std", 2), np.zeros((1, 3)))
+
+
+def test_subnormal_windows_read_the_unscaled_z_and_a_std_floored_above_zero():
+    # Windows of SUBNORMAL values — an ema settling onto its floor walks 3, 2, 1 smallest steps:
+    # every square underflowed to 0.0, so each varying window read std 0.0 and z NaN, the
+    # all-equal window's answers. Lifted, the z-score is the unscaled windows' z, bit for bit;
+    # the std is rounded once to the subnormal grid, and where it would round to 0.0 (0.47 of
+    # a step) it floors at the smallest subnormal — a varying window is never zero dispersion.
+    steps = np.array([3.0, 2.0, 1.0, 1.0, 1.0, 1.0])
+    t = steps * 5e-324
+    want_std = [np.nan, np.nan, 5e-324, 5e-324, 0.0, 0.0]
+    np.testing.assert_array_equal(rolling_agg_1d(t, 3, "std"), want_std)
+    np.testing.assert_array_equal(ref.rolling_agg(t, 3, "std"), want_std)
+    want_z = zscore_sma_1d(steps, 3)  # [nan, nan, -√1.5, -√0.5, nan, nan]
+    np.testing.assert_allclose(want_z[2:4], [-math.sqrt(1.5), -math.sqrt(0.5)], rtol=1e-15)
+    np.testing.assert_array_equal(zscore_sma_1d(t, 3), want_z)
+    _rtol(ref.zscore_sma(t, 3), want_z)
+    # a two-member cross-section one step apart: std half a step, a tie that rounds to 0.0
+    row = np.array([[1.0, 2.0]]) * 5e-324
+    np.testing.assert_array_equal(nb.cross_agg_apply_nb(row, "std", 2), [[5e-324, 5e-324]])
+    np.testing.assert_array_equal(ref.cross_agg_ref(row, "std", 2), [[5e-324, 5e-324]])
+
+
+def test_std_keeps_every_bit_while_the_variance_is_a_normal_double():
+    # The out-of-range rule binds only below the normal range: at 2**-500 (deviations ~1e-151,
+    # variances ~1e-301) every moment scales exactly by its power of two, so both stds are the
+    # unscaled bits times 2**-500 — no window the direct form represented moves.
+    x = np.array([1.0, 3.0, 2.0, 5.0, 4.0])
+    s = 2.0**-500
+    np.testing.assert_array_equal(rolling_agg_1d(x * s, 3, "std"), rolling_agg_1d(x, 3, "std") * s)
+    np.testing.assert_array_equal(
+        nb.cross_agg_apply_nb(x[None, :] * s, "std", 2),
+        nb.cross_agg_apply_nb(x[None, :], "std", 2) * s,
+    )
+
+
 def test_rolling_agg_nan_window_is_censored():
     # Any NaN in the trailing window censors the output (matches percentile's finite-window gate).
     arr = _rand(60, seed=6)
@@ -261,6 +322,103 @@ def test_rolling_corr_apply_nb_2d_matches_1d_per_column():
 def test_rolling_corr_shape_mismatch_raises():
     with pytest.raises(ValueError, match="shape mismatch"):
         nb.rolling_corr_apply_nb(np.zeros((10, 2)), np.zeros((10, 3)), 5)
+
+
+@pytest.mark.parametrize(
+    "scale", [1e80, 1e150, 2.0**500, 1e-85, 1e-150, 2.0**-500, 1e-160, 2.0**-1000, 5e-324]
+)
+def test_rolling_corr_of_a_series_with_itself_is_exactly_one_at_any_scale(scale):
+    # The review's probe: at 1e80 the variance PRODUCT overflowed and `cov / inf` read a finite
+    # 0.0 — a perfect correlation reported as none; at 1e-85 it underflowed to 0 and read NaN.
+    # Taken with the exponents moved out, the denominator is the direct form's exact value
+    # (sqrt(va²) == va), so corr(x, x) is exactly 1.0 at every scale whose variances are normal
+    # doubles (deviations up to ~1.3e154), as it is at 1 — and below that range (1e-160 down to
+    # subnormal values, where the variances themselves underflowed and read NaN) the lifted
+    # window's variances are normal again.
+    x = np.array([1.0, 3.0, 2.0, 5.0, 4.0, 7.0, 6.0])
+    want = [np.nan, np.nan] + [1.0] * 5
+    np.testing.assert_array_equal(rolling_corr_1d(scale * x, scale * x, 3), want)
+    np.testing.assert_array_equal(ref.rolling_corr_ref(scale * x, scale * x, 3), want)
+
+
+@pytest.mark.parametrize("k", [270, 500, -280, -500])
+def test_rolling_corr_is_exactly_scale_invariant_past_the_variance_product_range(k):
+    # Scaling both legs by 2**k scales every moment exactly, so the exponent-safe denominator
+    # returns the SAME bits as the unscaled windows — with the variance product near 2**(4k),
+    # far past the double range both ways (the direct form read 0.0 above it, NaN below).
+    rng = np.random.RandomState(14)
+    a = rng.randn(60)
+    b = 0.5 * a + rng.randn(60)
+    base = rolling_corr_1d(a, b, 10)
+    assert np.isfinite(base[9:]).all()
+    s = 2.0**k
+    np.testing.assert_array_equal(rolling_corr_1d(a * s, b * s, 10), base)
+    _assert(ref.rolling_corr_ref(a * s, b * s, 10), base)
+
+
+def test_rolling_corr_overflowed_variance_is_nan_never_zero():
+    # corr(1e160·x, x): the LEFT variance itself overflows (deviations past ~1.3e154), and
+    # `cov / sqrt(inf · vb)` read a finite 0.0 — "uncorrelated" for a perfectly correlated pair.
+    # A variance past the double range is no dispersion estimate: NaN, the undecidable ledger.
+    x = np.array([1.0, 3.0, 2.0, 5.0, 4.0, 7.0])
+    for left, right in ((1e160 * x, x), (x, 1e160 * x)):
+        np.testing.assert_array_equal(rolling_corr_1d(left, right, 3), np.full(6, np.nan))
+        np.testing.assert_array_equal(ref.rolling_corr_ref(left, right, 3), np.full(6, np.nan))
+
+
+def test_rolling_corr_with_an_underflowed_variance_reads_the_unscaled_correlation():
+    # Deviations of ~1e-161 square into the SUBNORMAL range: the variances (and the covariance)
+    # rounded to a few multiples of 5e-324. Divided by the direct product where that stayed
+    # normal (a wide right leg), they read 0.99745 for 0.99968; at 2**-1000 every square vanished
+    # and the window read NaN. The leg whose variance underflowed is lifted by a power of two —
+    # the other leg as it is — so each pair reads the unscaled windows' correlation, every bit.
+    a = np.array([1.0, -1.0, 2.0, 0.5, -0.5, 1.5])
+    b = np.array([1.1, -0.9, 2.0, 0.4, -0.6, 1.2])
+    exact = rolling_corr_1d(a, b, 3)
+    assert np.isfinite(exact[2:]).all()  # the unscaled windows are ordinary
+    pairs = (
+        (a * 2.0**-535, b * 2.0**60),
+        (a * 2.0**-535, b * 2.0**-535),
+        (a, b * 2.0**-1000),
+        (a * 2.0**-1000, b * 2.0**-600),
+    )
+    for left, right in pairs:
+        np.testing.assert_array_equal(rolling_corr_1d(left, right, 3), exact)
+        _rtol(ref.rolling_corr_ref(left, right, 3), exact)
+    # the same windows one exponent step up — variances normal — keep the unscaled bits exactly
+    np.testing.assert_array_equal(rolling_corr_1d(a * 2.0**-500, b * 2.0**-500, 3), exact)
+
+
+def test_ordinary_windows_are_bit_identical_to_the_direct_forms():
+    # The out-of-range rules bind only where a variance left the normal range (or the
+    # correlation's variance product did): on ordinary windows — scales from 1e-60 to 1e60 — the
+    # correlation, the SMA z-score and both stds keep the direct forms' exact bits.
+    rng = np.random.RandomState(15)
+    for _ in range(40):
+        scale = 10.0 ** rng.uniform(-60.0, 60.0)
+        level = scale * rng.choice([0.0, 1.0, 1e4])
+        a = _c1(level + scale * rng.randn(240).cumsum())
+        b = _c1(level + scale * (rng.randn(240) + 0.3 * rng.randn(240).cumsum()))
+        w = int(rng.randint(3, 40))
+        wa = sliding_window_view(a, w, axis=0)
+        wb = sliding_window_view(b, w, axis=0)
+        ma, mb = wa.mean(axis=-1), wb.mean(axis=-1)
+        va = ((wa - ma[..., None]) ** 2).mean(axis=-1)
+        vb = ((wb - mb[..., None]) ** 2).mean(axis=-1)
+        cov = ((wa - ma[..., None]) * (wb - mb[..., None])).mean(axis=-1)
+        direct = {
+            "corr": cov / np.sqrt(va * vb),
+            "z": (a[w - 1 :] - ma) / np.sqrt(va),
+            "std": np.sqrt(np.maximum(va, 0.0)),
+        }
+        assert np.isfinite(direct["corr"]).all() and (va > 0.0).all()
+        np.testing.assert_array_equal(nb.rolling_corr_apply_nb(a, b, w)[w - 1 :], direct["corr"])
+        np.testing.assert_array_equal(nb.zscore_sma_apply_nb(a, w)[w - 1 :], direct["z"])
+        np.testing.assert_array_equal(nb.rolling_agg_apply_nb(a, w, "std")[w - 1 :], direct["std"])
+        rows = (level + scale * rng.randn(50, 6)).astype(float)
+        dev = rows - rows.sum(axis=1, keepdims=True) / 6.0
+        cross = np.sqrt(np.maximum((dev * dev).sum(axis=1, keepdims=True) / 6.0, 0.0))
+        np.testing.assert_array_equal(nb.cross_agg_apply_nb(rows, "std", 2), np.repeat(cross, 6, 1))
 
 
 # ---- Phase-1 kernels: shift / unary_op --------------------------------------
@@ -756,6 +914,87 @@ def test_zscore_sma_translation_invariant_across_levels(base):
     assert np.isfinite(z[19:]).all()
 
 
+def test_zscore_sma_overflowed_variance_is_nan_and_an_underflowed_one_is_lifted():
+    # At 1e160 the squared deviations overflow the window variance to inf, and `(x − mean) / inf`
+    # read a FINITE 0.0 — "exactly at the mean" on every bar, which `z > 0` / `z < 0` decided:
+    # NaN now, the undecidable ledger.
+    x = np.array([1.0, 3.0, 2.0, 5.0, 4.0, 7.0])
+    np.testing.assert_array_equal(zscore_sma_1d(1e160 * x, 3), np.full(6, np.nan))
+    np.testing.assert_array_equal(ref.zscore_sma(1e160 * x, 3), np.full(6, np.nan))
+    # Below the normal range the squares lost their bits — at 2**-536 z read 1.3608 where it is
+    # 1.3363 (on random walks, past its population bound √(w−1)) — or vanished (2**-600 on: z
+    # NaN off a variance of 0.0). The lifted window reads the unscaled z, every bit, as does the
+    # direct form anywhere in between (2**±500).
+    want = zscore_sma_1d(x, 3)
+    for k in (500, -500, -536, -600, -1000):
+        np.testing.assert_array_equal(zscore_sma_1d(x * 2.0**k, 3), want)
+        _rtol(ref.zscore_sma(x * 2.0**k, 3), want)
+
+
+def _geometric_ew_z(alpha: float, r: float) -> float:
+    """The EW z-score a geometric input ``c·r**t`` converges to in exact arithmetic: the mean
+    settles at ``k = α·r / (r − 1 + α)`` times the input and the variance at ``σ`` times its
+    square, ``σ·(r² − 1 + α) = (1 − α)·α·(r − k)²``, so z is ``(1 − k)/√σ`` (signed as the input)
+    for ANY scale ``c`` — while ``r² > 1 − α``; below that the variance outlives the input and z
+    decays to 0."""
+    k = alpha * r / (r - 1.0 + alpha)
+    sigma = (1.0 - alpha) * alpha * (r - k) ** 2 / (r * r - 1.0 + alpha)
+    return (1.0 - k) / math.sqrt(sigma)
+
+
+def test_an_ema_decaying_through_a_hold_stays_decided_until_it_settles():
+    # A price that moves, holds for 2,000 bars at an ordinary level (~100), then moves again: its
+    # 1-bar change is 0.0 on the hold, and an `ema` of that change decays geometrically — through
+    # the range where a window's squares underflow — until it settles on the smallest subnormal.
+    # Every window of the decay VARIES: its std is positive and its z-score defined, so the guard
+    # recipe `std > 0` and the z it guards agree on every bar; only the settled ema's windows
+    # read zero dispersion (std 0.0, z NaN). Read as computed, the decay windows' variance of 0.0
+    # made their std the all-equal window's 0.0 (the guard False on moving data) and their z NaN.
+    # The EW z-score's variance rounded to 0.0 on the decay at alpha >= 0.5 (window 2 or 3,
+    # alpha 0.6) — NaN on 760-920 bars beside the guard's True; its recurrence runs lifted there
+    # (`nb._EW_LIFT_VAR`), so it is defined on every bar past warmup.
+    rng = np.random.RandomState(7)
+    px = 100.0 * np.exp(np.cumsum(0.01 * rng.randn(2500)))
+    px[300:2300] = px[299]
+    e = nb.ema_apply_nb(nb.change_apply_nb(_c1(px), 1, "pct"), *nb.ema_params(5, None)).ravel()
+    w = 20
+    for series in (e, -e):  # a decay from above zero and from below it
+        windows = sliding_window_view(series, w)[40:]  # past every warmup
+        constant = windows.min(axis=-1) == windows.max(axis=-1)
+        assert constant.sum() > 100 and (~constant).sum() > 2000
+        std = rolling_agg_1d(series, w, "std")[w - 1 :][40:]
+        z = zscore_sma_1d(series, w)[w - 1 :][40:]
+        np.testing.assert_array_equal(std == 0.0, constant)
+        assert (std[~constant] > 0.0).all()
+        np.testing.assert_array_equal(np.isnan(z), constant)
+        assert np.abs(z[~constant]).max() <= math.sqrt(w - 1)
+        for alpha, warm in (
+            nb.ema_params(2, None),
+            nb.ema_params(3, None),
+            nb.ema_params(None, 0.6),
+        ):
+            z_ew = nb.zscore_ema_1d(series, alpha, warm)
+            assert np.isfinite(z_ew[w - 1 :][40:]).all()
+            np.testing.assert_array_equal(z_ew, ref.zscore_ema_alpha(series, alpha, warm))
+    # ...and at its VALUE. Above alpha 5/9 the EW z of the (ratio 2/3) decay converges to a
+    # constant however deep it goes — −1/(2√2) at window 2. Where the ema is still a normal double
+    # but its squares are not, the variance read as computed rounded to 0.0 (z NaN) and, floored
+    # at the smallest subnormal, collapsed z toward 0: `z > -0.25` held on ~600 bars exact
+    # arithmetic keeps at −0.354. Lifted, every one of them reads the constant.
+    deep = (np.abs(e) < 1.5e-154) & (np.abs(e) >= 2.0**-1022)
+    assert deep.sum() > 800
+    r = 1.0 - nb.ema_params(5, None)[0]  # the ema's own decay factor on a 0.0 change
+    for alpha, warm in (nb.ema_params(2, None), nb.ema_params(None, 0.6)):
+        for series in (e, -e):
+            want = _geometric_ew_z(alpha, r) * np.sign(series[deep])
+            got = nb.zscore_ema_1d(series, alpha, warm)[deep]
+            np.testing.assert_allclose(got, want, rtol=1e-9, atol=0.0)
+    assert _geometric_ew_z(2.0 / 3.0, 2.0 / 3.0) == pytest.approx(-1.0 / (2.0 * math.sqrt(2.0)))
+    # two members decaying side by side never read an all-equal cross-section
+    cross = nb.cross_agg_apply_nb(np.c_[e, 2.0 * e][40:], "std", 2)[:, 0]
+    assert (cross > 0.0).all()
+
+
 @pytest.mark.parametrize("base", [0.0, 1e8, 1e12])
 def test_zscore_ema_translation_invariant_across_levels(base):
     r = _rand(200, seed=12)
@@ -764,6 +1003,27 @@ def test_zscore_ema_translation_invariant_across_levels(base):
     tol = 1e-9 if base == 0.0 else (1e-6 if base <= 1e8 else 1e-3)
     np.testing.assert_allclose(z, z0, rtol=0, atol=tol, equal_nan=True)
     assert np.isfinite(z[19:]).all()
+
+
+@pytest.mark.parametrize("k", [500, -536, -560, -700, -1000, -1050])
+def test_zscore_ema_is_exactly_scale_invariant_past_the_variance_range(k):
+    # The EW z-score of x·2**k is the z-score of x — every bit, at every scale: scaling by a power
+    # of two never rounds, so the recurrence on the scaled input is the same steps. Below ~2**-510
+    # the variance's squares left the normal range: at 2**-536 the z read 0.5103 for 0.5275 (and
+    # past its bound √((1−α)/α) on random walks), from ~2**-540 down NaN — and floored at the
+    # smallest subnormal, 0.0 on every bar. The recurrence runs lifted there instead.
+    rng = np.random.RandomState(0)
+    walk = np.round(rng.randn(300).cumsum() * 4.0)  # integers: every scaled value is exact
+    walk[[50, 51]] = np.nan
+    steps = np.array([1.0, 3.0, 2.0, 5.0, 4.0, 7.0, 6.0, 9.0, 8.0, 11.0])
+    held = np.r_[steps, np.full(40, 11.0), steps]  # a carried deviation, then moving again
+    for x in (walk, steps, held):
+        for spec in ((2, None), (3, None), (5, None), (20, None), (None, 0.06), (None, 0.9)):
+            alpha, _ = nb.ema_params(*spec)
+            want = nb.zscore_ema_1d(x, alpha, 2)
+            assert np.isfinite(want[2:][~np.isnan(x[2:])]).all()
+            np.testing.assert_array_equal(nb.zscore_ema_1d(x * 2.0**k, alpha, 2), want)
+            np.testing.assert_array_equal(ref.zscore_ema_alpha(x * 2.0**k, alpha, 2), want)
 
 
 @pytest.mark.parametrize("base", [0.0, 1e8, 1e12])
@@ -781,24 +1041,48 @@ def test_cross_agg_std_translation_invariant_across_levels(base):
 
 def test_kernel_overflow_yields_nan_never_inf():
     # Finite inputs whose arithmetic overflows (or divides by a denormal) must emit NaN — the
-    # undecidable ledger's food — never ±inf, which would latch warmup and decide thresholds.
+    # undecidable ledger's food — never ±inf, which would latch warmup and decide thresholds, and
+    # never a FINITE number read off an overflowed intermediate. Exact values, not "not inf": a
+    # bare not-inf check passed the 0.0 that `x / inf` makes of an overflowed denominator.
+    nan = np.nan
     huge = np.full(30, 1e308)
-    probes = [
-        zscore_sma_1d(huge, 4),
-        rolling_agg_1d(huge, 4, "mean"),
-        rolling_agg_1d(np.tile([1e308, -1e308], 15), 4, "std"),
-        change_1d(np.array([1e-320, 1.0, 1.0]), 1, "pct"),
-        change_1d(np.array([1e308, -1e308, 1e308]), 1, "diff"),
-        drawdown_1d(np.array([1e-320, -1e308])),
-        runup_1d(np.array([1e-320, 1e308])),
-        rolling_corr_1d(np.tile([0.0, 1e-160], 6), np.tile([0.0, 1e-160], 6), 4),
-        nb.zscore_ema_1d(np.array([0.0, 2e154, 1.0, 1.0, 1.0]), *nb.ema_params(2, None)),
-        nb.cross_demean_apply_nb(np.array([[1.7e308, -1.7e308, -1.7e308]]), 2).ravel(),
-        nb.cross_agg_apply_nb(np.array([[1.6e308, 1.6e308, 1.6e308]]), "mean", 2).ravel(),
-        nb.cross_agg_apply_nb(np.array([[1.6e308, -1.6e308, 1.6e308]]), "std", 2).ravel(),
+    cases = [
+        # a constant window has no dispersion, and its mean IS its value however large
+        (zscore_sma_1d(huge, 4), np.full(30, nan)),
+        (rolling_agg_1d(huge, 4, "mean"), [nan] * 3 + [1e308] * 27),
+        # ±1e308 deviations overflow the variance itself
+        (rolling_agg_1d(np.tile([1e308, -1e308], 15), 4, "std"), np.full(30, nan)),
+        (change_1d(np.array([1e-320, 1.0, 1.0]), 1, "pct"), [nan, nan, 0.0]),
+        (change_1d(np.array([1e308, -1e308, 1e308]), 1, "diff"), [nan, nan, nan]),
+        (drawdown_1d(np.array([1e-320, -1e308])), [0.0, nan]),
+        (runup_1d(np.array([1e-320, 1e308])), [0.0, nan]),
+        # a series against itself at a SUBNORMAL-variance scale (deviations 5e-161): the squares
+        # underflowed and the product divided by 0.0 → inf; lifted, the windows read exactly 1
+        (
+            rolling_corr_1d(np.tile([0.0, 1e-160], 6), np.tile([0.0, 1e-160], 6), 4),
+            [nan] * 3 + [1.0] * 9,
+        ),
+        # an overflowed EW variance stays inf in the recurrence: never a z read off it
+        (
+            nb.zscore_ema_1d(np.array([0.0, 2e154, 1.0, 1.0, 1.0]), *nb.ema_params(2, None)),
+            np.full(5, nan),
+        ),
+        # only the member whose deviation overflows is NaN
+        (
+            nb.cross_demean_apply_nb(np.array([[1.7e308, -1.7e308, -1.7e308]]), 2).ravel(),
+            [nan, -1.7e308 - (-1.7e308 / 3.0), -1.7e308 - (-1.7e308 / 3.0)],
+        ),
+        (
+            nb.cross_agg_apply_nb(np.array([[1.6e308, 1.6e308, 1.6e308]]), "mean", 2).ravel(),
+            [1.6e308] * 3,
+        ),
+        (
+            nb.cross_agg_apply_nb(np.array([[1.6e308, -1.6e308, 1.6e308]]), "std", 2).ravel(),
+            [nan] * 3,
+        ),
     ]
-    for got in probes:
-        assert not np.isinf(got).any()
+    for got, want in cases:
+        np.testing.assert_array_equal(got, want)
 
 
 @pytest.mark.parametrize("c", [0.1, 100.1, 0.7, -2.7])
@@ -1047,6 +1331,40 @@ def test_zscore_ema_long_hold_stays_defined_and_signed(w):
     z = nb.zscore_ema_1d(x, *nb.ema_params(w, None))[30:]
     assert np.isfinite(z).all()
     assert (z > 0.0).all()
+
+
+@pytest.mark.parametrize("side", [1.0, -1.0])
+def test_zscore_ema_deviation_that_underflows_keeps_its_exact_sign(side):
+    # Window 2 (alpha 2/3) at the smallest subnormals — where an `ema` of a change settles after a
+    # hold: the input steps (∓3 to ∓1 of them, or ∓1 of them to 0.0) and holds for 1,500 bars.
+    # Exact arithmetic moves the deviation to (1 − α)·d every held bar: it decays and keeps the
+    # step's sign. Read as computed, the EW variance rounded to 0.0 (z NaN on the first bars, or
+    # on every bar of a hold onto 0.0), and a carried deviation (1 − α)·d that rounded to ±0.0
+    # was floored at the NEGATIVE subnormal whatever d's sign: z below the mean on a hold exact
+    # arithmetic keeps above it. Floored where it rounded to 0.0, the variance collapsed z to
+    # 2.2e-162 from the first held bar (the bound √((1−α)/α) = 0.707 there). Lifted, the decay
+    # reads the z-scores of the same steps at ordinary scale, bit for bit, as long as those stay
+    # in range (~650 bars); past the frame's reach the variance and the carry are floored where
+    # they underflow, the sign kept.
+    u = 5e-324
+    alpha, warm = nb.ema_params(2, None)
+    for first, held in ((-3.0 * u, -u), (-u, 0.0)):
+        x = side * np.r_[first, np.full(1500, held)]
+        z = nb.zscore_ema_1d(x, alpha, warm)
+        np.testing.assert_array_equal(z[:600], nb.zscore_ema_1d(x / u, alpha, warm)[:600])
+        assert z[1] == pytest.approx(side * math.sqrt((1.0 - alpha) / alpha))
+        np.testing.assert_array_equal(np.sign(z[1:]), np.sign(x[1] - x[0]))
+        np.testing.assert_array_equal(z, ref.zscore_ema_alpha(x, alpha, warm))
+
+
+def test_zscore_ema_at_alpha_one_is_undefined_on_every_bar():
+    # At alpha 1 (the DSL refuses it) the EW mean IS the last value and the EW variance exactly 0:
+    # undefined throughout. A full-weight update that rounds off the value (1.1 + (0.1 − 1.1) is
+    # 0.10000000000000009) carried a deviation into the hold, and the held branch's floor read
+    # z = −2.2e-162 off a variance exact arithmetic keeps at 0 — every bar from the fourth on.
+    x = np.r_[1.1, np.full(5, 0.1)]
+    np.testing.assert_array_equal(nb.zscore_ema_1d(x, 1.0, 1), np.full(6, np.nan))
+    np.testing.assert_array_equal(ref.zscore_ema_alpha(x, 1.0, 1), np.full(6, np.nan))
 
 
 def test_event_agg_mean_of_a_constant_run_is_the_value():

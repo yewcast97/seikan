@@ -30,6 +30,10 @@ _NAN = float("nan")
 
 _EPS = float(np.finfo(np.float64).eps)
 
+#: The smallest positive NORMAL double: below it a value keeps fewer than 53 significant bits.
+#: ``compiler.nb._TINY`` is the same constant, for the kernels' side of :func:`_normal`'s rule.
+_TINY = float(np.finfo(np.float64).tiny)
+
 #: The zero-dispersion gate's scale: a pool whose largest deviation from its mean is below this
 #: many ulps of the mean's magnitude has no usable dispersion (:func:`_near_constant`). CSCV's
 #: split scores read the same gate off their per-block extrema.
@@ -53,13 +57,48 @@ def _near_constant(rets: np.ndarray, mean: float) -> bool:
     return spread == 0.0 or bool(spread < _NEAR_CONSTANT_ULPS * _EPS * abs(mean))
 
 
+def _normal(x: float) -> bool:
+    """``x`` is a positive NORMAL double — a variance (or a power or product of variances) that
+    carries its full precision. Past the range it is ``inf``, and every quotient by it a FINITE
+    0.0; below it the squared deviations it sums (deviations under ~1.5e-154) rounded to
+    multiples of the smallest subnormal or to 0.0, so it has lost its significant bits — no
+    estimate of a dispersion, and a varying pool's 0.0 is not zero dispersion either. A
+    statistic read off such a variance is NaN → null. ``compiler.nb._normal`` is the kernels'
+    twin on the overflow side; below the range the kernels LIFT the window back into it instead
+    (``compiler.nb._lifted_windows``), because the series they read are derived and decay there
+    from ordinary data (an ``ema`` of a change over a held stretch), where a pool reads measured
+    returns, which reach it only off input data at that scale."""
+    return _TINY <= x < math.inf
+
+
 def _ddof1_std(v: np.ndarray) -> float:
-    """The ddof=1 std of a finite pool of n ≥ 2, exactly 0.0 when every observation is equal —
-    the computed mean of a constant DECIMAL pool is not the constant, and ``np.std`` would read
-    its rounding residue (~1e-17) as dispersion."""
-    if float(np.max(v)) == float(np.min(v)):
+    """The ddof=1 std of a pool of n ≥ 2, exactly 0.0 when every observation is equal — the
+    computed mean of a constant DECIMAL pool is not the constant, and ``np.std`` would read its
+    rounding residue (~1e-17) as dispersion. 0.0 is reserved for that pool: a VARYING pool whose
+    variance is not a normal double (:func:`_normal` — deviations below ~1.5e-154 or past
+    ~1.3e154) has no representable dispersion, and neither has a pool holding a non-finite value
+    (the bootstrap's draws, whose means can overflow — ``inf == inf`` is no degenerate
+    distribution): NaN, never a zero or an infinite dispersion."""
+    lo, hi = float(np.min(v)), float(np.max(v))
+    if not (math.isfinite(lo) and math.isfinite(hi)):
+        return _NAN
+    if hi == lo:
         return 0.0
-    return float(np.std(v, ddof=1))
+    var = float(np.var(v, ddof=1))  # np.std IS the root of this variance, bit for bit
+    return math.sqrt(var) if _normal(var) else _NAN
+
+
+def _finite_ratio(num: float, den: float) -> float:
+    """``num / den`` where both operands and the quotient are finite (and ``den != 0``), else NaN.
+
+    The ratio reads of this module divide by a sum, a mean or a percentile of returns, and those
+    of finite returns can still overflow: ``x / inf`` is a finite 0.0 — a profit factor, a
+    win/loss ratio, a mass share of exactly zero — that a reader (or a ceiling check) would take
+    at face value. An operand past the double range is no evidence: NaN → null."""
+    if den == 0.0 or not (math.isfinite(num) and math.isfinite(den)):
+        return _NAN
+    q = num / den
+    return q if math.isfinite(q) else _NAN
 
 
 def pool_moments(rets: np.ndarray) -> PoolMoments:
@@ -67,16 +106,19 @@ def pool_moments(rets: np.ndarray) -> PoolMoments:
     hit_rate, win_loss_ratio, skewness, kurtosis, tail_ratio, cvar_5}``.
 
     Non-finite entries are dropped (``n`` counts what was described); an empty pool is ``n = 0``
-    with every statistic NaN → null. ``std_ret`` is ddof=1 (NaN below two observations);
+    with every statistic NaN → null. ``std_ret`` is ddof=1 (NaN below two observations, and
+    off a variance out of the normal double range — :func:`_ddof1_std`, :func:`_normal`);
     ``hit_rate`` is the share of returns strictly above zero (a zero return is not a hit);
     ``win_loss_ratio`` is the average win over the average |loss| with zero returns on neither
     side, NaN when either side is empty — the payoff-asymmetry partner of ``hit_rate``'s
     frequency; ``skewness``/``kurtosis`` are scipy's population (``bias=True``) moments,
     kurtosis PEARSON (normal = 3, not excess) — not pandas' unbiased G1/G2 — nulled on a
-    near-constant pool (:func:`_near_constant`); ``tail_ratio`` is ``|p95/p05|`` of the same
+    near-constant pool (:func:`_near_constant`) and where the variance power they divide by
+    leaves the normal range (:func:`_normal`); ``tail_ratio`` is ``|p95/p05|`` of the same
     linear-interpolated percentiles :func:`pool_quantiles` reports (NaN when ``p05`` is zero,
     and a spread ratio rather than a tail read when both tails share a sign); ``cvar_5`` is the
-    mean of the observations at or below ``p05``, its historical-VaR partner.
+    mean of the observations at or below ``p05``, its historical-VaR partner (NaN where ``p05``
+    itself left the double range).
 
     Overlap caveat, shared with every row-level read: one market move enters ~h rows, so
     these describe the realized pool, never an estimated distribution. Evidence-only; the
@@ -110,15 +152,29 @@ def pool_moments(rets: np.ndarray) -> PoolMoments:
     out["std_ret"] = _ddof1_std(v) if n > 1 else _NAN
     out["hit_rate"] = float(np.mean(v > 0))
     out["win_loss_ratio"] = (
-        float(np.mean(wins) / abs(np.mean(losses))) if wins.size and losses.size else _NAN
+        _finite_ratio(float(np.mean(wins)), abs(float(np.mean(losses))))
+        if wins.size and losses.size
+        else _NAN
     )
-    out["skewness"] = float(sps.skew(v)) if n > 2 and not degenerate else _NAN
-    out["kurtosis"] = float(sps.kurtosis(v, fisher=False)) if n > 3 and not degenerate else _NAN
+    # scipy's moments are ``m3 / m2**1.5`` and ``m4 / m2**2``: where that power of the variance
+    # leaves the normal range (a dispersion below ~3e-103 / ~1.2e-77, or past ~5e102 / ~1.2e77)
+    # the moment it normalizes underflowed or overflowed with it — a kurtosis read 11.737849
+    # for 11.737878 at a 1e-80 scale. Null, never a finite number read off the lost bits.
+    shaped3 = shaped4 = False
+    if n > 2 and not degenerate:
+        with np.errstate(over="ignore", invalid="ignore"):
+            m2 = np.var(v)
+            shaped3, shaped4 = _normal(float(m2**1.5)), _normal(float(m2 * m2))
+    out["skewness"] = float(sps.skew(v)) if shaped3 else _NAN
+    out["kurtosis"] = float(sps.kurtosis(v, fisher=False)) if n > 3 and shaped4 else _NAN
     if n > 1:
         p5, p95 = (float(q) for q in np.percentile(v, [5.0, 95.0]))
-        out["tail_ratio"] = float(abs(p95 / p5)) if p5 != 0 and not math.isnan(p5) else _NAN
+        out["tail_ratio"] = abs(_finite_ratio(p95, p5)) if p5 != 0 else _NAN
         tail = v[v <= p5]
-        out["cvar_5"] = float(np.mean(tail)) if tail.size else _NAN
+        # p05's interpolation overflows to +inf across a gap past the double range, and
+        # `v <= inf` is the WHOLE pool: a mean of every return (positive, even) read as the
+        # lower tail — null, as p05 itself is
+        out["cvar_5"] = float(np.mean(tail)) if tail.size and math.isfinite(p5) else _NAN
     return out
 
 
@@ -128,7 +184,8 @@ def concentration(rets: np.ndarray, top_frac: float = 0.05) -> ConcentrationBloc
     observations over the total |return| mass; near 1 means the whole edge is a handful of events
     (``n_nonoverlap`` shows overlap inflation, this shows MASS concentration). The per-cell
     concentration checklist reads ``top_share_abs`` against a ceiling; an empty pool yields NaN,
-    which that checklist refuses rather than waves through."""
+    which that checklist refuses rather than waves through — and so does a pool whose total
+    |return| mass leaves the double range (:func:`_finite_ratio`)."""
     rets = np.asarray(rets, dtype=float)
     rets = rets[~np.isnan(rets)]
     n = rets.shape[0]
@@ -137,7 +194,8 @@ def concentration(rets: np.ndarray, top_frac: float = 0.05) -> ConcentrationBloc
     k = max(1, math.ceil(top_frac * n))
     mag = np.sort(np.abs(rets))[::-1]
     total = float(mag.sum())
-    share = float(mag[:k].sum() / total) if total > 0 else _NAN
+    # an OVERFLOWED total mass read top/inf = 0.0 — "no concentration", which the ceiling passes
+    share = _finite_ratio(float(mag[:k].sum()), total) if total > 0 else _NAN
     return {"top_share_abs": share, "n_top": int(k), "top_frac": float(top_frac)}
 
 
@@ -209,15 +267,16 @@ def profit_factor(rets: np.ndarray) -> float:
     convenience read, never as independent evidence. Zero returns join neither side. NaN when
     EITHER side is empty — the same no-ratio-to-form rule as ``win_loss_ratio``, and this engine
     never emits an infinity (the JSON layer refuses non-finite tokens): "no losses in sample" is
-    a fact a reader takes from ``hit_rate``, not from an unbounded ratio. Evidence-only, per
-    pool; no check reads it."""
+    a fact a reader takes from ``hit_rate``, not from an unbounded ratio. NaN too when either
+    mass leaves the double range (:func:`_finite_ratio` — an overflowed loss mass read 0.0).
+    Evidence-only, per pool; no check reads it."""
     v = np.asarray(rets, dtype=float)
     v = v[np.isfinite(v)]
     wins = v[v > 0]
     losses = v[v < 0]
     if wins.size == 0 or losses.size == 0:
         return _NAN
-    return float(wins.sum() / abs(losses.sum()))
+    return _finite_ratio(float(wins.sum()), abs(float(losses.sum())))
 
 
 def edge_ratio(mae_rows: np.ndarray, mfe_rows: np.ndarray) -> float:
@@ -240,7 +299,8 @@ def edge_ratio(mae_rows: np.ndarray, mfe_rows: np.ndarray) -> float:
     under asymmetric holes this ratio need not equal ``mfe_quantiles.mean / |mae_quantiles.mean|``
     — the pairing is the point. NaN when no pair
     survives or the paired adverse mean is exactly zero — an unbounded ratio is refused, never
-    emitted. Evidence-only; no check reads it."""
+    emitted — or when either mean leaves the double range (:func:`_finite_ratio`). Evidence-only;
+    no check reads it."""
     m_a = np.asarray(mae_rows, dtype=float)
     m_f = np.asarray(mfe_rows, dtype=float)
     keep = np.isfinite(m_a) & np.isfinite(m_f)
@@ -250,7 +310,7 @@ def edge_ratio(mae_rows: np.ndarray, mfe_rows: np.ndarray) -> float:
     denom = abs(float(np.mean(m_a)))
     if denom == 0:
         return _NAN
-    return float(np.mean(m_f)) / denom
+    return _finite_ratio(float(np.mean(m_f)), denom)
 
 
 def cross_mean_pooled_mean(raw: np.ndarray, closed: np.ndarray) -> float:
@@ -314,11 +374,18 @@ def benchmark_regression(raw: np.ndarray, bench: np.ndarray) -> BenchmarkRegress
     authoritative "was there a benchmark"), ``insufficient_observations`` below n=3 (two points
     fit a line exactly — r² ≡ 1 vacuously), ``no_benchmark_variation`` on a (near-)constant bench
     leg (:func:`_near_constant` — a constant DECIMAL leg's computed variance is rounding residue,
-    and dividing by it minted an arbitrary beta). ``r2`` alone is NaN → null when the raw leg has
-    zero variance (likewise near-constant): nothing to explain, while beta = 0 (exactly) and
-    alpha = mean(raw) are still real numbers. On overlapping pools the fit is
-    inflated exactly as every row-level read is — the caveat, not a correction, covers it.
-    Evidence only, read by no check; a one-regressor attribution, not a factor model."""
+    and dividing by it minted an arbitrary beta), ``not_representable`` when a VARYING bench
+    leg's variance is not a normal double (:func:`_normal` — an overflowed one read ``beta = cov
+    / inf = 0.0``, a fit that never happened; an underflowed one divided by its lost bits, or
+    read as no variation at 0.0) or beta or alpha leaves the double range. ``r2`` alone is NaN
+    → null when the raw leg has zero variance (likewise near-constant): nothing to explain, while
+    beta = 0 (exactly) and alpha = mean(raw) are still real numbers — and when the raw variance
+    is not a normal double. The variance PRODUCT under ``r2`` of two normal variances is taken
+    in an unbounded exponent range (:func:`_r2`): past the ceiling it read ``inf / inf`` (a
+    representable r2 lost), in the subnormal range it shed precision, and underflowed to 0.0 it
+    raised ZeroDivisionError out of the run. On overlapping pools the fit is inflated exactly as
+    every row-level read is — the caveat, not a correction, covers it. Evidence only, read by no
+    check; a one-regressor attribution, not a factor model."""
     r = np.asarray(raw, dtype=float)
     b = np.asarray(bench, dtype=float)
     keep = np.isfinite(r) & np.isfinite(b)
@@ -333,17 +400,43 @@ def benchmark_regression(raw: np.ndarray, bench: np.ndarray) -> BenchmarkRegress
     if n < 3:
         return _declined("insufficient_observations")
     var_b = float(np.var(b, ddof=1))
-    if var_b == 0 or _near_constant(b, float(np.mean(b))):
+    if _near_constant(b, float(np.mean(b))):
         return _declined("no_benchmark_variation")
+    if not _normal(var_b):
+        # a VARYING leg (a constant one is near-constant, above) whose variance left the range:
+        # no zero variation, and no divisor either
+        return _declined("not_representable")
     mean_r = float(np.mean(r))
     if _near_constant(r, mean_r):
         return {"n": n, "beta": 0.0, "alpha": mean_r, "r2": _NAN, "reason": None}
     cv = float(np.cov(r, b, ddof=1)[0, 1])
     beta = cv / var_b
     alpha = mean_r - beta * float(np.mean(b))
+    if not (math.isfinite(beta) and math.isfinite(alpha)):
+        return _declined("not_representable")
     var_r = float(np.var(r, ddof=1))
-    r2 = (cv * cv) / (var_r * var_b) if var_r > 0 else _NAN
+    r2 = _r2(cv, var_r, var_b) if _normal(var_r) else _NAN
     return {"n": n, "beta": float(beta), "alpha": float(alpha), "r2": float(r2), "reason": None}
+
+
+def _r2(cv: float, var_r: float, var_b: float) -> float:
+    """``cv² / (var_r · var_b)`` for two NORMAL variances (the caller's :func:`_normal` gate),
+    exponent-safe: the direct form wherever the variance product is a normal double (bit for
+    bit); elsewhere each variance's exponent is taken out first (made even, ``cv`` scaled by the
+    half-sum) — power-of-two scaling of a normal double never rounds, so the ratio is EXACTLY the
+    direct form's value in an unbounded exponent range. Only because the variances are normal: a
+    subnormal one has already lost its bits (r2 read 2.0 for 0.99 off two of them). The scalar
+    twin of ``compiler.nb._sqrt_product`` (the rolling correlation's denominator) — a change to
+    the rule changes both."""
+    prod = var_r * var_b
+    if _TINY <= prod < math.inf:
+        return (cv * cv) / prod
+    m_r, e_r = math.frexp(var_r)
+    m_b, e_b = math.frexp(var_b)
+    m_r, e_r = math.ldexp(m_r, e_r & 1), e_r - (e_r & 1)
+    m_b, e_b = math.ldexp(m_b, e_b & 1), e_b - (e_b & 1)
+    c = math.ldexp(cv, -((e_r + e_b) // 2))
+    return (c * c) / (m_r * m_b)
 
 
 def timing_summary(bars_to_positive: np.ndarray, bars_to_trough: np.ndarray) -> TimingBlock:

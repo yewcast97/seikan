@@ -108,7 +108,9 @@ def _tail_p(
     DEFINED null values it was formed over. NaN-safe: an undefined shift (the rotated mask lands
     on no finite forward bar) drops out of the null, so the p's own floor is ``1/(1 + n_null)``
     — the per-cell resolution the runner reports beside the p as ``rot_n_null``, which on a
-    sparse mask sits above the run-level ``1/(1 + n_shifts)``.
+    sparse mask sits above the run-level ``1/(1 + n_shifts)``. An observed mean past the double
+    range (its sum overflowed) is no observation either: NaN, never the p floor an ``inf`` would
+    claim above every finite null value.
 
     ``tol_obs`` / ``tol_null`` are the absolute error tolerances of the observed and of each null
     value (estimated envelopes — see ``_FFT_TIE_C`` — not rigorous bounds): a null value within
@@ -120,7 +122,7 @@ def _tail_p(
     band = tol_obs + (0.0 if tol_null is None else np.asarray(tol_null, dtype=float)[keep])
     null = null[keep]
     n_null = int(null.shape[0])
-    if n_null == 0 or math.isnan(observed):
+    if n_null == 0 or not math.isfinite(observed):
         return _NAN, n_null
     return float((1.0 + np.sum(null >= observed - band)) / (1.0 + n_null)), n_null
 

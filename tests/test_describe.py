@@ -428,6 +428,50 @@ def test_volume_block_hand_computed_and_absent_without_volume(tmp_path, capsys):
     assert doc["profiles"][0]["volume"] is None
 
 
+def test_volume_mean_of_an_overflowing_window_is_exact_never_a_zero_ratio(tmp_path, capsys):
+    # Volumes alternating 1.7e308 / 1.0e308: the trailing SUM overflows, and the mean read inf —
+    # null, beside a `last_to_mean` of exactly 0.0 (last / inf) and no reason at all. The mean of
+    # finite volumes lies between their extremes; summed pre-scaled it is exact, and so the ratio.
+    path = _write_flat_ohlcv(
+        tmp_path / "v.csv", [10.0 + i for i in range(30)], volumes=[1.7e308, 1.0e308] * 15
+    )
+    code, doc = _run(capsys, ["describe", str(path), "--windows", "5"])
+    assert code == 0
+    w5 = doc["profiles"][0]["volume"]["windows"]["5"]
+    assert w5["mean"] == pytest.approx(1.28e308, rel=1e-15)  # (3·1.0 + 2·1.7)e308 / 5
+    assert w5["last_to_mean"] == pytest.approx(1.0 / 1.28, rel=1e-15)
+    assert w5["reason"] is None and w5["ratio_reason"] is None
+
+
+def test_dispersion_diff_std_keeps_its_value_where_its_squares_leave_the_range(tmp_path, capsys):
+    # A VARYING series whose squared 1-bar changes leave the double range: past it the std read
+    # inf — a null beside finite endpoints, with no reason (2**520, 1e160); below it they lost
+    # their bits (2**-536 read 9.1647e-162 where the std is 9.1106e-162) or vanished into the 0.0
+    # only an all-equal series owns (1e-170, 2**-1000). Scaled by a power of two the std is
+    # computed in range — every bit of the unscaled std, scaled — and in range it is np.std's.
+    # (The exact reads call the block directly: the CSV parse itself may land a 17-digit level
+    # one ulp off its repr.)
+    from seikan.describe import _dispersion_block
+
+    levels = np.array([1.0, 3.0, 2.0, 5.0, 4.0, 7.0])
+    unscaled = float(np.std(np.diff(levels), ddof=1))
+    for k in (-500, 520, -536, -1000):
+        assert _dispersion_block(levels * 2.0**k, 5)["diff"] == unscaled * 2.0**k, k
+    # an all-equal change keeps its exact 0.0 down there, and an ordinary walk np.std's bits
+    assert _dispersion_block(np.arange(6.0) * 2.0**-1000, 5)["diff"] == 0.0
+    walk = 100.0 + np.random.RandomState(3).randn(300).cumsum()
+    for w in (2, 5, 21, 63, 252):
+        tail = walk[-(w + 1) :]
+        assert _dispersion_block(walk, w)["diff"] == float(np.std(np.diff(tail), ddof=1)), w
+    # end to end: never a null beside finite endpoints, never a zero for a varying series
+    for i, scale in enumerate((1e160, 1e-170)):
+        y = _write_series(tmp_path / f"y{i}.csv", levels * scale)
+        code, doc = _run(capsys, ["describe", str(y), "--windows", "5"])
+        d5 = _series_profile(doc)["dispersion"]["5"]
+        assert code == 0 and d5["reason"] is None
+        assert d5["diff"] == pytest.approx(unscaled * scale, rel=1e-14), scale
+
+
 def test_single_row_file(tmp_path, capsys):
     one = _write_flat_ohlcv(tmp_path / "one.csv", [10.5], volumes=[1000.0])
     code, doc = _run(capsys, ["describe", str(one), "--windows", "1,5"])

@@ -4,6 +4,7 @@ the episode-deduplicated profile.
 
 from __future__ import annotations
 
+import math
 from typing import NamedTuple
 
 import numpy as np
@@ -114,7 +115,9 @@ def episode_stats(trades: pd.DataFrame) -> EpisodeStatsBlock:
     The rows are merged ACROSS targets, so a cluster is a market episode rather than a per-target
     one: an edge that is one crisis seen through three targets must not read as three episodes.
     An empty or all-NaN pool — a declared cell that never fired, which is reported and never
-    dropped — returns the zero panel with NaN shares.
+    dropped — returns the zero panel with NaN shares; a pool whose total |return| mass leaves the
+    double range has NaN shares too (every share would read ``x / inf = 0.0``, which the
+    one-episode ceiling passes).
     """
     empty: EpisodeStatsBlock = {
         "n": 0,
@@ -133,14 +136,15 @@ def episode_stats(trades: pd.DataFrame) -> EpisodeStatsBlock:
 
     mag = np.abs(rets)
     total = float(mag.sum())
+    shareable = 0.0 < total < math.inf  # a zero mass has no shares, an overflowed one neither
     cluster_mass = [float(mag[c].sum()) for c in clusters]
     largest = max(clusters, key=len)
-    share = float(mag[largest].sum() / total) if total > 0 else _NAN
+    share = float(mag[largest].sum() / total) if shareable else _NAN
     # ONE shares array feeds the ceiling read AND its smooth Herfindahl companion — the ceiling
     # sees only the LARGEST share, so two 50% episodes sail under 0.60 while hhi = 0.5 says the
-    # pool is exactly two effective episodes. NaN on a zero-mass pool, the shares' own domain
-    # rule (evidence-only for the hhi pair; max_cluster_share_abs is the gated read).
-    if total > 0:
+    # pool is exactly two effective episodes. NaN on a zero- or overflowed-mass pool, the shares'
+    # own domain rule (evidence-only for the hhi pair; max_cluster_share_abs is the gated read).
+    if shareable:
         shares = np.asarray(cluster_mass) / total
         max_share = float(shares.max())
         mass_hhi = float(np.sum(shares * shares))
@@ -190,7 +194,8 @@ def episode_ledger(
     (ranking would crown episodes exactly the way the engine refuses to crown cells). Each
     entry: ``start`` / ``end`` (the cluster's earliest entry and latest exit — a chain merge
     can end on an interior row's window), ``n``, ``mean_ret``, and ``share_abs`` (the cluster's
-    |return| mass over the pool total; NaN on a zero-mass pool, which serializes to null).
+    |return| mass over the pool total; NaN on a zero-mass pool or one whose total mass leaves the
+    double range, which serializes to null).
     Truncation is mass-conserving: ``n_omitted`` counts the clusters past the cap and
     ``omitted_share_abs`` carries their combined share, so listed + omitted shares sum to ≈ 1
     and no episode silently vanishes. A dead cell returns the explicit empty ledger, never
@@ -218,7 +223,8 @@ def episode_ledger(
     total = float(mag.sum())
 
     def _share(rows: list[int]) -> float:
-        return float(mag[rows].sum() / total) if total > 0 else _NAN
+        # the episode_stats domain rule: no share of a zero or an overflowed total mass
+        return float(mag[rows].sum() / total) if 0.0 < total < math.inf else _NAN
 
     kept = clusters[: max(int(cap), 0)]
     omitted = clusters[len(kept) :]
@@ -270,7 +276,8 @@ def episode_profile(
     legs feed it. The streak pair is the one
     honest home for consecutive-outcome reads — over overlapping ROWS "consecutive" is a cluster
     artifact, over time-ordered episodes it is a run statistic: the longest run of episodes with
-    strictly positive / strictly negative ``ret_mean``, a zero-mean episode breaking both.
+    strictly positive / strictly negative ``ret_mean``, a zero-mean episode breaking both — as
+    does one whose mean overflowed, which also nulls every read over the episode means.
 
     Emits ALWAYS — descriptive statistics do not refuse on thinness (the bootstrap's 5-episode
     floor is a resampling impossibility, not a noise threshold; quantiles over two episodes rest
@@ -321,25 +328,30 @@ def episode_profile(
     mae_mins = mae_by_episode[np.isfinite(mae_by_episode)]
     mfe_maxes = mfe_by_episode[np.isfinite(mfe_by_episode)]
 
+    # An episode whose mean is not finite — its rows' sum overflowed, though the true mean of
+    # finite returns is finite — has no known value or sign: every read over the episode means
+    # is NaN (the quantiles and the profit factor would read the pool without it, the extremes
+    # and the hit rate off its overflow), and it breaks both streaks like a zero-mean episode.
+    known = bool(np.isfinite(ret_means).all())
     win = loss = max_win = max_loss = 0
     for r in ret_means:
-        if r > 0:
+        if 0 < r < math.inf:
             win, loss = win + 1, 0
-        elif r < 0:
+        elif -math.inf < r < 0:
             win, loss = 0, loss + 1
-        else:  # a zero-mean episode joins neither side — the same rule as profit_factor's
-            win = loss = 0
+        else:  # a zero-mean episode joins neither side — the same rule as profit_factor's —
+            win = loss = 0  # and neither does an overflowed one
         max_win = max(max_win, win)
         max_loss = max(max_loss, loss)
 
     return {
         "n_episodes": len(clusters),
-        "hit_rate": float(np.mean(ret_means > 0)),
-        "mean_ret": float(np.mean(ret_means)),
-        "profit_factor": profit_factor(ret_means),
-        "ret_quantiles": pool_quantiles(ret_means),
-        "worst_ret": float(np.min(ret_means)),
-        "best_ret": float(np.max(ret_means)),
+        "hit_rate": float(np.mean(ret_means > 0)) if known else _NAN,
+        "mean_ret": float(np.mean(ret_means)) if known else _NAN,
+        "profit_factor": profit_factor(ret_means) if known else _NAN,
+        "ret_quantiles": pool_quantiles(ret_means if known else np.empty(0)),
+        "worst_ret": float(np.min(ret_means)) if known else _NAN,
+        "best_ret": float(np.max(ret_means)) if known else _NAN,
         "mae_quantiles": mae_block(mae_mins),
         "mfe_quantiles": mfe_block(mfe_maxes),
         "edge_ratio": edge_ratio(mae_by_episode, mfe_by_episode),

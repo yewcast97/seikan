@@ -6,7 +6,7 @@ import math
 
 import numpy as np
 
-from seikan.analysis._pools import _near_constant
+from seikan.analysis._pools import _near_constant, _normal
 
 _NAN = float("nan")
 
@@ -35,7 +35,12 @@ def newey_west_mean(rets: np.ndarray, entry_bars: np.ndarray, h: int) -> tuple[f
 
     A (near-)constant pool (:func:`_near_constant`) is ``(NaN, NaN)``, like any other pool
     without a positive long-run variance: its dispersion is rounding residue — the computed mean
-    of a constant DECIMAL pool is not the constant — and dividing by it minted ``|t| ≈ 1e16``.
+    of a constant DECIMAL pool is not the constant — and dividing by it minted ``|t| ≈ 1e16``. So
+    is a pool whose mean's variance ``s/n`` is not a normal double (``_pools._normal``): past the
+    range (returns past ~1e154) ``mean / inf`` read a finite ``t = 0.0`` beside an infinite SE;
+    below it (returns under ~1e-154) the squared deviations had lost their bits — a t off by
+    0.7 — or underflowed to an SE of 0.0, and ``mean / 0.0`` raised ZeroDivisionError out of the
+    run.
 
     No p-value is computed here: a consumer who wants one derives it from ``t_stat`` at
     ``df = n_nonoverlap − 1`` — the row count wildly overstates the information on an
@@ -72,9 +77,13 @@ def newey_west_mean(rets: np.ndarray, entry_bars: np.ndarray, h: int) -> tuple[f
             # gaps at event lag k are nondecreasing in k (sorted bars) — no later pair overlaps
             break
         s += 2.0 * float((w[m] * dev[k:][m] * dev[:-k][m]).sum()) / (n - 1.0)
-    if not (s > 0.0):
+    # `_normal(s / n)`: deviations past ~1e154 overflow the long-run variance, and `mean / inf`
+    # is a FINITE t of 0.0 — an overflow must read as no estimate, never as "no edge"; below
+    # ~1e-154 they underflow, into lost bits or an SE of exactly 0.0.
+    v = s / n
+    if not _normal(v):
         return (_NAN, _NAN)
-    se = math.sqrt(s / n)
+    se = math.sqrt(v)
     return (mean / se, se)
 
 

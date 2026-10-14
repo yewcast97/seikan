@@ -60,7 +60,10 @@ class MfeQuantiles(PoolQuantiles):
 
 #: Why :func:`~seikan.analysis.stats.benchmark_regression` declined to fit.
 type BenchmarkRegressionReason = Literal[
-    "no_paired_observations", "insufficient_observations", "no_benchmark_variation"
+    "no_paired_observations",
+    "insufficient_observations",
+    "no_benchmark_variation",
+    "not_representable",
 ]
 
 
@@ -75,8 +78,10 @@ class BenchmarkRegressionBlock(TypedDict):
     ``alpha + beta·mean(bench) == mean(raw)`` is an identity a reader re-checks. All three
     statistical fields are genuinely None — not NaN — when the block declined to fit, with
     ``reason`` naming why (``no_paired_observations`` — which covers every unbenchmarked run —
-    / ``insufficient_observations`` / ``no_benchmark_variation``); ``r2`` alone is NaN → null
-    when the raw leg has zero variance (nothing to explain; beta and alpha are still real).
+    / ``insufficient_observations`` / ``no_benchmark_variation`` / ``not_representable`` — a
+    varying bench leg's variance is not a normal double, or beta or alpha left the double
+    range); ``r2`` alone is NaN → null when the raw leg has zero variance (nothing to explain;
+    beta and alpha are still real) or one that is not a normal double.
     Evidence only, read by no check; not a factor model.
     """
 
@@ -124,7 +129,10 @@ class EpisodeBootstrapCI(TypedDict):
     Mounted as ``boot`` on every per-target panel (and the pooled panel) by ``compiler.runner``;
     read by no check. The three interval fields are genuinely ``None`` — not NaN — when the pool
     carries no resampling distribution, and ``reason`` says which refusal applied
-    (``no_observations`` / ``insufficient_episodes``).
+    (``no_observations`` / ``insufficient_episodes``). They are NaN → null together, ``reason``
+    None, when an episode sum or a draw left the double range — a percentile over such draws is
+    never half an interval — and ``boot_se`` alone is when the draws' variance is not a normal
+    double.
     """
 
     method: Literal["episode_percentile"]
@@ -244,8 +252,10 @@ class EpisodeProfileBlock(TypedDict):
     reads
     (row-level streaks over overlapping observations are cluster artifacts and are deliberately
     not emitted): the longest run of consecutive episodes, in time order, whose ``ret_mean`` is
-    strictly positive / strictly negative — a zero-mean episode breaks both runs. In basket the
-    cross-target merge makes this the pooled episode read for free.
+    strictly positive / strictly negative — a zero-mean episode breaks both runs, and so does one
+    whose mean overflowed (its rows' sum left the double range), which also nulls every read
+    over the episode means. In basket the cross-target merge makes this the pooled episode read
+    for free.
     """
 
     n_episodes: int
@@ -300,7 +310,8 @@ class BucketMonotonicity(TypedDict):
     ``analysis.stats._bucket_monotonicity``, mounted under ``bucket_monotonicity``.
 
     Carried only for features that bucketed AND showed a rank signal (fewer than 3 populated
-    buckets, or constant means, yields no entry at all). Evidence only.
+    buckets, constant means, or a populated bucket whose mean overflowed yields no entry at
+    all). Evidence only.
     """
 
     rho: float

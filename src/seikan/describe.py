@@ -108,7 +108,8 @@ def _dispersion_block(x: np.ndarray, w: int) -> ChangeBlock:
     PER BAR, never annualized — sqrt-time scaling interprets cadence, which is the caller's
     assumption, not this engine's. ``w == 1`` holds a single change and cannot carry a ddof=1
     std, so it refuses as ``insufficient_bars``; a hole anywhere in the window is a 1-bar
-    change with a missing endpoint (``endpoint_missing``), never skipped over.
+    change with a missing endpoint (``endpoint_missing``), never skipped over. The ``diff`` std
+    is :func:`_std`: finite changes whose squares leave the double range keep their std.
     """
     out = _empty_change_block()
     if w < 2 or len(x) < w + 1:
@@ -118,7 +119,7 @@ def _dispersion_block(x: np.ndarray, w: int) -> ChangeBlock:
     if not np.isfinite(tail).all():
         out["reason"] = "endpoint_missing"
         return out
-    out["diff"] = float(np.std(np.diff(tail), ddof=1))
+    out["diff"] = _std(np.diff(tail))
     if (tail > 0).all():
         ratio = tail[1:] / tail[:-1]
         out["pct"] = float(np.std(ratio - 1.0, ddof=1))
@@ -241,11 +242,59 @@ def _missingness_block(s: pd.Series) -> MissingnessBlock:
     }
 
 
+def _mean(vals: np.ndarray) -> float:
+    """The arithmetic mean of finite values, overflow-safe: the direct ``vals.mean()`` wherever
+    its sum stays in range, bit for bit. Where the sum overflowed — the mean itself never does,
+    lying between the values' extremes — the values are pre-scaled by the power of two ``2**-c``
+    (``2**c ≥ 2n``, which keeps every partial sum in range), the mean is scaled back and held in
+    ``[min, max]`` like any convex combination. Read off the overflowed ``inf`` instead, the mean
+    was null and a ratio over it a FINITE 0.0."""
+    with np.errstate(over="ignore", invalid="ignore"):
+        m = float(vals.mean())
+    if _finite(m):
+        return m
+    c = (2 * vals.size).bit_length()
+    with np.errstate(over="ignore"):  # a rounding past DBL_MAX is clamped back to the max below
+        m = float(np.ldexp(np.ldexp(vals, -c).mean(), c))
+    return min(max(m, float(vals.min())), float(vals.max()))
+
+
+#: The smallest positive NORMAL double: a variance below it has lost significant bits.
+_TINY = float(np.finfo(np.float64).tiny)
+
+
+def _std(vals: np.ndarray) -> float:
+    """The ddof=1 std of n ≥ 2 finite values, scale-safe: the direct ``np.std`` wherever its
+    variance is a normal double, bit for bit. Elsewhere the squared deviations left the double
+    range — past it the std read ``inf`` (a null beside finite endpoints, with no reason); below
+    it a VARYING series read the 0.0 an all-equal one owns, or a std off a subnormal variance's
+    lost bits — so the values are scaled by the power of two that brings the largest magnitude
+    into ``[0.5, 1)`` and the std is scaled back: exact on the way up (scaling up by a power of
+    two never rounds), to rounding on the way down, floored at the smallest subnormal as the
+    kernels' lifted std is (``compiler.nb``) — a series that varies never reads zero dispersion.
+    A REPORTED number, never a divisor, so it is computed rather than nulled. Non-finite (→ null)
+    only where the values or the std itself leave the double range (a 1-bar change of two finite
+    levels past it; four changes alternating ±1.7e308, whose std is ~1.96e308)."""
+    with np.errstate(over="ignore", invalid="ignore"):
+        var = float(np.var(vals, ddof=1))  # np.std IS the root of this variance, bit for bit
+    if _TINY <= var < math.inf:
+        return math.sqrt(var)
+    lo, hi = float(vals.min()), float(vals.max())
+    if not (_finite(lo) and _finite(hi)):
+        return math.nan
+    if lo == hi:
+        return 0.0
+    e = math.frexp(max(-lo, hi))[1]
+    with np.errstate(over="ignore"):  # a std past DBL_MAX is unrepresentable: inf → null
+        return max(float(np.ldexp(np.std(np.ldexp(vals, -e), ddof=1), e)), 5e-324)
+
+
 def _volume_block(v: np.ndarray, windows: Sequence[int]) -> VolumeBlock:
     """Last volume, trailing mean and ``last_to_mean`` per window. The ratio carries NO
     'unusual' flag — what counts as elevated is the caller's judgment, not a property of the
     file. A non-positive trailing mean refuses the ratio (``non_positive_endpoint`` — the
-    denominator is an endpoint of the ratio), never divides through zero."""
+    denominator is an endpoint of the ratio), never divides through zero; the mean itself is
+    overflow-safe (:func:`_mean`), so the ratio is never read off an overflowed sum."""
     vals = np.asarray(v, dtype=float)
     last = float(vals[-1]) if _finite(float(vals[-1])) else None
     by_window: dict[str, VolumeWindow] = {}
@@ -263,7 +312,7 @@ def _volume_block(v: np.ndarray, windows: Sequence[int]) -> VolumeBlock:
             if not np.isfinite(tail).all():
                 entry["reason"] = "endpoint_missing"
             else:
-                mean = float(tail.mean())
+                mean = _mean(tail)
                 entry["mean"] = mean
                 if last is not None and mean > 0:
                     entry["last_to_mean"] = last / mean

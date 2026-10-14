@@ -10,7 +10,7 @@ from typing import cast
 
 import numpy as np
 
-from seikan.analysis._pools import _NEAR_CONSTANT_ULPS
+from seikan.analysis._pools import _NEAR_CONSTANT_ULPS, _TINY
 from seikan.types import (
     CellKey,
     DegradationSlopeReason,
@@ -51,6 +51,14 @@ def _disperses(lo: np.ndarray, hi: np.ndarray, mean: np.ndarray, eps: float) -> 
     return ok
 
 
+def _representable(mean: np.ndarray, var: np.ndarray) -> np.ndarray:
+    """The split's ``mean`` is finite and its ``var`` a positive NORMAL double (the
+    ``_pools._normal`` rule) — the Sharpe ``mean / sd`` is read off representable moments only
+    (see :func:`_split_scores`)."""
+    ok: np.ndarray = np.isfinite(mean) & (var >= _TINY) & (var < np.inf)
+    return ok
+
+
 def _split_scores(
     moments: np.ndarray,
     refs: np.ndarray,
@@ -80,7 +88,12 @@ def _split_scores(
     column's OTHER blocks hold. A pool whose centered sum of squares does not exceed the
     accumulation error of the shifted sums it is the difference of (``4·n·ε`` of the shifted sum
     of squares) is cancellation residue too. The split reads of a real return pool sit many
-    orders of magnitude above both floors.
+    orders of magnitude above both floors. A split whose mean left the double range, or whose
+    variance is not a normal double, scores NaN as well: ``mean / inf`` is a FINITE 0.0 Sharpe
+    (the pooled expansion's cross terms can overflow the sum of squares while the floor it is
+    tested against stays finite), an infinite mean would win every ranking, and a subnormal
+    variance (returns under ~1e-154, where the floor itself underflows to 0.0) has lost the bits
+    the Sharpe divides by.
     """
     mg = moments[:, :, :, block_idx].sum(axis=3)  # (Q, T, 3) per-member block sums
     n_g, s1_g, s2_g = mg[:, :, 0], mg[:, :, 1], mg[:, :, 2]
@@ -93,17 +106,21 @@ def _split_scores(
             mean = (s1_g + n_g * refs).sum(axis=1) / n
             d = refs - mean[:, None]
             ss = (s2_g + 2.0 * d * s1_g + n_g * d * d).sum(axis=1)
-            sd = np.sqrt(np.maximum(ss / (n - 1.0), 0.0))
+            var = ss / (n - 1.0)
+            sd = np.sqrt(np.maximum(var, 0.0))
             varies = _disperses(lo_g.min(axis=1), hi_g.max(axis=1), mean, eps)
             resolved = ss > 4.0 * n * eps * (s2_g + n_g * d * d).sum(axis=1)
-            return np.where((n >= 2) & varies & resolved & (sd > 0.0), mean / sd, np.nan)
+            scoreable = (n >= 2) & varies & resolved & _representable(mean, var)
+            return np.where(scoreable, mean / sd, np.nan)
         mean_shift = s1_g / n_g
         mean = mean_shift + refs
         ss_g = s2_g - n_g * mean_shift * mean_shift
-        sd = np.sqrt(np.maximum(ss_g / (n_g - 1.0), 0.0))
+        var_g = ss_g / (n_g - 1.0)
+        sd = np.sqrt(np.maximum(var_g, 0.0))
         resolved_g = ss_g > 4.0 * n_g * eps * s2_g
         varies_g = _disperses(lo_g, hi_g, mean, eps)
-        sr = np.where((n_g >= 2) & varies_g & resolved_g & (sd > 0.0), mean / sd, np.nan)
+        scoreable_g = (n_g >= 2) & varies_g & resolved_g & _representable(mean, var_g)
+        sr = np.where(scoreable_g, mean / sd, np.nan)
     # The weakest target's Sharpe, one value per combo — an axis-wise reduction, which
     # numpy's own signature can only type as `Any` (its element-wise overload returns a
     # scalar); the cast states the (Q,) array it is here.

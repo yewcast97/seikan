@@ -38,14 +38,16 @@ def _bucket_monotonicity(records: list[BucketRecord]) -> BucketMonotonicity | No
     records arrive in ascending feature order, so ``rho`` > 0 means "higher feature → higher return"
     and ``sign`` is its sign (for a feature keyed on depth or heat, a strong monotone response is
     the signature).
-    ``None`` when fewer than 3 populated buckets or the means carry no rank signal (constant).
-    Evidence-only — like the buckets themselves, no checklist reads it."""
-    means = [
-        r["mean_ret"]
-        for r in records
-        if r.get("n", 0) > 0 and not math.isnan(r.get("mean_ret", _NAN))
-    ]
-    # constant means → no rank signal (undefined rho)
+    ``None`` when fewer than 3 populated buckets or the means carry no rank signal (constant),
+    and when a populated bucket's computed mean is not finite — its return sum overflowed
+    (``inf``, or ``inf − inf``), though the true mean of finite returns is finite: its place in
+    the ranking is unknown, so the rank signal is too (``inf`` ranked it above every finite mean;
+    dropping it would rank the rest as if it were empty). Evidence-only — like the buckets
+    themselves, no checklist reads it."""
+    means = [r.get("mean_ret", _NAN) for r in records if r.get("n", 0) > 0]
+    # an overflowed mean → no rank signal; constant means → none either (undefined rho)
+    if not all(math.isfinite(m) for m in means):
+        return None
     if len(means) < 3 or min(means) == max(means):
         return None
     order = np.arange(len(means), dtype=float)

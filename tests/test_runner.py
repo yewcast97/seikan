@@ -3968,6 +3968,67 @@ def test_cross_mean_pooled_mean_overflow_is_refused_not_a_crash(tmp_path):
     assert support.met is False
 
 
+@pytest.mark.filterwarnings("ignore:overflow encountered:RuntimeWarning")
+@pytest.mark.filterwarnings("ignore:invalid value encountered:RuntimeWarning")
+def test_overflowed_return_mass_refuses_concentration_never_passes_it(tmp_path):
+    # Two members, one closed row each, both a pct return of ~1e308 (a 1e-300 open into 1e8)
+    # on disjoint bars: each member's |return| mass is finite, their total overflows. Every
+    # mass share read `x / inf = 0.0` — the pooled top share, BOTH member shares and both
+    # episode shares — and a basket of two ~1e308 bets passed the concentration ceiling as
+    # perfectly spread. An overflowed total has no shares: null, and the check refuses.
+    from seikan.gate import GateThresholds, evaluate_gate
+
+    n = 30
+    idx = pd.date_range("2021-01-01", periods=n, freq="1D")
+    files = {}
+    for t, fire in (("A", 4), ("B", 14)):
+        px = np.ones(n)
+        px[fire + 1], px[fire + 2] = 1e-300, 1e8  # fill at open[t+1], exit at open[t+2]
+        vol = np.full(n, 1000.0)
+        vol[fire] = 1.0
+        df = pd.DataFrame(
+            {"open": px, "high": px, "low": px, "close": px, "volume": vol}, index=idx
+        )
+        df.index.name = "datetime"
+        df.to_csv(tmp_path / f"{t}.csv", float_format="%.17g")
+        files[t] = str(tmp_path / f"{t}.csv")
+    thesis = Thesis.model_validate(
+        {
+            "name": "mass_overflow",
+            "target_mode": "basket",
+            "data": {"targets": ["A", "B"]},
+            "entry": {
+                "type": "threshold",
+                "left": {"type": "field", "column": "volume"},
+                "op": "<",
+                "right": {"type": "constant", "value": 500.0},
+            },
+            "params": {"horizon": 1},
+        }
+    )
+    res = run_backtest(thesis, load(thesis, files))
+    closed = res.trades[~res.trades["is_open"]]
+    assert sorted(closed["target"]) == ["A", "B"]
+    assert (closed["ret"] > 1e307).all() and np.isinf(closed["ret"].abs().sum())  # the premise
+    cell = res.summary["cells"][0]
+    shares = cell["pooled"]["member_share"]
+    assert np.isnan(shares["max_member_share_abs"])
+    assert all(np.isnan(v) for v in shares["by_target"].values())
+    assert np.isnan(cell["pooled"]["concentration"]["top_share_abs"])
+    assert np.isnan(cell["episode_stats"]["max_cluster_share_abs"])
+    concentration = next(
+        c
+        for c in evaluate_gate(res.summary, GateThresholds()).cells[0].checks
+        if c.name == "concentration"
+    )
+    assert concentration.met is False
+    assert concentration.observed == {
+        "pooled_top_share_abs": None,
+        "max_member_share_abs": None,
+        "max_cluster_share_abs": None,
+    }
+
+
 def test_cross_mean_swept_horizons_each_mount_their_own_pooled_mean(tmp_path):
     # The exact pooled mean is keyed per declared cell: under a swept horizon every cell mounts
     # ITS OWN pool's mean (equal to its closed rows' average, to rounding), bit-identical across

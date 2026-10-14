@@ -590,6 +590,102 @@ def test_a_feed_pinned_after_warmup_is_undecidable_not_fired(tmp_path):
     assert _check(report.cells[0], "signal_coverage").met is False
 
 
+@pytest.mark.parametrize(
+    "z_form",
+    [
+        {"window": 20, "mean_type": "sma"},
+        {"window": 2, "mean_type": "ema"},
+        {"window": 3, "mean_type": "ema"},
+        {"alpha": 0.6, "mean_type": "ema"},
+    ],
+)
+def test_a_held_feed_read_through_its_ema_keeps_the_dispersion_guard_decided(tmp_path, z_form):
+    # A feed that moves, then holds for 1,900 bars (stale prints) at an ordinary level: its 1-bar
+    # change is 0.0 on the hold, and an `ema` of that change decays geometrically — through the
+    # range where a window's squared deviations underflow — until it settles on the smallest
+    # subnormal. The documented guard `and(rolling_agg(x, N, std) > 0, zscore(x) …)` reads True
+    # on every VARYING window of that decay and False only once the ema has settled (an
+    # all-equal window), and the z-score it guards is defined wherever it reads True, so every
+    # bar stays decided: `signal_coverage` keeps n_undefined 0 and the check met. An underflowed
+    # variance read the all-equal window's std 0.0 on the decay (the guard False on moving data);
+    # NaN-gated, it left 964 of these bars undecidable; and the EW z-score at alpha >= 0.5
+    # rounded its own variance to 0.0 there — NaN beside the guard's True on 760-920 bars.
+    n_bars, n_move = 2000, 100
+    values = np.full(n_bars, 0.0)
+    values[:n_move] = 1.0 + np.cumsum(np.random.RandomState(5).normal(0.0, 0.01, n_move))
+    values[n_move:] = values[n_move - 1]
+    path, feed = tmp_path / "px.csv", tmp_path / "feed.csv"
+    _write_px(path, _planted_dip_px(n_bars, 5, 9))
+    _write_feed(feed, values, n_bars)
+    change = {"type": "change", "input": _FEED, "periods": 1, "kind": "pct"}
+    ema = {"type": "ema", "input": change, "window": 5}
+    std = {"type": "rolling_agg", "input": ema, "window": 20, "agg": "std"}
+    z = {"type": "zscore", "input": ema, **z_form}
+    guard = {
+        "type": "threshold",
+        "left": std,
+        "op": ">",
+        "right": {"type": "constant", "value": 0.0},
+    }
+    fire = {"type": "threshold", "left": z, "op": ">", "right": {"type": "constant", "value": 1.5}}
+    thesis = _feed_thesis("held_feed_guard", {"type": "and", "conditions": [guard, fire]})
+    md = load(thesis, {"target": path, "px": feed})
+    level = vectorize.build_series(thesis.entry.conditions[0].left.input, md)[0].to_numpy()[:, 0]
+    windows = np.lib.stride_tricks.sliding_window_view(level, 20)[40:]  # past every warmup
+    varies = windows.min(axis=-1) != windows.max(axis=-1)
+    assert varies.sum() > 1700 and (~varies).sum() > 50  # the decay, then the settled ema
+    on = vectorize.signal(thesis.entry.conditions[0], md).to_numpy()[:, 0]
+    np.testing.assert_array_equal(on[19:][40:], varies)
+    res = run_backtest(thesis, md)
+    assert res.summary["cells"][0]["signal_coverage"]["target"]["n_undefined"] == 0
+    assert _check(evaluate_gate(res.summary, GateThresholds()).cells[0], "signal_coverage").met
+
+
+def test_a_held_feed_read_through_its_ema_fires_where_its_exact_ew_z_does(tmp_path):
+    # The same held feed, under a threshold BELOW the decay's |z|. The ema's decay is geometric
+    # (ratio 2/3), and the EW z at window 2 of a geometric input is a constant exact arithmetic
+    # keeps however deep it goes: −1/(2√2) ≈ −0.354. Where the ema is still a normal double but
+    # its squares are not (|e| < ~1.5e-154), the EW variance read as computed rounded to 0.0 — z
+    # NaN beside the guard's True, the coverage check unmet — and floored at the smallest
+    # subnormal it collapsed z toward 0, so `z > -0.25` entered on ~600 bars of the hold exact
+    # arithmetic never enters on. The lifted recurrence reads −0.354 there: no entry, all decided.
+    n_bars, n_move = 2000, 100
+    values = np.full(n_bars, 0.0)
+    values[:n_move] = 1.0 + np.cumsum(np.random.RandomState(5).normal(0.0, 0.01, n_move))
+    values[n_move:] = values[n_move - 1]
+    path, feed = tmp_path / "px.csv", tmp_path / "feed.csv"
+    _write_px(path, _planted_dip_px(n_bars, 5, 9))
+    _write_feed(feed, values, n_bars)
+    change = {"type": "change", "input": _FEED, "periods": 1, "kind": "pct"}
+    ema = {"type": "ema", "input": change, "window": 5}
+    std = {"type": "rolling_agg", "input": ema, "window": 20, "agg": "std"}
+    z = {"type": "zscore", "input": ema, "window": 2, "mean_type": "ema"}
+    guard = {
+        "type": "threshold",
+        "left": std,
+        "op": ">",
+        "right": {"type": "constant", "value": 0.0},
+    }
+    fire = {
+        "type": "threshold",
+        "left": z,
+        "op": ">",
+        "right": {"type": "constant", "value": -0.25},
+    }
+    thesis = _feed_thesis("held_feed_exact_z", {"type": "and", "conditions": [guard, fire]})
+    md = load(thesis, {"target": path, "px": feed})
+    level = vectorize.build_series(thesis.entry.conditions[0].left.input, md)[0].to_numpy()[:, 0]
+    zs = vectorize.build_series(thesis.entry.conditions[1].left, md)[0].to_numpy()[:, 0]
+    deep = (np.abs(level) < 1.5e-154) & (np.abs(level) >= 2.0**-1022)
+    assert deep.sum() > 800
+    want = -1.0 / (2.0 * np.sqrt(2.0)) * np.sign(level[deep])
+    np.testing.assert_allclose(zs[deep], want, rtol=1e-9, atol=0.0)
+    res = run_backtest(thesis, md)
+    assert not set(res.trades["entry_bar"].astype(int)) & set(np.flatnonzero(deep))
+    assert res.summary["cells"][0]["signal_coverage"]["target"]["n_undefined"] == 0
+    assert _check(evaluate_gate(res.summary, GateThresholds()).cells[0], "signal_coverage").met
+
+
 def test_deleting_losing_decision_inputs_cannot_improve_a_cell(tmp_path):
     # THE decision-input attack, end-to-end. A NaN in an entry operand does not censor an
     # outcome — it suppresses the FIRING, so without a ledger recording it the adverse rows would

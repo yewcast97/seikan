@@ -8,6 +8,7 @@ import hashlib
 import numpy as np
 
 from seikan.analysis._episodes import overlap_clusters
+from seikan.analysis._pools import _ddof1_std
 from seikan.types import (
     EpisodeBootstrapCI,
 )
@@ -134,11 +135,18 @@ def episode_bootstrap_ci(
         stats_arr[done : done + rows] = ep_sums[idx].sum(axis=1) / ep_counts[idx].sum(axis=1)
         done += rows
 
+    out["n_boot"] = int(n_boot)
+    # An episode sum that overflowed makes every draw that resamples it ±inf (NaN off inf − inf),
+    # ranked at one end, so the percentile read one FINITE bound over draws that left the double
+    # range beside a null one. Any such sum or draw nulls the whole interval and `boot_se` alike.
+    if not (np.isfinite(ep_sums).all() and np.isfinite(stats_arr).all()):
+        out["ci_lo"] = out["ci_hi"] = out["boot_se"] = _NAN
+        return out
     alpha = (1.0 - ci) / 2.0
     lo, hi = np.percentile(stats_arr, [100.0 * alpha, 100.0 * (1.0 - alpha)])
-    out["n_boot"] = int(n_boot)
     out["ci_lo"] = float(lo)
     out["ci_hi"] = float(hi)
-    degenerate = float(stats_arr.max()) == float(stats_arr.min())
-    out["boot_se"] = 0.0 if degenerate else float(np.std(stats_arr, ddof=1))
+    # Exactly 0.0 on bit-identical draws (a degenerate distribution); NaN when the draws'
+    # variance is not a normal double — never a 0.0 read off an overflow or an underflow.
+    out["boot_se"] = _ddof1_std(stats_arr)
     return out

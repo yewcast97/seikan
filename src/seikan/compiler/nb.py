@@ -51,6 +51,32 @@ from numpy.lib.stride_tricks import sliding_window_view
 # on large-magnitude series (a price near 5000 with a std near 1 has already lost most of the
 # mantissa).
 #
+# OUT-OF-RANGE intermediates: sanitizing the RESULT is not enough where an out-of-range
+# intermediate yields a FINITE one — ``x / inf`` is 0.0, so a correlation whose variance product
+# overflowed read 0.0 for ``corr(x, x)`` at 1e80 scale, and a z-score whose window variance
+# overflowed read 0.0. A window variance that OVERFLOWED (deviations past ~1.3e154) is therefore
+# NaN wherever it is divided by or reported — the undecidable ledger, never a value. One that fell
+# BELOW the normal range is no overflow but a precision loss, and ordinary data reaches it: an
+# ``ema`` of a change decays geometrically through it over a held stretch. The squares of
+# deviations under ~1.5e-154 round to multiples of the smallest subnormal or to 0.0, reading a
+# z-score past its population bound ``√(w−1)``, a correlation off in its third digit, or a
+# varying window's std as the 0.0 an all-equal window owns. Such a VARYING window is recomputed
+# LIFTED by ``2**_LIFT`` (``_lifted_windows``): scaling up by a power of two never rounds, and the
+# lifted windows keep the direct form's layout — the same summation order — so every moment is
+# the direct one times its power of two, and the z-score, correlation and std are the values the
+# direct form has in an unbounded exponent range (a std under the smallest subnormal floors there:
+# a varying window is never zero dispersion). The correlation's variance PRODUCT of two normal
+# variances is taken with the exponents moved out wherever it leaves the normal range
+# (``_sqrt_product``), to the same exactness. Every window whose variances and, for
+# ``rolling_corr``, their product are normal doubles keeps every bit. The EW z-score
+# (``zscore_ema_1d``) carries its variance in a recurrence, which the same rule reaches by moving
+# the whole recurrence into a frame lifted by ``2**_LIFT`` once its variance nears the range
+# (``_EW_LIFT_VAR``): its z is the recurrence's value in an unbounded exponent range too — not
+# NaN, nor collapsed toward 0 off a floored variance, nor past its bound ``√((1−α)/α)``. Past the
+# frame's reach only a HELD input's decay is left, a z exact arithmetic has sent under
+# ``2**-158/α`` by then: its variance and carried deviation are floored at the smallest subnormal
+# there, sign kept — decided, imprecise in magnitude.
+#
 # EXACT zero dispersion: a window (or a cross-section) whose finite values are all equal is
 # detected exactly and given its exact answer instead of the arithmetic's: the mean of such a
 # window is the value itself, its deviations and std are 0.0, and every read that divides by its
@@ -58,8 +84,11 @@ from numpy.lib.stride_tricks import sliding_window_view
 # window is not the constant (``(0.1 + 0.1 + 0.1) / 3 != 0.1``), so without the exact test the
 # residual minted a z-score of exactly ±1 and a correlation of 1 out of a constant series. The
 # recurrences hold the same line (``ema_1d``, ``zscore_ema_1d``, ``event_agg_1d``). Every window
-# with any variation is computed exactly as before, bit for bit (the EW recurrences differ only on
-# the steps whose rounded update left its exact interval, or a held input's carried deviation);
+# with any variation whose variances and, for ``rolling_corr``, their product are normal doubles
+# is computed exactly as before, bit for bit (the EW recurrences differ only on the steps whose
+# rounded update left its exact interval, or a held input's carried deviation, and the EW z-score
+# where its plain recurrence left the normal range; the out-of-range windows and the lifted EW
+# frame are the note above);
 # "constant" means bit-identical
 # values — arithmetic on decimal levels (a spread ``y1 − y2`` moving in lockstep) leaves residue
 # at the operands' scale, which is variation as far as any kernel can tell.
@@ -80,6 +109,76 @@ def _constant_windows(a: npt.NDArray[np.float64], window: int) -> npt.NDArray[np
     return constant
 
 
+#: The smallest positive NORMAL double: below it a value keeps fewer than 53 significant bits.
+#: ``analysis._pools._TINY`` is the same constant for the pool statistics, which null a variance
+#: out of the normal range on BOTH sides (``analysis._pools._normal`` says why).
+_TINY = float(np.finfo(np.float64).tiny)
+
+
+def _normal(v: npt.NDArray[np.float64]) -> npt.NDArray[np.bool_]:
+    """Elementwise: ``v`` is a positive NORMAL double — a variance that carries its full
+    precision (see the out-of-range note above). False on 0.0, a subnormal, ``inf`` and NaN."""
+    ok: npt.NDArray[np.bool_] = (v >= _TINY) & (v < np.inf)
+    return ok
+
+
+#: The power of two a varying window whose variance fell below the normal range is LIFTED by.
+#: Down there every value of the window is under ~2**-440 (its deviations are under ~1.5e-154,
+#: and a varying window's largest deviation is at least 2**-55 of its largest magnitude) and its
+#: largest deviation at least 2**-1075 (distinct doubles differ by a subnormal step at least), so
+#: the lifted values stay under 2**160 and the lifted variance is a normal double.
+_LIFT = 600
+
+
+def _window_moments(
+    win: npt.NDArray[np.float64],
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """The mean and the two-pass centered population variance over the LAST axis — stable at
+    any input level, where the one-pass ``E[x²] − E[x]²`` form NaNs out around 1e8 already."""
+    mean = win.mean(axis=-1)
+    var: npt.NDArray[np.float64] = ((win - mean[..., None]) ** 2).mean(axis=-1)
+    return mean, var
+
+
+def _lifted_windows(a: npt.NDArray[np.float64], window: int) -> npt.NDArray[np.float64]:
+    """The trailing windows of ``a · 2**_LIFT`` — exact, as scaling UP by a power of two never
+    rounds — in the direct form's own ``sliding_window_view`` layout, so every reduction sums in
+    the same order and each lifted moment is the direct one times its power of two, bit for bit
+    (a fancy-indexed copy of the few windows that need it would not be: numpy reduces a
+    multi-column window view in another order than a contiguous stack). Members past ~2**424
+    overflow; no window read off the lift holds one (``_LIFT``). Callers silence the overflow."""
+    return sliding_window_view(np.ldexp(a, _LIFT), window, axis=0)
+
+
+def _sqrt_product(
+    a: npt.NDArray[np.float64], b: npt.NDArray[np.float64]
+) -> npt.NDArray[np.float64]:
+    """``sqrt(a·b)`` of two positive NORMAL arrays (the caller's :func:`_normal` gate), overflow-
+    and underflow-safe; any other element's result is unspecified, for that gate to discard.
+
+    The direct ``sqrt(a·b)`` wherever the product is a normal double — bit for bit. Elsewhere the
+    product overflowed (``corr(x, x)`` at 1e80 scale divided by ``inf``) or fell below the normal
+    range (to 0.0 or a subnormal, a precision loss neither factor has), so each factor's exponent
+    is taken out first (``frexp``, made even so the root halves it exactly) and put back after the
+    root (``ldexp``). Power-of-two scaling of a normal factor never rounds, so the result is
+    EXACTLY the direct form's value in an unbounded exponent range — not ``sqrt(a)·sqrt(b)``,
+    which rounds twice and reads ``corr(x, x)`` one ulp off 1.0 on about half of all scales. It is
+    exact only because the factors are: a SUBNORMAL factor has already lost its bits, and moving
+    its exponent recovers none of them. ``analysis._pools._r2`` is the scalar twin (r²'s
+    variance product) — a change to the rule changes both."""
+    with np.errstate(all="ignore"):
+        prod = a * b
+        ma, ea = np.frexp(a)
+        mb, eb = np.frexp(b)
+        ma, ea = np.ldexp(ma, ea & 1), ea - (ea & 1)
+        mb, eb = np.ldexp(mb, eb & 1), eb - (eb & 1)
+        scaled = np.ldexp(np.sqrt(ma * mb), (ea + eb) // 2)
+        out: npt.NDArray[np.float64] = np.where(
+            np.isfinite(prod) & (prod >= _TINY), np.sqrt(prod), scaled
+        )
+    return out
+
+
 def zscore_sma_apply_nb(arr: npt.NDArray[np.float64], window: int) -> npt.NDArray[np.float64]:
     a = np.asarray(arr, dtype=float)
     n = a.shape[0]
@@ -92,13 +191,22 @@ def zscore_sma_apply_nb(arr: npt.NDArray[np.float64], window: int) -> npt.NDArra
     # mean's rounding leaves (see the zero-dispersion note above).
     varies = ~_constant_windows(a, window)
     with np.errstate(all="ignore"):
-        mean = win.mean(axis=-1)
-        # Two-pass centered population variance (the ``rolling_agg`` std pattern) — stable at any
-        # input level, where the one-pass E[x²] − E[x]² form NaNs out around 1e8 already.
-        var = ((win - mean[..., None]) ** 2).mean(axis=-1)
+        # Two-pass centered population variance (the ``rolling_agg`` std pattern).
+        mean, var = _window_moments(win)
         x = a[window - 1 :]
         z = (x - mean) / np.sqrt(var)
-    out[window - 1 :] = np.where(finite_all & varies & (var > 0.0) & np.isfinite(z), z, np.nan)
+        # A VARYING window whose variance fell below the normal range (deviations under
+        # ~1.5e-154: a subnormal variance read |z| past its bound √(w−1), one of 0.0 read NaN) is
+        # recomputed lifted — the same z, every rounding scaled (the out-of-range note above).
+        lost = finite_all & varies & (var < _TINY)
+        if lost.any():
+            lifted_mean, lifted_var = _window_moments(_lifted_windows(a, window))
+            z = np.where(lost, (np.ldexp(x, _LIFT) - lifted_mean) / np.sqrt(lifted_var), z)
+            var = np.where(lost, lifted_var, var)
+    # `_normal(var)`: squared deviations past ~1.3e154 overflow the variance to inf, and the
+    # z-score `(x − mean) / inf` is a FINITE 0.0 that `isfinite(z)` cannot catch.
+    ok = finite_all & varies & _normal(var) & np.isfinite(z)
+    out[window - 1 :] = np.where(ok, z, np.nan)
     return out
 
 
@@ -144,9 +252,19 @@ def rolling_agg_apply_nb(
             # A constant window's mean IS its value (the zero-dispersion note above).
             v = np.where(_constant_windows(a, window), win[..., -1], win.mean(axis=-1))
         elif agg == "std":
-            m = win.mean(axis=-1)
-            var = ((win - m[..., None]) ** 2).mean(axis=-1)
-            v = np.where(_constant_windows(a, window), 0.0, np.sqrt(np.maximum(var, 0.0)))
+            _, var = _window_moments(win)
+            constant = _constant_windows(a, window)
+            v = np.sqrt(var)
+            # 0.0 only for a CONSTANT window. A VARYING one whose variance fell below the normal
+            # range (squared deviations under ~1.5e-154 — to 0.0 itself under ~1e-162) is
+            # recomputed lifted: its std exactly, rounded once to the window's scale and floored
+            # at the smallest subnormal — never the 0.0 an all-equal window owns.
+            lost = finite_all & ~constant & (var < _TINY)
+            if lost.any():
+                _, lifted_var = _window_moments(_lifted_windows(a, window))
+                lifted_std = np.ldexp(np.sqrt(lifted_var), -_LIFT)
+                v = np.where(lost, np.maximum(lifted_std, 5e-324), v)
+            v = np.where(constant, 0.0, v)
         elif agg == "median":
             v = np.median(win, axis=-1)
         elif agg == "mad":
@@ -298,6 +416,19 @@ def bars_since_extremum_apply_nb(
     return out
 
 
+def _pair_moments(
+    wa: npt.NDArray[np.float64], wb: npt.NDArray[np.float64]
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """The two population variances and the covariance of two aligned window stacks, two-pass
+    (centered) over the LAST axis — the correlation's direct form."""
+    da = wa - wa.mean(axis=-1)[..., None]
+    db = wb - wb.mean(axis=-1)[..., None]
+    va: npt.NDArray[np.float64] = (da**2).mean(axis=-1)
+    vb: npt.NDArray[np.float64] = (db**2).mean(axis=-1)
+    cov: npt.NDArray[np.float64] = (da * db).mean(axis=-1)
+    return va, vb, cov
+
+
 def rolling_corr_apply_nb(
     left: npt.NDArray[np.float64], right: npt.NDArray[np.float64], window: int
 ) -> npt.NDArray[np.float64]:
@@ -307,6 +438,16 @@ def rolling_corr_apply_nb(
     → NaN, never ±1; an exactly constant window is zero-variance whatever its computed variance's
     rounding residual) — the standard NaN-gating contract. Population moments (ddof=0) over the
     window, matching ``rolling_agg`` std.
+
+    Scale-safe (the out-of-range note above): the denominator ``sqrt(va·vb)`` is
+    :func:`_sqrt_product`, so a window whose variance PRODUCT leaves the double range while both
+    variances are normal doubles — where ``corr(x, x)`` read 0.0 at 1e80 scale and NaN at 1e-85 —
+    divides by the direct form's exact value; and a VARYING leg whose own variance fell below the
+    normal range (deviations under ~1.5e-154, where its lost bits read a correlation off in its
+    third digit, or NaN off a variance of 0.0) is recomputed lifted, the other leg as it is, so
+    the window reads the correlation the direct form has in an unbounded exponent range. Every
+    window whose variances and their product are normal doubles keeps every bit. A leg whose
+    variance OVERFLOWED (deviations past ~1.3e154) is NaN: ``cov / inf`` read a finite 0.0.
     """
     a = np.asarray(left, dtype=float)
     b = np.asarray(right, dtype=float)
@@ -319,16 +460,30 @@ def rolling_corr_apply_nb(
     wa = sliding_window_view(a, window, axis=0)
     wb = sliding_window_view(b, window, axis=0)
     finite_all = ~(np.isnan(wa) | np.isnan(wb)).any(axis=-1)
-    with np.errstate(all="ignore"):
-        ma = wa.mean(axis=-1)
-        mb = wb.mean(axis=-1)
-        va = ((wa - ma[..., None]) ** 2).mean(axis=-1)
-        vb = ((wb - mb[..., None]) ** 2).mean(axis=-1)
-        cov = ((wa - ma[..., None]) * (wb - mb[..., None])).mean(axis=-1)
-        corr = cov / np.sqrt(va * vb)
-    # `isfinite(corr)`: the variance product can underflow to 0 while both factors stay > 0.
     varies = ~_constant_windows(a, window) & ~_constant_windows(b, window)
-    ok = finite_all & varies & (va > 0.0) & (vb > 0.0) & np.isfinite(corr)
+    with np.errstate(all="ignore"):
+        va, vb, cov = _pair_moments(wa, wb)
+        # Each leg is lifted only on the windows where IT lost its variance: lifting a leg whose
+        # variance is normal could overflow its squares (an ordinary leg beside a decayed one).
+        lost_a = finite_all & varies & (va < _TINY)
+        lost_b = finite_all & varies & (vb < _TINY)
+        if lost_a.any() or lost_b.any():
+            la = _lifted_windows(a, window)
+            lb = _lifted_windows(b, window)
+            for lost, xa, xb in (
+                (lost_a & ~lost_b, la, wb),
+                (~lost_a & lost_b, wa, lb),
+                (lost_a & lost_b, la, lb),
+            ):
+                if lost.any():
+                    lva, lvb, lcov = _pair_moments(xa, xb)
+                    va = np.where(lost, lva, va)
+                    vb = np.where(lost, lvb, vb)
+                    cov = np.where(lost, lcov, cov)
+        corr = cov / _sqrt_product(va, vb)
+    # `_normal(va)` / `_normal(vb)`: an overflowed variance divides `cov` by inf — a FINITE ±0.0
+    # that `isfinite(corr)` cannot catch (it still catches a covariance at the float ceiling).
+    ok = finite_all & varies & _normal(va) & _normal(vb) & np.isfinite(corr)
     out[window - 1 :] = np.where(ok, corr, np.nan)
     return out
 
@@ -456,6 +611,17 @@ def cross_demean_apply_nb(arr: npt.NDArray[np.float64], min_valid: int) -> npt.N
     return np.where(ok, dev, np.nan)
 
 
+def _row_var(
+    a: npt.NDArray[np.float64], finite: npt.NDArray[np.bool_], k: npt.NDArray[np.float64]
+) -> npt.NDArray[np.float64]:
+    """``(rows, 1)``: each row's population variance over its ``k`` finite members, two-pass
+    (centered) — ``cross_agg`` std's direct form."""
+    mean = np.where(finite, a, 0.0).sum(axis=1, keepdims=True) / k
+    dev = np.where(finite, a - mean, 0.0)
+    var: npt.NDArray[np.float64] = (dev * dev).sum(axis=1, keepdims=True) / k
+    return var
+
+
 def cross_agg_apply_nb(
     arr: npt.NDArray[np.float64], agg: str, min_valid: int
 ) -> npt.NDArray[np.float64]:
@@ -488,10 +654,15 @@ def cross_agg_apply_nb(
         elif agg == "std":
             # Two-pass centered variance — the one-pass Σx²/k − mean² form cancels to a silent
             # 0.0 std at large member levels, which the documented z-score recipe then divides by.
-            mean = np.where(finite, a, 0.0).sum(axis=1, keepdims=True) / k
-            dev = np.where(finite, a - mean, 0.0)
-            var = (dev * dev).sum(axis=1, keepdims=True) / k
-            v = np.where(constant, 0.0, np.sqrt(np.maximum(var, 0.0)))
+            var = _row_var(a, finite, k)
+            v = np.sqrt(var)
+            # 0.0 only for a CONSTANT row; a VARYING one whose variance fell below the normal
+            # range is recomputed lifted and floored (the ``rolling_agg`` std rule).
+            lost = ~constant & (var < _TINY)
+            if lost.any():
+                lifted_std = np.ldexp(np.sqrt(_row_var(np.ldexp(a, _LIFT), finite, k)), -_LIFT)
+                v = np.where(lost, np.maximum(lifted_std, 5e-324), v)
+            v = np.where(constant, 0.0, v)
         elif agg == "frac_positive":
             v = (finite & (a > 0.0)).sum(axis=1, keepdims=True) / k
         else:
@@ -553,6 +724,19 @@ def ema_params(window: int | None, alpha: float | None) -> tuple[float, int]:
     return a, max(1, math.ceil(round(2.0 / a - 1.0, 9)))
 
 
+#: The EW z-score's recurrence (``zscore_ema_1d``) runs in a FRAME lifted by ``2**_LIFT`` — at most
+#: twice, which takes every nonzero double past ``2**126`` — once its variance is under
+#: ``2**-600`` while the input, the mean and the deviation are all under ``2**-300``: lifted, the
+#: variance stays under ``2**600`` and the values under ``2**300``, and as one step shrinks a
+#: variance by ``1 − α`` (``2**-53`` at the least) none leaves the normal range before the frame
+#: moves. It lowers again once an input passes ``2**400`` in it — the gap keeps a series that
+#: hovers from toggling.
+_EW_LIFT_VAR = 2.0**-600
+_EW_LIFT_AT = 2.0**-300
+_EW_LOWER_AT = 2.0**400
+_EW_MAX_LIFT = 2 * _LIFT
+
+
 @njit(cache=True)
 def zscore_ema_1d(
     arr: npt.NDArray[np.float64], alpha: float, warmup: int
@@ -573,8 +757,27 @@ def zscore_ema_1d(
     ``r / √s`` until the input moves. Without the carry μ sticks a few ulps off, ``d`` freezes at
     that residue, ``s`` settles at ``(1−α)·d²`` and the z-score reads exactly ``±1/√(1−α)`` for as
     long as the input holds; zeroing the deviation instead would flip the sign every ``z > 0``
-    read takes on the stretch. Only those held bars and an update that left its exact interval
-    differ from the plain recurrence.
+    read takes on the stretch. Only those held bars, an update that left its exact interval and
+    the out-of-range steps below differ from the plain recurrence.
+
+    Out of range: the squares of deviations under ~1.5e-154 lose their bits, and an input that
+    DECAYS geometrically — an ``ema`` of a change over a held stretch, from ordinary levels — gets
+    there with a z exact arithmetic keeps constant. Read as computed, ``s`` rounded to subnormals
+    or to 0.0: the z read past its bound ``√((1−α)/α)``, NaN, or (floored) collapsed toward 0 —
+    deciding thresholds the exact z does not. The recurrence therefore runs in a frame lifted by
+    ``2**_LIFT`` once its variance nears the range (``_EW_LIFT_VAR``), lowered once the input
+    returns. Scaling by a power of two never rounds, so every step in the frame is the plain step
+    times its power of two: the z is the recurrence's value in an unbounded exponent range, and a
+    series whose plain recurrence stays in the normal range keeps every bit. Out of the frame's
+    reach is only a HELD input's decay (a carried deviation, or a mean decaying onto a held 0.0),
+    whose z exact arithmetic sends to 0 like ``(1−α)**(t/2)``: under ``2**-158/α`` (~5e-47 at
+    RiskMetrics' 0.06; ~1e-140 on a hold at ordinary levels) once ``s`` leaves the normal range in
+    the frame. Below ``α = 1`` exact arithmetic keeps ``s`` and the carried
+    deviation nonzero once the input has moved, so an update that rounded either to 0.0 there is
+    floored at the smallest subnormal, sign kept: the z stays decided, with the carried sign and
+    an imprecise magnitude. An ``s`` that OVERFLOWED is carried forward: undefined from there on.
+    At ``α = 1`` (the DSL refuses it) the mean is the last value and ``s`` IS 0: undefined
+    throughout.
     """
     n = arr.shape[0]
     out = np.full(n, np.nan)
@@ -585,22 +788,34 @@ def zscore_ema_1d(
     seen = 0
     prev = np.nan
     carry = np.nan  # the exact deviation x − μ while a held input's update cannot move μ
+    lift = 0  # the frame's exponent: μ, s (twice over), the carry and x are held times 2**lift
     for i in range(n):
-        x = arr[i]
-        if np.isnan(x):
+        raw = arr[i]
+        if np.isnan(raw):
             continue
+        x = raw
+        if lift > 0:
+            # the input is back in range: lower the frame (exact wherever the state is normal
+            # there; what rounds is a decayed remnant the input's own deviation swamps)
+            while lift > 0 and abs(raw) > math.ldexp(_EW_LOWER_AT, -lift):
+                lift -= _LIFT
+                mu = math.ldexp(mu, -_LIFT)
+                s = math.ldexp(s, -2 * _LIFT)
+                carry = math.ldexp(carry, -_LIFT)
+            x = math.ldexp(raw, lift)
         if np.isnan(mu):
             mu = x
             s = 0.0
             carry = np.nan
-        elif x == prev and not np.isnan(carry):
+        elif raw == prev and not np.isnan(carry):
             d = carry
             s = (1.0 - alpha) * (s + alpha * d * d)
             carry = (1.0 - alpha) * d
-            # Exact arithmetic never reaches zero: floor the carried pair at the smallest
-            # subnormal, sign kept (round-to-nearest already does so for alpha < 0.5; without it
-            # a long hold at alpha >= 0.5 read undecidable, or lost its sign).
-            if s == 0.0:
+            # Exact arithmetic never reaches zero below alpha 1: floor the carried pair at the
+            # smallest subnormal, sign kept (round-to-nearest already does so for alpha < 0.5;
+            # without it a long hold at alpha >= 0.5 read undecidable, or lost its sign). At
+            # alpha 1 the EW variance IS 0 — the mean is the last value — and stays undefined.
+            if s == 0.0 and alpha < 1.0:
                 s = 5e-324
             if carry == 0.0:
                 carry = 5e-324 if d > 0.0 else -5e-324
@@ -610,20 +825,40 @@ def zscore_ema_1d(
             lo = min(mu, x)
             hi = max(mu, x)
             moved = lo if v < lo else (hi if v > hi else v)
-            s = (1.0 - alpha) * (s + alpha * d * d)
+            s_next = (1.0 - alpha) * (s + alpha * d * d)
+            # The same floor once the input has varied — reached past the frame's reach only, by
+            # a held input whose mean still moves at alpha >= 0.5: one decaying onto a held 0.0,
+            # or one already on the held value (z 0.0 either way).
+            if s_next == 0.0 and alpha < 1.0 and (s > 0.0 or d != 0.0):
+                s_next = 5e-324
+            s = s_next
             # On a held input whose update cannot move μ (absorbed, or landing on x) the exact
             # deviation is carried; μ takes the rounded update either way, so a landing leaves
             # no stale mean once the input moves.
-            held = x == prev and d != 0.0 and moved in (mu, x)
+            held = raw == prev and d != 0.0 and moved in (mu, x)
             carry = (1.0 - alpha) * d if held else np.nan
+            if carry == 0.0:  # underflowed at alpha >= 0.5: floored, sign kept, as held below
+                carry = 5e-324 if d > 0.0 else -5e-324
             mu = moved
-        prev = x
+        prev = raw
         seen += 1
+        dev = (x - mu) if np.isnan(carry) else carry
+        # the variance nears the subnormal range with every value it is built from small: lift
+        if (
+            lift < _EW_MAX_LIFT
+            and s < _EW_LIFT_VAR
+            and max(abs(x), abs(mu), abs(dev)) < _EW_LIFT_AT
+        ):
+            lift += _LIFT
+            mu = math.ldexp(mu, _LIFT)
+            s = math.ldexp(s, 2 * _LIFT)
+            carry = math.ldexp(carry, _LIFT)
+            dev = math.ldexp(dev, _LIFT)
         if seen < warmup:
             continue
         if s <= 0.0 or not np.isfinite(s):
             continue
-        z = ((x - mu) if np.isnan(carry) else carry) / np.sqrt(s)
+        z = dev / np.sqrt(s)
         if np.isfinite(z):
             out[i] = z
     return out

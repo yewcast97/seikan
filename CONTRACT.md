@@ -317,9 +317,9 @@ less than a falling market"; unbenchmarked runs: `mean_ret_raw` equals `mean_ret
 `mean_ret_bench` is null — `benchmark_regression` — {n, beta, alpha, r2, reason}, the legs'
 per-window OLS attribution: is the excess mean alpha, or beta ≠ 1 riding market drift; `alpha +
 beta·mean_ret_bench == mean_ret_raw` exactly, alpha per h-bar window and never annualized, null
-fields + reason when unbenchmarked/thin/degenerate — hit_rate / win_loss_ratio / profit_factor
-(Σwins/|Σlosses|, null never infinity when a side is empty) / std_ret / skewness / kurtosis
-(Pearson, normal = 3) / tail_ratio (≡ |p95/p05|, derivable) / cvar_5 (the mean at or below
+fields + reason when unbenchmarked/thin/degenerate/out of range — hit_rate / win_loss_ratio /
+profit_factor (Σwins/|Σlosses|, null never infinity when a side is empty) / std_ret / skewness /
+kurtosis (Pearson, normal = 3) / tail_ratio (≡ |p95/p05|, derivable) / cvar_5 (the mean at or below
 `ret_quantiles.p05`, its historical-VaR partner) — the `pool_moments` shape reads over the
 pool's own closed rows — t_hac / hac_se / rot_p / rot_n_null (the defined-shift count the
 cell's null was formed over; its own p floor is `1/(1 + rot_n_null)`) / concentration, plus the
@@ -735,9 +735,51 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   of a series that can sit flat with `rolling_agg(x, N, std) > 0`. "Equal" means bit-identical: a
   spread built from decimal levels moving in lockstep carries residue at the operands' scale,
   which no kernel can tell from variation. Every window, cross-section and pool that varies is
-  computed as before, bit for bit; the EW recurrences differ from the plain recurrence only on the
-  steps where a rounded update left its exact interval or a held input's deviation is carried —
-  rounding-scale steps a varying series with repeated values (tick data) can take too.
+  computed as before, bit for bit, while its variances and, for `rolling_corr`, their product are
+  normal doubles (the next bullet); the EW recurrences differ from the plain recurrence only on
+  the steps where a rounded update left its exact interval or a held input's deviation is
+  carried — rounding-scale steps a varying series with repeated values (tick data) can take too
+  — and the EW z-score where its plain recurrence left the normal range (the next bullet).
+- **Out-of-range dispersion is no dispersion, nor a lost one.** The finite-or-NaN line holds for
+  INTERMEDIATES too, not only results: `x / inf` is a finite 0.0, so no check on a result can see a
+  quotient whose divisor overflowed. A window variance that OVERFLOWED (deviations past ~1.3e154)
+  read `rolling_corr(x, x)` as 0 at 1e80 and a z-score as 0: it is NaN wherever it is divided by or
+  reported, undecidable like `x / 0`. One that fell BELOW the normal range (deviations under
+  ~1.5e-154) is no overflow but a precision loss, and ordinary data reaches it — an `ema` of a
+  change decays geometrically through it over a held stretch: its squares lost their bits (a
+  z-score past its bound `√(w−1)`, a correlation off in its third digit) or vanished into the `0.0`
+  an all-equal window owns (the guard `std > 0` False on moving data). Such a VARYING window is
+  recomputed on its values lifted by `2**600` — exact, scaling up by a power of two never rounds —
+  in the direct form's own summation order, so its `zscore` (`mean_type: "sma"`), `rolling_corr`
+  and `std` (`rolling_agg`, `cross_agg`) are the values the direct form has in an unbounded
+  exponent range; a `std` under the smallest subnormal floors there, so `std > 0` holds on every
+  varying window, exactly where the SMA z-score it guards is defined. The correlation's variance
+  PRODUCT of two normal variances is taken in an unbounded exponent range too, so
+  `rolling_corr(x, x)` is exactly 1 at 1e80, at 1e-85 and on subnormal values as at 1. The EW
+  `zscore` carries its variance in a recurrence, which runs in a frame lifted by `2**600` once that
+  variance nears the range — exact, the same doctrine — so its z too is the recurrence's value in
+  an unbounded exponent range: never NaN for want of range, nor collapsed toward 0 off a floored
+  variance (which decided thresholds the exact z does not), nor past its bound `√((1−α)/α)`; past
+  its warmup, and short of an overflow its recurrence carries forward, it is defined on every window
+  `std > 0` admits. Out of the frame's reach is only a held input's decay, whose z exact arithmetic
+  has sent under `2**-158/α` by then: its variance and carried deviation are floored at the
+  smallest subnormal there, sign kept — decided, imprecise in magnitude. The pool statistics read
+  measured returns, which reach that range only off input data at that scale, and hold the
+  undecidable line on both sides: a share, ratio, `t_hac`, CSCV split Sharpe, episode-mean read,
+  regression read or `cvar_5` read off a sum, mean, quantile or variance that overflowed, and a
+  `std_ret`, `boot_se`, `t_hac`, skewness/kurtosis, split Sharpe or `r2`/beta read off a variance
+  (or the power of it a moment divides by) outside the normal range, is null —
+  `benchmark_regression` declines with reason `not_representable`, an overflowed |return| mass
+  fails the concentration check instead of passing it on 0.0 shares, a bucket mean that overflowed
+  leaves `bucket_monotonicity` null, and an episode sum that overflowed nulls both `boot` bounds
+  with `boot_se`, never one bound. `describe` reports
+  numbers it never divides by, so it computes them instead: its dispersion `diff` std and its
+  trailing volume mean are scaled by a power of two where their squares or sum leave the range (a
+  varying series never reads std 0.0, `last_to_mean` never `x / inf`, and finite levels never a
+  null std while their 1-bar changes and the std itself are representable doubles). Every window
+  and pool whose variances and, for `rolling_corr`, their product are normal doubles, and whose
+  sums and means stay finite, and every EW z-score whose plain recurrence stays in the normal
+  range, is computed as before, bit for bit.
 - **Strict, frozen DSL.** Types are strict (no str/bool/float coerces to an int, no str to a
   bool; int stays legal for a float field — JSON has one number type), instances are frozen
   (`model_copy(update=...)` is the derive path), a duplicate JSON object key at any depth
