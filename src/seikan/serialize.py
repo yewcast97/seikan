@@ -159,9 +159,10 @@ def write_entry_flags_csv(frame: pd.DataFrame, path: str) -> int:
     by one bar.
 
     This is the ONE CLI output that carries a FINAL-bar firing. That firing anchors no observation —
-    there is no ``open[t+1]`` to measure from — so the runner records nothing for it and the trades
-    CSV, which is shaped per OBSERVATION, structurally cannot represent it; no coverage ledger
-    counts it either. A caller asking "is this thesis firing NOW?" reads it here.
+    there is no ``open[t+1]`` to measure from — so the runner records no observation for it and the
+    trades CSV, which is shaped per OBSERVATION, structurally cannot represent it; no coverage
+    ledger counts it either (only the rotation nulls, which rotate a member's complete mask, still
+    see it). A caller asking "is this thesis firing NOW?" reads it here.
 
     ISO-8601 index labelled ``datetime``, always overwriting; returns the row count. The file
     ALWAYS re-reads through ``dataio.read_strict_csv`` as a series-shaped CSV — int dtype, no NaN

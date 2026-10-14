@@ -782,13 +782,18 @@ target, named `entry` / `entry[axis=value,…]` with an `@<target>` suffix when 
 bit-identical to the backtest's own mask — the *whether*. A fired bar also reaches you through the
 trades CSV, in observation shape.
 
-One firing reaches only the flags file, and it is the one you are most likely to want: a firing on
-the **final bar** has no next open to anchor at, so it opens no observation, and a frame in
-observation shape has nowhere to put it (the runner drops it from the observations by design, and
-no `outcome_coverage` count records it either). So if you are asking "is my thesis firing right
-now?", read the last row of the `--entry-flags-out` CSV — never infer it from an empty trades tail.
-The library equivalent is `api.list_entries`, whose `entries` / `entry_flags` report raw firings
-rather than observations.
+One firing appears as a firing only in the flags file, and it is the one you are most likely to
+want: a firing on the **final bar** has no next open to anchor at, so it opens no observation, and a
+frame in observation shape has nowhere to put it (the runner drops it from the observations by
+design, and no `outcome_coverage` count records it either). So if you are asking "is my thesis
+firing right now?", read the last row of the `--entry-flags-out` CSV — never infer it from an empty
+trades tail. The library equivalent is `api.list_entries`, whose `entries` / `entry_flags` report
+raw firings rather than observations. One summary read still sees such a firing, because the
+rotation nulls rotate each member's COMPLETE mask: it shapes `rot_p` / `rot_n_null` — a member's own
+per-target null when that member closed rows elsewhere, and a basket's pooled common-shift null even
+when it is the member's ONLY firing. So `pooled.rot_p` / `pooled.rot_n_null` can differ from a lone
+row-bearing member's `by_target[t]` pair while every row-level ledger shows the other member
+contributing nothing.
 
 #### (b) End-of-bull / exit risk-alarm
 

@@ -4304,6 +4304,101 @@ def test_pooled_rotation_survives_an_all_censored_member(tmp_path):
     assert pooled["member_share"]["by_target"]["A"] == pytest.approx(1.0)
 
 
+def _brute_common_shift(masks: list[np.ndarray], fwds: list[np.ndarray]) -> tuple[float, int]:
+    """``(rot_p, rot_n_null)`` of the common-shift rotation null by direct summation, independent
+    of the engine's FFT path: every tau rolls EVERY member's mask by the same amount, the pooled
+    mean is Σ(rolled · finite fwd) / Σ(rolled ∧ finite), a shift with a zero denominator is
+    undefined, and p is the (1+·)/(1+·) right tail over the defined shifts. Compared exactly, so
+    the caller asserts no null value sits near the observed one (the engine's FFT tie band, ~1e-14
+    here, is then inert)."""
+    n = masks[0].shape[0]
+    means = np.full(n, np.nan)
+    for tau in range(n):
+        num = den = 0.0
+        for m, f in zip(masks, fwds, strict=True):
+            hit = np.roll(m, tau) & np.isfinite(f)
+            num += float(f[hit].sum())
+            den += float(hit.sum())
+        if den > 0:
+            means[tau] = num / den
+    observed, null = means[0], means[1:]
+    null = null[np.isfinite(null)]
+    assert np.min(np.abs(null - observed)) > 1e-9  # no near-tie: an exact comparison is sound
+    return float((1 + np.sum(null >= observed)) / (1 + null.size)), int(null.size)
+
+
+def test_pooled_rotation_rotates_a_member_whose_only_firing_is_the_final_bar(tmp_path):
+    # The roster is appended BEFORE the fillable filter: a member whose ONLY firing is the final
+    # bar has no next open to fill at, so it opens no observation (no trades row, no coverage
+    # count) — yet it fired, it shaped the basket's cross-sectional firing pattern, and the
+    # common shift must rotate its COMPLETE mask like any other member's. Rotated by tau, that
+    # firing lands on bar tau − 1 and enters the pooled null there.
+    n, h = 80, 5
+    idx = pd.date_range("2021-01-01", periods=n, freq="1D")
+    rng = np.random.RandomState(23)
+    a = 100.0 + rng.uniform(-2.0, 2.0, n)
+    # A's firings span 6 bars, so exactly one shift (tau = 44) parks all three in the 6-bar
+    # NaN-forward tail [74, 79] — undefined for A alone, defined once B's firing rides along
+    a[[30, 33, 35]] += 10.0
+    b = 100.0 + rng.uniform(-2.0, 2.0, n)
+    b[n - 1] += 10.0  # B's ONLY threshold crossing: the final bar
+    files = {
+        "A": _write_bars(tmp_path / "A.csv", a, idx),
+        "B": _write_bars(tmp_path / "B.csv", b, idx),
+    }
+    thesis = Thesis.model_validate(
+        {
+            "name": "final_bar_member",
+            "target_mode": "basket",
+            "data": {"targets": ["A", "B"]},
+            "entry": _gt(105.0),
+            "params": {"horizon": h},
+        }
+    )
+    md = load(thesis, files)
+    res = run_backtest(thesis, md)
+    cell = res.summary["cells"][0]
+
+    # the oracle, from the price arrays alone: the masks the threshold draws, and the forward
+    # return open[t+1+h] / open[t+1] − 1, NaN where the window runs past the data end
+    masks = [a > 105.0, b > 105.0]
+    assert [np.flatnonzero(m).tolist() for m in masks] == [[30, 33, 35], [n - 1]]
+    fwds = []
+    for px in (a, b):
+        f = np.full(n, np.nan)
+        f[: n - 1 - h] = px[1 + h :] / px[1 : n - h] - 1.0
+        fwds.append(f)
+    rot_p, rot_n_null = _brute_common_shift(masks, fwds)
+    # the defect's footprint: the roster without B (fillable firings only) is a different null
+    assert _brute_common_shift(masks[:1], fwds[:1]) != (rot_p, rot_n_null)
+    assert rot_n_null == n - 1  # B's rotated firing defines the shift A alone leaves undefined
+
+    pooled = cell["pooled"]
+    assert pooled["rot_p"] == rot_p
+    assert pooled["rot_n_null"] == rot_n_null
+    # B adds nothing to the ROWS: every row-level pooled read is A's own
+    st_a = cell["by_target"]["A"]
+    assert pooled["n"] == st_a["n"] == 3
+    assert pooled["n_nonoverlap"] == st_a["n_nonoverlap"] == 2
+    assert json_safe([pooled["t_hac"], pooled["hac_se"]]) == json_safe(
+        [st_a["t_hac"], st_a["hac_se"]]
+    )
+    # ... and B's own per-target read stays the closed-only roster's no-evidence default
+    st_b = cell["by_target"]["B"]
+    assert st_b["n"] == 0 and math.isnan(st_b["rot_p"]) and st_b["rot_n_null"] == 0
+
+    # the firing is real — listed and flagged — while it contributes zero observations
+    assert (res.trades["target"] == "B").sum() == 0
+    assert cell["outcome_coverage"]["B"]["n_attempted"] == 0
+    from seikan.api import list_entries
+
+    listing = list_entries(thesis, md)
+    row_b = next(r for r in listing.entries if r["target"] == "B")
+    assert row_b["timestamps"] == [idx[-1]]
+    flags_b = listing.entry_flags["entry@B"].to_numpy()  # what --entry-flags-out writes
+    assert flags_b[-1] == 1 and int(flags_b.sum()) == 1
+
+
 # ---- run-level unconditional baseline (evidence-only) ------------------------
 # The base rate every conditional mean must be read against: the SAME measurement with the entry
 # condition removed, per horizon × target — plus, in basket mode, one pooled (bar × member) row.

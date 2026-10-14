@@ -972,11 +972,13 @@ def _measure_grid(
     frames: list[pd.DataFrame] = []
     rel_cells: list[ReliabilityCell] = []
     # The basket's OWN reliability roster, kept SEPARATE from `rel_cells` on purpose: the pooled
-    # rotation null must rotate every FIRED member's mask — including a member whose every
-    # observation is right-censored, which `rel_cells` (closed-rows-only by construction) never
-    # holds — while `rel_cells` feeds the per-target reliability pass AND `cscv_pbo`, whose
-    # combo-admissibility reads would move if fired-but-uncloseable members appeared in it.
-    # Appending here instead keeps every conjunction number and both modes' CSCV byte-stable.
+    # rotation null must rotate every FIRED member's COMPLETE mask — including a member whose
+    # every observation is censored (past the data end or by a hole), and one that opened no
+    # observation at all (its only firing on the final bar, which has no next open to fill at),
+    # neither of which `rel_cells` (closed-rows-only by construction) ever holds — while
+    # `rel_cells` feeds the per-target reliability pass AND `cscv_pbo`, whose combo-admissibility
+    # reads would move if fired-but-uncloseable members appeared in it. Appending here instead
+    # keeps every conjunction number and both modes' CSCV byte-stable.
     pooled_cells: list[ReliabilityCell] = []
     # THE DECLARED GRID — one entry per (param combo × horizon), recorded as the loop declares it
     # and BEFORE anything about firing is known. `rel_cells` above only ever holds cells that fired
@@ -1062,15 +1064,14 @@ def _measure_grid(
             )
             closed_mask = np.zeros(fwd.shape, dtype=bool) if exact_pooled_mean else None
             for g, target in enumerate(targets):
-                fire = np.flatnonzero(mask[:, g])
-                fire = fire[fire + off <= n_bars - 1]  # must be able to fill the entry
-                if fire.size == 0:
-                    continue
-                if basket:
-                    # Every FIRED member's mask reaches the pooled rotation null, closed rows
-                    # or not — a member whose firings are all right-censored still shaped the
-                    # basket's cross-sectional firing pattern, and the common shift must
-                    # preserve what it rotates.
+                fire_all = np.flatnonzero(mask[:, g])
+                if basket and fire_all.size:
+                    # Every FIRED member's COMPLETE mask reaches the pooled rotation null, closed
+                    # rows or not, fillable or not — hence BEFORE the fillable filter below: a
+                    # member whose every firing is censored (past the data end or by a hole), or
+                    # whose only firing is the final bar (no row at all), still shaped the
+                    # basket's cross-sectional firing pattern, and the common shift must preserve
+                    # what it rotates.
                     pooled_cells.append(
                         {
                             "key": (*combo_key, target),
@@ -1079,6 +1080,9 @@ def _measure_grid(
                             "h": h,
                         }
                     )
+                fire = fire_all[fire_all + off <= n_bars - 1]  # must be able to fill the entry
+                if fire.size == 0:
+                    continue
                 ret = fwd[fire, g]
                 closed = np.isfinite(ret)
                 if closed_mask is not None:
@@ -1358,11 +1362,13 @@ def run_backtest(thesis: Thesis, md: MarketData) -> EventStudyResult:
     # each cell's per-target panel below; they are EVIDENCE (both estimators are known
     # anti-conservative — see analysis.stats), never a certificate.
     rel = reliability_summary(rel_cells, n_bars, targets)
-    # The basket's pooled reliability reads, derived from the SAME rel_cells
-    # entries — one pooled entry per combo × horizon: the common-shift rotation null (one shift
-    # rotates every member's mask as a block, preserving the per-bar cross-sectional firing
+    # The basket's pooled reliability reads, derived from the basket's OWN `pooled_cells` roster
+    # (every FIRED member's complete mask — a superset of the members `rel_cells` holds, see
+    # `_measure_grid`) — one pooled entry per combo × horizon: the common-shift rotation null (one
+    # shift rotates every member's mask as a block, preserving the per-bar cross-sectional firing
     # pattern a rank signal fixes) and the pooled event-time HAC / greedy n_nonoverlap over the
-    # concatenated member rows. Conjunction runs form no pooled read at all.
+    # concatenated member closed rows (a member with none adds nothing there). Conjunction runs
+    # form no pooled read at all.
     pooled_per_cell = pooled_reliability_summary(pooled_cells, n_bars)["per_cell"] if basket else {}
 
     cells = _cells_panel(

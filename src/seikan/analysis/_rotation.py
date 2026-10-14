@@ -249,10 +249,14 @@ def pooled_reliability_summary(cells: list[ReliabilityCell], length: int) -> Rel
     """Basket-mode sibling of :func:`reliability_summary`: ONE pooled overlap-aware read per
     (param combo × horizon), over the union of that combo's member (target) pools.
 
-    Consumes the SAME cell entries (``{"key": (param values…, target), "mask_col", "fwd_col",
-    "h"}``), grouped by ``key[:-1]`` — the combo prefix — in first-seen order; a group's members
-    share one ``h`` by construction (a swept horizon rides the prefix). ``G = 1`` reduces
-    EXACTLY to the per-target read: same spectra, same division, same kernels on the same rows.
+    Consumes the SAME cell-entry shape (``{"key": (param values…, target), "mask_col",
+    "fwd_col", "h"}``), grouped by ``key[:-1]`` — the combo prefix — in first-seen order; a
+    group's members share one ``h`` by construction (a swept horizon rides the prefix). The runner
+    hands it the basket's own roster — every FIRED member's complete mask, closed rows or not, a
+    superset of the per-target pass's closed-only cells — so a member with no closed row (every
+    firing censored — past the data end or by a hole — or its only firing on the final bar)
+    still rotates with the block while adding nothing to the rows. ``G = 1`` reduces EXACTLY to
+    the per-target read: same spectra, same division, same kernels on the same rows.
 
     ``rot_p`` — the COMMON-SHIFT rotation null: one shift ``tau`` rotates EVERY member's mask
     as a block. That is the null a cross-sectional signal warrants: it preserves each member's
