@@ -74,10 +74,18 @@ class RotationStamp(TypedDict):
 class SourceAvailability(TypedDict):
     """ONE raw decision leaf's availability within one target —
     ``summary["sources"][target]["by_source"][label]``, built by
-    ``compiler.runner.source_coverage`` and read by ``gate._check_source_coverage``.
+    ``compiler.runner.source_coverage`` and read by ``gate._check_source_coverage``. Labels are
+    ``field:<column>``, ``external:<feed>``, ``days_since:<feed>`` and ``native:<feed>`` (a feed
+    a ``native`` node reads on its own clock: missing on a bar whose interval absorbed a NaN
+    print, which the asof-anchored ``external`` leaf keeps only the last of — the first bar's
+    interval being the whole print history before it — or whose anchored value is missing, a NaN
+    print that stays the feed's latest).
 
-    ``n_missing`` counts holes STRICTLY AFTER the leaf's first available bar; a leaf that merely
-    starts late is warmup, and ``first_available`` reports the late start as evidence. A NULL
+    ``n_missing`` counts holes from the leaf's ``first_available`` on — the first bar its warmup
+    is over: for a bar-clock leaf the first bar its value exists (so the count runs strictly
+    after it), for a native leaf the bar the feed's first finite print arrives at (which can
+    itself be missing). A leaf that merely starts late is warmup, and ``first_available`` reports
+    the late start as evidence. A NULL
     ``first_available`` is the never-available marker: the ledger stays factual (zero post-warmup
     holes, vacuously) and ``gate._check_source_coverage`` REFUSES it (policy v3) — warmup
     requires a start to exist.

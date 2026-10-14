@@ -201,8 +201,10 @@ def _check_evidence_complete(s: Mapping[str, object], t: GateThresholds) -> Gate
 
 def _check_source_coverage(s: Mapping[str, object], t: GateThresholds) -> GateCheck:
     """Fail-closed availability contract over the RAW decision inputs — run-level because it is
-    combo-independent: the entry tree's leaves (``Field``/``External``/``DaysSince``) either had
-    data on a bar or they did not, whichever parameters read them.
+    combo-independent: the entry tree's leaves (``Field``/``External``/``DaysSince``, and a
+    ``native`` node's feed prints as ``native:<feed>``) either had data on a bar or they did
+    not, whichever parameters read them. The labels are the engine's; this check reads them
+    generically.
 
     This is the layer the per-cell three-valued ``signal_coverage`` ledger structurally cannot
     see. Two ways a hole reaches a decision while the root condition reads perfectly DEFINED:
@@ -229,7 +231,7 @@ def _check_source_coverage(s: Mapping[str, object], t: GateThresholds) -> GateCh
     the thesis may be unevaluable."""
     threshold = (
         "per target: sources.n_missing == 0 — every raw decision input the entry tree reads is "
-        "available on every bar of the evaluated interval after its own first available bar (a "
+        "available on every bar of the evaluated interval from its own first_available on (a "
         "series that merely starts late is warmup) — and first_available is non-null: an input "
         "that never became available at all refuses, because warmup requires a start to exist. "
         "With sources.n_bars == summary.n_bars, every per-source count in 0..n_bars, and the "
@@ -337,12 +339,22 @@ def _check_source_coverage(s: Mapping[str, object], t: GateThresholds) -> GateCh
                 continue
             per_source_total += n_miss
             if n_miss > 0:
+                # A native read consumes its feed's WHOLE print history, the prints before the
+                # first bar included: data.start slices the bars, never the prints, so it cannot
+                # exclude a hole counted there; data.end can still end the interval before one
+                # that arrives inside it (a print after the last bar reaches no decision).
+                remedy = (
+                    "repair the feed, or end the interval before the hole with data.end — a "
+                    "native read consumes every print before the first bar too, which "
+                    "data.start cannot exclude"
+                    if label.startswith("native:")
+                    else "repair the series or exclude the region with data.start / data.end"
+                )
                 unmet.append(
                     f"{tgt}: decision input {label} is missing on {n_miss} of {s_bars} bar(s) "
                     "of the evaluated interval — a hole under the decision inputs suppresses "
                     "firings (and can survive a decisive sibling or a NaN-skipping transform), "
-                    "so adverse firings may have been deleted; repair the series or exclude "
-                    "the region with data.start / data.end"
+                    f"so adverse firings may have been deleted; {remedy}"
                 )
         if by_source is not None and s_missing > per_source_total:
             unmet.append(

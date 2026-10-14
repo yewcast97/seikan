@@ -197,8 +197,12 @@ def series_cross_nodes(node: Series) -> Iterator[CrossRank | CrossDemean | Cross
 
 def series_source_leaves(node: Series) -> Iterator[tuple[str, str]]:
     """Yield ``(kind, name)`` for every RAW DATA leaf under a Series node, embedded conditions
-    included. The three source kinds are the only raw leaves: an event node reads its input and
-    its event condition's operands, never a source of its own."""
+    included. The three bar-clock kinds (``field``/``external``/``days_since``) are the raw
+    leaves; an event node reads its input and its event condition's operands, never a source of
+    its own. A ``native`` node additionally yields ``("native", feed)``: it reads the feed's
+    PRINTS, every one of them, so its availability also covers a print the bar-clock
+    ``external`` leaf never sees (one absorbed between two bars) — the ``external`` leaf under
+    its ``expr`` still yields as well."""
     for s in _iter_series_tree(node):
         if isinstance(s, Field):
             yield ("field", s.column)
@@ -206,6 +210,8 @@ def series_source_leaves(node: Series) -> Iterator[tuple[str, str]]:
             yield ("external", s.name)
         elif isinstance(s, DaysSince):
             yield ("days_since", s.name)
+        elif isinstance(s, Native):
+            yield ("native", s.name)
 
 
 # ---- sweeps -------------------------------------------------------------------------------

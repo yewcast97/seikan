@@ -4573,6 +4573,354 @@ def test_native_feed_end_to_end_with_lag_and_freshness_guard(tmp_path):
     )
 
 
+# The review's native-hole case: daily prints at midnight, plus a NaN print at 06:00 and a
+# finite one at 12:00 on 01-05 — both arrive at the 01-06 bar, whose asof read keeps only the
+# midnight print, so the bar-clock ``external`` leaf never sees the hole the native EMA skipped.
+_DAILY = [f"2024-01-{d:02d}" for d in range(1, 11)]
+_HOLED_STAMPS = sorted([*_DAILY, "2024-01-05T06:00", "2024-01-05T12:00"])
+
+
+def _holed_values(stamps, nan_at=("2024-01-05T06:00",)):
+    return [np.nan if s in nan_at else 1.0 + i for i, s in enumerate(stamps)]
+
+
+_NATIVE_EMA = {
+    "type": "native",
+    "name": "eps",
+    "expr": {"type": "ema", "input": _EPS, "window": 2},
+}
+
+
+def _native_sources(tmp_path, stamps, values, **kw):
+    thesis, md = _native_run(tmp_path, stamps, values, _gt0(_NATIVE_EMA), **kw)
+    summary = run_backtest(thesis, md).summary
+    return summary, summary["sources"]["target"]["by_source"]
+
+
+def test_native_print_hole_between_bars_enters_the_sources_panel(tmp_path):
+    # The native EMA skipped the 06:00 NaN print and emitted finite values after it; the root
+    # read perfectly DEFINED and the raw leaf perfectly available — both ledgers blind. The
+    # native leaf counts the hole at the bar it arrived at, and source_coverage refuses.
+    from seikan.gate import GateThresholds, evaluate_gate
+
+    summary, by_source = _native_sources(tmp_path, _HOLED_STAMPS, _holed_values(_HOLED_STAMPS))
+    assert by_source["external:eps"] == {"n_missing": 0, "first_available": "2024-01-01T00:00:00"}
+    assert by_source["native:eps"] == {"n_missing": 1, "first_available": "2024-01-01T00:00:00"}
+    assert summary["sources"]["target"]["n_missing"] == 1
+    assert summary["cells"][0]["signal_coverage"]["target"]["n_undefined"] == 0
+    report = evaluate_gate(summary, GateThresholds())
+    check = next(c for c in report.run_checks if c.name == "source_coverage")
+    assert check.met is False and "native:eps" in check.detail
+
+
+def test_native_leaf_is_clean_on_sparse_late_and_leading_nan_feeds(tmp_path):
+    # Ordinary print schedules stay legal: a sparse feed (every third day), a feed that starts
+    # late, and leading NaN prints (the feed's own warmup) — no hole, and the native leaf starts
+    # exactly where the raw leaf does.
+    sparse = ["2024-01-01", "2024-01-04", "2024-01-07", "2024-01-10"]
+    late = ["2024-01-05", "2024-01-06", "2024-01-07T09:00", "2024-01-07T15:00"]
+    for stamps, values in (
+        (sparse, [1.0, 2.0, 3.0, 4.0]),
+        (late, [1.0, 2.0, 3.0, 4.0]),
+        (late, [np.nan, np.nan, 3.0, 4.0]),
+    ):
+        _summary, by_source = _native_sources(tmp_path, stamps, values)
+        assert by_source["native:eps"] == by_source["external:eps"]
+        assert by_source["native:eps"]["n_missing"] == 0
+
+
+def test_native_hole_counts_where_the_raw_leaf_also_sees_it(tmp_path):
+    # A NaN print stamped ON a bar is the raw leaf's hole too: the native leaf never counts
+    # fewer missing bars than the raw leaf it rides on.
+    stamps = list(_DAILY)
+    _summary, by_source = _native_sources(tmp_path, stamps, _holed_values(stamps, ("2024-01-05",)))
+    assert by_source["external:eps"]["n_missing"] == 1
+    assert by_source["native:eps"]["n_missing"] == 1
+
+
+def test_native_hole_in_the_first_started_interval_is_not_warmup(tmp_path):
+    # The first finite print and a NaN print after it arrive at the SAME bar: the bar is the
+    # leaf's start (its asof value exists), and the NaN print is a hole from there on — not
+    # absorbed into warmup by the start moving one bar later.
+    stamps = ["2024-01-03T06:00", "2024-01-03T12:00", "2024-01-03T18:00", *_DAILY[3:]]
+    values = _holed_values(stamps, ("2024-01-03T12:00",))
+    _summary, by_source = _native_sources(tmp_path, stamps, values)
+    assert by_source["native:eps"] == {"n_missing": 1, "first_available": "2024-01-04T00:00:00"}
+    assert by_source["external:eps"]["n_missing"] == 0
+
+
+def _source_check(summary):
+    from seikan.gate import GateThresholds, evaluate_gate
+
+    report = evaluate_gate(summary, GateThresholds())
+    return next(c for c in report.run_checks if c.name == "source_coverage")
+
+
+def test_native_hole_before_the_evaluated_interval_counts_on_the_first_bar(tmp_path):
+    # A native read consumes the feed's WHOLE print history (feeds are not sliced by data.start),
+    # so a NaN print after the feed's first finite print but before the first bar reaches the
+    # decisions a NaN-skipping kernel carries it into: the native leaf is missing on bar 0.
+    stamps = ["2023-12-28", "2023-12-29", "2023-12-30", *_DAILY]
+    values = _holed_values(stamps, ("2023-12-29",))
+    _summary, by_source = _native_sources(tmp_path, stamps, values)
+    assert by_source["native:eps"] == {"n_missing": 1, "first_available": "2024-01-01T00:00:00"}
+    assert by_source["external:eps"] == {"n_missing": 0, "first_available": "2024-01-01T00:00:00"}
+
+
+def test_native_hole_survives_the_data_start_remedy(tmp_path):
+    # data.start slices the BARS, never the prints a native expression reads: excluding the region
+    # of the review's hole leaves every native value as it was, so the hole stays on the ledger
+    # (on the first bar now) — and the refusal names the only remedy that works.
+    values = _holed_values(_HOLED_STAMPS)
+    thesis, _md = _native_run(tmp_path, _HOLED_STAMPS, values, _gt0(_NATIVE_EMA))
+    sliced = Thesis.model_validate(
+        {**thesis.model_dump(), "data": {**thesis.data.model_dump(), "start": "2024-01-07"}}
+    )
+    summary = run_backtest(
+        sliced, load(sliced, {"target": tmp_path / "px.csv", "eps": tmp_path / "eps.csv"})
+    ).summary
+    assert summary["sources"]["target"]["by_source"]["native:eps"]["n_missing"] == 1
+    check = _source_check(summary)
+    assert check.met is False and "repair the feed" in check.detail
+    assert "data.start" in check.detail and "cannot exclude" in check.detail
+
+
+def test_native_hole_inside_the_interval_is_excluded_by_data_end(tmp_path):
+    # data.end DOES exclude an in-interval native hole — a print after the last bar reaches no
+    # decision (the native evaluation is causal on print order) — so the refusal offers it, and
+    # names data.start alone as powerless (prints before the first bar count on it).
+    values = _holed_values(_HOLED_STAMPS)
+    thesis, md = _native_run(tmp_path, _HOLED_STAMPS, values, _gt0(_NATIVE_EMA))
+    check = _source_check(run_backtest(thesis, md).summary)
+    assert check.met is False and "data.end" in check.detail
+    assert "data.start / data.end cannot exclude" not in check.detail
+    cut = Thesis.model_validate(
+        {**thesis.model_dump(), "data": {**thesis.data.model_dump(), "end": "2024-01-05"}}
+    )
+    summary = run_backtest(
+        cut, load(cut, {"target": tmp_path / "px.csv", "eps": tmp_path / "eps.csv"})
+    ).summary
+    assert summary["sources"]["target"]["by_source"]["native:eps"]["n_missing"] == 0
+    assert _source_check(summary).met is True
+
+
+def test_bar_clock_hole_keeps_the_interval_remedy(tmp_path):
+    # A bar-clock leaf's hole sits on the bars the interval slices, so its refusal still offers
+    # both data.start and data.end — the native remedy is for `native:<feed>` labels only.
+    values = np.r_[np.ones(4), np.nan, np.ones(5)]
+    thesis, md = _native_run(tmp_path, _DAILY, values, _gt0(_EPS))
+    summary = run_backtest(thesis, md).summary
+    assert summary["sources"]["target"]["by_source"]["external:eps"]["n_missing"] == 1
+    check = _source_check(summary)
+    assert check.met is False
+    assert "exclude the region with data.start / data.end" in check.detail
+    assert "native read" not in check.detail
+
+
+def _per_target_native_sources(tmp_path, stamps, nan_at):
+    n = 10
+    idx = pd.date_range("2024-01-01", periods=n, freq="1D")
+    targets = list(stamps)
+    files = {t: _write_bars(tmp_path / f"{t}.csv", np.full(n, 100.0), idx) for t in targets}
+    for t in targets:
+        feed = pd.DataFrame(
+            {"eps": _holed_values(stamps[t], nan_at[t])}, index=pd.DatetimeIndex(stamps[t])
+        )
+        feed.index.name = "datetime"
+        feed.to_csv(tmp_path / f"eps_{t}.csv")
+        files[f"eps@{t}"] = str(tmp_path / f"eps_{t}.csv")
+    thesis = Thesis.model_validate(
+        {
+            "name": "t",
+            "target_mode": "basket",
+            "data": {"targets": targets, "external": {"eps": {"per_target": True}}},
+            "entry": _gt0(_NATIVE_EMA),
+            "params": {"horizon": 1},
+        }
+    )
+    return run_backtest(thesis, load(thesis, files)).summary["sources"]
+
+
+def test_per_target_native_leaf_starts_member_by_member(tmp_path):
+    # Each member's native leaf starts where ITS first finite print arrives. A starts late (01-05)
+    # and is clean; B starts on bar 0 and absorbs a NaN print between 01-02 and 01-03 — a hole
+    # BEFORE A's start, which a start mask shared across members would erase as warmup.
+    sources = _per_target_native_sources(
+        tmp_path,
+        {"A": _DAILY[4:], "B": sorted([*_DAILY, "2024-01-02T06:00", "2024-01-02T12:00"])},
+        {"A": (), "B": ("2024-01-02T06:00",)},
+    )
+    assert sources["A"]["by_source"]["native:eps"] == {
+        "n_missing": 0,
+        "first_available": "2024-01-05T00:00:00",
+    }
+    assert sources["B"]["by_source"]["native:eps"] == {
+        "n_missing": 1,
+        "first_available": "2024-01-01T00:00:00",
+    }
+
+
+def test_shared_native_feed_is_ledgered_on_every_target(tmp_path):
+    # A shared feed is ONE print history every member reads: the review's hole is on every
+    # target's native leaf, exactly as the evaluation broadcasts the native result.
+    n = 10
+    idx = pd.date_range("2024-01-01", periods=n, freq="1D")
+    targets = ["A", "B", "C"]
+    files = {t: _write_bars(tmp_path / f"{t}.csv", np.full(n, 100.0), idx) for t in targets}
+    feed = pd.DataFrame(
+        {"eps": _holed_values(_HOLED_STAMPS)}, index=pd.DatetimeIndex(_HOLED_STAMPS)
+    )
+    feed.index.name = "datetime"
+    feed.to_csv(tmp_path / "eps.csv")
+    files["eps"] = str(tmp_path / "eps.csv")
+    thesis = Thesis.model_validate(
+        {
+            "name": "t",
+            "target_mode": "basket",
+            "data": {"targets": targets, "external": {"eps": {}}},
+            "entry": _gt0(_NATIVE_EMA),
+            "params": {"horizon": 1},
+        }
+    )
+    sources = run_backtest(thesis, load(thesis, files)).summary["sources"]
+    for t in targets:
+        assert sources[t]["by_source"]["native:eps"] == {
+            "n_missing": 1,
+            "first_available": "2024-01-01T00:00:00",
+        }, t
+
+
+def test_native_nan_print_ending_the_first_started_interval_is_a_hole(tmp_path):
+    # The first finite prints and a NaN print that ENDS their interval all arrive at 01-04: the
+    # asof value there is the NaN, but the native EMA was seeded by the 06:00 print and carries it
+    # across the 18:00 NaN. The leaf starts where the first finite print arrives, so the NaN is a
+    # hole on that bar, not warmup (deleting the finite 12:00 print can no longer clean it).
+    stamps = ["2024-01-03T06:00", "2024-01-03T12:00", "2024-01-03T18:00", *_DAILY[4:]]
+    values = _holed_values(stamps, ("2024-01-03T18:00",))
+    summary, by_source = _native_sources(tmp_path, stamps, values)
+    assert summary["cells"][0]["signal_coverage"]["target"]["n_undefined"] == 0
+    assert by_source["native:eps"] == {"n_missing": 1, "first_available": "2024-01-04T00:00:00"}
+    assert by_source["external:eps"] == {"n_missing": 0, "first_available": "2024-01-05T00:00:00"}
+    assert _source_check(summary).met is False
+
+
+def test_native_leading_nan_sharing_the_first_finite_interval_is_warmup(tmp_path):
+    # A NaN print BEFORE the feed's first finite one is the feed's warmup, even inside the same
+    # bar interval.
+    stamps = ["2024-01-03T06:00", "2024-01-03T12:00", *_DAILY[3:]]
+    _summary, by_source = _native_sources(
+        tmp_path, stamps, _holed_values(stamps, ("2024-01-03T06:00",))
+    )
+    assert by_source["native:eps"] == by_source["external:eps"]
+    assert by_source["native:eps"] == {"n_missing": 0, "first_available": "2024-01-04T00:00:00"}
+
+
+def test_native_counts_a_multi_bar_raw_hole_like_the_raw_leaf(tmp_path):
+    # A NaN print on a sparse feed holds NaN across three bars: the native leaf never counts fewer
+    # missing bars than the raw leaf it rides on.
+    stamps = ["2024-01-01", "2024-01-04", "2024-01-07", "2024-01-10"]
+    _summary, by_source = _native_sources(tmp_path, stamps, [1.0, np.nan, 3.0, 4.0])
+    assert by_source["external:eps"]["n_missing"] == 3
+    assert by_source["native:eps"]["n_missing"] == 3
+
+
+def test_native_hole_follows_the_post_lag_stamps(tmp_path):
+    # The lag shifts every print BEFORE arrival is decided: a one-day lag moves the review's hole
+    # one bar later, an 18-hour lag moves the NaN print onto a bar — counted once either way.
+    values = _holed_values(_HOLED_STAMPS)
+    _summary, by_source = _native_sources(tmp_path, _HOLED_STAMPS, values, lag=1)
+    assert by_source["native:eps"] == {"n_missing": 1, "first_available": "2024-01-02T00:00:00"}
+    summary, by_source = _native_sources(tmp_path, _HOLED_STAMPS, values, lag="18h")
+    assert by_source["external:eps"]["n_missing"] == by_source["native:eps"]["n_missing"] == 1
+    assert summary["sources"]["target"]["n_missing"] == 1
+
+
+def test_native_nan_print_after_the_last_bar_is_outside_the_interval(tmp_path):
+    after = sorted([*_DAILY, "2024-01-10T06:00", "2024-01-10T12:00"])
+    _s, by = _native_sources(tmp_path, after, _holed_values(after, ("2024-01-10T06:00",)))
+    assert by["native:eps"]["n_missing"] == 0
+    into = sorted([*_DAILY, "2024-01-09T06:00", "2024-01-09T12:00"])
+    _s, by = _native_sources(tmp_path, into, _holed_values(into, ("2024-01-09T06:00",)))
+    assert by["native:eps"]["n_missing"] == 1
+
+
+def test_native_leaf_is_ledgered_under_embedded_conditions(tmp_path):
+    inner = _gt0(_NATIVE_EMA)
+    close = {"type": "field", "column": "close"}
+    for left in (
+        {"type": "mask", "condition": inner},
+        {"type": "bars_since_event", "event": inner},
+        {"type": "event_value", "event": inner, "input": close},
+    ):
+        entry = {
+            "type": "threshold",
+            "left": left,
+            "op": ">=",
+            "right": {"type": "constant", "value": 0.0},
+        }
+        thesis, md = _native_run(tmp_path, _HOLED_STAMPS, _holed_values(_HOLED_STAMPS), entry)
+        summary = run_backtest(thesis, md).summary
+        assert summary["sources"]["target"]["by_source"]["native:eps"]["n_missing"] == 1, left
+        assert _source_check(summary).met is False, left
+
+
+def test_native_arrival_handles_mixed_timestamp_resolutions(tmp_path):
+    # Bars stamped to the nanosecond, feed stamps to the second: arrival is read with the same
+    # asof expression the anchoring uses, never a resolution-casting search.
+    n = 10
+    stamps_ns = [f"2024-01-{d:02d}T00:00:00.000000001" for d in range(1, n + 1)]
+    closes = np.full(n, 100.0)
+    (tmp_path / "px.csv").write_text(
+        "datetime,open,high,low,close,volume\n"
+        + "".join(f"{s},{c},{c},{c},{c},1.0\n" for s, c in zip(stamps_ns, closes, strict=True))
+    )
+    feed = pd.DataFrame(
+        {"eps": _holed_values(_HOLED_STAMPS)}, index=pd.DatetimeIndex(_HOLED_STAMPS)
+    )
+    feed.index.name = "datetime"
+    feed.to_csv(tmp_path / "eps.csv")
+    thesis = Thesis.model_validate(
+        {
+            "name": "t",
+            "data": {"targets": ["target"], "external": {"eps": {}}},
+            "entry": _gt0(_NATIVE_EMA),
+            "params": {"horizon": 1},
+        }
+    )
+    md = load(thesis, {"target": tmp_path / "px.csv", "eps": tmp_path / "eps.csv"})
+    by_source = run_backtest(thesis, md).summary["sources"]["target"]["by_source"]
+    assert by_source["native:eps"]["n_missing"] == 1
+
+
+def test_per_target_native_hole_is_ledgered_for_its_member_only(tmp_path):
+    # A per-target feed evaluates each member on its own prints: the NaN print absorbed between
+    # two bars is a hole for THAT member's native leaf and for nobody else's.
+    n = 10
+    idx = pd.date_range("2024-01-01", periods=n, freq="1D")
+    targets = ["A", "B"]
+    files = {t: _write_bars(tmp_path / f"{t}.csv", np.full(n, 100.0), idx) for t in targets}
+    for t, nan_at in (("A", ("2024-01-05T06:00",)), ("B", ())):
+        feed = pd.DataFrame(
+            {"eps": _holed_values(_HOLED_STAMPS, nan_at)}, index=pd.DatetimeIndex(_HOLED_STAMPS)
+        )
+        feed.index.name = "datetime"
+        feed.to_csv(tmp_path / f"eps_{t}.csv")
+        files[f"eps@{t}"] = str(tmp_path / f"eps_{t}.csv")
+    thesis = Thesis.model_validate(
+        {
+            "name": "t",
+            "target_mode": "basket",
+            "data": {"targets": targets, "external": {"eps": {"per_target": True}}},
+            "entry": _gt0(_NATIVE_EMA),
+            "params": {"horizon": 1},
+        }
+    )
+    sources = run_backtest(thesis, load(thesis, files)).summary["sources"]
+    assert sources["A"]["by_source"]["native:eps"]["n_missing"] == 1
+    assert sources["B"]["by_source"]["native:eps"]["n_missing"] == 0
+    assert sources["A"]["by_source"]["external:eps"]["n_missing"] == 0
+
+
 # ---- the cross-sectional population model end to end -------------------------------------
 
 

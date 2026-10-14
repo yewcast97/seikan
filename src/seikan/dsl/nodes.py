@@ -555,6 +555,9 @@ class Native(_Strict):
     # refused, as is a nested ``native``. Counts one level over ``expr``. The feed is evaluated
     # over its WHOLE print history (feeds are not sliced by ``data.start``/``end``; the anchored
     # bars are) — causal on print order, consistent with the raw asof anchoring and ``days_since``.
+    # Its prints are ledgered as their own ``sources`` leaf (``native:<feed>``): a NaN print
+    # absorbed between two bars is a hole there, though the anchored ``external`` leaf keeps only
+    # each interval's last print.
     # The engine has no session calendar: resampling the TARGET's own bars (weekly from daily)
     # still needs a caller-consolidated feed stamped at period completion.
     type: Literal["native"] = "native"

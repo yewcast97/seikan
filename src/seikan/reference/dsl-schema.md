@@ -594,7 +594,21 @@ with a shared axis, see below).
   clock), a nested `native`, and an `expr` that never reads the feed.
 - Counts one level over `expr`. The feed is evaluated over its WHOLE print history (feeds are not
   sliced by `data.start`/`end`; the anchored bars are) — causal on print order. An explicitly
-  stamped NaN print is a hole on the native clock and on every bar it anchors to.
+  stamped NaN print is a hole on the native clock, and the `sources` panel ledgers it under its
+  own `native:<feed>` leaf at the bar it arrives at (and on every later bar it stays the feed's
+  latest print, like the `external` leaf) — including a NaN print absorbed BETWEEN two
+  bars, which the asof-anchored `external:<feed>` leaf never sees (a bar keeps only its interval's
+  last print) while a NaN-skipping `ema` carries its state across it. The leaf starts at the bar
+  the feed's first finite print arrives at (its `first_available`; leading NaN prints are
+  warmup), and since a native read consumes the WHOLE print history, a NaN print stamped before
+  the first bar (after the feed's first finite one) counts on the first bar: `data.start` slices
+  the bars, never the prints, so it cannot clear that hole — repair the feed, or trim its history
+  before the hole — while `data.end` can end the interval before a hole that arrives inside it.
+  The ledger counts every print the read consumes without modelling how far back the expression
+  reaches, as every leaf is counted whichever parameters read it. A NaN produced INSIDE the
+  expression (`log` of a
+  non-positive print, `x/0`) is a domain NaN, not a missing print, and like any NaN-skipping
+  kernel's domain NaN it is not ledgered.
 - Recipes: **SUE** (standardized unexpected earnings over eight releases) =
   `native(eps, change(eps, 4, diff) / rolling_agg(change(eps, 4, diff), 8, std))`; a true
   **10-week EMA** = a caller-consolidated weekly close stamped at week completion +
@@ -1103,7 +1117,10 @@ complete statistics are still in `summary.cells[i]` — a checklist result never
   hypotheses from the search burden it declares, which is drifted input, not evidence.
 - `source_coverage` — fail-closed availability over the RAW decision inputs (`summary.sources`):
   per target `n_missing == 0` for every leaf the entry tree reads (a price field, an external feed,
-  a `days_since` age) over the evaluated interval, after its own first available bar. This catches
+  a `days_since` age — and, for a feed a `native` node reads on its own clock, its prints:
+  `native:<feed>`, missing on a bar whose interval absorbed a NaN print or whose anchored value
+  is missing — a NaN print that stays the latest) over the evaluated
+  interval, from its own `first_available` on. This catches
   what the per-cell `signal_coverage` structurally cannot see: an `and`/`or` operand hole settled by
   a decisive sibling (`F ∧ U = F` leaves the root DEFINED), and a hole a NaN-skipping recursive
   transform (`ema`, expanding `rolling_agg`, `bars_since_extremum`) carried its state across before

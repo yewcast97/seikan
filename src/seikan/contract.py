@@ -434,7 +434,8 @@ METRIC_ROLES_DOC: dict[str, JsonValue] = {
         "dropped hypotheses from the search burden it declares — drifted input, not evidence)",
         "sources[*].{n_bars,n_missing} + sources[*].by_source[*].n_missing (source_coverage — "
         "the fail-closed availability contract over the RAW decision inputs, run-level because "
-        "it is combo-independent: the entry tree's leaves (Field/External/DaysSince) either had "
+        "it is combo-independent: the entry tree's leaves (Field/External/DaysSince, and the "
+        "prints of a feed a native node reads) either had "
         "data on a bar or they did not, whichever parameters read them. This is the layer the "
         "per-cell three-valued signal_coverage ledger structurally cannot see, because two hole "
         "classes decide cleanly while data is missing: an operand hole absorbed by a decisive "
@@ -1082,7 +1083,9 @@ REPORT_FIELDS: dict[str, JsonValue] = {
         ),
         "sources": (
             "per-target per-decision-leaf availability (n_missing, first_available) — the raw "
-            "inputs under source_coverage"
+            "inputs under source_coverage, labelled field:/external:/days_since:/native: (the "
+            "last a feed read on its own clock: every print, so a NaN print between two bars "
+            "is a hole)"
         ),
         "cross_breadth": (
             "per (cross node × combo): {node, params, min_valid, n_bars, n_bars_evaluated, "
@@ -1354,8 +1357,9 @@ GATE_CONTRACT_DOC: dict[str, JsonValue] = {
         "source_coverage": (
             "fail-closed availability contract over the RAW decision inputs, run-level because "
             "it is combo-independent: per target sources.n_missing == 0 — every leaf the entry "
-            "tree reads (Field/External/DaysSince) available on every bar of the evaluated "
-            "interval after its own first available bar — with sources.n_bars == summary.n_bars, "
+            "tree reads (Field/External/DaysSince, and native:<feed> for a feed a native node "
+            "reads on its own clock) available on every bar of the evaluated interval from its "
+            "own first_available on — with sources.n_bars == summary.n_bars, "
             "every per-source count in 0..n_bars, and the union no larger than the sum of parts. "
             "This is the layer the per-cell three-valued signal_coverage ledger structurally "
             "cannot see: an operand hole absorbed by a decisive sibling (Kleene F and U = F "

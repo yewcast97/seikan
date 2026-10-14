@@ -399,8 +399,13 @@ countable `n_bars` and
 grid has dropped hypotheses from the search burden it declares, which is drifted input, not
 evidence); `source_coverage` (the fail-closed availability contract over the RAW decision inputs,
 run-level because it is combo-independent: per target `sources.n_missing == 0` — every leaf the
-entry tree reads (`Field`/`External`/`DaysSince`) available on every bar after its own first
-available bar — with `sources.n_bars == summary.n_bars`, every per-source count in `0..n_bars`,
+entry tree reads (`Field`/`External`/`DaysSince`, plus `native:<feed>` for a feed a `Native` node
+reads on its own clock — every print, so a NaN print absorbed between two bars is a hole the
+asof-anchored `external` leaf never sees, and one stamped after the feed's first finite print
+but before the first bar is a hole on it, since a native read consumes the whole print history —
+counted whatever the expression's reach, as every leaf is counted whichever parameters read it)
+available on every bar from its own
+`first_available` on — with `sources.n_bars == summary.n_bars`, every per-source count in `0..n_bars`,
 and the union no larger than the sum of parts; a source that merely STARTS LATE is warmup, not a
 hole, and `first_available` is evidence, never a refusal; no knob); and `search_cap`
 (`n_hypotheses_attempted` — the DECLARED grid, which non-firing combos cannot shrink — ≤ 64, the

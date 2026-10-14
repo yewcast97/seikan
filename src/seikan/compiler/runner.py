@@ -475,8 +475,9 @@ def _run_summary(
     # beat the observation", not "p ≈ 0".
     n_shifts = int(rel.get("n_shifts", 0))
     # Per-SOURCE availability, computed UNCONDITIONALLY. Every raw decision leaf
-    # the entry tree reads (`Field`/`External`/`DaysSince`), counted over the WHOLE evaluated
-    # interval after its own first available bar. This is the layer beneath each cell's
+    # the entry tree reads (`Field`/`External`/`DaysSince`, and `native:<feed>` — the prints a
+    # native node reads), counted over the WHOLE evaluated interval from its own first_available
+    # on. This is the layer beneath each cell's
     # `signal_coverage`: the root condition's `defined` channel answers "was the condition
     # DECIDED?", which a decisive sibling can settle (Kleene F∧U = F) and a NaN-skipping recursive
     # kernel can launder (state carried across a hole, finite output afterwards) — reading the raw

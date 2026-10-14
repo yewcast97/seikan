@@ -20,6 +20,7 @@ from seikan.dsl.schema import (
     ThresholdCondition,
     ZScore,
     declared_grid_size,
+    iter_source_leaves,
 )
 
 NESTED_THESIS = {
@@ -3130,3 +3131,25 @@ def test_json_schema_includes_axis_ref_and_axes():
     schema = Thesis.model_json_schema()
     assert "AxisRef" in schema["$defs"]
     assert "axes" in schema["properties"]
+
+
+def test_source_leaf_walks_yield_the_native_kind() -> None:
+    # A `native` node reads its feed's PRINTS: the public walk yields its own ("native", feed)
+    # leaf beside the bar-clock ("external", feed) leaf under its expr.
+    doc = {
+        "name": "n",
+        "data": {"targets": ["A"], "external": {"n": {}}},
+        "entry": {
+            "type": "threshold",
+            "op": ">",
+            "right": {"type": "constant", "value": 50},
+            "left": {
+                "type": "native",
+                "name": "n",
+                "expr": {"type": "ema", "input": {"type": "external", "name": "n"}, "window": 5},
+            },
+        },
+        "params": {"horizon": 3},
+    }
+    entry = Thesis.model_validate(doc).entry
+    assert sorted(iter_source_leaves(entry)) == [("external", "n"), ("native", "n")]
