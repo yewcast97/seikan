@@ -93,6 +93,7 @@ from seikan.dsl.schema import (
     render_series,
     series_cross_nodes,
 )
+from seikan.numeric import log_ratio_array
 from seikan.types import (
     EXCLUSION_REASONS,
     EXIT_REASONS,
@@ -1270,7 +1271,12 @@ def run_backtest(thesis: Thesis, md: MarketData) -> EventStudyResult:
 
     # The measurement algebra (params.outcome.kind): pct = (b/a − 1), log = ln(b/a),
     # diff = (b − a). Non-finite (0-division, log of a non-positive ratio) → NaN, censoring the
-    # observation like any other unmeasurable window.
+    # observation like any other unmeasurable window — a pct or diff past the double range
+    # included: it has no representable value, so it censors as `no_outcome` (silently: the
+    # overflow is expected, hence `over="ignore"`). `log` reads through the scale-safe
+    # `numeric.log_ratio_array`, finite for every positive pair: 1e200 → 1e-200 is −921.03…,
+    # not ln(0) = −inf censoring a perfectly measurable window. The direct ln(b/a) stands
+    # wherever the quotient is a normal double, so every other log return is bit-identical.
     #
     # pct and log additionally require both endpoints STRICTLY POSITIVE. Both
     # are ratio algebras and are meaningless off a positive scale, but neither fails loudly:
@@ -1283,11 +1289,11 @@ def run_backtest(thesis: Thesis, md: MarketData) -> EventStudyResult:
     # not a domain error). OHLCV targets cannot reach this (the strict loader already refuses
     # non-positive prices); series-shaped targets and feed outcomes can.
     def _measure(num: np.ndarray, den: np.ndarray) -> np.ndarray:
-        with np.errstate(divide="ignore", invalid="ignore"):
+        with np.errstate(divide="ignore", over="ignore", invalid="ignore"):
             if outcome_kind == "pct":
                 r = np.where((num > 0.0) & (den > 0.0), num / den - 1.0, np.nan)
             elif outcome_kind == "log":
-                r = np.where((num > 0.0) & (den > 0.0), np.log(num / den), np.nan)
+                r = np.where((num > 0.0) & (den > 0.0), log_ratio_array(num, den), np.nan)
             else:  # diff
                 r = num - den
         return r

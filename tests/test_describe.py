@@ -11,14 +11,17 @@ nothing, and supports no thesis. The exit code carries check-data's meaning — 
 
 from __future__ import annotations
 
+import ast
 import json
 import math
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 
 from seikan.cli import MAX_DESCRIBE_WINDOWS, main
+from seikan.dataio import read_strict_csv
 from tests._helpers import write_ohlcv as _write_ohlcv
 
 # ---- fixtures -------------------------------------------------------------------------------
@@ -318,6 +321,155 @@ def test_zero_crossing_series_refuses_ratio_algebras_while_diff_lives(tmp_path, 
     assert fs["ratio_reason"] == "non_positive_endpoint"
 
 
+def test_quotient_past_the_double_range_reads_the_exact_log_and_names_the_pct_refusal(
+    tmp_path, capsys
+):
+    # The review's probe: 1e200 → 1e-200 is a quotient of 1e-400, which underflows to 0.0, so
+    # math.log(b/a) raised a domain error and the whole command died at exit 4. ln(b/a) itself
+    # is the finite −921.03…; the scale-safe log reads it as ln(b) − ln(a) exactly there.
+    down = _write_series(tmp_path / "down.csv", [1e200, 1e-200])
+    code, doc = _run(capsys, ["describe", str(down), "--windows", "1"])
+    assert code == 0
+    blocks = _series_profile(doc)
+    ch1 = blocks["changes"]["1"]
+    assert ch1["log"] == math.log(1e-200) - math.log(1e200) == -921.0340371976183
+    assert ch1["pct"] == -1.0  # b/a underflows to 0.0, and −1.0 IS the correctly rounded pct
+    assert ch1["diff"] == -1e200
+    assert ch1["reason"] is None and ch1["ratio_reason"] is None
+    assert blocks["full_sample"]["drawdown_pct"] == -1.0
+    # Reversed, the quotient 1e400 OVERFLOWS: log still reads exactly, but pct = b/a − 1 has no
+    # double to be — so it is a null that says why (it used to be an inf serialized to a
+    # reasonless null), here and in every block that reads the same ratio.
+    up = _write_series(tmp_path / "up.csv", [1e-200, 1e200])
+    code, doc = _run(capsys, ["describe", str(up), "--windows", "1,2"])
+    assert code == 0
+    blocks = _series_profile(doc)
+    ch1 = blocks["changes"]["1"]
+    assert ch1["log"] == 921.0340371976183 and ch1["diff"] == 1e200
+    assert ch1["pct"] is None and ch1["ratio_reason"] == "not_representable"
+    assert ch1["reason"] is None  # the block did not refuse — only its pct read
+    rp2 = blocks["range_position"]["2"]
+    assert rp2["from_low"] == {"diff": 1e200, "pct": None}
+    assert rp2["from_high"] == {"diff": 0.0, "pct": 0.0}
+    assert rp2["reason"] is None and rp2["ratio_reason"] == "not_representable"
+    fs = blocks["full_sample"]
+    assert fs["runup_pct"] is None and fs["runup_diff"] == 1e200
+    assert fs["drawdown_pct"] == 0.0
+    assert fs["ratio_reason"] == "not_representable"
+
+
+def test_subnormal_quotient_reads_the_exact_log_not_its_rounded_one(tmp_path, capsys):
+    # 3e20 → 1e-300 is a quotient of 3.3e-321 — SUBNORMAL, so ln of it was finite and read
+    # without complaint, but rounding to the subnormal grid had already cost it ~5e-4:
+    # −737.92536 where ln(b) − ln(a) is −737.92584. The rule reads the exact value wherever the
+    # quotient is not a normal double, the subnormal band included — changes and dispersion.
+    y = _write_series(tmp_path / "y.csv", [3e20, 1e-300, 1e-300])
+    code, doc = _run(capsys, ["describe", str(y), "--windows", "2"])
+    assert code == 0
+    blocks = _series_profile(doc)
+    exact = math.log(1e-300) - math.log(3e20)
+    assert exact == -737.9258420467627 != math.log(1e-300 / 3e20)
+    ch2 = blocks["changes"]["2"]
+    assert ch2["log"] == exact
+    assert ch2["pct"] == -1.0 and ch2["ratio_reason"] is None
+    # dispersion reads its changes through the ARRAY twin, so its expectation is np.log's
+    np_exact = np.log(1e-300) - np.log(3e20)
+    assert np_exact != np.log(1e-300 / 3e20)
+    want = float(np.std([np_exact, np.log(1e-300 / 1e-300)], ddof=1))
+    assert blocks["dispersion"]["2"]["log"] == want
+
+
+def test_dispersion_pct_past_the_double_range_refuses_by_name_while_log_lives(tmp_path, capsys):
+    # 1e-300 → 1e10 is a 1-bar ratio of 1e310: the pct std has no double to be (it warned and
+    # emitted a reasonless null), while the log changes stay exact and their std finite.
+    y = _write_series(tmp_path / "y.csv", [1e-300, 1e10, 1e10])
+    code, doc = _run(capsys, ["describe", str(y), "--windows", "2"])
+    assert code == 0
+    blocks = _series_profile(doc)
+    d2 = blocks["dispersion"]["2"]
+    assert d2["pct"] is None and d2["ratio_reason"] == "not_representable"
+    assert d2["reason"] is None
+    log_changes = [np.log(1e10) - np.log(1e-300), np.log(1e10 / 1e10)]  # the array twin's log
+    assert d2["log"] == float(np.std(log_changes, ddof=1))
+    assert d2["diff"] == float(np.std(np.diff([1e-300, 1e10, 1e10]), ddof=1))
+    ch2 = blocks["changes"]["2"]
+    assert ch2["log"] == math.log(1e10) - math.log(1e-300)
+    assert ch2["pct"] is None and ch2["ratio_reason"] == "not_representable"
+    # Every 1-bar pct here is finite (~1e155, then 0.0), but numpy's std squares deviations of
+    # ~5e154, which overflow: the COMPUTATION leaves the double range even though the std itself
+    # (~7.07e154) would fit. No rescaled std is attempted — the read refuses by the same name,
+    # silently (it warned), while the log and diff stds and the changes pct live.
+    levels = [1e-150, 1e5, 1e5]
+    y = _write_series(tmp_path / "z.csv", levels)
+    code, doc = _run(capsys, ["describe", str(y), "--windows", "2"])
+    assert code == 0
+    blocks = _series_profile(doc)
+    d2 = blocks["dispersion"]["2"]
+    assert d2["pct"] is None and d2["ratio_reason"] == "not_representable"
+    assert d2["reason"] is None
+    assert d2["log"] == float(np.std([np.log(1e5 / 1e-150), np.log(1e5 / 1e5)], ddof=1))
+    assert d2["diff"] == float(np.std(np.diff(levels), ddof=1))
+    assert blocks["changes"]["2"]["pct"] == 1e5 / 1e-150 - 1.0
+
+
+def test_levels_farther_apart_than_the_double_range_refuse_their_blocks_by_name(tmp_path, capsys):
+    # Two FINITE levels of opposite sign can sit farther apart than the double range holds
+    # (1.7e308 → −1.7e308 is a change of −3.4e308): `diff`, the algebra that rides every block
+    # that did not refuse, has no double to be. A range distance's `diff` is never null, so
+    # this file crashed describe at exit 4 on its own emitted contract; elsewhere the overflow
+    # rode out as a reasonless null. Each such block now refuses WHOLE, by name.
+    crash = _write_series(tmp_path / "crash.csv", [1.7e308, -1.7e308])
+    code, doc = _run(capsys, ["describe", str(crash), "--windows", "1,2"])
+    assert code == 0
+    blocks = _series_profile(doc)
+    refused_change = {
+        "diff": None,
+        "pct": None,
+        "log": None,
+        "reason": "not_representable",
+        "ratio_reason": None,
+    }
+    assert blocks["changes"]["1"] == refused_change
+    assert blocks["range_position"]["2"] == {
+        "high": None,
+        "low": None,
+        "from_high": None,
+        "from_low": None,
+        "percentile_rank": None,
+        "reason": "not_representable",
+        "ratio_reason": None,
+    }
+    assert blocks["range_position"]["1"]["reason"] is None  # one bar: no distance to overflow
+    fs = blocks["full_sample"]  # the distance reads refuse; the observed extremes stay
+    assert fs["high"]["value"] == 1.7e308 and fs["low"]["value"] == -1.7e308
+    assert fs["drawdown_diff"] is None and fs["runup_diff"] is None
+    assert fs["drawdown_pct"] is None and fs["runup_pct"] is None
+    assert fs["reason"] == "not_representable" and fs["ratio_reason"] is None
+    # Only the windows that span the gap refuse: the 1-bar reads beside them still ride.
+    span = _write_series(tmp_path / "span.csv", [-1e308, 1e308, 1e308])
+    code, doc = _run(capsys, ["describe", str(span), "--windows", "1,2,3"])
+    assert code == 0
+    blocks = _series_profile(doc)
+    assert blocks["changes"]["1"]["diff"] == 0.0 and blocks["changes"]["1"]["log"] == 0.0
+    assert blocks["changes"]["2"] == refused_change
+    assert blocks["dispersion"]["2"] == refused_change  # a 1-bar change of 2e308
+    assert blocks["range_position"]["2"]["from_low"] == {"diff": 0.0, "pct": 0.0}
+    assert blocks["range_position"]["3"]["reason"] == "not_representable"
+    assert blocks["full_sample"]["reason"] == "not_representable"
+    # A dispersion std can leave the range over changes that do not: ±1.7e308 has a std of
+    # 2.4e308. The block refuses whole — the log std with it, finite as it is where 1e-300
+    # keeps every level positive — while the changes it reads ride, each a double.
+    for i, levels in enumerate(([0.0, 1.7e308, 0.0], [1e-300, 1.7e308, 1e-300])):
+        y = _write_series(tmp_path / f"std{i}.csv", levels)
+        code, doc = _run(capsys, ["describe", str(y), "--windows", "1,2"])
+        assert code == 0
+        blocks = _series_profile(doc)
+        assert blocks["dispersion"]["2"] == refused_change
+        assert blocks["changes"]["1"]["diff"] == levels[2] - levels[1]
+        assert blocks["changes"]["1"]["reason"] is None
+        assert blocks["full_sample"]["drawdown_diff"] == levels[2] - levels[1]
+
+
 def test_nan_endpoint_is_never_repaired(tmp_path, capsys):
     # The last level is a HOLE. The forbidden move is skipping back to the previous finite
     # value: every number that repair would have produced must appear NOWHERE in the document.
@@ -402,6 +554,33 @@ def test_exact_values_including_the_most_recent_tie_rule(tmp_path, capsys):
     assert fs["runup_pct"] == pytest.approx(1.5)
 
     assert blocks["missingness"]["n_missing"] == 0
+
+
+def test_ordinary_log_reads_are_the_direct_form_bit_for_bit(tmp_path, capsys):
+    # The scale-safe log reads ln(b) − ln(a) ONLY where the quotient left the normal double
+    # range: that form rounds differently from ln(b/a) on almost every ordinary pair, so on a
+    # random walk every changes[N].log and dispersion[N].log carries the direct form's exact
+    # bits — and the difference of logs must visibly disagree with them, or this pins nothing.
+    rng = np.random.default_rng(11)
+    walk = 100.0 * np.exp(np.cumsum(rng.normal(0.0, 0.02, 300)))
+    y = _write_series(tmp_path / "y.csv", walk)
+    windows = (2, 3, 5, 8, 13, 21, 34, 55, 89, 144)
+    code, doc = _run(capsys, ["describe", str(y), "--windows", ",".join(map(str, windows))])
+    assert code == 0
+    blocks = _series_profile(doc)
+    frame, _report = read_strict_csv(str(y))  # the levels describe read, bit for bit
+    assert frame is not None
+    x = frame["y"].to_numpy()
+    n_change_moves = n_dispersion_moves = 0
+    for w in windows:
+        a, b, tail = float(x[-1 - w]), float(x[-1]), x[-(w + 1) :]
+        log = blocks["changes"][str(w)]["log"]
+        assert log == math.log(b / a)
+        n_change_moves += log != math.log(b) - math.log(a)
+        std = blocks["dispersion"][str(w)]["log"]
+        assert std == float(np.std(np.log(tail[1:] / tail[:-1]), ddof=1))
+        n_dispersion_moves += std != float(np.std(np.log(tail[1:]) - np.log(tail[:-1]), ddof=1))
+    assert n_change_moves > 0 and n_dispersion_moves > 0
 
 
 def test_volume_block_hand_computed_and_absent_without_volume(tmp_path, capsys):
@@ -512,6 +691,36 @@ def test_document_is_byte_deterministic(tmp_path, capsys):
     second = capsys.readouterr().out
     assert code == 0
     assert first == second  # same bytes, always — no RNG, no set/dict-order dependence
+
+
+def _imported_modules(module) -> set[str]:
+    tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            names.add(node.module or "")
+    return names
+
+
+def test_describe_shares_the_log_ratio_rule_through_a_leaf_never_the_engine():
+    # The containment claim, pinned on describe's OWN imports: it reads the engine's log-ratio
+    # rule from the leaf `seikan.numeric`, never from compiler/ (nor analysis/, gate/, numba) —
+    # and the leaf stays a leaf, so sharing the rule cannot drag the engine in.
+    import seikan.describe
+    import seikan.numeric
+
+    engine = ("seikan.compiler", "seikan.analysis", "seikan.gate", "numba")
+    assert "seikan.numeric" in _imported_modules(seikan.describe)
+    assert not {m for m in _imported_modules(seikan.describe) if m.startswith(engine)}
+    assert _imported_modules(seikan.numeric) <= {
+        "__future__",
+        "math",
+        "sys",
+        "numpy",
+        "numpy.typing",
+    }
 
 
 def test_document_carries_no_judgment_vocabulary(tmp_path, capsys):

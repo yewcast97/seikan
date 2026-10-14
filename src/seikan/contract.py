@@ -1880,25 +1880,40 @@ DESCRIBE_REPORT: dict[str, JsonValue] = {
             "against the level N bars earlier. diff whenever both endpoints are finite; "
             "pct/log ONLY when both are strictly positive (the positivity "
             "rule — ratio algebras through zero mint garbage, so they refuse with "
-            "ratio_reason 'non_positive_endpoint' while diff lives). A NaN endpoint refuses "
+            "ratio_reason 'non_positive_endpoint' while diff lives). log = ln(last/base) is "
+            "scale-safe — finite for EVERY positive pair, 1e200 -> 1e-200 included (the run's "
+            "own log algebra, one rule); a pct whose ratio leaves the double range has no "
+            "number to be and refuses alone, ratio_reason 'not_representable', while log and "
+            "diff live. A NaN endpoint refuses "
             "as 'endpoint_missing' and is NEVER repaired by skipping to the previous finite "
-            "value. All three algebras ride with domain-nulls because choosing one would be "
+            "value; endpoints of opposite sign farther apart than the double range leave diff "
+            "no number to be, and the block refuses whole as 'not_representable'. All three "
+            "algebras ride with domain-nulls because choosing one would be "
             "the engine deciding what a series IS"
         ),
         "dispersion[N]": (
             "{diff, pct, log, reason, ratio_reason} — ddof=1 std of the N trailing 1-bar "
             "changes (the same N+1 trailing levels changes[N] reads), one per algebra under "
-            "the same domain gates, PER BAR and never annualized. N=1 holds a single change "
+            "the same domain gates (a pct std whose computation leaves the double range — "
+            "a 1-bar ratio, or the squared deviations, overflowing — refuses as "
+            "'not_representable'), PER BAR and never annualized. N=1 holds a single change "
             "and cannot carry a ddof=1 std (insufficient_bars); a hole in the window is a "
-            "change with a missing endpoint (endpoint_missing), never skipped"
+            "change with a missing endpoint (endpoint_missing), never skipped; a diff std "
+            "with no double to be (a 1-bar change, or the std itself, past the double range) "
+            "refuses the block whole as 'not_representable'"
         ),
         "range_position[N]": (
             "{high: {value, timestamp}, low: {value, timestamp}, from_high: {diff, pct}, "
             "from_low: {diff, pct}, percentile_rank, reason, ratio_reason} — trailing "
             "extremes over EXACTLY the last N bars: a shorter file refuses as "
-            "insufficient_bars (the window is never silently shortened) and a hole inside "
-            "the window refuses as endpoint_missing (the extremum could be hiding in it). "
+            "insufficient_bars (the window is never silently shortened), a hole inside "
+            "the window refuses as endpoint_missing (the extremum could be hiding in it), and "
+            "a distance from an extremum past the double range (a window spanning both signs "
+            "more than ~1.8e308 apart) as not_representable — every refusal nulls the whole "
+            "block. "
             "Ties resolve to the MOST RECENT bar (the bars_since_extremum rule). "
+            "from_*.pct = last/extremum - 1 under the changes[N] pct gates (ratio_reason "
+            "'non_positive_endpoint' / 'not_representable', the diff twins always riding). "
             "percentile_rank is the right-continuous empirical CDF of the last level within "
             "the window — the share of window levels <= it, in (0, 1]"
         ),
@@ -1907,8 +1922,11 @@ DESCRIBE_REPORT: dict[str, JsonValue] = {
             "ratio_reason} — whole-file extremes over the OBSERVED (finite) levels, "
             "most-recent tie rule, with the missingness block beside them stating the "
             "holes; drawdown_pct = last/high - 1 and runup_pct = last/low - 1 (diff twins "
-            "always ride), both against the ACTUAL last level — a NaN last level refuses "
-            "them (endpoint_missing) rather than substituting the previous finite value"
+            "beside them; the pct reads under the changes[N] pct gates), both against the "
+            "ACTUAL last level — a NaN last level refuses "
+            "them (endpoint_missing) rather than substituting the previous finite value, and "
+            "a distance past the double range refuses them as not_representable; the "
+            "extremes stay either way"
         ),
         "missingness": (
             "{n_missing, n_interior_missing, first_valid, last_valid} — pure counts and the "
@@ -1917,8 +1935,10 @@ DESCRIBE_REPORT: dict[str, JsonValue] = {
         "reasons": (
             "refusals are EXPLICIT and PRESENT, never omitted: every windowed block carries "
             "its entry for every requested window, with reason in {insufficient_bars, "
-            "endpoint_missing} when the block refuses whole, and ratio_reason in "
-            "{non_positive_endpoint} when only the ratio algebras refuse while diff lives"
+            "endpoint_missing, not_representable} when the block refuses whole, and "
+            "ratio_reason in {non_positive_endpoint, not_representable} when only a ratio read "
+            "refuses while diff lives — on a block that did not refuse whole diff is NEVER "
+            "null and a null ratio read ALWAYS carries its ratio_reason (enforced at emission)"
         ),
     },
 }

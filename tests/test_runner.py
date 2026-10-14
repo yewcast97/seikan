@@ -2809,6 +2809,28 @@ def test_log_outcome_yields_a_true_log_excess(tmp_path):
         assert ret == pytest.approx(want, abs=1e-12)
 
 
+def test_log_benchmark_leg_past_the_double_range_closes_instead_of_no_benchmark(tmp_path):
+    """The market leg is read by the outcome's own `_measure`, so a benchmark quotient past the
+    double range (1e200 → 1e-200 and back) read ln(0) = −inf / ln(inf) = +inf: the excess went
+    NaN and a window whose two legs were both measurable censored as `no_benchmark`. The
+    scale-safe log closes it with the exact log-excess."""
+    tgt = np.array([100.0, 101.0, 102.0, 103.0, 104.0, 105.0])
+    bench = np.array([1.0, 1e200, 1e-200, 1e200, 1.0, 1.0])
+    res = _bench_run(tmp_path, tgt, bench, horizon=1, benchmark="market", outcome={"kind": "log"})
+    by_bar = {int(r.entry_bar): r for r in res.trades.itertuples()}
+    # bar t measures the next-bar anchor t+1 → t+2: bench 1e200 → 1e-200, then 1e-200 → 1e200
+    # (expectations by np.log — the runner's own log — never math.log's possibly other ulp)
+    down = np.log(1e-200) - np.log(1e200)
+    for bar, ret_bench in ((0, down), (1, -down)):
+        row = by_bar[bar]
+        assert row.exit_reason == "horizon"
+        assert row.ret_bench == ret_bench
+        assert row.ret_raw == np.log(tgt[bar + 2] / tgt[bar + 1])
+        assert row.ret == row.ret_raw - row.ret_bench
+    cov = res.summary["cells"][0]["outcome_coverage"]["target"]
+    assert cov["exit_reasons"]["no_benchmark"] == 0
+
+
 def test_benchmark_legs_attribute_the_excess_return(tmp_path):
     """The two legs the excess subtraction consumed are RETAINED, not discarded: per closed row
     ret == ret_raw − ret_bench bit-exactly (they are the very floats `_forward` subtracted), and
@@ -3032,6 +3054,55 @@ def test_log_outcome_censors_two_negative_endpoints(tmp_path):
     assert by_bar[1].exit_reason == "no_outcome"  # -2.0 → 5.0, sign change
     assert by_bar[2].exit_reason == "horizon"
     np.testing.assert_allclose(by_bar[2].ret, math.log(20.0 / 5.0))
+
+
+def test_log_outcome_past_the_double_range_closes_with_the_exact_log(tmp_path):
+    """The quotient of 1e200 → 1e-200 underflows to 0.0, so ln(b/a) read −inf and a perfectly
+    measurable window was censored as `no_outcome` — a deleted outcome the checklist then
+    refused. ln(b/a) is the finite −921.03…; the scale-safe log closes the window with it, and
+    the direct form (and its bits) stays wherever the quotient is a normal double."""
+    trades = _measured(tmp_path, [1.0, 1e200, 1e-200, 1e200, 1.0], "log")
+    by_bar = {int(r.entry_bar): r for r in trades.itertuples()}
+    down = np.log(1e-200) - np.log(1e200)  # the runner's own log: −921.03…
+    assert by_bar[0].exit_reason == "horizon"  # 1e200 → 1e-200: underflowing quotient
+    assert by_bar[0].ret == down and math.isclose(down, -921.0340371976183, rel_tol=1e-15)
+    assert by_bar[1].exit_reason == "horizon"  # 1e-200 → 1e200: overflowing quotient
+    assert by_bar[1].ret == np.log(1e200) - np.log(1e-200)
+    assert by_bar[2].exit_reason == "horizon"  # 1e200 → 1.0: a normal quotient, direct form
+    assert by_bar[2].ret == np.log(1.0 / 1e200)
+    # A SUBNORMAL quotient (3e20 → 1e-300 is 3.3e-321) closed before too, but with ln of the
+    # rounded quotient (−737.92536): it now reads the exact −737.92584.
+    trades = _measured(tmp_path, [1.0, 3e20, 1e-300, 1.0], "log")
+    row = trades[trades["entry_bar"] == 0].iloc[0]
+    assert row.exit_reason == "horizon"
+    assert row.ret == np.log(1e-300) - np.log(3e20) != np.log(1e-300 / 3e20)
+    assert math.isclose(row.ret, -737.9258420467627, rel_tol=1e-15)
+
+
+def test_log_outcome_keeps_the_direct_form_bit_for_bit_on_ordinary_levels(tmp_path):
+    """The difference of logs rounds differently from ln(b/a) on almost every ordinary pair, so
+    the scale-safe fallback may fire only where the quotient left the normal double range: on a
+    random walk every closed `ret` carries the direct form's exact bits over the very
+    `entry_px` / `exit_px` floats the window measured — and the fallback visibly disagrees."""
+    rng = np.random.default_rng(5)
+    walk = 100.0 * np.exp(np.cumsum(rng.normal(0.0, 0.02, 300)))
+    trades = _measured(tmp_path, list(walk), "log")
+    closed = trades[trades["exit_reason"] == "horizon"]
+    assert len(closed) > 250
+    ret = closed["ret"].to_numpy()
+    num, den = closed["exit_px"].to_numpy(), closed["entry_px"].to_numpy()
+    np.testing.assert_array_equal(ret, np.log(num / den))
+    assert (ret != np.log(num) - np.log(den)).mean() > 0.5
+
+
+def test_pct_outcome_past_the_double_range_censors_silently(tmp_path):
+    """A pct return whose ratio overflows (1e-200 → 1e200) has no double to be: it censors as
+    `no_outcome` like any unmeasurable window — without the RuntimeWarning the overflow raised —
+    while an underflowing ratio is the correctly rounded −1.0 and closes."""
+    trades = _measured(tmp_path, [1.0, 1e-200, 1e200, 1.0], "pct")
+    by_bar = {int(r.entry_bar): r for r in trades.itertuples()}
+    assert by_bar[0].exit_reason == "no_outcome" and math.isnan(by_bar[0].ret)
+    assert by_bar[1].exit_reason == "horizon" and by_bar[1].ret == -1.0
 
 
 def test_diff_outcome_still_measures_signed_levels(tmp_path):
@@ -4201,6 +4272,45 @@ def test_cross_mean_member_hole_censors_the_whole_bar(tmp_path):
     ra = closed[closed["target"] == "A"].sort_values("entry_bar")["ret"].to_numpy(dtype=float)
     rb = closed[closed["target"] == "B"].sort_values("entry_bar")["ret"].to_numpy(dtype=float)
     np.testing.assert_allclose(ra, -rb, atol=1e-12)
+
+
+def test_cross_mean_log_leg_past_the_double_range_no_longer_censors_the_bar(tmp_path):
+    # The whole-bar censoring above is for a leg that IS missing. A log leg whose quotient left
+    # the double range (B: 1e200 → 1e-200 and back) read ln(0) = −inf / ln(inf) = +inf → NaN,
+    # so the bar's mean died and the ORDINARY member's rows censored as `no_benchmark` beside
+    # B's `no_outcome`. The scale-safe log measures B exactly, so both members close against the
+    # full two-member basket — and A's excess carries B's ∓921/2 share of the bar mean.
+    idx = pd.date_range("2021-01-01", periods=6, freq="1D")
+    a = np.array([100.0, 101.0, 102.0, 103.0, 104.0, 105.0])
+    b = np.array([1.0, 1e200, 1e-200, 1e200, 1.0, 1.0])
+    files = {
+        "A": _write_bars(tmp_path / "A.csv", a, idx),
+        "B": _write_bars(tmp_path / "B.csv", b, idx),
+    }
+    thesis = Thesis.model_validate(
+        {
+            "name": "cm_log_range",
+            "target_mode": "basket",
+            "data": {"targets": ["A", "B"]},
+            "entry": _gt(0.0),
+            "params": {"horizon": 1, "outcome": {"kind": "log"}, "benchmark": "cross_mean"},
+        }
+    )
+    res = run_backtest(thesis, load(thesis, files))
+    rows = {t: g.set_index("entry_bar") for t, g in res.trades.groupby("target")}
+    # bar t measures the next-bar anchor t+1 → t+2: B's 1e200 → 1e-200, then 1e-200 → 1e200
+    # (expectations by np.log, the runner's own log)
+    down = np.log(1e-200) - np.log(1e200)
+    for bar, b_leg in ((0, down), (1, -down)):
+        a_row, b_row = rows["A"].loc[bar], rows["B"].loc[bar]
+        assert a_row["exit_reason"] == b_row["exit_reason"] == "horizon"
+        assert b_row["ret_raw"] == b_leg
+        assert a_row["ret_raw"] == np.log(a[bar + 2] / a[bar + 1])
+        assert a_row["ret_bench"] == b_row["ret_bench"] == (a_row["ret_raw"] + b_leg) / 2
+        assert a_row["ret"] == a_row["ret_raw"] - a_row["ret_bench"]
+    cov = res.summary["cells"][0]["outcome_coverage"]
+    assert cov["A"]["exit_reasons"]["no_benchmark"] == 0
+    assert cov["B"]["exit_reasons"]["no_outcome"] == 0
 
 
 # ---- basket library-boundary backstops ---------------------------------------

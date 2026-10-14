@@ -11,18 +11,26 @@ Containment, by construction:
 - plain numpy/pandas only — no numba, no RNG, and NOTHING imported from ``compiler/``,
   ``analysis/`` or ``gate/``: the one thing it shares with the run summary is the clock
   geometry stamp, :func:`seikan.dataio.bar_spacing`, which lives with the data layer so both
-  emit it in one vocabulary;
+  emit it in one vocabulary, and the one rule it shares with the engine's ``log`` algebra
+  lives in the leaf :mod:`seikan.numeric` for the same reason;
 - admission is :func:`seikan.dataio.read_strict_csv` — the SAME strict reader ``check-data``
   runs, called identically, so the ``data_report`` this module builds is byte-equal to
   ``check-data``'s over the same files (a refused file is refused for the same reason by both,
   and gets a stub profile here rather than a guess);
 - refuse-never-repair: a NaN endpoint is NEVER repaired by skipping to the previous finite
   value, a window shorter than requested is NEVER silently shortened, and every refusal is an
-  explicit ``reason`` (``insufficient_bars`` / ``endpoint_missing``) or ``ratio_reason``
-  (``non_positive_endpoint``) in the block it refuses — present, never omitted;
+  explicit ``reason`` (``insufficient_bars`` / ``endpoint_missing`` / ``not_representable``) or
+  ``ratio_reason`` (``non_positive_endpoint`` / ``not_representable``) in the block it refuses —
+  present, never omitted: on a block that did not refuse, a null read is a ratio read carrying
+  its ``ratio_reason``, never a bare one;
 - all three change algebras are emitted with domain-nulls (``pct``/``log`` require both
   endpoints strictly positive — the positivity rule), because choosing ONE
-  algebra would be the engine deciding what a series IS;
+  algebra would be the engine deciding what a series IS. ``log`` is scale-safe, so it is
+  finite for every positive pair; a ``pct`` read whose computation leaves the double range
+  (its ratio, or a dispersion std's squared deviations, overflowing) refuses as
+  ``not_representable``, and a ``diff`` read that does (two finite levels of opposite sign
+  farther apart than the double range, or a dispersion std past it) refuses its whole block by
+  the same name, since ``diff`` rides every block that did not refuse;
 - BOUNDED OUTPUT: no per-bar array ever rides the document — its size is independent of
   ``n_bars``. Windows are BAR counts, never days; ``bar_spacing`` states the clock.
 """
@@ -36,6 +44,7 @@ import numpy as np
 import pandas as pd
 
 from seikan.dataio import FileReport, bar_spacing, build_data_report, read_strict_csv
+from seikan.numeric import log_ratio, log_ratio_array
 from seikan.types import (
     ChangeBlock,
     DescribeResult,
@@ -45,6 +54,7 @@ from seikan.types import (
     MissingnessBlock,
     RangeDistance,
     RangePositionBlock,
+    RatioReason,
     RefusalStub,
     SeriesProfile,
     VolumeBlock,
@@ -67,7 +77,10 @@ def _change_block(x: np.ndarray, w: int) -> ChangeBlock:
     positive (RATIO algebras — off a positive scale a percent change through zero returns a
     finite number with an inverted sign, so the domain refusal is the honest output). A NaN
     endpoint refuses as ``endpoint_missing`` and is never repaired by walking back to the
-    previous finite value.
+    previous finite value. ``log`` is the scale-safe :func:`~seikan.numeric.log_ratio` — finite
+    for every positive pair, ``1e200 → 1e-200`` included; a ``pct`` whose ratio overflows the
+    double range refuses alone as ``not_representable`` while ``log`` and ``diff`` live, and a
+    ``diff`` that overflows it refuses the whole block by that name.
     """
     out = _empty_change_block()
     if len(x) < w + 1:
@@ -77,22 +90,37 @@ def _change_block(x: np.ndarray, w: int) -> ChangeBlock:
     if not (_finite(a) and _finite(b)):
         out["reason"] = "endpoint_missing"
         return out
-    out["diff"] = b - a
+    diff = b - a
+    if not _finite(diff):
+        # Levels of opposite sign farther apart than the double range (−1e308 → 1e308): the
+        # change has no double to be, and ``diff`` rides every block that did not refuse, so the
+        # block refuses whole rather than carry a reasonless null — its ratio reads cross zero
+        # and refuse on the domain anyway.
+        out["reason"] = "not_representable"
+        return out
+    out["diff"] = diff
     if a > 0 and b > 0:
-        out["pct"] = b / a - 1.0
-        out["log"] = math.log(b / a)
+        pct = b / a - 1.0
+        if _finite(pct):
+            out["pct"] = pct
+        else:
+            out["ratio_reason"] = "not_representable"
+        out["log"] = log_ratio(b, a)
     else:
         out["ratio_reason"] = "non_positive_endpoint"
     return out
 
 
-def _ratio(last: float, base: float) -> float | None:
-    """``last/base − 1`` on a strictly positive pair, else ``None`` — the one positive-domain
-    ratio read the range-position and full-sample blocks share (their ``ratio_reason`` says
-    when any leg refused)."""
-    if last > 0 and base > 0:
-        return last / base - 1.0
-    return None
+def _ratio(last: float, base: float) -> tuple[float | None, RatioReason | None]:
+    """``(last/base − 1, None)`` on a strictly positive pair — the one positive-domain ratio
+    read the range-position and full-sample blocks share — else ``(None, tag)`` naming why it
+    refused: a non-positive leg, or a ratio that left the double range (``last/base``
+    overflowing; an underflow reads −1.0, exact to rounding). The caller states the tag as its
+    block's ``ratio_reason``."""
+    if not (last > 0 and base > 0):
+        return None, "non_positive_endpoint"
+    r = last / base - 1.0
+    return (r, None) if _finite(r) else (None, "not_representable")
 
 
 def _empty_change_block() -> ChangeBlock:
@@ -101,9 +129,14 @@ def _empty_change_block() -> ChangeBlock:
     return {"diff": None, "pct": None, "log": None, "reason": None, "ratio_reason": None}
 
 
+# Under ``errstate`` as a whole: a 1-bar change or a std's squared deviations may leave the double
+# range here, and each such read refuses BY NAME below — an overflow is an expected input, never
+# a warning (an error under ``-W error``).
+@np.errstate(over="ignore", invalid="ignore")
 def _dispersion_block(x: np.ndarray, w: int) -> ChangeBlock:
     """ddof=1 std of the w trailing 1-bar changes (the same w+1 trailing levels
-    ``changes[w]`` reads), one value per algebra under the same domain gates.
+    ``changes[w]`` reads), one value per algebra under the same domain gates and the same
+    ``not_representable`` refusals (a ``pct`` std alone, a ``diff`` std the whole block).
 
     PER BAR, never annualized — sqrt-time scaling interprets cadence, which is the caller's
     assumption, not this engine's. ``w == 1`` holds a single change and cannot carry a ddof=1
@@ -121,11 +154,26 @@ def _dispersion_block(x: np.ndarray, w: int) -> ChangeBlock:
         return out
     out["diff"] = _std(np.diff(tail))
     if (tail > 0).all():
-        ratio = tail[1:] / tail[:-1]
-        out["pct"] = float(np.std(ratio - 1.0, ddof=1))
-        out["log"] = float(np.std(np.log(ratio), ddof=1))
+        # A 1-bar ratio past the double range — or squared pct deviations past it, even where
+        # the std itself would fit (no rescaled std is attempted) — leaves the pct read
+        # non-finite, and it refuses as ``not_representable``; the log changes are scale-safe
+        # (|change| < 1455) and their std always finite here.
+        pct = float(np.std(tail[1:] / tail[:-1] - 1.0, ddof=1))
+        if _finite(pct):
+            out["pct"] = pct
+        else:
+            out["ratio_reason"] = "not_representable"
+        out["log"] = float(np.std(log_ratio_array(tail[1:], tail[:-1]), ddof=1))
     else:
         out["ratio_reason"] = "non_positive_endpoint"
+    # ``diff`` rides every block that did not refuse, so where ITS std has no double to be — a
+    # 1-bar change of two finite levels past the double range, or a std past it (changes of
+    # ±1.7e308) — the block refuses whole by name, the ratio reads with it: never a reasonless
+    # null beside reads that rode.
+    if out["diff"] is None or not _finite(out["diff"]):
+        refused = _empty_change_block()
+        refused["reason"] = "not_representable"
+        return refused
     return out
 
 
@@ -143,8 +191,9 @@ def _range_position_block(x: np.ndarray, index: pd.DatetimeIndex, w: int) -> Ran
 
     Requires the full w bars: a shorter file refuses as ``insufficient_bars`` (never silently
     shortened) and a hole inside the window refuses as ``endpoint_missing`` (the extremum —
-    or the rank — could be hiding in it). ``percentile_rank`` is position within the window's
-    OWN range, not valuation: a trending series sits at its extreme by construction.
+    or the rank — could be hiding in it); a distance from an extremum past the double range
+    refuses as ``not_representable``. ``percentile_rank`` is position within the window's OWN
+    range, not valuation: a trending series sits at its extreme by construction.
     """
     out: RangePositionBlock = {
         "high": None,
@@ -166,15 +215,23 @@ def _range_position_block(x: np.ndarray, index: pd.DatetimeIndex, w: int) -> Ran
     hi_pos = _most_recent_extremum(tail, "max")
     lo_pos = _most_recent_extremum(tail, "min")
     hi, lo, last = float(tail[hi_pos]), float(tail[lo_pos]), float(tail[-1])
+    to_high, to_low = last - hi, last - lo
+    if not (_finite(to_high) and _finite(to_low)):
+        # A window spanning both signs farther apart than the double range: the last level's
+        # distance from an extremum has no double to be, and a range distance's ``diff`` is
+        # never null — so the block refuses whole, by name, like any other refusal of it.
+        out["reason"] = "not_representable"
+        return out
     out["high"] = {"value": hi, "timestamp": ts[hi_pos].isoformat()}
     out["low"] = {"value": lo, "timestamp": ts[lo_pos].isoformat()}
-    from_high: RangeDistance = {"diff": last - hi, "pct": None}
-    from_low: RangeDistance = {"diff": last - lo, "pct": None}
-    from_high["pct"] = _ratio(last, hi)
-    from_low["pct"] = _ratio(last, lo)
+    from_high: RangeDistance = {"diff": to_high, "pct": None}
+    from_low: RangeDistance = {"diff": to_low, "pct": None}
+    # The two refusals cannot disagree: ``last <= hi`` keeps from_high in range, and a
+    # non-positive ``hi`` or ``last`` refuses both legs on the domain.
+    from_high["pct"], high_refusal = _ratio(last, hi)
+    from_low["pct"], low_refusal = _ratio(last, lo)
     out["from_high"], out["from_low"] = from_high, from_low
-    if from_high["pct"] is None or from_low["pct"] is None:
-        out["ratio_reason"] = "non_positive_endpoint"
+    out["ratio_reason"] = high_refusal or low_refusal
     out["percentile_rank"] = float(np.count_nonzero(tail <= last)) / w
     return out
 
@@ -185,8 +242,9 @@ def _full_sample_block(x: np.ndarray, index: pd.DatetimeIndex) -> FullSampleBloc
 
     ``drawdown_pct = last/high - 1`` is a property of the file's EXTENT — extend or trim the
     file and it moves. A NaN last level refuses the distance reads as ``endpoint_missing``
-    (the previous finite value is never substituted); the extremes themselves are observed
-    facts and stay, with the missingness block right beside them stating the holes.
+    (the previous finite value is never substituted), a distance past the double range as
+    ``not_representable``; the extremes themselves are observed facts and stay, with the
+    missingness block right beside them stating the holes.
     """
     out: FullSampleBlock = {
         "high": None,
@@ -212,12 +270,18 @@ def _full_sample_block(x: np.ndarray, index: pd.DatetimeIndex) -> FullSampleBloc
     if not _finite(last):
         out["reason"] = "endpoint_missing"
         return out
-    out["drawdown_diff"] = last - hi
-    out["runup_diff"] = last - lo
-    out["drawdown_pct"] = _ratio(last, hi)
-    out["runup_pct"] = _ratio(last, lo)
-    if out["drawdown_pct"] is None or out["runup_pct"] is None:
-        out["ratio_reason"] = "non_positive_endpoint"
+    drawdown, runup = last - hi, last - lo
+    if not (_finite(drawdown) and _finite(runup)):
+        # As in the range-position block: a distance past the double range refuses the
+        # distance reads by name, never a reasonless null diff beside them.
+        out["reason"] = "not_representable"
+        return out
+    out["drawdown_diff"] = drawdown
+    out["runup_diff"] = runup
+    # As in the range-position block, the two ratio refusals cannot disagree.
+    out["drawdown_pct"], drawdown_refusal = _ratio(last, hi)
+    out["runup_pct"], runup_refusal = _ratio(last, lo)
+    out["ratio_reason"] = drawdown_refusal or runup_refusal
     return out
 
 

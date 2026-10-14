@@ -50,6 +50,7 @@ from seikan.types.data_report import (
     JoinInfo,
 )
 from seikan.types.describe import (
+    BlockReason,
     ChangeBlock,
     DescribeResult,
     ExtremumPoint,
@@ -59,6 +60,7 @@ from seikan.types.describe import (
     MissingnessBlock,
     RangeDistance,
     RangePositionBlock,
+    RatioReason,
     RefusalStub,
     SeriesProfile,
     VolumeBlock,
@@ -157,6 +159,7 @@ __all__ = [
     "BenchmarkMode",
     "BenchmarkRegressionBlock",
     "BenchmarkRegressionReason",
+    "BlockReason",
     "BucketMonotonicity",
     "BucketRecord",
     "CellBucketPanels",
@@ -217,6 +220,7 @@ __all__ = [
     "PoolQuantiles",
     "RangeDistance",
     "RangePositionBlock",
+    "RatioReason",
     "RefusalStub",
     "ReliabilityCell",
     "ReliabilityRead",

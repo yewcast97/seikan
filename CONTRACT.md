@@ -705,7 +705,17 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   undecidable ledger, never latches warmup, and can never fire a signal. The ratio transforms
   (`change(kind="pct")`, `drawdown`, `runup`) are POSITIVE-domain like the pct/log outcome
   algebras: off a positive scale they invert silently, so a non-positive base censors as NaN
-  instead of minting a sign-flipped number. Signed series belong to `diff`.
+  instead of minting a sign-flipped number. Signed series belong to `diff`. The LOG ratio is
+  scale-safe, one rule for `change(kind="log")`, the `log` outcome (benchmark leg, `pre_ret`,
+  excursions included) and `describe`'s `log` reads (`seikan.numeric`): `ln(b/a)` of two
+  positive finite levels is always representable even where the quotient `b/a` is not, so it
+  reads `ln b − ln a` exactly where the quotient overflowed, underflowed or went subnormal
+  (1e200 → 1e-200 is −921.03…, never `ln(0)`), and the direct form — bit for bit — everywhere
+  else. A `pct` (or `diff`) past the double range has no representable value: NaN (a
+  `no_outcome` observation, an undecidable decision bar); a `describe` `pct` past the range is
+  null with `ratio_reason: "not_representable"`, and a `describe` `diff` past it — levels of
+  opposite sign ~1.8e308 apart — refuses its whole block as `reason: "not_representable"`
+  (`diff` rides every block that did not refuse, so it is never a reasonless null).
 - **Zero dispersion is exact.** The floating-point mean of a constant DECIMAL series is not the
   constant, and its rounding residue (~1e-17) used to read as dispersion — a z-score of exactly
   ±1, a correlation of 1, a flat feed drifting off its own EMA, an EW z-score locked at
@@ -813,7 +823,8 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   so the only thing a checklist result moves is the content of `gate`).
 - `describe.py` — pure data profiling behind `seikan describe`: plain numpy/pandas, no numba, no
   RNG, and nothing imported from `compiler/`, `analysis/` or `gate/` (the clock-geometry stamp it
-  shares with the run summary is `dataio.bar_spacing`, which lives with the data layer). Admission is the SAME strict read `check-data` performs; refusals get stub
+  shares with the run summary is `dataio.bar_spacing`, which lives with the data layer, and the
+  log-ratio rule it shares with the engine's `log` algebra is the leaf `numeric.py`). Admission is the SAME strict read `check-data` performs; refusals get stub
   profiles, never guesses; bounded output — no per-bar array ever rides the document.
 - `contract.py` — the static contract payloads, data only (imports nothing from the package):
   `METRIC_ROLES` (compact, with its `caveats` map, stamped into every report) and
@@ -824,6 +835,10 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
 - `constants.py` — structural names and bounds shared across the layers without a cycle:
   `TRADE_COLUMNS`, the reserved sweep/feature namespaces, `DEFAULT_FEATURE_NAMES`,
   `MAX_DECLARED_GRID` (the sealed search cap's validation-side twin).
+- `numeric.py` — scale-safe numeric rules shared across the layers, a leaf (`math` + `numpy`,
+  no numba, nothing from the package, so `describe.py` can share them with `compiler/`):
+  `log_ratio` / `log_ratio_array`, the one log-ratio rule of the decision side, the outcome
+  algebra and `describe`.
 - `types/` — the emitted-shape declarations (TypedDicts), one module per report section behind
   the package facade; `emitted.py` validates every success document against them at emission,
   so the bytes written are the bytes that type-checked.

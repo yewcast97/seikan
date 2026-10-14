@@ -177,6 +177,103 @@ def test_a_drifted_metric_roles_blob_refuses(run_doc):
         validate_emitted("run", doc)
 
 
+@pytest.fixture
+def describe_doc(tmp_path, capsys) -> dict:
+    px = tmp_path / "px.csv"
+    _write_ohlcv(px)
+    assert main(["describe", str(px), "--windows", "1,5"]) == 0
+    return json.loads(capsys.readouterr().out)
+
+
+@pytest.mark.parametrize(
+    ("block", "read", "reason"),
+    [
+        (("series", "close", "changes", "1"), ("pct",), "not_representable"),
+        (("series", "close", "dispersion", "5"), ("log",), "non_positive_endpoint"),
+        (("series", "close", "range_position", "5"), ("from_low", "pct"), "not_representable"),
+        (("series", "close", "full_sample"), ("runup_pct",), "not_representable"),
+        (("volume", "windows", "5"), ("last_to_mean",), "non_positive_endpoint"),
+    ],
+)
+def test_a_null_ratio_read_without_its_reason_refuses(describe_doc, block, read, reason):
+    # Refusals are explicit, never omitted — a cross-field rule no TypedDict can state, so the
+    # seam's AfterValidator does: a ratio read nulled on a block that did not refuse whole must
+    # carry its ratio_reason (a pct past the double range used to ride out as a reasonless null).
+    doc = copy.deepcopy(describe_doc)
+    node = doc["profiles"][0]
+    for key in block:
+        node = node[key]
+    assert node["reason"] is None and node["ratio_reason"] is None
+    target = node
+    for key in read[:-1]:
+        target = target[key]
+    target[read[-1]] = None
+    with pytest.raises(ReportContractError, match="ratio_reason"):
+        validate_emitted("describe", doc)
+    node["ratio_reason"] = reason  # the same null, now saying why
+    validate_emitted("describe", doc)
+
+
+@pytest.mark.parametrize("kind", ["changes", "dispersion"])
+def test_a_null_log_under_not_representable_refuses(describe_doc, kind):
+    # `not_representable` names a pct read only: the log is scale-safe (finite for every positive
+    # pair), so a null log beside it is a builder bug the reason must not excuse.
+    doc = copy.deepcopy(describe_doc)
+    block = doc["profiles"][0]["series"]["close"][kind]["5"]
+    block["pct"], block["ratio_reason"] = None, "not_representable"
+    validate_emitted("describe", doc)
+    block["log"] = None
+    with pytest.raises(ReportContractError, match="null log"):
+        validate_emitted("describe", doc)
+    block["ratio_reason"] = "non_positive_endpoint"  # off the positive domain both refuse
+    validate_emitted("describe", doc)
+
+
+@pytest.mark.parametrize(
+    ("block", "read"),
+    [
+        (("series", "close", "changes", "1"), ("diff",)),
+        (("series", "close", "dispersion", "5"), ("diff",)),
+        (("series", "close", "range_position", "5"), ("from_low",)),
+        (("series", "close", "full_sample"), ("drawdown_diff",)),
+    ],
+)
+def test_a_null_diff_on_a_block_that_did_not_refuse_whole_refuses(describe_doc, block, read):
+    # `diff` rides every block that did not refuse whole — no ratio_reason can excuse it — so a
+    # null diff there is a builder bug (a level distance past the double range used to ride out
+    # as one, or crash on a range distance's non-nullable diff); refused whole by name, it is
+    # the contract's own shape.
+    doc = copy.deepcopy(describe_doc)
+    node = doc["profiles"][0]
+    for key in block:
+        node = node[key]
+    assert node["reason"] is None
+    node[read[0]] = None
+    node["ratio_reason"] = "non_positive_endpoint"
+    with pytest.raises(ReportContractError, match="null diff"):
+        validate_emitted("describe", doc)
+    kept = ("high", "low") if block[-1] == "full_sample" else ()  # its extremes are facts
+    node.update({key: None for key in node if key not in kept}, reason="not_representable")
+    validate_emitted("describe", doc)
+
+
+def test_ratio_reason_is_a_closed_vocabulary_and_whole_refusals_need_none(describe_doc):
+    doc = copy.deepcopy(describe_doc)
+    block = doc["profiles"][0]["series"]["close"]["changes"]["1"]
+    block["pct"], block["ratio_reason"] = None, "not_representable"  # a pct past the range
+    validate_emitted("describe", doc)
+    block["ratio_reason"] = "overflow"  # …and the vocabulary stays closed around it
+    with pytest.raises(ReportContractError, match="ratio_reason"):
+        validate_emitted("describe", doc)
+    # a block refused WHOLE is all-null under its structural reason, no ratio_reason owed —
+    # and that vocabulary is closed too
+    block.update(diff=None, pct=None, log=None, reason="insufficient_bars", ratio_reason=None)
+    validate_emitted("describe", doc)
+    block["reason"] = "overflow"
+    with pytest.raises(ReportContractError, match="'endpoint_missing' or 'not_representable'"):
+        validate_emitted("describe", doc)
+
+
 # ---- the library seam validates the engine's own output ---------------------------------------
 
 

@@ -40,9 +40,9 @@ own contract is a seikan bug and must fall through to the exit-4 ``internal`` en
 
 from __future__ import annotations
 
-from typing import Literal, TypedDict
+from typing import Annotated, Literal, TypedDict, cast
 
-from pydantic import ConfigDict, TypeAdapter, ValidationError, with_config
+from pydantic import AfterValidator, ConfigDict, TypeAdapter, ValidationError, with_config
 
 from seikan.contract import DESCRIBE_ROLES, METRIC_ROLES
 from seikan.serialize import json_safe
@@ -105,15 +105,101 @@ class CheckDataDocument(TypedDict):
     data_report: DataReport
 
 
+def _check_refusal_reasons(
+    profiles: list[FileProfile | RefusalStub],
+) -> list[FileProfile | RefusalStub]:
+    """Refusals are explicit, never omitted: on a block that did not refuse whole (``reason``
+    null) a ``diff`` read is never null — ``diff`` rides every such block, and one with no double
+    to be refuses the block by name (``not_representable``) — and a ratio read (``pct``/``log``,
+    a range distance's ``pct``, ``drawdown_pct``/``runup_pct``, ``last_to_mean``) that is null
+    must carry the ``ratio_reason`` saying why — for ``log`` only ``non_positive_endpoint``, the
+    scale-safe log never refusing as ``not_representable``. A reasonless null reads as "nothing
+    to report" — exactly how a ``pct`` or a ``diff`` past the double range used to ride out —
+    and the per-field TypedDicts cannot state a cross-field rule, so the seam does. A violation is a
+    builder bug in ``describe.py``: the ``ValueError`` here surfaces as the pydantic
+    ``ValidationError`` :func:`validate_emitted` re-raises as :class:`ReportContractError`."""
+    for profile in profiles:
+        if "series" not in profile:  # a refused file's stub carries no blocks
+            continue
+        admitted = cast("FileProfile", profile)
+        # (where, reason, ratio_reason, diff reads, ratio reads) per block
+        reads: list[
+            tuple[str, str | None, str | None, tuple[float | None, ...], tuple[float | None, ...]]
+        ] = []
+        for column, sp in admitted["series"].items():
+            for kind, panel in (("changes", sp["changes"]), ("dispersion", sp["dispersion"])):
+                for w, ch in panel.items():
+                    if (
+                        ch["reason"] is None
+                        and ch["log"] is None
+                        and (ch["ratio_reason"] == "not_representable")
+                    ):
+                        raise ValueError(
+                            f"{admitted['path']}: {column}.{kind}[{w}] carries a null log under "
+                            "ratio_reason not_representable — log is scale-safe and refuses only "
+                            "off the positive domain"
+                        )
+                    reads.append(
+                        (
+                            f"{column}.{kind}[{w}]",
+                            ch["reason"],
+                            ch["ratio_reason"],
+                            (ch["diff"],),
+                            (ch["pct"], ch["log"]),
+                        )
+                    )
+            for w, rp in sp["range_position"].items():
+                legs = (rp["from_high"], rp["from_low"])
+                reads.append(
+                    (
+                        f"{column}.range_position[{w}]",
+                        rp["reason"],
+                        rp["ratio_reason"],
+                        tuple(None if d is None else d["diff"] for d in legs),
+                        tuple(None if d is None else d["pct"] for d in legs),
+                    )
+                )
+            fs = sp["full_sample"]
+            reads.append(
+                (
+                    f"{column}.full_sample",
+                    fs["reason"],
+                    fs["ratio_reason"],
+                    (fs["drawdown_diff"], fs["runup_diff"]),
+                    (fs["drawdown_pct"], fs["runup_pct"]),
+                )
+            )
+        if admitted["volume"] is not None:
+            for w, vw in admitted["volume"]["windows"].items():
+                reads.append(
+                    (f"volume[{w}]", vw["reason"], vw["ratio_reason"], (), (vw["last_to_mean"],))
+                )
+        for where, reason, ratio_reason, diffs, ratios in reads:
+            if reason is not None:  # refused whole: its nulls stand under the structural reason
+                continue
+            if any(v is None for v in diffs):
+                raise ValueError(
+                    f"{admitted['path']}: {where} carries a null diff on a block that did not "
+                    "refuse whole — a diff with no double to be refuses its block by reason"
+                )
+            if ratio_reason is None and any(v is None for v in ratios):
+                raise ValueError(
+                    f"{admitted['path']}: {where} carries a null ratio read with no "
+                    "ratio_reason — a refusal must be explicit, never omitted"
+                )
+    return profiles
+
+
 @with_config(ConfigDict(extra="forbid"))
 class DescribeDocument(TypedDict):
-    """The ``seikan describe`` stdout document — like ``check-data``, emitted at both exit tiers."""
+    """The ``seikan describe`` stdout document — like ``check-data``, emitted at both exit tiers;
+    its ``profiles`` additionally pass :func:`_check_refusal_reasons`."""
 
     seikan_version: str
     report_schema_version: int
     command: Literal["describe"]
     data_report: DataReport
-    profiles: list[FileProfile | RefusalStub]
+    profiles: Annotated[list[FileProfile | RefusalStub], AfterValidator(_check_refusal_reasons)]
     describe_roles: dict[str, JsonValue]
 
 

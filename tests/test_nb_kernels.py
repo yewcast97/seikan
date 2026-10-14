@@ -13,6 +13,7 @@ import pytest
 from numpy.lib.stride_tricks import sliding_window_view
 
 from seikan.compiler import nb
+from seikan.numeric import log_ratio, log_ratio_array
 
 from . import _reference_nb as ref
 
@@ -215,6 +216,93 @@ def test_change_diff_allows_zero_base():
 def test_change_unknown_kind_raises():
     with pytest.raises(ValueError, match="unknown change kind"):
         nb.change_apply_nb(np.zeros((5, 1)), 1, "bogus")
+
+
+def test_change_log_past_the_double_range_is_finite():
+    # 1e200 → 1e-200 is a quotient of 1e-400 (underflow to 0.0) and the reverse one of 1e400
+    # (overflow to inf): ln of either was ∓inf → NaN, an undecidable decision bar over two
+    # perfectly finite levels. The scale-safe log reads ln(b) − ln(a) exactly there; a pct of
+    # the overflowing ratio has no double to be and stays NaN.
+    # The kernel reads np.log, so its exact expectations do too; the reference mirror reads
+    # math.log, and the two logs need not agree to the last bit, so parity goes through _assert.
+    arr = np.array([1e200, 1e-200, 1e200, 1.0])
+    got = change_1d(arr, 1, "log")
+    down = np.log(1e-200) - np.log(1e200)
+    np.testing.assert_array_equal(got, [np.nan, down, -down, np.log(1.0 / 1e200)])
+    _assert(got, ref.change(arr, 1, "log"))
+    np.testing.assert_array_equal(change_1d(arr, 1, "pct"), [np.nan, -1.0, np.nan, -1.0])
+    # A SUBNORMAL quotient (3e20 → 1e-300 is 3.3e-321) was finite but precision-lost — ln of the
+    # rounded quotient read −737.92536 — and the rule reads the exact −737.92584 there too.
+    sub = np.array([3e20, 1e-300])
+    exact = np.log(1e-300) - np.log(3e20)
+    assert exact != np.log(1e-300 / 3e20)
+    np.testing.assert_array_equal(change_1d(sub, 1, "log"), [np.nan, exact])
+    math_exact = math.log(1e-300) - math.log(3e20)
+    assert math_exact == -737.9258420467627 != math.log(1e-300 / 3e20)
+    np.testing.assert_array_equal(ref.change(sub, 1, "log"), [np.nan, math_exact])
+
+
+def test_log_ratio_is_the_direct_form_bit_for_bit_on_ordinary_levels():
+    # The difference of logs rounds differently from ln(b/a) on almost every ordinary pair, so
+    # the fallback must never fire there: on a random walk both twins — and the change kernel
+    # reading through them — equal the direct form exactly, bit for bit.
+    rng = np.random.RandomState(7)
+    walk = 100.0 * np.exp(np.cumsum(rng.normal(0.0, 0.02, 5000)))
+    num, den = walk[1:], walk[:-1]
+    direct = np.log(num / den)
+    assert (direct != np.log(num) - np.log(den)).mean() > 0.5  # the fallback WOULD move bits
+    np.testing.assert_array_equal(log_ratio_array(num, den), direct)
+    scalar = [log_ratio(float(b), float(a)) for b, a in zip(num, den, strict=True)]
+    np.testing.assert_array_equal(scalar, [math.log(b / a) for b, a in zip(num, den, strict=True)])
+    np.testing.assert_array_equal(change_1d(walk, 1, "log")[1:], direct)
+
+
+def test_log_ratio_twins_share_one_rule_at_the_range_edges():
+    # The scalar (math.log) and array (np.log) twins take the SAME branch on every class of
+    # positive pair — the direct form for normal quotients, the difference of logs for
+    # overflowing, underflowing and subnormal ones, the direct form again at exactly the
+    # smallest normal — and each equals its own log's formula for that branch exactly. The two
+    # logs need not agree to the last bit across platforms (numpy's SIMD log is not libm's), so
+    # between the twins only an ulp is allowed; every value is finite.
+    tiny = np.finfo(np.float64).tiny  # the smallest positive NORMAL double
+    pairs = [
+        (3.0, 2.0, False),
+        (1e200, 1e-200, True),  # quotient 1e400: overflow
+        (1e-200, 1e200, True),  # quotient 1e-400: underflow to 0.0
+        (1e-300, 3e20, True),  # quotient 3.3e-321: subnormal, its relative precision lost
+        (5e-324, 1.0, True),  # the smallest subnormal as a level
+        (tiny, 1.0, False),  # quotient exactly the smallest normal: the direct form
+        (1.7976931348623157e308, 5e-324, True),
+    ]
+    num = np.array([p[0] for p in pairs])
+    den = np.array([p[1] for p in pairs])
+    fallback = np.array([p[2] for p in pairs])
+    q = np.array([a / b for a, b, _ in pairs])  # Python floats: overflow/underflow silently
+    np.testing.assert_array_equal(fallback, ~((q >= tiny) & (q < np.inf)))  # the rule's branch
+    arr = log_ratio_array(num, den)
+    with np.errstate(divide="ignore"):  # the direct form's ln(0) on the underflowing pair
+        arr_want = np.where(fallback, np.log(num) - np.log(den), np.log(q))
+    np.testing.assert_array_equal(arr, arr_want)
+    scalar = np.array([log_ratio(a, b) for a, b, _ in pairs])
+    scalar_want = [math.log(a) - math.log(b) if off else math.log(a / b) for a, b, off in pairs]
+    np.testing.assert_array_equal(scalar, scalar_want)
+    np.testing.assert_array_max_ulp(arr, scalar, maxulp=1)
+    assert np.isfinite(arr).all() and np.isfinite(scalar).all()
+    assert arr[1] == -arr[2] and scalar[1] == -scalar[2]
+    # The subnormal branch is the RULE, not a tie: there the two forms disagree (ln of the
+    # rounded quotient is −737.92536) and both twins read the exact difference of logs.
+    assert arr[3] != np.log(1e-300 / 3e20)
+    assert scalar[3] == -737.9258420467627 != math.log(1e-300 / 3e20)
+    # 0-d operands broadcast like any others, the fallback included: always an array back.
+    zero_d = log_ratio_array(np.float64(1e200), 1e-200)
+    assert zero_d.shape == () and zero_d == np.log(1e200) - np.log(1e-200)
+    assert log_ratio_array(3.0, 2.0) == np.log(3.0 / 2.0)
+    # The scalar twin takes numpy scalars — an element read straight off an array — without the
+    # overflow warning np.float64 division raises (an error under -W error), and their bits.
+    levels = np.array([1e-200, 1e200, 3.0, 2.0])
+    assert log_ratio(levels[1], levels[0]) == 921.0340371976183
+    assert log_ratio(levels[0], levels[1]) == -921.0340371976183
+    assert log_ratio(levels[2], levels[3]) == math.log(3.0 / 2.0)
 
 
 # ---- ema vs reference -------------------------------------------------------

@@ -349,7 +349,9 @@ bit for bit.
   mirroring `Outcome.kind`: `pct` = (cur/prev − 1), `log` = ln(cur/prev), `diff` = cur − prev
   (level change — the honest form for rates/spreads/multiples). `pct` and `log` require BOTH
   endpoints strictly positive and are NaN otherwise (ratio algebras invert silently on a signed
-  scale — the same rule the forward outcome applies); signed series belong to `diff`. A list
+  scale — the same rule the forward outcome applies); signed series belong to `diff`. `log` is
+  scale-safe — finite for every positive pair, even where the quotient leaves the double range
+  (1e200 → 1e-200 is −921.03…) — while a `pct` or `diff` past the range is NaN. A list
   `periods` sweeps as `change_periods`. Prefer `change(kind:"diff")` over composing
   `binary_op(x, shift(x), "-")`.
 - `shift` (periods=1) — the input `periods` bars ago (backward-only; leading bars NaN). Prefer
@@ -913,7 +915,10 @@ because `extra="forbid"` applies to every DSL model:
   censors the observation as `exit_reason="no_outcome"` instead of minting a garbage return — which
   the per-cell `outcome_coverage` check then refuses. `diff` is untouched (a yield crossing zero is
   a real move, not a domain error). OHLCV targets cannot reach this; series targets and feed
-  outcomes can.
+  outcomes can. `log` = ln(b/a) is scale-safe (the decision-side `change` and `describe` read the
+  same rule): finite for every positive pair, even where `b/a` leaves the double range
+  (1e200 → 1e-200 measures −921.03…, never ln(0)); a `pct` or `diff` past the range has no
+  representable value and censors as `no_outcome`.
 - The anchor is always the next bar (`t+1 → t+1+h`) — no same-bar look-ahead, whatever the outcome.
   `benchmark: "market"` works with `pct` and `log` (the benchmark leg is measured in the OUTCOME'S
   OWN algebra, so a `log` outcome yields the true log-excess `ln(tgt ratio) − ln(bench ratio)`) but
@@ -1696,14 +1701,20 @@ Each admitted profile: identity + geometry in the run summary's own vocabulary (
 `sha256`, `shape`, `n_bars`, `index_start`/`index_end`, `bar_spacing`), `last_bar` (the final
 row verbatim, NaN as null, never back-filled), and per series: `changes` (the w-bar endpoint
 change in ALL THREE algebras with domain-nulls — `pct`/`log` refuse non-positive endpoints
-(`ratio_reason: "non_positive_endpoint"`), a NaN endpoint refuses as `endpoint_missing` and is
-NEVER repaired by walking back to the previous finite value), `dispersion` (ddof=1 std of 1-bar
-changes, per bar, NEVER annualized), `range_position` (trailing high/low with timestamps —
-most-recent tie rule — distance from each, and `percentile_rank` within the window; requires
-the full window, `insufficient_bars` otherwise, never silently shortened), `full_sample`
-(whole-file extremes plus `drawdown_pct = last/high − 1` and `runup_pct`, with diff twins),
-`missingness` (pure counts), and — OHLCV with volume only — `volume` (last, trailing mean,
-`last_to_mean`; otherwise null).
+(`ratio_reason: "non_positive_endpoint"`), `log` is scale-safe (finite for every positive pair)
+while a `pct` past the double range refuses alone (`ratio_reason: "not_representable"`), a NaN
+endpoint refuses as `endpoint_missing` and is NEVER repaired by walking back to the previous
+finite value; a null ratio read on a block that did not refuse whole always carries its
+`ratio_reason`), `dispersion` (ddof=1 std of 1-bar changes, per bar, NEVER annualized),
+`range_position` (trailing high/low with timestamps — most-recent tie rule — distance from each,
+and `percentile_rank` within the window; requires the full window, `insufficient_bars`
+otherwise, never silently shortened), `full_sample` (whole-file extremes plus
+`drawdown_pct = last/high − 1` and `runup_pct`, with diff twins), `missingness` (pure counts),
+and — OHLCV with volume only — `volume` (last, trailing mean, `last_to_mean`; otherwise null).
+The `diff` read rides every block that did not refuse whole: where it has no double to be —
+levels of opposite sign more than ~1.8e308 apart, or a dispersion std past the double range —
+the block refuses whole as `reason: "not_representable"` (`full_sample` keeping its extremes),
+never a null diff.
 
 How to read it honestly (the `describe_roles.caveats` travel in the document): `percentile_rank`
 is position within the window's OWN range, NOT valuation — a trending series sits at its extreme

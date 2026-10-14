@@ -35,6 +35,8 @@ import numpy.typing as npt
 from numba import njit
 from numpy.lib.stride_tricks import sliding_window_view
 
+from seikan.numeric import log_ratio_array
+
 # =============================================================================
 # Vectorized numpy kernels (windowed + elementwise) — no Python time-loop.
 #
@@ -498,7 +500,10 @@ def change_apply_nb(
     change through zero or between negative levels returns a finite number with an INVERTED sign:
     −4 → −2 reads as −50% while the level rose) — the same rule the runner's forward-outcome
     measurement applies; signed levels belong to ``diff``, which only needs both bars finite
-    (0 is a valid level base).
+    (0 is a valid level base). ``log`` is the scale-safe :func:`seikan.numeric.log_ratio_array`
+    — the runner's outcome rule too — so a quotient past the double range (1e200 → 1e-200) still
+    reads its finite log (−921.03…) instead of an undecidable NaN; a ``pct`` or ``diff`` past
+    the range has no representable value and stays NaN.
     """
     a = np.asarray(arr, dtype=float)
     n = a.shape[0]
@@ -513,13 +518,14 @@ def change_apply_nb(
             r = cur / prev - 1.0
         elif kind == "log":
             valid = finite & (prev > 0.0) & (cur > 0.0)
-            r = np.log(cur / prev)
+            r = log_ratio_array(cur, prev)
         elif kind == "diff":
             valid = finite
             r = cur - prev
         else:
             raise ValueError(f"unknown change kind: {kind!r}")
-    # `isfinite(r)`: a denormal-positive denominator or a level-scale subtraction can overflow.
+    # `isfinite(r)`: a pct ratio over a denormal-positive denominator or a level-scale
+    # subtraction can overflow (the scale-safe log ratio cannot).
     out[periods:] = np.where(valid & np.isfinite(r), r, np.nan)
     return out
 

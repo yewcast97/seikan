@@ -14,9 +14,24 @@ from seikan.types.run import (
 # ---- the describe profiles ----------------------------------------------------------------
 #
 # ``describe.py``'s pure data profiling — the one non-measuring path. Every block states what the
-# bytes contain and refuses explicitly rather than repairing: ``reason`` names a structural
-# refusal (``insufficient_bars`` / ``endpoint_missing``) and ``ratio_reason`` the domain refusal
-# of the RATIO algebras (``non_positive_endpoint``), both present-never-omitted.
+# bytes contain and refuses explicitly rather than repairing: ``reason`` names the refusal of the
+# WHOLE block (``insufficient_bars`` / ``endpoint_missing`` / ``not_representable``) and
+# ``ratio_reason`` the refusal of the RATIO algebras alone (``non_positive_endpoint`` /
+# ``not_representable``), both present-never-omitted — the emission seam refuses a null read on a
+# block that did not refuse whole unless it is a ratio read whose ``ratio_reason`` says why
+# (``emitted._check_refusal_reasons``).
+
+#: Why a block refused WHOLE: too few bars for the window, a hole where an endpoint or an
+#: extremum must be read, or a ``diff`` read — the algebra that rides every block that did not
+#: refuse — with no double to be (two finite levels of opposite sign farther apart than the
+#: double range, or a dispersion std past it).
+type BlockReason = Literal["insufficient_bars", "endpoint_missing", "not_representable"]
+
+#: Why a block's ratio reads refused while ``diff`` lives: a non-positive endpoint (the
+#: positivity rule — a ratio through zero mints a garbage sign), or a ``pct`` read whose
+#: computation left the double range (``b/a − 1`` overflowing, or a dispersion std's squared
+#: deviations; ``log`` is scale-safe and never refuses on it).
+type RatioReason = Literal["non_positive_endpoint", "not_representable"]
 
 
 class ChangeBlock(TypedDict):
@@ -24,15 +39,18 @@ class ChangeBlock(TypedDict):
     (``describe._dispersion_block``) — the two share this shape exactly, one value per algebra.
 
     All three algebras are emitted, because choosing ONE would be the engine deciding what a
-    series IS. ``diff`` carries whenever both endpoints are finite; ``pct``/``log`` are None with
-    ``ratio_reason`` set off a positive scale. A refused block is all-None with ``reason`` set.
+    series IS. ``diff`` carries on every block that did not refuse; ``pct``/``log`` are None with
+    ``ratio_reason`` set off a positive scale, and ``pct`` alone is None (``not_representable``)
+    where its computation leaves the double range — the ratio, or a dispersion std's squared
+    deviations. A refused block is all-None with ``reason`` set — ``not_representable`` where
+    ``diff`` itself has no double to be.
     """
 
     diff: float | None
     pct: float | None
     log: float | None
-    reason: Literal["insufficient_bars", "endpoint_missing"] | None
-    ratio_reason: Literal["non_positive_endpoint"] | None
+    reason: BlockReason | None
+    ratio_reason: RatioReason | None
 
 
 class ExtremumPoint(TypedDict):
@@ -44,8 +62,9 @@ class ExtremumPoint(TypedDict):
 
 
 class RangeDistance(TypedDict):
-    """The last level's distance from a window extremum — ``diff`` always, ``pct`` only on a
-    positive scale (None with the block's ``ratio_reason`` set otherwise)."""
+    """The last level's distance from a window extremum — ``diff`` always (a distance past the
+    double range refuses the whole block instead), ``pct`` only on a positive scale and within
+    the double range (None with the block's ``ratio_reason`` set otherwise)."""
 
     diff: float
     pct: float | None
@@ -54,10 +73,10 @@ class RangeDistance(TypedDict):
 class RangePositionBlock(TypedDict):
     """One window's range position — ``describe._range_position_block``.
 
-    Requires the FULL window: a shorter file refuses as ``insufficient_bars`` and a hole inside
-    the window as ``endpoint_missing`` (the extremum, or the rank, could be hiding in it), and a
-    refusal nulls every value. ``percentile_rank`` is position within the window's OWN range, not
-    valuation.
+    Requires the FULL window: a shorter file refuses as ``insufficient_bars``, a hole inside the
+    window as ``endpoint_missing`` (the extremum, or the rank, could be hiding in it), and a
+    distance past the double range as ``not_representable``; a refusal nulls every value.
+    ``percentile_rank`` is position within the window's OWN range, not valuation.
     """
 
     high: ExtremumPoint | None
@@ -65,16 +84,17 @@ class RangePositionBlock(TypedDict):
     from_high: RangeDistance | None
     from_low: RangeDistance | None
     percentile_rank: float | None
-    reason: Literal["insufficient_bars", "endpoint_missing"] | None
-    ratio_reason: Literal["non_positive_endpoint"] | None
+    reason: BlockReason | None
+    ratio_reason: RatioReason | None
 
 
 class FullSampleBlock(TypedDict):
     """The whole file's extremes and the drawdown/runup off them — ``describe._full_sample_block``.
 
     A property of the file's EXTENT: extend or trim the file and these move. A NaN last level
-    refuses the distance reads (``endpoint_missing``) while the extremes themselves — observed
-    facts — stay, with the missingness block beside them stating the holes.
+    (``endpoint_missing``) or a distance past the double range (``not_representable``) refuses
+    the distance reads while the extremes themselves — observed facts — stay, with the
+    missingness block beside them stating the holes.
     """
 
     high: ExtremumPoint | None
@@ -83,8 +103,8 @@ class FullSampleBlock(TypedDict):
     drawdown_pct: float | None
     runup_diff: float | None
     runup_pct: float | None
-    reason: Literal["insufficient_bars", "endpoint_missing"] | None
-    ratio_reason: Literal["non_positive_endpoint"] | None
+    reason: BlockReason | None
+    ratio_reason: RatioReason | None
 
 
 class MissingnessBlock(TypedDict):

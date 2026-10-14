@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import itertools
 import math
+import sys
 
 import numpy as np
 
@@ -335,8 +336,9 @@ def bars_since_extremum(
 def change(arr: np.ndarray, periods: int, kind: str = "pct") -> np.ndarray:
     """k-period change: ``pct`` = (cur/prev − 1), ``log`` = ln(cur/prev), ``diff`` = cur − prev.
 
-    Matches ``nb.change_apply_nb``'s per-kind NaN guards: ``pct`` NaNs when ``prev == 0``; ``log``
-    NaNs on a non-positive ratio; ``diff`` only needs both bars finite (0 is a valid level base).
+    Matches ``nb.change_apply_nb``'s per-kind NaN guards: ``pct`` and ``log`` NaN on a
+    non-positive endpoint (``pct`` also past the double range, where ``log`` stays finite);
+    ``diff`` only needs both bars finite (0 is a valid level base).
     """
     n = arr.shape[0]
     out = np.full(n, np.nan, dtype=np.float64)
@@ -358,7 +360,14 @@ def change(arr: np.ndarray, periods: int, kind: str = "pct") -> np.ndarray:
         elif kind == "log":
             if prev <= 0.0 or cur <= 0.0:
                 continue
-            out[i] = math.log(cur / prev)
+            # Scale-safe: ln of the quotient where it is a finite positive NORMAL double, the
+            # difference of logs where it overflowed/underflowed (1e200 → 1e-200 is −921.03…,
+            # never ln(0)). Python floats, so the quotient cannot warn.
+            q = float(cur) / float(prev)
+            if sys.float_info.min <= q < math.inf:
+                out[i] = math.log(q)
+            else:
+                out[i] = math.log(cur) - math.log(prev)
         else:  # diff
             out[i] = cur - prev
     return out
