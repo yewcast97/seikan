@@ -13,7 +13,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from seikan.dataio import MAX_EXAMPLES, read_strict_csv, sufficiency_check
+from seikan import dataio
+from seikan.dataio import _CSV_FIELD_LIMIT, MAX_EXAMPLES, read_strict_csv, sufficiency_check
 
 _GOOD = (
     "datetime,open,high,low,close,volume\n"
@@ -330,9 +331,10 @@ def test_header_is_the_first_record_pandas_reads(tmp_path):
 
 
 def test_a_field_past_the_csv_field_limit_is_unreadable_not_a_crash(tmp_path):
-    # csv.reader refuses a field longer than csv.field_size_limit(); in the header or in a record,
-    # that is an unreadable file naming the line the record starts on, never an uncaught csv.Error.
-    big = "9" * (csv.field_size_limit() + 1)
+    # csv.reader refuses a field longer than the limit the scan pins (_CSV_FIELD_LIMIT); in the
+    # header or in a record, that is an unreadable file naming the line the record starts on, never
+    # an uncaught csv.Error.
+    big = "9" * (_CSV_FIELD_LIMIT + 1)
     for line, text in ((1, f"datetime,{big}\n2021-01-01,1\n"), (2, f"datetime,close\n1,{big}\n")):
         df, rep = _run(tmp_path, text)
         assert df is None and [e["code"] for e in rep.errors] == ["unreadable"]
@@ -350,12 +352,62 @@ def test_an_unclosed_quote_is_named_by_the_line_it_opens_on(tmp_path):
     (err,) = rep.errors
     assert err["code"] == "field_count_mismatch"
     assert err["examples"] == [{"csv_line": 3, "value": "1"}]
-    _, rep = _run(tmp_path, 'datetime,close\n2021-01-01,1\n"2021-01-02,2\n' + tail * 400)
+    past = tail * (_CSV_FIELD_LIMIT // len(tail) + 1)
+    _, rep = _run(tmp_path, 'datetime,close\n2021-01-01,1\n"2021-01-02,2\n' + past)
     (err,) = rep.errors
     assert err["code"] == "unreadable"
     assert err["examples"] == [{"csv_line": 3}]
     assert "the record starting at csv line 3" in err["message"]
     assert "a quote that never closes" in err["message"]
+
+
+def test_the_field_limit_is_pinned_not_read_from_the_process(tmp_path, monkeypatch):
+    # csv.field_size_limit() is interpreter-global, and the scan used to read whatever it held:
+    # once a co-imported package raised it (scipy's ARFF reader does), an unclosed quote read as a
+    # field_count_mismatch and an over-long decimal or header name loaded; a lowered one refused
+    # a clean file. The scan pins the stdlib default for read_strict_csv's stages, so the bytes
+    # alone decide, and hands the caller's limit back on every exit: admitted, refused, raised.
+    # The lone-\r file is clean too, but its endings send the tokenizer cross-check (stage 5) back
+    # through the record scan, so a pin released before that stage refuses it under the lowered
+    # limit — every stage that scans is covered, not only the two ahead of the parse.
+    tail = "".join(f"2021-02-{d:02d},{d}\n" for d in range(1, 29))
+    past = tail * (_CSV_FIELD_LIMIT // len(tail) + 1)  # what the unclosed quote reads as one field
+    texts = {
+        "unclosed": 'datetime,close\n2021-01-01,1\n"2021-01-02,2\n' + past,
+        "decimal": f"datetime,close\n2021-01-01,1.{'0' * _CSV_FIELD_LIMIT}\n2021-01-02,2\n",
+        "header": f"datetime,{'c' * (_CSV_FIELD_LIMIT + 1)}\n2021-01-01,1\n2021-01-02,2\n",
+        "clean": "datetime,close\n2021-01-01,1\n2021-01-02,2\n",
+        "lone_cr": "datetime,close\r2021-01-01,1\r2021-01-02,2\r",
+    }
+
+    def verdicts():
+        out, limit = {}, csv.field_size_limit()
+        for name, text in texts.items():
+            df, rep = _run(tmp_path, text)
+            assert csv.field_size_limit() == limit, name  # the caller's limit, handed back
+            out[name] = (None if df is None else df.reset_index().to_dict("list"), rep.to_dict())
+        return out
+
+    ambient = csv.field_size_limit()
+    pinned = verdicts()
+    assert {name: [e["code"] for e in rep["errors"]] for name, (_, rep) in pinned.items()} == {
+        "unclosed": ["unreadable"],
+        "decimal": ["unreadable"],
+        "header": ["unreadable"],
+        "clean": [],
+        "lone_cr": [],
+    }
+    try:
+        for limit in (2**31 - 1, 4):  # raised (the most a C long holds on every platform), lowered
+            csv.field_size_limit(limit)
+            assert verdicts() == pinned, limit
+        # an exception raised through the stages hands the limit back too
+        monkeypatch.setattr(dataio, "_parse_frame", lambda *_: 1 / 0)
+        with pytest.raises(ZeroDivisionError):
+            _run(tmp_path, texts["clean"])
+        assert csv.field_size_limit() == 4
+    finally:
+        csv.field_size_limit(ambient)
 
 
 def test_a_doubled_bom_is_dropped_as_pandas_drops_it(tmp_path):

@@ -7,8 +7,10 @@ timestamps, no format guessing, forced-float value columns, duplicate/order chec
 sees a single number. All violations for a file are accumulated — never fail-fast — and every
 check lands in a structured ``data_report`` the CLI emits even on refusal (exit 2), so a calling
 agent can fix its data without guesswork. The one exception is a structural refusal (undecodable
-bytes, a duplicate header name, a ragged record, a record pandas reads differently from the file):
-past it no cell can be placed under a column, so the cell-level checks do not run.
+bytes, a duplicate header name, a ragged record, a record the strict scan cannot read — a field
+past ``_CSV_FIELD_LIMIT`` characters, usually a quote that never closes — or a record pandas cannot
+read or reads differently from the file): past it no cell can be placed under a column, so the
+cell-level checks do not run.
 
 Refusals vs warnings: structural defects (bad timestamps, non-numeric garbage, inverted OHLC)
 refuse; market-shaped anomalies (interior NaN holes, crash-sized moves, calendar gaps) only warn —
@@ -51,12 +53,18 @@ _GAP_FACTOR = 10.0
 MAX_EXAMPLES = 5
 #: Fewer than this many possible anchor bars beyond the longest horizon → barely_sufficient warning.
 _MIN_COMFORT_ANCHORS = 8
+#: The longest field, in characters, the record scan (:func:`_records`) reads — a longer one
+#: refuses as ``unreadable``. It is the stdlib's default ``csv.field_size_limit()``, PINNED for
+#: :func:`read_strict_csv`'s stages rather than read: that limit is interpreter-global, so a
+#: library caller or a co-imported package (scipy's ARFF reader lifts it to the C long's maximum)
+#: would otherwise decide whether the same bytes refuse or load.
+_CSV_FIELD_LIMIT = 131072
 #: Two of the four places pandas' tokenizer can read a record differently from ``csv.reader``
 #: (:func:`_records`; a NUL byte and a byte-order mark past the file's start are the others), so
 #: its frame is cross-checked: a carriage return that is not half of a ``\r\n``, and a line led by
 #: spaces or tabs and then a quote — after a ``\n``: past a lone ``\r`` the check runs anyway, and
 #: the first line, which opens the first 256 KiB read buffer, could put its quote at the next one
-#: only behind ~262k leading spaces, one field past the csv field limit the header stage refuses.
+#: only behind ~262k leading spaces, one field past ``_CSV_FIELD_LIMIT`` the header stage refuses.
 _LONE_CR = re.compile(rb"\r(?!\n)")
 _SPACED_QUOTE = re.compile(rb'\n[ \t]+"')
 
@@ -249,18 +257,30 @@ def read_strict_csv(
     cross-check) consumes that one buffer, so the digest describes exactly the bytes the engine
     measured: a rewrite between stages cannot split the reported identity from the evidence
     actually parsed. The whole file is held in memory — pandas materialized it anyway.
+
+    The record scan reads under ``csv.field_size_limit()``, which is interpreter-global, so stages
+    2 to 5 (the scans and the parse between them) run with it pinned to ``_CSV_FIELD_LIMIT`` — the
+    stdlib default — and the caller's limit is handed back on every exit, admitted, refused or
+    raised through: a field longer than 131072 characters refuses as ``unreadable`` whatever else
+    in the process set the limit. The pin is a set-and-restore of process state, so it is NOT
+    thread-safe: a thread using ``csv`` while a read is inside those stages reads under the pin,
+    and a limit it sets meanwhile is overwritten by the restore.
     """
     rep = FileReport(path=str(path), role=role)
     blob = _read_blob(path, rep)
     if blob is None:
         return None, rep
     rep.sha256 = hashlib.sha256(blob).hexdigest()
-    cols = _header_columns(path, blob, rep)
-    if cols is None or not _record_shape(path, blob, len(cols), rep):
-        return None, rep
-    raw = _parse_frame(path, blob, rep)
-    if raw is None or not _tokenizer_parity(path, blob, raw, rep):
-        return None, rep
+    ambient = csv.field_size_limit(_CSV_FIELD_LIMIT)  # set, returning the limit it replaces
+    try:
+        cols = _header_columns(path, blob, rep)
+        if cols is None or not _record_shape(path, blob, len(cols), rep):
+            return None, rep
+        raw = _parse_frame(path, blob, rep)
+        if raw is None or not _tokenizer_parity(path, blob, raw, rep):
+            return None, rep
+    finally:  # here, never in the _records generator, whose cleanup waits on garbage collection
+        csv.field_size_limit(ambient)
     ts_col = "datetime" if "datetime" in raw.columns else raw.columns[0]
     ts = _parse_timestamps(path, raw, ts_col, rep)
     data = _parse_value_columns(path, raw, ts_col, rep)
@@ -290,8 +310,9 @@ def _read_blob(path: str, rep: FileReport) -> bytes | None:
 
 
 class _RecordError(csv.Error):
-    """A ``csv.Error`` (in practice a field past ``csv.field_size_limit()``) tagged with the csv
-    line its record starts on, so the refusal can name where to look."""
+    """A ``csv.Error`` (in practice a field past ``_CSV_FIELD_LIMIT``, the limit
+    :func:`read_strict_csv` pins) tagged with the csv line its record starts on, so the refusal
+    can name where to look."""
 
     def __init__(self, csv_line: int, exc: csv.Error) -> None:
         self.csv_line = csv_line
@@ -333,7 +354,9 @@ def _records(blob: bytes) -> Iterator[tuple[int, list[str]]]:
     field. Wherever a NUL byte, a lone ``\\r``, a space-led quote or a BOM past the file's start
     occurs, :func:`_tokenizer_parity` cross-checks pandas' frame against these records.
 
-    A ``csv.Error`` re-raises as :class:`_RecordError` naming the line its record starts on.
+    A ``csv.Error`` re-raises as :class:`_RecordError` naming the line its record starts on. The
+    reader obeys whatever ``csv.field_size_limit()`` holds while it runs — :func:`read_strict_csv`
+    pins it to ``_CSV_FIELD_LIMIT`` around every stage that calls this.
     """
     text = io.TextIOWrapper(io.BytesIO(blob), encoding="utf-8-sig", newline="")
     raw = ""

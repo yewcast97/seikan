@@ -916,7 +916,11 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   admits only its default or stricter (a loosened exam is exit 3), unknown `SEIKAN_*` env vars
   refuse (the known set is derived from `model_fields`, so a deleted knob's env var is enforced for
   free), `is_canonical()` feeds the report's `identity.thresholds_canonical` stamp.
-- `dataio.py` — the strict-CSV front door: `read_strict_csv` (all violations accumulated,
+- `dataio.py` — the strict-CSV front door: `read_strict_csv` (all violations accumulated, except
+  past a structural refusal — undecodable bytes, a duplicate header name, a ragged record, a
+  record the strict scan cannot read (a field past 131072 characters, usually a quote that never
+  closes), a record pandas' tokenizer cannot read or reads differently from the strict scan —
+  where no cell can be placed under a column, so the cell-level checks do not run;
   machine-readable `FileReport`s — each carrying the file's raw-byte `sha256`, the report's data
   identity), `check_frame` integrity invariants, `sufficiency_check` (an index too short to close
   one observation refuses up front), `DataError` → exit 2.
