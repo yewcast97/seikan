@@ -226,8 +226,9 @@ class EpisodeProfileBlock(TypedDict):
     times (× members in basket): one crisis can be the whole tail of ``mae_quantiles``, most of
     ``hit_rate``'s streak of wins, and ``profit_factor``'s loss mass. This block recomputes the
     same statistic family in EPISODE units — the same frozen cross-target overlap merge as
-    ``episode_stats``, one aggregate per episode (the MEAN of member rows' ``ret``, matching the
-    ledger's per-episode ``mean_ret``; the extreme ``mae``/``mfe`` within the episode) — so
+    ``episode_stats``, one aggregate per episode (the MEAN of member rows' ``ret`` — a
+    ``cross_mean`` full bar's rows at their sum's exact 0 — matching the ledger's per-episode
+    ``mean_ret``; the extreme ``mae``/``mfe`` within the episode) — so
     row-vs-episode divergence is itself the visible cluster diagnostic, the ``n`` vs
     ``n_nonoverlap``
     doctrine applied to every pool statistic. Reported, never a correction: no row-level number

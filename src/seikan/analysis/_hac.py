@@ -27,7 +27,11 @@ def newey_west_mean(rets: np.ndarray, entry_bars: np.ndarray, h: int) -> tuple[f
     ``h − 1`` under the same divisor — event ORDER is never mistaken for bar TIME (an ordinal-lag
     Bartlett with lag ≈ n drives the long-run variance toward 0 and fabricates significance).
     Rows are canonically ordered by (entry bar, return) before accumulation, so the estimate is
-    bit-identical under any permutation of tied-bar rows (the basket pooled path).
+    bit-identical under any permutation of tied-bar rows (the basket pooled path). Same-bar
+    pairs sit at weight 1, so the long-run variance reads the rows only through their per-BAR
+    deviation sums ``D_a`` (``Σ_a Σ_b w(|a−b|)·D_a·D_b``): rows with the same per-bar sums give
+    the same estimate in exact arithmetic — why a ``cross_mean`` pool may hand in its full bars'
+    rows at their sum's exact 0 (``runner._cells_panel``).
 
     A (near-)constant pool (:func:`_near_constant`) is ``(NaN, NaN)``, like any other pool
     without a positive long-run variance: its dispersion is rounding residue — the computed mean

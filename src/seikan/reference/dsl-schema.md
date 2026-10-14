@@ -970,8 +970,11 @@ file. Regroup rows on the leading param columns + `target` (there is no `cell_id
 Machine-readable contract: `seikan schema` → `trades_csv` — whose `derived_views` note records
 that each cell's `episodes` ledger (and `episode_stats`) is a deterministic derivable function of
 this CSV, which is why there is no `--episodes-out` flag: the in-report ledger truncates visibly
-at its cap, while this CSV never truncates, so rebuild past-the-cap entries from here. The
-columns:
+at its cap, while this CSV never truncates, so rebuild past-the-cap entries from here. Under a
+`cross_mean` basket, zero the rows of every FULL bar — an `entry_bar` on which every member has a
+closed row in the cell — before averaging an entry's `mean_ret`: their excesses sum to exactly 0,
+which their rounded `ret` values miss by residue, so the report reads each of them at 0.0
+(`share_abs` stays on each row's own `|ret|`). The columns:
 
 | column | meaning |
 |---|---|
@@ -1037,9 +1040,26 @@ and int64 nanosecond counts silently round in IEEE-754 consumers.)
     every read of it takes its exact value — means, quantiles and std 0.0, `rot_p` 1.0, `t_hac` /
     `hac_se`, the shape reads, `concentration` and `member_share` null) — exactly 0, the pooled
     mean being summed from the raw legs in any
-    declaration order (on a full bar with distinct legs only this mean is re-summed: the pool's
-    OTHER reads — its HAC, `rot_p`, era and episode panels — keep ordinary rounding, so legs equal
-    but for their last bits, one instrument in two quote units, leave them residue-driven) —
+    declaration order (on a full bar with distinct legs each per-row excess is that row's own
+    rounded value, and the pooled reads that SUM whole bars take the identity too: a full bar —
+    every member closed in the cell — enters `boot`'s episode sums (same draws), the `subperiods`
+    means, the cell's `episodes` / `episode_profile` means and the HAC's per-bar deviation sums
+    at exactly 0, so a pool whose every bar is full reads `t_hac` / `hac_se` null (no long-run
+    variance, as on identical legs) and any other pool holding a full bar reads `t_hac` as this
+    exact mean over its `hac_se`; a pool with no full bar reads each of these over its rows
+    plainly. `rot_p` counts the identity's ties only where the demeaning's residue sits inside
+    its FFT tie band — a basket-wide ENTRY (every member firing on the same bars, so every
+    rotated pool is full too) on ordinary dispersed legs reads 1, while legs equal but for
+    their last bits, one instrument in two quote units, leave it residue-driven. The grid-level
+    `pbo` does not take the identity at all: its CSCV split scores sum each row's rounded
+    excess, so on a grid of all-full cells every candidate scores ±residue and `pbo` follows
+    the targets' declaration order. Nor do the cell's `conditional_buckets` means and
+    `bucket_monotonicity`: they keep each row's rounded excess, so bucketed by a basket-wide
+    feature (a `calendar` field, a shared `external` feed) on an all-full pool every bucket
+    holds whole bars and reads residue, and `bucket_monotonicity` can rank residue in
+    declaration order. The row-level reads — the dispersion, quantile and shape
+    reads, `hit_rate`, `profit_factor`, |return| mass shares — keep each row's ordinary
+    rounding) —
     and a selective signal's
     pooled mean IS its cross-sectional selection read; the LEGS still attribute —
     `mean_ret_bench` ≈ `mean_ret_raw` is the basket's own realized drift), `hit_rate`,

@@ -3681,8 +3681,10 @@ def test_cross_mean_identical_legs_pool_is_exactly_zero(tmp_path):
 
 
 def test_cross_mean_pooled_mean_ret_is_the_raw_leg_sum_not_pool_moments(tmp_path):
-    # The documented provenance exception: a basket-wide cross_mean pool's graded mean_ret is the
-    # exact raw-leg sum (0.0), where pool_moments over the same closed rows keeps rounding residue.
+    # The documented provenance split: a basket-wide cross_mean pool's graded mean_ret is the
+    # exact raw-leg sum (0.0), and so are the pooled reads that SUM whole bars — here the one
+    # chained episode's ledger and profile means and the era means — while pool_moments over
+    # the same closed rows, a row-level read, keeps each row's rounding.
     from seikan.analysis.stats import pool_moments
 
     idx = pd.date_range("2021-01-01", periods=100, freq="1D")
@@ -3705,8 +3707,191 @@ def test_cross_mean_pooled_mean_ret_is_the_raw_leg_sum_not_pool_moments(tmp_path
     )
     res = run_backtest(thesis, load(thesis, files))
     closed = res.trades[~res.trades["is_open"]]["ret"].to_numpy(dtype=float)
-    assert res.summary["cells"][0]["pooled"]["mean_ret"] == 0.0
+    cell = res.summary["cells"][0]
+    assert cell["pooled"]["mean_ret"] == 0.0
     assert pool_moments(closed)["mean_ret"] != 0.0
+    assert [e["mean_ret"] for e in cell["episodes"]["entries"]] == [0.0]  # one dense chain
+    assert cell["episode_profile"]["mean_ret"] == 0.0
+    assert [s["mean_ret"] for s in cell["pooled"]["subperiods"]] == [0.0, 0.0, 0.0]
+
+
+def _pow_basket(tmp_path, order="ABC", *, above=0.0, n=12):
+    """The review's basket: members A, B, C priced 2**t, 4**t, 16**t, declared in ``order``,
+    ``cross_mean`` at h=1. Every pct leg is exactly 1, 3 or 15, so every closed row's excess is
+    one of three NONZERO values whose exact sum is 0 — and whose rounded sum is not. ``close >
+    above`` fires C first, then B, then A: ``above=0`` makes every bar full."""
+    idx = pd.date_range("2021-01-01", periods=n, freq="1D")
+    t = np.arange(n, dtype=float)
+    files = {
+        name: _write_bars(tmp_path / f"{name}.csv", base**t, idx)
+        for name, base in (("A", 2.0), ("B", 4.0), ("C", 16.0))
+    }
+    thesis = Thesis.model_validate(
+        {
+            "name": "cm_pow",
+            "target_mode": "basket",
+            "data": {"targets": list(order)},
+            "entry": _gt(above),
+            "params": {"horizon": 1, "benchmark": "cross_mean"},
+        }
+    )
+    return run_backtest(thesis, load(thesis, files))
+
+
+def test_cross_mean_full_bars_are_exactly_zero_in_the_pooled_bar_closed_sums(tmp_path):
+    # The review's case beyond the headline mean: every bar is full, so each bar's excesses sum
+    # to exactly zero while each row is a nonzero rounded value whose bar sum is residue. Every
+    # pooled read that SUMS whole bars — the bootstrap's draws, the eras, the episode ledger and
+    # profile, the HAC's per-bar deviation sums — reads the identity: a zero-width interval at
+    # 0.0, no win and no loss streak, and no long-run variance (HAC null, as on identical legs).
+    # Row-level reads keep each row's own excess.
+    for order in ("ABC", "CAB"):
+        res = _pow_basket(tmp_path, order)
+        cell = res.summary["cells"][0]
+        pooled = cell["pooled"]
+        closed = res.trades[~res.trades["is_open"]].sort_values(["entry_bar", "target"])
+        by_bar = closed["ret"].to_numpy(dtype=float).reshape(-1, 3)  # every bar: all 3 members
+        assert (by_bar.sum(axis=1) != 0.0).all(), order  # the premise: rounded residue
+        assert pooled["mean_ret"] == 0.0
+        boot = pooled["boot"]
+        assert boot["reason"] is None and boot["n_episodes"] == 10 and boot["n_boot"] == 2000
+        assert boot["ci_lo"] == boot["ci_hi"] == 0.0 and boot["boot_se"] == 0.0, order
+        assert [s["mean_ret"] for s in pooled["subperiods"]] == [0.0, 0.0, 0.0], order
+        prof = cell["episode_profile"]
+        assert prof["n_episodes"] == 10 and prof["hit_rate"] == 0.0 and prof["mean_ret"] == 0.0
+        assert prof["max_win_streak"] == prof["max_loss_streak"] == 0, order
+        assert [e["mean_ret"] for e in cell["episodes"]["entries"]] == [0.0] * 10, order
+        assert math.isnan(pooled["hac_se"]) and math.isnan(pooled["t_hac"]), order
+        assert pooled["rot_p"] == 1.0  # every rotated mean ties the observed one in its band
+        # the row-level reads keep each row's excess: C's row beats the basket on every bar
+        assert pooled["hit_rate"] == 1 / 3 and pooled["std_ret"] > 1.0
+        assert pooled["worst_ret"] == float(by_bar.min())
+        assert pooled["best_ret"] == float(by_bar.max())
+    # Over the rounded rows the HAC's variance was residue of either sign: a ~1e-8 SE at some
+    # lengths, null at others. Over the identity it is null at every length.
+    for n in range(7, 15):
+        pooled = _pow_basket(tmp_path, n=n).summary["cells"][0]["pooled"]
+        assert math.isnan(pooled["hac_se"]) and math.isnan(pooled["t_hac"]), n
+        assert pooled["boot"]["ci_lo"] == pooled["boot"]["ci_hi"] == 0.0, n
+
+
+def test_cross_mean_mixed_bars_zero_only_the_full_ones(tmp_path):
+    # C fires from bar 6, B from 11, A from 21 (n=30, h=1 — one episode per bar): bars 21..27
+    # are full, 6..20 partial. A full bar reads 0.0 in the pooled bar-closed sums; a sum over
+    # partial bars alone is the plain mean of their rows, byte for byte; the per-member panels,
+    # which hold one row of a full bar, never see the zeros; a pool without a full bar is the
+    # plain pool in every read, its HAC included; the trades frame keeps its columns.
+    from seikan.analysis.stats import episode_bootstrap_ci, episode_ledger, newey_west_mean
+    from seikan.constants import DEFAULT_FEATURE_NAMES, TRADE_COLUMNS
+
+    res = _pow_basket(tmp_path, above=2.0**20, n=30)
+    assert list(res.trades.columns) == [
+        "horizon",
+        "target",
+        *TRADE_COLUMNS,
+        *DEFAULT_FEATURE_NAMES,
+    ]
+    cell = res.summary["cells"][0]
+    pooled = cell["pooled"]
+    closed = res.trades[~res.trades["is_open"]]
+    rets = closed["ret"].to_numpy(dtype=float)
+    bars = closed["entry_bar"].to_numpy(dtype=np.int64)
+    counts = closed.groupby("entry_bar")["target"].size()
+    full_bars = set(counts.index[counts == 3])
+    assert full_bars == set(range(21, 28)) and set(counts.index) == set(range(6, 28))
+    full = np.isin(bars, sorted(full_bars))
+    pool = np.where(full, 0.0, rets)
+
+    # ledger and profile: one episode per bar, earliest first
+    for e, b in zip(cell["episodes"]["entries"], range(6, 28), strict=True):
+        rows = closed[closed["entry_bar"] == b].sort_values("target")["ret"].to_numpy(float)
+        assert e["mean_ret"] == (0.0 if b in full_bars else float(np.mean(rows))), b
+    prof = cell["episode_profile"]
+    assert prof["n_episodes"] == 22 and prof["hit_rate"] == 15 / 22
+    assert prof["max_win_streak"] == 15 and prof["max_loss_streak"] == 0
+    # eras [0, 10), [10, 20), [20, 30): only the third holds full bars
+    eras = pooled["subperiods"]
+    for s, (a, b) in zip(eras, ((0, 10), (10, 20), (20, 30)), strict=True):
+        in_era = (bars >= a) & (bars < b)
+        assert s["mean_ret"] == float(np.mean(pool[in_era]))
+        assert (s["mean_ret"] == float(np.mean(rets[in_era]))) is (a < 20)
+    # the bootstrap sums the pool values on the draw stream the rows alone give
+    assert pooled["boot"] == episode_bootstrap_ci(rets, bars, 1, rets_pool=pool)
+    assert pooled["boot"]["n_episodes"] == 22
+    # the HAC reads the same per-bar sums: its SE over the pool values, its t the exact mean
+    assert pooled["hac_se"] == newey_west_mean(pool, bars, 1)[1] > 0.0
+    assert pooled["t_hac"] == pooled["mean_ret"] / pooled["hac_se"]
+    # the per-member panels are ordinary pools
+    for tgt in ("A", "B", "C"):
+        mine = closed[closed["target"] == tgt]
+        assert cell["by_target"][tgt]["boot"] == episode_bootstrap_ci(
+            mine["ret"].to_numpy(dtype=float), mine["entry_bar"].to_numpy(dtype=np.int64), 1
+        )
+    # a pool with NO full bar (A never fires): every bar-closed read is the plain one
+    sel = _pow_basket(tmp_path, above=2.0**30, n=30)
+    sel_cell = sel.summary["cells"][0]
+    sel_closed = sel.trades[~sel.trades["is_open"]]
+    assert set(sel_closed["target"]) == {"B", "C"}
+    sel_rets = sel_closed["ret"].to_numpy(dtype=float)
+    sel_bars = sel_closed["entry_bar"].to_numpy(dtype=np.int64)
+    assert sel_cell["pooled"]["boot"] == episode_bootstrap_ci(sel_rets, sel_bars, 1)
+    # the reliability pass's HAC, its t over the rows' own mean — not the exact mean beside it
+    t_sel, se_sel = newey_west_mean(sel_rets, sel_bars, 1)
+    assert (sel_cell["pooled"]["t_hac"], sel_cell["pooled"]["hac_se"]) == (t_sel, se_sel)
+    assert sel_cell["episodes"] == episode_ledger(sel_closed)
+    assert json_safe(sel_cell["episode_profile"]) == json_safe(episode_profile(sel_closed))
+
+
+def test_cross_mean_ledger_rebuilds_from_the_trades_csv_past_its_cap(tmp_path):
+    # The `trades_csv.derived_views` recipe, followed on the written file: the cell's CLOSED rows
+    # in (entry_time, target) order, the greedy half-open merge across targets, each entry's
+    # mean over its rows' ret with every FULL bar's rows (every member closed) zeroed, share_abs
+    # over each row's own |ret|. It reproduces the listed entries exactly — and past the cap,
+    # where the CSV is the only source, the full bars read 0.0, never the residue their rounded
+    # rows average to.
+    from seikan.serialize import write_trades_csv
+
+    res = _pow_basket(tmp_path, above=2.0**20, n=60)  # C fires from bar 6, B from 11, A from 21
+    write_trades_csv(res, str(tmp_path / "trades.csv"))
+    rows = pd.read_csv(
+        tmp_path / "trades.csv",
+        float_precision="round_trip",
+        parse_dates=["entry_time", "exit_time"],
+    )
+    closed = rows[~rows["is_open"]].sort_values(["entry_time", "target"], kind="stable")
+    n_members = closed.groupby("entry_bar")["target"].transform("nunique").to_numpy()
+    ret = closed["ret"].to_numpy(dtype=float)
+    pool = np.where(n_members == len(res.summary["targets"]), 0.0, ret)
+    entry, exit_ = closed["entry_time"].to_numpy(), closed["exit_time"].to_numpy()
+    clusters: list[list[int]] = []
+    end = None
+    for i in range(len(closed)):
+        if end is None or entry[i] >= end:
+            clusters.append([i])
+            end = exit_[i]
+        else:
+            clusters[-1].append(i)
+            end = max(end, exit_[i])
+    mass = np.abs(ret)
+    rebuilt = [
+        {
+            "start": pd.Timestamp(entry[c[0]]).isoformat(),
+            "end": pd.Timestamp(exit_[c].max()).isoformat(),
+            "n": len(c),
+            "mean_ret": float(np.mean(pool[c])),
+            "share_abs": float(mass[c].sum() / mass.sum()),
+        }
+        for c in clusters
+    ]
+    led = res.summary["cells"][0]["episodes"]
+    cap = led["cap"]
+    assert led["n_total"] == len(rebuilt) == 52 and led["n_omitted"] == 52 - cap
+    assert led["entries"] == rebuilt[:cap]  # bars 6..20 partial, 21.. full
+    assert led["omitted_share_abs"] == sum(e["share_abs"] for e in rebuilt[cap:])
+    # past the cap every episode is one full bar: 0.0 by the recipe, where the plain mean of
+    # its rows is residue (save on the odd bar whose rounding happens to cancel)
+    assert [e["mean_ret"] for e in rebuilt[cap:]] == [0.0] * (52 - cap)
+    assert sum(float(np.mean(ret[c])) != 0.0 for c in clusters[cap:]) > (52 - cap) // 2
 
 
 def test_cross_mean_swept_entry_axis_each_cell_mounts_its_own_pooled_mean(tmp_path):

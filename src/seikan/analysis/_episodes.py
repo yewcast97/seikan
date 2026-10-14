@@ -55,10 +55,12 @@ class _EpisodeView(NamedTuple):
     entry: np.ndarray
     exit_: np.ndarray
     rets: np.ndarray
+    #: What an episode MEAN sums per row — ``rets`` unless the caller handed ``rets_pool``.
+    rets_pool: np.ndarray
     clusters: list[list[int]]
 
 
-def _episode_view(trades: pd.DataFrame) -> _EpisodeView | None:
+def _episode_view(trades: pd.DataFrame, rets_pool: np.ndarray | None = None) -> _EpisodeView | None:
     """The ONE episode pipeline — dropna → canonical stable sort → cross-target
     :func:`overlap_clusters` merge — shared by :func:`episode_stats`, :func:`episode_ledger` and
     :func:`episode_profile`, so their documented "same pipeline, step for step" claim is
@@ -70,10 +72,19 @@ def _episode_view(trades: pd.DataFrame) -> _EpisodeView | None:
     and the default unstable quicksort could reorder even that — moving the fp summation order,
     and with it the last bit of the mean/share reads, between equivalent inputs.
     ``(entry_time, target)`` is unique within a cell, so the order is total.
+
+    ``rets_pool`` (row-aligned with ``trades``, finite wherever ``ret`` is) follows the rows
+    through the dropna and the sort by POSITION — never as a frame column, which a caller's
+    feature snapshot of the same name would collide with.
     """
     if trades is None or trades.empty or "entry_time" not in trades.columns:
         return None
-    df = trades.dropna(subset=["entry_time", "exit_time", "ret"])
+    if rets_pool is not None and len(rets_pool) != len(trades):
+        raise ValueError(
+            f"rets_pool must be row-aligned with trades: {len(rets_pool)} != {len(trades)} rows"
+        )
+    # Positional labels, so the surviving rows' labels ARE their positions in `trades`.
+    df = trades.reset_index(drop=True).dropna(subset=["entry_time", "exit_time", "ret"])
     if df.empty:
         return None
     keys = ["entry_time", "target"] if "target" in df.columns else ["entry_time"]
@@ -81,7 +92,8 @@ def _episode_view(trades: pd.DataFrame) -> _EpisodeView | None:
     entry = df["entry_time"].to_numpy()
     exit_ = df["exit_time"].to_numpy()
     rets = df["ret"].to_numpy(dtype=float)
-    return _EpisodeView(df, entry, exit_, rets, overlap_clusters(entry, exit_))
+    pool = rets if rets_pool is None else np.asarray(rets_pool, dtype=float)[df.index.to_numpy()]
+    return _EpisodeView(df, entry, exit_, rets, pool, overlap_clusters(entry, exit_))
 
 
 def episode_stats(trades: pd.DataFrame) -> EpisodeStatsBlock:
@@ -157,7 +169,12 @@ def episode_stats(trades: pd.DataFrame) -> EpisodeStatsBlock:
 EPISODE_LIST_MAX = 32
 
 
-def episode_ledger(trades: pd.DataFrame, cap: int = EPISODE_LIST_MAX) -> EpisodeLedgerBlock:
+def episode_ledger(
+    trades: pd.DataFrame,
+    cap: int = EPISODE_LIST_MAX,
+    *,
+    rets_pool: np.ndarray | None = None,
+) -> EpisodeLedgerBlock:
     """TIME-ORDERED per-episode ledger of one cell's CLOSED rows — the narrative companion to
     :func:`episode_stats`, which reports only the extremes.
 
@@ -179,6 +196,11 @@ def episode_ledger(trades: pd.DataFrame, cap: int = EPISODE_LIST_MAX) -> Episode
     and no episode silently vanishes. A dead cell returns the explicit empty ledger, never
     null. Evidence-only; no check reads it — the gated one-episode detector is
     ``episode_stats.max_cluster_share_abs``.
+
+    ``mean_ret`` sums ``rets_pool`` (row-aligned with ``trades``; default the rows' ``ret``) —
+    a ``cross_mean`` basket's rows with every full bar's excesses at 0.0, the identity their sum
+    holds exactly; an episode holds each bar's rows entirely, so its mean is exact over them.
+    The |return| shares stay on ``ret``: a row's mass is its own, not its bar's.
     """
     empty: EpisodeLedgerBlock = {
         "entries": [],
@@ -187,10 +209,11 @@ def episode_ledger(trades: pd.DataFrame, cap: int = EPISODE_LIST_MAX) -> Episode
         "omitted_share_abs": 0.0,
         "cap": int(cap),
     }
-    view = _episode_view(trades)
+    view = _episode_view(trades, rets_pool)
     if view is None:
         return empty
     entry, exit_, rets, clusters = view.entry, view.exit_, view.rets, view.clusters
+    pool = view.rets_pool
     mag = np.abs(rets)
     total = float(mag.sum())
 
@@ -205,7 +228,7 @@ def episode_ledger(trades: pd.DataFrame, cap: int = EPISODE_LIST_MAX) -> Episode
                 "start": _iso(entry[c[0]]),  # rows sorted by entry: c[0] opens the episode
                 "end": _iso(exit_[c].max()),
                 "n": len(c),
-                "mean_ret": float(np.mean(rets[c])),
+                "mean_ret": float(np.mean(pool[c])),
                 "share_abs": _share(c),
             }
             for c in kept
@@ -219,7 +242,9 @@ def episode_ledger(trades: pd.DataFrame, cap: int = EPISODE_LIST_MAX) -> Episode
     }
 
 
-def episode_profile(trades: pd.DataFrame) -> EpisodeProfileBlock:
+def episode_profile(
+    trades: pd.DataFrame, *, rets_pool: np.ndarray | None = None
+) -> EpisodeProfileBlock:
     """The episode-deduplicated TWIN of the row-level pool statistics — same family, EPISODE units.
 
     Overlapping observations from one market episode enter every row-level statistic up to ~h
@@ -235,9 +260,10 @@ def episode_profile(trades: pd.DataFrame) -> EpisodeProfileBlock:
     makes this the pooled episode read for free.
 
     Per-episode aggregates: ``ret`` → the MEAN of the episode's rows (the ledger's established
-    per-episode aggregate, and the unit that stays commensurable with the row-level ``mean_ret``;
-    a SUM would scale with overlap density — re-importing exactly the inflation this block
-    removes); ``mae`` → the episode's most adverse finite excursion (min), ``mfe`` → its most
+    per-episode aggregate, summed off the same ``rets_pool`` as :func:`episode_ledger`'s
+    ``mean_ret``, and the unit that stays commensurable with the row-level ``mean_ret``; a SUM
+    would scale with overlap density — re-importing exactly the inflation this block removes);
+    ``mae`` → the episode's most adverse finite excursion (min), ``mfe`` → its most
     favorable (max), each excursion pool covering the episodes that carry a finite path column
     (subset ``n`` beside it, exactly like the row-level blocks) — while ``edge_ratio`` pairs at
     the EPISODE level, exactly as the row-level ratio pairs rows: only episodes carrying BOTH
@@ -252,7 +278,7 @@ def episode_profile(trades: pd.DataFrame) -> EpisodeProfileBlock:
     counts and streaks, NaN statistics. ``n_episodes == episode_stats.n_clusters`` on the same
     rows by construction — a reader-checkable reconciliation, deliberately not gated. Evidence
     only; no check reads any field here."""
-    view = _episode_view(trades)
+    view = _episode_view(trades, rets_pool)
     if view is None:
         return {
             "n_episodes": 0,
@@ -271,14 +297,14 @@ def episode_profile(trades: pd.DataFrame) -> EpisodeProfileBlock:
     # Same frozen pipeline as `episode_stats`/`episode_ledger` — structurally, via `_episode_view`:
     # the clusters must be the very ones those blocks report, or `n_episodes == n_clusters` stops
     # being checkable.
-    df, rets, clusters = view.df, view.rets, view.clusters
+    df, pool, clusters = view.df, view.rets_pool, view.clusters
     n_rows = len(df)
     mae = df["mae"].to_numpy(dtype=float) if "mae" in df.columns else np.full(n_rows, _NAN)
     mfe = df["mfe"].to_numpy(dtype=float) if "mfe" in df.columns else np.full(n_rows, _NAN)
 
     # Clusters arrive in time order (the greedy chain opens them at strictly increasing starts),
     # so the streak walk below IS the calendar walk.
-    ret_means = np.array([float(np.mean(rets[c])) for c in clusters])
+    ret_means = np.array([float(np.mean(pool[c])) for c in clusters])
     # EPISODE-ALIGNED excursion aggregates — one slot per cluster, NaN where the cluster carries
     # no finite value in that leg. The quantile blocks below read each leg's own finite subset
     # (as ever), while `edge_ratio` reads the ALIGNED pair, so an episode censored on one side

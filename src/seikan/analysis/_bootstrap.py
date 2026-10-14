@@ -41,6 +41,7 @@ def episode_bootstrap_ci(
     entry_bars: np.ndarray,
     h: int,
     *,
+    rets_pool: np.ndarray | None = None,
     n_boot: int = BOOT_N,
     ci: float = BOOT_CI,
     min_episodes: int = BOOT_MIN_EPISODES,
@@ -59,15 +60,27 @@ def episode_bootstrap_ci(
     and the null fields say so rather than minting a degenerate interval). A degenerate bootstrap
     distribution is reported exactly — ``ci_lo == ci_hi``, ``boot_se`` 0.0 — instead of the
     ulp-scale spread rounding would mint (a ``mean / boot_se`` of ~1e15, the ``t_hac``
-    pathology): a pool whose returns are all equal (its interval is the pool's own arithmetic
-    mean, the ``mean_ret`` the cell reports beside it — save a ``cross_mean`` pooled panel's,
-    re-summed from the raw legs), and any pool whose resampled means come
-    out bit-identical on every draw (every episode carrying the same sum and count).
+    pathology): a pool whose summed values are all equal (its interval is their arithmetic
+    mean), and any pool whose resampled means come out bit-identical on every draw (every
+    episode carrying the same sum and count).
+
+    ``rets_pool`` (row-aligned with ``rets``, finite wherever ``rets`` is; default ``rets``
+    itself) is what the episode sums ADD — a ``cross_mean`` basket's pooled panel hands in its
+    rows with every full bar's excesses at 0.0, the identity their sum holds exactly. An episode
+    holds each bar's rows entirely (one bar, one window), so every draw sums whole bars and the
+    identity survives resampling. Everything else stays on ``rets``: the canonical (bar, ret)
+    order (the pool values break only the ties left in it, so row order stays irrelevant), the
+    seed digest (so the draw stream is the one ``rets`` alone would give) and the episodes.
     """
     rets = np.asarray(rets, dtype=float)
     bars = np.asarray(entry_bars, dtype=np.int64)
+    pool = rets if rets_pool is None else np.asarray(rets_pool, dtype=float)
+    if pool.shape != rets.shape:
+        raise ValueError(
+            f"rets_pool must be row-aligned with rets: shape {pool.shape} != {rets.shape}"
+        )
     keep = np.isfinite(rets)
-    rets, bars = rets[keep], bars[keep]
+    rets, bars, pool = rets[keep], bars[keep], pool[keep]
     out: EpisodeBootstrapCI = {
         "method": "episode_percentile",
         "ci_level": float(ci),
@@ -84,24 +97,29 @@ def episode_bootstrap_ci(
     # lexsort, not a stable bars-only sort: the seed digest below hashes the sorted BYTES, so
     # tied-bar rows (the basket pooled pool) must land in one canonical order or the caller's
     # row order would pick the draw stream. (rets, bars) is canonical: within a bar, rows sort
-    # by return.
-    order = np.lexsort((rets, bars))
-    bars, rets = bars[order], rets[order]
+    # by return. `pool` rides the same permutation and only breaks ties left in (bar, ret) —
+    # rows equal in both, so the sorted bars/rets bytes and the digest stay the two-key ones,
+    # while the episode sums add in one canonical order whatever pool values a caller hands in
+    # (the runner's never differ across such ties: within a bar they are all 0.0 or the rows'
+    # rets). Ordering on `pool` INSTEAD of `rets` would hand a full bar's tied zeros — and with
+    # them the hashed `rets` — back to the caller's row order.
+    order = np.lexsort((rets, bars) if rets_pool is None else (pool, rets, bars))
+    bars, rets, pool = bars[order], rets[order], pool[order]
     clusters = overlap_clusters(bars, bars + int(h))
     n_ep = len(clusters)
     out["n_episodes"] = int(n_ep)
     if n_ep < min_episodes:
         out["reason"] = "insufficient_episodes"
         return out
-    if float(rets.max()) == float(rets.min()):
+    if float(pool.max()) == float(pool.min()):
         out["n_boot"] = int(n_boot)
-        out["ci_lo"] = out["ci_hi"] = float(np.mean(rets))
+        out["ci_lo"] = out["ci_hi"] = float(np.mean(pool))
         out["boot_se"] = 0.0
         return out
     # Clusters partition the sorted rows into CONTIGUOUS runs (the greedy merge walks the rows in
     # order), so each episode is a reduceat segment.
     starts = np.fromiter((c[0] for c in clusters), dtype=np.int64, count=n_ep)
-    ep_sums = np.add.reduceat(rets, starts)
+    ep_sums = np.add.reduceat(pool, starts)
     ep_counts = np.diff(np.append(starts, rets.size))
 
     digest = hashlib.sha256(np.int64(h).tobytes() + bars.tobytes() + rets.tobytes()).digest()

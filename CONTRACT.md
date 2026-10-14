@@ -270,9 +270,10 @@ moments; v5 CORRECTED six ways evidence could be manufactured: warmup has no tru
 negation waits for its whole operand — `mask` with it, and a series computed from others
 initializes only where its inputs are — zero dispersion is exact in every kernel,
 recurrence and pool read that divides by it, a `native` feed's prints are their own `sources`
-leaf, the rotation null judges ties within the FFT's rounding, the `cross_mean` pooled mean keeps
-its zero-excess identities exactly, and `cross_breadth`'s `k` counts the members a kernel
-actually reduced over — see CHANGELOG.md) names the engine's estimator revision the same way.
+leaf, the rotation null judges ties within the FFT's rounding, the `cross_mean` pooled mean and
+the bootstrap, era, episode and HAC reads beside it keep its zero-excess identities exactly, and
+`cross_breadth`'s `k` counts the members a kernel actually reduced over — see CHANGELOG.md)
+names the engine's estimator revision the same way.
 
 The summary is a GRID, not a headline. Run-level keys are geometry and provenance only —
 `n_bars`, `index_start`/`index_end`, `bar_spacing` ({min,median,max}_seconds between consecutive
@@ -336,7 +337,8 @@ medians censored at h),
 mass-conserving episode ledger, capped at 32 with explicit truncation and `n_total ==
 episode_stats.n_clusters`), `episode_profile` (the episode-deduplicated TWIN of the row-level
 pool statistics: the SAME frozen cross-target merge as `episode_stats`, one aggregate per
-episode — the mean of its rows' `ret`, the ledger's own per-episode read, plus the extreme
+episode — the mean of its rows' `ret` (a `cross_mean` full bar's rows at their sum's exact 0,
+see `pooled`), the ledger's own per-episode read, plus the extreme
 `mae`/`mfe` within it — then the same statistic family over the episodes: n_episodes / hit_rate
 / mean_ret / profit_factor / ret_quantiles / worst_ret / best_ret / mae_quantiles /
 mfe_quantiles / edge_ratio / max_win_streak / max_loss_streak, the streak pair's one honest
@@ -361,9 +363,29 @@ outcome feed: every per-row excess is then exactly 0, and every read of it takes
 `concentration` and `member_share` null) — and then EXACTLY:
 the pooled mean is summed from the raw legs, so a full bar contributes `S − 1.0·S`, never
 rounding residue whose sign the targets' declaration order would set; on a full bar with
-distinct legs only this graded `mean_ret` is re-summed, the pool's other reads (`rot_p` and
-`t_hac` among them) keep ordinary
-rounding — and the LEGS still attribute: `mean_ret_bench` ≈
+distinct legs each per-row excess is that row's own rounded value, and the pooled reads that SUM
+whole bars take the identity too — a full bar's rows enter them at exactly 0.0 (re-derivable
+from the trades: a bar on which every member has a closed row in the cell), so the bootstrap's
+episode sums (same draws, same seed), the `subperiods` means, the `episodes` ledger and
+`episode_profile` means (with the profile's hit rate, streaks and quantiles over them) and the
+HAC (its long-run variance reads the rows only through per-bar deviation sums, same-bar pairs
+at weight 1) are exact where the identity holds and the rows' own values everywhere else: a
+pool whose every bar is full has no long-run variance — `t_hac` / `hac_se` null, as on
+identical legs — and any other pool holding a full bar reads `t_hac` as the exact `mean_ret`
+over its `hac_se`; on a pool with no full bar each of these is the plain read over its rows;
+`rot_p` counts the identity's ties only where the demeaning's residue (~ε·|raw|) sits inside
+its FFT tie band (a basket-wide ENTRY on ordinary dispersed legs reads 1 — every member fires on
+the same bars, so every rotated pool is full too — while legs equal but for their last bits, one
+instrument in two quote units, still read a coin flip), the grid-level CSCV does not take it
+at all (its split scores sum each row's rounded excess, so on a grid of all-full cells every
+candidate scores ±residue and `pbo` follows the targets' declaration order), nor do the cell's
+`conditional_buckets` means and `bucket_monotonicity`, which keep each row's rounded excess
+(bucketed by a basket-wide feature — a `calendar` field, a shared `external` feed — on an
+all-full pool every bucket holds whole bars and reads residue, so `bucket_monotonicity` can
+rank residue in declaration order), and row-level reads (`std_ret` and the shape reads,
+quantiles, the row hit rate, `profit_factor`, |ret| mass shares) keep each row's ordinary
+rounding, its excess being its own — and the LEGS still
+attribute: `mean_ret_bench` ≈
 `mean_ret_raw`
 is the basket's own realized drift), the panel the
 basket rubric grades
@@ -693,8 +715,9 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   per-block extrema), within the HAC's ~10 ulps, or has a centered sum of squares within its own
   accumulation error. Pool MEANS stay the arithmetic
   mean (a few ulps off a constant pool's value — the summation's rounding — never off its sign;
-  the one exception is a `cross_mean` basket's pooled `mean_ret`, summed from the raw legs — see
-  the pooled panel).
+  the one exception is a `cross_mean` basket's pooled `mean_ret`, summed from the raw legs, and
+  the bar-closed sums beside it, which read a full bar's rows at exactly 0 — see the pooled
+  panel).
   A post-warmup zero-dispersion bar
   is UNDECIDABLE like `x / 0`: its NaN lands in `signal_coverage`, never fires — guard a z-score
   of a series that can sit flat with `rolling_agg(x, N, std) > 0`. "Equal" means bit-identical: a

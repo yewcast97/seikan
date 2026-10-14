@@ -163,9 +163,16 @@ METRIC_ROLES: dict[str, JsonValue] = {
         "subset's cross-sectional selection tilt — each closed bar's FULL cross-section demeans "
         "to zero, but the pool holds only the members that fired, so 0 (exactly — summed "
         "from the raw legs) appears only when firings are basket-wide or every member's leg is "
-        "the same value (a shared outcome feed) — while the legs still "
-        "attribute: mean_ret_bench ≈ "
-        "mean_ret_raw is the basket's own drift)",
+        "the same value (a shared outcome feed); boot's episode sums, the subperiods and "
+        "episode means and the HAC read a full bar's rows (every member closed) at exactly 0 "
+        "too — an all-full pool's t_hac/hac_se null, as on identical legs — while rot_p "
+        "counts that identity only within its tie band, the grid-level pbo not at all (its "
+        "CSCV split scores sum each row's rounded excess), the conditional_buckets means and "
+        "bucket_monotonicity not at all either (each row's rounded excess: bucketed by a "
+        "basket-wide feature, a calendar field or a shared external feed, on an all-full pool "
+        "every bucket holds whole bars and reads residue, which bucket_monotonicity can rank "
+        "in declaration order), and row-level reads keep each row's rounding — and the legs "
+        "still attribute: mean_ret_bench ≈ mean_ret_raw is the basket's own drift)",
         "per-cell pooled.member_share.by_target (the full member-mass decomposition — "
         "attribution, never a ranking; only max_member_share_abs gates)",
     ],
@@ -603,7 +610,8 @@ METRIC_ROLES_DOC: dict[str, JsonValue] = {
         "per-cell episode_profile (the episode-deduplicated TWIN of the row-level pool "
         "statistics: the same frozen cross-target overlap merge as episode_stats — one crisis "
         "seen through three targets is ONE episode — then one aggregate per episode (the MEAN "
-        "of its rows' ret, matching the ledger's per-episode read; the extreme mae/mfe within "
+        "of its rows' ret, a cross_mean full bar's rows at their sum's exact 0, matching the "
+        "ledger's per-episode read; the extreme mae/mfe within "
         "it) and the same statistic family over the episodes: n_episodes, hit_rate, mean_ret, "
         "profit_factor, ret_quantiles, worst/best, the excursion blocks over per-episode "
         "extremes, edge_ratio, and max_win_streak / max_loss_streak — the one honest home for "
@@ -656,8 +664,16 @@ METRIC_ROLES_DOC: dict[str, JsonValue] = {
         "cross-sectional selection tilt: each closed bar's FULL cross-section demeans to zero, "
         "but the pool holds only the members that fired, so 0 (exactly — summed from the raw "
         "legs) appears only when firings are basket-wide (an unconditional basket-wide entry) "
-        "or every member's leg is the same value (a shared outcome feed), "
-        "and a selective signal's pooled mean "
+        "or every member's leg is the same value (a shared outcome feed) — boot's episode "
+        "sums, the subperiods and episode means and the HAC read a full bar's rows (every "
+        "member closed) at exactly 0 too (an all-full pool's t_hac/hac_se null, as on "
+        "identical legs), rot_p counts that identity only within its tie band, the grid-level "
+        "pbo not at all (its CSCV split scores sum each row's rounded excess), the "
+        "conditional_buckets means and bucket_monotonicity not at all either (they keep each "
+        "row's rounded excess: bucketed by a basket-wide feature — a calendar field, a shared "
+        "external feed — on an all-full pool every bucket holds whole bars and reads residue, "
+        "so bucket_monotonicity can rank residue in declaration order) and row-level reads "
+        "keep each row's rounding — and a selective signal's pooled mean "
         "IS its cross-sectional selection read. The LEGS still attribute: mean_ret_bench ≈ "
         "mean_ret_raw is the basket's own realized drift, a market-magnitude number and not a "
         "construction artifact)",
@@ -727,7 +743,10 @@ METRIC_ROLES_DOC: dict[str, JsonValue] = {
             "overlapping in-block pools (only block-boundary crossings are purged), so the "
             "ranking it is built on inherits overlap inflation; sparse grids fall back to S = 6 "
             "or 4 blocks, where the whole number can flip on one split (the reported `blocks` "
-            "says which S was used)."
+            "says which S was used). Under a cross_mean basket the split scores sum each row's "
+            "rounded excess — a full bar (every member closed) adds its rounding residue, not "
+            "the exact 0 the pooled panel reads — so on a grid whose cells are all full every "
+            "candidate scores ±residue and the pbo follows the targets' declaration order."
         ),
         "cross_breadth": (
             "k counts the members a cross node's kernel REDUCED over per bar — entering "
@@ -865,7 +884,12 @@ METRIC_ROLES_DOC: dict[str, JsonValue] = {
             "smearing as every pooled read: 'associated in this sample', never 'predicts'. Do "
             "not rebuild a pooled cross-cell version yourself — the same bar enters once per "
             "combo × horizon, which makes every bucket boundary depend on grid composition "
-            "(dishonest conditioning, not redundancy)."
+            "(dishonest conditioning, not redundancy). Under a cross_mean basket the bucket "
+            "means average each row's rounded excess — a full bar (every member closed) adds "
+            "its rounding residue, not the exact 0 the pooled panel reads — so bucketed by a "
+            "basket-wide feature (a calendar field, a shared external feed) on a pool whose "
+            "every bar is full, every bucket holds whole bars and reads residue, and "
+            "bucket_monotonicity can rank that residue in the targets' declaration order."
         ),
         "feature_association": (
             "Spearman between the entry-time feature snapshot and the realized closed ret, per "
@@ -946,8 +970,9 @@ METRIC_ROLES_DOC: dict[str, JsonValue] = {
         "episode_profile": (
             "The episode-deduplicated TWIN of the row-level statistics: the same frozen "
             "cross-target overlap merge as episode_stats clusters the rows into market "
-            "episodes, each episode contributes ONE aggregate (the mean of its rows' ret — the "
-            "ledger's own per-episode read; a sum would scale with overlap density and "
+            "episodes, each episode contributes ONE aggregate (the mean of its rows' ret — a "
+            "cross_mean full bar's rows at their sum's exact 0 — the ledger's own per-episode "
+            "read; a sum would scale with overlap density and "
             "re-import the inflation — and its extreme mae/mfe), and the same statistic family "
             "is recomputed over the episodes, streaks included (their one honest home: over "
             "overlapping rows 'consecutive' is a cluster artifact). Read it AGAINST the "
@@ -1215,7 +1240,9 @@ REPORT_FIELDS: dict[str, JsonValue] = {
             "the time-ordered episode LEDGER under episode_stats: {entries: [{start, end, n, "
             "mean_ret, share_abs}], n_total, n_omitted, omitted_share_abs, cap} — earliest "
             "first, never ranked; truncation past the cap is explicit and mass-conserving; "
-            "n_total == episode_stats.n_clusters (evidence-only)"
+            "n_total == episode_stats.n_clusters; in a cross_mean basket an episode's mean_ret "
+            "reads a full bar's rows (every member closed) at exactly 0, the identity their "
+            "excesses' sum holds, while share_abs stays each row's own |ret| (evidence-only)"
         ),
         "episode_profile": (
             "the episode-deduplicated TWIN of the row-level pool statistics: {n_episodes, "
@@ -1224,7 +1251,8 @@ REPORT_FIELDS: dict[str, JsonValue] = {
             "per-episode aggregates (mean ret; extreme excursions) under the SAME cross-target "
             "merge as episode_stats — n_episodes == episode_stats.n_clusters by construction; "
             "row-vs-episode divergence is the cluster diagnostic, reported never corrected; "
-            "emits always; in basket it doubles as the pooled episode read (evidence-only)"
+            "emits always; in basket it doubles as the pooled episode read, its episode means "
+            "summed like the episodes ledger's (evidence-only)"
         ),
         "conditional_buckets / bucket_monotonicity": (
             "PER-CELL feature conditioning over the cell's own closed rows, pooled across its "
@@ -1256,7 +1284,12 @@ REPORT_FIELDS: dict[str, JsonValue] = {
         "pooled.t_hac / hac_se": (
             "event-time overlap HAC over the pooled rows, df = pooled.n_nonoverlap - 1 — same-bar "
             "cross-member pairs enter at full Bartlett weight (cluster-robust for free), same "
-            "anti-conservative caveat (evidence-only)"
+            "anti-conservative caveat; under cross_mean a pool holding a full bar (every member "
+            "closed) is read over the per-bar sums with that bar at its exact 0 — the long-run "
+            "variance reads the rows only through per-bar deviation sums — so an all-full pool "
+            "reads both null (no long-run variance, as on identical legs), any other pool "
+            "holding a full bar reads t_hac as the exact pooled mean_ret over hac_se, and a pool "
+            "with no full bar keeps its rows' plain read (evidence-only)"
         ),
         "pooled.rot_p": (
             "COMMON-SHIFT rotation null — one shift rotates every member's mask as a block, "
@@ -1276,6 +1309,8 @@ REPORT_FIELDS: dict[str, JsonValue] = {
         "ret_quantiles / worst_ret / best_ret / mae_quantiles / mfe_quantiles / edge_ratio": (
             "pooled twins of the by_target evidence riders (boot resamples cross-member-merged "
             "episodes; every by_target caveat carries over), evidence-only — under cross_mean "
+            "boot's episode sums and the subperiods' means read a full bar's rows (every member "
+            "closed) at exactly 0, the identity their excesses' sum holds (same draws), and "
             "the pooled mean_ret is the FIRING subset's cross-sectional selection tilt (0, "
             "exactly, only when firings are basket-wide — the full cross-section demeans to "
             "zero, the firing subset need not — or every member's leg is the same value) and the "
@@ -1603,7 +1638,13 @@ TRADES_CSV: dict[str, JsonValue] = {
         "the leading swept-axis columns; the horizon is a cell axis like any other), keep the "
         "CLOSED ones (is_open false), and greedily merge overlapping half-open "
         "[entry_time, exit_time) windows ACROSS targets — the SAME frozen overlap merge "
-        "episode_stats runs. That reproduces the in-report ledger exactly, including past its "
+        "episode_stats runs, over rows ordered by (entry_time, target). An entry's mean_ret "
+        "averages its rows' ret, save under a cross_mean basket: there the rows of a FULL bar "
+        "(an entry_bar on which every member in summary.targets has a closed row in the cell) "
+        "enter at 0.0 each — their excesses sum to exactly 0, which their rounded ret values "
+        "miss by residue — so zero those rows before averaging; share_abs stays on every row's "
+        "own |ret|. "
+        "That reproduces the in-report ledger exactly, including past its "
         "cap: the report's episodes list truncates VISIBLY at `cap` entries (n_omitted / "
         "omitted_share_abs conserve the mass), while this CSV never truncates — rebuild the "
         "ledger from here when you need the entries past the cap"

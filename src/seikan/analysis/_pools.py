@@ -81,7 +81,11 @@ def pool_moments(rets: np.ndarray) -> PoolMoments:
     Overlap caveat, shared with every row-level read: one market move enters ~h rows, so
     these describe the realized pool, never an estimated distribution. Evidence-only; the
     checklist reads ``n``, ``mean_ret`` (a ``cross_mean`` basket's pooled ``mean_ret`` is
-    re-summed by :func:`cross_mean_pooled_mean` instead) and nothing else here.
+    re-summed by :func:`cross_mean_pooled_mean` instead) and nothing else here. Every other
+    read here is ROW-level and reads each row's own rounded value, a ``cross_mean`` full bar's
+    nonzero excesses included — only the pooled panel's bar-closed SUMS (the mean, the
+    bootstrap's episode sums, the era and episode means, the HAC's per-bar deviation sums) read
+    such a bar at its exact 0.
     """
     v = np.asarray(rets, dtype=float)
     v = v[np.isfinite(v)]
@@ -267,7 +271,11 @@ def cross_mean_pooled_mean(raw: np.ndarray, closed: np.ndarray) -> float:
     raw leg finite — a NaN leg voids the bar's whole cross-sectional mean, censoring every member
     there — so no NaN reaches the sums. Legs so large that a bar's sum, or the exact total, leaves
     the double range have no finite pooled mean: NaN, which the gate refuses as non-finite —
-    never an exception out of the run."""
+    never an exception out of the run. The same all-closed rows of ``closed`` are the full bars
+    whose rows the pool's other bar-closed sums read at 0.0 (the runner's ``rets_pool``), so the
+    bootstrap, the eras, the episode means and the HAC keep this identity too — the rotation
+    null only through its tie band, the CSCV split scores and the conditional-bucket means (each
+    row's own excess) not at all."""
     c = np.asarray(closed, dtype=bool)
     n = int(c.sum())
     if n == 0:

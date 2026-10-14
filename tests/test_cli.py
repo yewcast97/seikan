@@ -2691,6 +2691,10 @@ def test_schema_documents_the_trades_csv_between_csv_format_and_root_series(caps
     assert "--episodes-out" in csv_doc["derived_views"]  # the absent flag is named, on purpose
     assert "overlap merge" in csv_doc["derived_views"]
     assert "cap" in csv_doc["derived_views"]
+    # ...and the one rule the merge alone does not give: a cross_mean FULL bar's rows enter an
+    # entry's mean_ret at their sum's exact 0, not their rounded ret
+    assert "cross_mean" in csv_doc["derived_views"]
+    assert "FULL bar" in csv_doc["derived_views"]
     cols = csv_doc["columns"]
     assert set(cols) == {
         "<swept axes>",

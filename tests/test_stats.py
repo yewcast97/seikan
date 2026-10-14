@@ -1870,6 +1870,44 @@ def test_episode_profile_is_invariant_to_tied_row_order():
     assert episode_profile(frame) == episode_profile(shuffled)
 
 
+def test_episode_means_sum_the_pool_values_while_shares_keep_ret():
+    # `rets_pool` (row-aligned with the frame) is what an episode MEAN sums: a `cross_mean`
+    # basket's full bar reads 0.0 on each of its rows — the identity its excesses' sum holds —
+    # where its rounded rows average to residue (a "win" every time, a streak of them). The
+    # |return| shares stay on `ret`, and the values follow their rows by POSITION through the
+    # sort, whatever index labels the frame carries.
+    day = pd.Timedelta(days=1)
+    base = pd.Timestamp("2021-07-01")
+    frame = pd.DataFrame(
+        {
+            "entry_time": [base + 20 * day, base, base, base],
+            "exit_time": [base + 21 * day, base + day, base + day, base + day],
+            "ret": [0.05, -5.333333333333333, -3.333333333333333, 8.666666666666668],
+            "target": ["A", "C", "B", "A"],
+        }
+    )
+    pool = np.array([0.05, 0.0, 0.0, 0.0])
+    plain_led, plain_prof = episode_ledger(frame), episode_profile(frame)
+    assert plain_led["entries"][0]["mean_ret"] != 0.0  # the premise: residue
+    assert plain_prof["hit_rate"] == 1.0 and plain_prof["max_win_streak"] == 2
+    led = episode_ledger(frame, rets_pool=pool)
+    assert [e["mean_ret"] for e in led["entries"]] == [0.0, 0.05]
+    assert [e["share_abs"] for e in led["entries"]] == [
+        e["share_abs"] for e in plain_led["entries"]
+    ]
+    prof = episode_profile(frame, rets_pool=pool)
+    assert prof["n_episodes"] == 2 and prof["hit_rate"] == 0.5 and prof["worst_ret"] == 0.0
+    assert prof["max_win_streak"] == 1 and prof["max_loss_streak"] == 0
+    perm = [2, 0, 3, 1]  # labels left non-positional on purpose
+    assert episode_ledger(frame.iloc[perm], rets_pool=pool[perm]) == led
+    assert episode_profile(frame.iloc[perm], rets_pool=pool[perm]) == prof
+    # omitting it IS `rets_pool=ret`, byte for byte; a misaligned pool is refused
+    assert episode_ledger(frame, rets_pool=frame["ret"].to_numpy()) == plain_led
+    assert episode_profile(frame, rets_pool=frame["ret"].to_numpy()) == plain_prof
+    with pytest.raises(ValueError, match="row-aligned"):
+        episode_profile(frame, rets_pool=pool[:3])
+
+
 def test_episode_profile_dead_cell_is_the_explicit_zero_block():
     for dead in (
         pd.DataFrame(),
@@ -2236,6 +2274,67 @@ def test_degenerate_bootstrap_distribution_has_exactly_zero_se():
     assert ci["reason"] is None and ci["n_episodes"] == 12
     assert ci["ci_lo"] == ci["ci_hi"]
     assert ci["boot_se"] == 0.0
+
+
+def test_bootstrap_sums_the_pool_values_on_the_draw_stream_rets_alone_gives():
+    # `rets_pool` is what the episode sums ADD; the canonical order, the seed digest and the
+    # episodes stay on `rets`. Doubling every pool value doubles every draw's mean EXACTLY (a
+    # power-of-two scale commutes with rounding), so the interval and the SE double bit for bit
+    # — the draws are the ones `rets` alone gives — and passing `rets` itself IS the default.
+    rng = np.random.RandomState(5)
+    bars = np.repeat(np.arange(12) * 9, 3)  # 12 disjoint bars at h=5, three members on each
+    rets = rng.normal(0.01, 0.02, size=bars.size)
+    plain = episode_bootstrap_ci(rets, bars, 5)
+    assert episode_bootstrap_ci(rets, bars, 5, rets_pool=rets) == plain
+    doubled = episode_bootstrap_ci(rets, bars, 5, rets_pool=2.0 * rets)
+    assert doubled["n_episodes"] == plain["n_episodes"] == 12
+    assert doubled["ci_lo"] == 2.0 * plain["ci_lo"] and doubled["ci_hi"] == 2.0 * plain["ci_hi"]
+    assert doubled["boot_se"] == 2.0 * plain["boot_se"] > 0.0
+    # the values ride the rows: any row order, the pool's tied zeros included, is one block
+    pool = np.where(bars < 50, 0.0, rets)
+    want = episode_bootstrap_ci(rets, bars, 5, rets_pool=pool)
+    for _ in range(3):
+        perm = rng.permutation(bars.size)
+        assert episode_bootstrap_ci(rets[perm], bars[perm], 5, rets_pool=pool[perm]) == want
+    # rows tied on (bar, ret) may carry DIFFERENT pool values (a library caller's — the
+    # runner's never do): the values break the tie, so an episode's values add in one order and
+    # no permutation moves a bit. Each bar below holds 1e16, 1.0 and -1e16 in one of their six
+    # orders, and the cancellation makes the order visible: (1e16 + 1.0) - 1e16 is 0.0,
+    # (1e16 - 1e16) + 1.0 is 1.0.
+    big, one = 1e16, 1.0
+    spread = np.array(
+        [
+            [big, one, -big],
+            [big, -big, one],
+            [one, big, -big],
+            [one, -big, big],
+            [-big, big, one],
+            [-big, one, big],
+        ]
+    ).ravel()
+    six_bars = bars[:18]
+    tied = np.repeat(0.01 * np.arange(6), 3)  # every row of a bar ties on ret
+    want = episode_bootstrap_ci(tied, six_bars, 5, rets_pool=spread)
+    for _ in range(5):
+        perm = rng.permutation(18)
+        got = episode_bootstrap_ci(tied[perm], six_bars[perm], 5, rets_pool=spread[perm])
+        assert got == want
+    with pytest.raises(ValueError, match="row-aligned"):
+        episode_bootstrap_ci(rets, bars, 5, rets_pool=pool[:-1])
+
+
+def test_bootstrap_over_full_bar_zeros_is_exactly_zero():
+    # A `cross_mean` basket whose every bar is full: each bar's excesses sum to zero by
+    # identity, its rounded rows to residue. Summing the pool values (0.0 on every full-bar row)
+    # the interval sits at exactly 0.0 with an SE of exactly 0.0 — summing the rows themselves
+    # it sat at the residue.
+    bars = np.repeat(np.arange(6) * 10, 3)
+    rets = np.tile([-5.333333333333333, -3.333333333333333, 8.666666666666668], 6)
+    assert float(np.sum(rets[:3])) != 0.0  # the premise: the rounded excesses do not cancel
+    ci = episode_bootstrap_ci(rets, bars, 5, rets_pool=np.zeros(rets.size))
+    assert ci["reason"] is None and ci["n_episodes"] == 6 and ci["n_boot"] == 2000
+    assert ci["ci_lo"] == ci["ci_hi"] == 0.0 and ci["boot_se"] == 0.0
+    assert episode_bootstrap_ci(rets, bars, 5)["ci_lo"] != 0.0
 
 
 def test_constant_pool_has_no_bucket_monotonicity():
