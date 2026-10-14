@@ -249,7 +249,7 @@ def test_run_writes_complete_report_and_exits_0(tmp_path, capsys):
         "thesis_max_hypotheses",
     }
     assert doc["data_report"]["ok"] is True
-    assert doc["summary"]["statistics_version"] == 4  # the estimator revision is stamped
+    assert doc["summary"]["statistics_version"] == 5  # the estimator revision is stamped
     assert doc["summary"]["gate_evidence_basis"] == "full_sample"
     assert doc["summary"]["cells"]  # the full grid is present
     assert doc["summary"]["rotation"]["n_shifts"] > 0  # the null's resolution is stamped
@@ -2894,7 +2894,7 @@ def test_schema_markdown_is_pinned_to_the_live_contract(capsys):
     guide = capsys.readouterr().out
     assert f"`report_schema_version` **{REPORT_SCHEMA_VERSION}**" in guide
     assert f"`gate.policy_version` ({POLICY_VERSION})" in guide
-    assert STATISTICS_VERSION == 4  # the guide describes the v4 estimators; bump both together
+    assert STATISTICS_VERSION == 5  # the guide describes the v5 estimators; bump both together
     assert "{p05, p10, p25, p50, p75, p90, p95}" in guide and "{p10, p25" not in guide
     for field in typing.get_type_hints(ReportIdentity):
         assert f"`{field}`" in guide, field

@@ -246,7 +246,7 @@ appeared is not a state this CLI can reach. There is no top-level `n`: a scalar 
 would have to be some cell's, and naming one cell is the selection this engine does not perform.
 `policy_version` (**3** — v3: a never-available source refuses, and the support floor reads
 the renamed `n_nonoverlap`) names the checklist semantics (two cell results compare only
-under the same version); `summary.statistics_version` (**4** — v2 ADDED evidence: the p05/p95
+under the same version); `summary.statistics_version` (**5** — v2 ADDED evidence: the p05/p95
 quantile tails, the promoted per-cell shape reads, `benchmark_regression`, `timing` and the
 episode-deduplicated `episode_profile`; v3 CORRECTED: the excursion/trough window stops reading
 the exit bar's high/low — full H/L over `[fill, fill+h−1]` plus only the exit print — CSCV
@@ -266,7 +266,13 @@ seed hashes the same canonical order, so tied-bar row order is genuinely irrelev
 split scores run on SHIFTED moments (level-safe) and `oos_degradation_slope` is a centered
 OLS that nulls with `oos_degradation_slope_reason` on degenerate train scores; and
 zero-dispersion pools null their skewness/kurtosis instead of minting unreliable
-moments) names the engine's estimator revision the same way.
+moments; v5 CORRECTED six ways evidence could be manufactured: warmup has no truth value and
+negation waits for its whole operand — `mask` with it, and a series computed from others
+initializes only where its inputs are — zero dispersion is exact in every kernel,
+recurrence and pool read that divides by it, a `native` feed's prints are their own `sources`
+leaf, the rotation null judges ties within the FFT's rounding, the `cross_mean` pooled mean keeps
+its zero-excess identities exactly, and `cross_breadth`'s `k` counts the members a kernel
+actually reduced over — see CHANGELOG.md) names the engine's estimator revision the same way.
 
 The summary is a GRID, not a headline. Run-level keys are geometry and provenance only —
 `n_bars`, `index_start`/`index_end`, `bar_spacing` ({min,median,max}_seconds between consecutive

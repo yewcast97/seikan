@@ -59,10 +59,10 @@ def _episodes(rets, reasons=None, feature=None) -> pd.DataFrame:
 
 
 def test_statistics_version_is_stamped():
-    # v3: correctness fixes — the excursion/trough window stops reading the exit bar's high/low,
-    # CSCV midranks + duplicate collapse + the population ledger, paired edge_ratio, per-target
-    # bucket edges, and the episode_stats hhi pair.
-    assert STATISTICS_VERSION == 4
+    # v5: corrections — warmup has no truth value and negation waits for its whole operand, exact
+    # zero dispersion, native-clock print holes, rotation-null ties within the FFT's rounding, the
+    # exact cross_mean pooled mean, and the breadth k a cross kernel actually reduced over.
+    assert STATISTICS_VERSION == 5
 
 
 # ---- pool_moments: one pool's moment and shape reads ------------------------

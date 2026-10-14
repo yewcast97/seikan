@@ -7,6 +7,142 @@ semantics — `gate.POLICY_VERSION`). Each entry below names every stamp it move
 frozen statistic is only ever a correction, and it bumps `statistics_version`; anything that
 merely repackages code changes no number.
 
+## Unreleased — report schema 5, statistics 5, policy 3
+
+Correction release for six defects an external review found in 4.0.0, each a way the engine could
+manufacture evidence: warmup read as a truth value, rounding residue read as dispersion or as a
+sign, a missing input no ledger saw, a count of evaluations that never happened. Every fix lands in
+the fail-closed direction and none touches observer purity, the per-cell reporting doctrine or a
+sealed threshold. `statistics_version` moves 4 → 5 (summaries compare only within a version, and
+the gate refuses a summary stamped otherwise); `report_schema_version` and `policy_version` do not
+move — no key, field or check rule changes, and the one new value is a `sources` label
+(`native:<feed>`). Every number below is listed with the inputs that move it; every other summary
+number is byte-identical to 4.0.0 (verified by diffing conjunction, market-basket and
+cross_mean-basket summaries before and after). Reworded texts ride every report and
+`seikan schema`: the embedded `metric_roles` (caveats `baseline` / `cross_breadth` / `rot_p`, the
+`cross_breadth` and pooled-riders `evidence_only` lines), the `source_coverage` threshold (holes
+count "from its own first_available on", was "after its own first available bar"), the
+`signal_coverage` unmet wording and the native remedy; `seikan schema` also rewords
+`report_fields.run.sources` / `cross_breadth` and `gate_contract.run_checks.source_coverage`.
+
+- CHANGED the decision layer's warmup rules (`compiler.vectorize`). A still-warming condition node
+  has no truth value (`~init ⇒ ~value`, beside `~init ⇒ defined`), and negation waits for its whole
+  operand: `not` is initialized only where every condition under its operand is past warmup
+  (`vectorize.fully_initialized`, per member column, through `rolling` / `lag` / `first_true` and
+  into conditions embedded in operand series). In 4.0.0 `or(not(ema(close, 40) > 0), close < 0)`
+  fired — and closed observations — on all 39 warmup bars; `not(or(A_warming, B_false))`, a warming
+  `rolling(any)` under an `or`, a phantom True absorbing an `or` over a live hole, and a late
+  member's `cross_agg` broadcast through an `or` leaked the same way. `mask(C)` is a number only
+  once C is fully initialized — NaN and warmup while any branch warms, its live-branch Trues
+  included, since a series of those Trues alone would hand every NaN-skipping reader a
+  value-selected history — so a history read over it starts there and a cross-section thins the
+  member meanwhile (`cross_breadth` records the `k`). Every Series computed from other Series
+  initializes only at a finite value where its inputs are initialized — at the bar a lagged read
+  (`shift`, `change`) reaches back to (`_derived_latch`; identical to the finiteness latch for
+  plain data) — and a `cross_agg` broadcast waits for the member's own first value as well as its
+  init. A Series computed from an input that is initialized with no value yet — an event node whose
+  anchor became unknowable before its first event (a domain NaN in E), a mask undecided on its
+  first live bar — ledgers that stretch on `signal_coverage` as the input's direct readers do
+  (4.0.0 absorbed it as the derived series' warmup, so a domain NaN deleted firings unseen; new
+  refusals only). Moves: firings and every cell read of theses with a `not` / `mask` over a
+  staggered-warmup operand, a partially warm `rolling` under an `or`, a late member's `cross_agg`
+  broadcast read through an `or` / `lag`, directly or through any transform (removals where the
+  condition tree reads them directly; a history read or a cross-section over such a `mask` starts
+  later and can move either way, and so does that cross node's `cross_breadth` panel — its `k`
+  counts the member only once its mask is live); a `not` / `mask` over a partially warm operand
+  neither fires nor ledgers there. Signal-level reads (`first_true`, event anchors, cross `where`)
+  keep reading the tradable signal — where a branch used to leak a phantom True they now see the
+  live branch's real transitions and can GAIN firings (documented residual).
+- CHANGED zero dispersion to exact. A window, cross-section or since-event run of bit-identical
+  values has its mean equal to the value, a `std` / `mad` / `cross_demean` of 0.0 and an undefined
+  `zscore` / `rolling_corr` (4.0.0: `zscore_sma([0.1]*3) == -1`, `[100.1]*3 == +1`,
+  `rolling_corr(x, x) == 1`, a constant decimal feed fired `zscore(F, 3) < -0.5` on 294 of 300
+  bars); `ema` holds each update inside the OPEN interval its exact value lies in (a flat feed
+  drifted off itself; 6% of move-then-hold stretches settled on the wrong side, and 3–23% landed ON
+  the held value — every series for windows 3–5 — so `x <= ema(x)` fired on held bars exact
+  arithmetic keeps above the mean, and a crossover recipe fired a second time after a hold);
+  `zscore` (`ema`) clamps its mean the same way and, once a held input's mean can no longer move,
+  carries the deviation exactly, never rounding it to zero — it decays on the held stretch, keeping
+  the sign exact arithmetic gives it, instead of locking at `±1/√(1−α)` (a held stretch's `z > 0`
+  had read against exact arithmetic on ~10% of held bars; at `alpha ≥ 0.5` a long hold would
+  otherwise turn undecidable); `event_agg` `mean` of an all-equal run is its value. A post-warmup
+  zero-dispersion bar is undecidable (→ `signal_coverage`, the gate now says "missing or undefined
+  input"; a cross node over such an input no longer counts the member there, so its `cross_breadth`
+  panel moves too). Statistics: `t_hac` / `hac_se` null on a near-constant pool (4.0.0 read ~1e16);
+  `std_ret` exactly 0.0 on a constant pool (by_target, pooled, baseline); `benchmark_regression`
+  declines a near-constant bench leg and fits `beta` 0.0 (alpha the raw leg's mean, `r2` null —
+  nothing to explain) on a near-constant raw leg; CSCV split scores are NaN on a split pool that is
+  constant (per-block extrema), whose largest deviation is within ~10 ulps of its mean (the HAC's
+  gate; a single-level one-ulp pool scored ~1e15 and won every split, `pbo` 0.0) or that varies
+  only within its accumulation error (4.0.0 scored ~30% of such splits at ±1e7), moving `pbo` and
+  its diagnostics where a candidate had such splits; `boot` is degenerate exactly — `boot_se` 0.0 —
+  on a constant pool (its interval on the pool's arithmetic mean) and on any pool whose resampled
+  means are bit-identical on every draw; a constant pool has no `bucket_monotonicity` entry.
+  Feature snapshots (`params.features`) read the same kernels, so a feature over a bit-identical
+  window moves with them — the trades CSV feature columns, `conditional_buckets`,
+  `bucket_monotonicity` and `feature_association` (a `zscore` feature over a held decimal level
+  reads NaN, not ±1, and leaves the buckets); a `mask` feature is likewise NaN until its condition
+  is fully initialized. Every window, cross-section and pool that varies is computed as before, bit
+  for bit; the EW recurrences differ only on the steps where a rounded update left its exact
+  interval or a held input's deviation is carried (rounding-scale steps tick data with repeated
+  values can take too).
+- ADDED `native:<feed>` to the `sources` panel: a feed a `native` node reads on its own clock
+  starts where its first finite print arrives and is missing on every bar whose interval absorbed a
+  non-finite print, or whose anchored value is missing (a NaN print stays missing until the next
+  finite print arrives, as on the `external` leaf) — the first bar's interval being the whole
+  pre-interval print history, which `data.start` cannot exclude (every consumed print counts,
+  whatever the expression's reach). In 4.0.0 a NaN print between two bars was skipped by a native
+  `ema` and seen by no ledger; such runs now refuse on `source_coverage` (remedy: repair or trim
+  the feed; `data.end` can end the interval before a hole inside it). The bar-clock leaves are
+  counted as before; holes count from each leaf's `first_available` on.
+- CHANGED the rotation null's tie handling: the coincidence count `den` is an exact integer and
+  ties are judged within the FFT's rounding (an absolute band, `16·ε·log2(T)·‖f‖₂·√k / den`).
+  `rot_p` moves up wherever shifts tie the observed mean exactly — a forward series of identical
+  returns now reads exactly 1 (4.0.0: as low as 0.016), and outcomes whose values are exactly
+  representable (count series, a `diff` on a binary-exact tick such as 0.25) count their exact ties
+  (4.0.0 read p up to ~0.1 low); a `diff` of decimal-quoted levels counts its tick-level ties only
+  where the quotes' representation residue (~ε·level) sits inside the band, which grows with the
+  series length (~`log2(T)·√(T/k)`) — and reads them as variation above that, as 4.0.0 did (with
+  0.01 ticks from roughly 50 on a year of daily bars to a few hundred on ten years; 5-decimal FX
+  quotes always). A `cross_mean` basket-wide pool counts its ties only where the demeaning's
+  residue (~ε·|raw|) sits inside the band: ordinary dispersed baskets now read 1 (4.0.0: coin
+  flips), while legs equal but for their last bits (one instrument in two quote units) still read a
+  coin flip, as in 4.0.0 — the pool's reads other than `mean_ret` keep ordinary rounding. Dispersed
+  returns are byte-identical.
+- CHANGED the basket `cross_mean` pooled `mean_ret` (and the baseline's pooled `mean_ret`) to be
+  summed from the raw legs (`analysis.stats.cross_mean_pooled_mean`): a bar on which every member
+  closed, or whose legs are all equal, contributes exactly 0, in any declaration order. In 4.0.0 a
+  basket-wide firing read ±1e-19 with its sign set by the targets' order, and `support` flipped
+  with it; the baseline's "≈ 0 by construction" is now exactly 0.0. Every `cross_mean` pooled
+  `mean_ret` is this exact sum, so it can move in its last bits on any basket; legs so large the
+  sum leaves the double range read NaN (refused), never a crash. The `cross_mean` benchmark leg
+  takes an all-equal bar's value exactly, so on a basket whose legs are bit-identical (a shared or
+  duplicated outcome feed) every per-row excess is exactly 0.0 and every read of it moves to its
+  exact value: by_target / pooled / baseline means, `hit_rate`, `std_ret`, quantiles, `t_hac` /
+  `hac_se` (null), `rot_p` (1.0), `boot`, `subperiods`, `concentration` and `member_share` (null —
+  the gate's concentration check reads them missing), `bucket_monotonicity` (entries dropped),
+  `conditional_buckets` (bucket means and hit rates 0.0), `feature_association` (null,
+  `no_rank_variation`), the shape reads (`skewness` / `kurtosis` / `win_loss_ratio` /
+  `profit_factor` null; `tail_ratio`, `cvar_5`, `worst_ret` / `best_ret` exact), `episode_profile`,
+  `episode_stats` (cluster-mass fields null) and the `episodes` ledger (`share_abs` null),
+  `benchmark_regression` (last bits), the grid-level `pbo` block (every split pool constant: null,
+  `reason: insufficient_data`, after the block fallbacks), `mean_ret_bench`, and the trades `ret` /
+  `ret_bench` columns. Market / unbenchmarked pools and conjunction runs are unchanged.
+- CHANGED `cross_breadth`'s `k` to the members a cross kernel actually reduced over
+  (`vectorize.cross_reduced`: the entering members of every population whose reduction produced a
+  value — a member whose own demeaned value overflowed still counts). Moves only where they differ:
+  grouped nodes with groups below `min_valid` (4.0.0 reported 80 bars evaluated and a full basket
+  from bar 0 for a node that never produced a value) and populations whose reduction overflowed.
+  This change leaves ungrouped panels on ordinary data byte-identical; the decision-layer and
+  zero-dispersion changes above move the inputs some cross nodes reduce over, and their panels with
+  them.
+- Library: `vectorize.fully_initialized`, `vectorize.cross_reduced`,
+  `analysis.stats.cross_mean_pooled_mean`, `sources.LeafMasks` (`source_availability` now returns
+  `{label: LeafMasks}`), `MarketData.full_memo` (cleared by `clear_memo()`),
+  `nb.mask_apply_nb(value, init, defined, full)`, and the public walks
+  `dsl.schema.iter_source_leaves` / `series_source_leaves`, which also yield `("native", feed)` for
+  a `native` node beside the `("external", feed)` leaf under its `expr`.
+
 ## 4.0.0 — report schema 5, statistics 4, policy 3
 
 DSL expressiveness release: the entry vocabulary grows so a thesis can say what it means instead

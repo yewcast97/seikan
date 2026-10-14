@@ -857,7 +857,7 @@ def test_statistics_version_and_basis_are_stamped(tmp_path):
         }
     )
     s = run_backtest(thesis, load(thesis, {"target": tmp_path / "px.csv"})).summary
-    assert s["statistics_version"] == 4
+    assert s["statistics_version"] == 5
     # Every cell is measured once over the whole index — stamped so a consumer verifies the basis
     # it is reading instead of assuming it.
     assert s["gate_evidence_basis"] == "full_sample"

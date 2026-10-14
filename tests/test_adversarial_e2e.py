@@ -145,7 +145,7 @@ def test_golden_baseline_meets_its_cell(golden, capsys):
     # this suite pins the CONTRACT stamps — the estimator and checklist revisions — literally.
     assert doc["report_schema_version"] == REPORT_SCHEMA_VERSION
     assert doc["command"] == "run"
-    assert doc["summary"]["statistics_version"] == 4
+    assert doc["summary"]["statistics_version"] == 5
     assert doc["summary"]["target_mode"] == "conjunction"
     assert doc["gate"]["n_cells"] == doc["gate"]["n_met"] == 1
     assert doc["gate"]["cells"][0]["met"] is True

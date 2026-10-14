@@ -67,7 +67,7 @@ from seikan.analysis._rotation import pooled_reliability_summary, reliability_su
 #: names the ESTIMATORS). The gate reads it as a drift detector: a summary stamped with anything
 #: but this build's number refuses ungraded rather than being graded under assumptions that may
 #: not hold of it. The revision history is in CHANGELOG.md.
-STATISTICS_VERSION = 4
+STATISTICS_VERSION = 5
 
 __all__ = [
     "ASSOC_MIN_N",

@@ -161,7 +161,7 @@ def test_golden_run_meets_the_edge_cell_and_not_the_noise_cell(tmp_path):
     doc = report.to_dict()
     assert doc["n_cells"] == 2 and doc["n_met"] == 1
     # The whole evidence contract is on record end-to-end, exactly.
-    assert summary["statistics_version"] == 4
+    assert summary["statistics_version"] == 5
     assert summary["gate_evidence_basis"] == "full_sample"
     assert summary["target_mode"] == "conjunction"  # the stamp the checklist dispatched on
     assert summary["n_bars"] == 3000
