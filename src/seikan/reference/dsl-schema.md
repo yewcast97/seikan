@@ -437,8 +437,17 @@ Definitions shared by every node:
 
 The nodes:
 - `{"type": "mask", "condition": <Condition>}` — the condition as a number: `1.0` where it holds,
-  `0.0` where it was decided False, NaN while warming or undecidable. Depth-transparent (like
-  `shift`). The bridge for every counting recipe: "at least 2 of A/B/C" is
+  `0.0` where it was decided False, NaN while warming or undecidable. It waits like `not` does
+  (below): until EVERY condition under it is past warmup — an `or` whose live branch is False
+  while another branch still warms has decided nothing, and although its True there is decided
+  (T∨U = T, the `or` fires), a series of those Trues alone would be value-selected for every
+  reader that skips NaN (an `ema` reading "C held on every bar"). So the mask is NaN, and warmup,
+  until every branch is live: a threshold on it, every series computed from it and every history
+  read over it (an expanding `max` reads "C has not held since every branch went live") begin
+  there, and the `cross_agg` breadth thins the member meanwhile, as it thins a late-listed one
+  (`cross_breadth` records the `k`). The condition-level reads (`rolling`, `first_true`, the
+  event nodes) still count the live branch's firings. Depth-transparent (like `shift`). The
+  bridge for every counting recipe: "at least 2 of A/B/C" is
   `mask(A) + mask(B) + mask(C) >= 2`; breadth of a condition across a basket is
   `cross_agg(mask(C), "mean")`.
 - `{"type": "bars_since_event", "event": <Condition>}` — `t − s(t)` (0 on the event bar). Streak
@@ -642,7 +651,19 @@ expression that says the thesis.
 
 - `{"type": "threshold", "left": <Series>, "op": "<|<=|>|>=|==|!=", "right": <Series>}`
 - `{"type": "and|or", "conditions": [<Condition>, <Condition>, ...]}`  (min 2)
-- `{"type": "not", "condition": <Condition>}`
+- `{"type": "not", "condition": <Condition>}` — three-valued negation: a hole stays undecided
+  (`¬U = U`), and warmup stays warmup. Every condition node has no truth value while it warms,
+  and `not` is initialized only where EVERY condition under its operand is past warmup — not
+  merely where the operand itself is. The difference is `or`, which initializes on ANY branch so a
+  staggered-warmup disjunction fires from its live branch (T∨U = T): its False while a branch
+  still warms is no-signal, not a decided False, so `not(or(A, B))` ("none of these") waits for
+  A and B both. The same holds through `rolling`/`lag` (their windows/shifts) and into conditions
+  embedded in the operand's series (`mask`, the event nodes, a cross node's `where`), on each
+  member's own column. The signal-level reads differ by design: an event, a `first_true` edge and
+  a `where` population read the TRADABLE SIGNAL, for which a warming branch is simply not firing —
+  `bars_since_event(or(A, B)) > 5` counts B's events while A warms, where
+  `not(rolling(any, or(A, B), 6))` waits for A. Spell "none of these lately" with the `not` form
+  when every branch's warmup must be over.
 - `{"type": "rolling", "window": N, "agg": "all|any|count", "condition": <Condition>}` — fires when
   the inner condition held on every (`all`) / at least one (`any`) / at least `min_count` (`count`)
   bar of the trailing window. `count` **requires** `min_count` (the K of "at least K of N", e.g. `>= 3

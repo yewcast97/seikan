@@ -92,9 +92,11 @@ class MarketData:
     # ``condition_arrays``, each keyed by the node's canonical JSON — one typed dict per channel
     # shape, so a hit needs no cast: ``series_memo`` holds a Series node's (value, init) frames,
     # ``condition_memo`` a Condition's (value, init, defined) frames, ``array_memo`` those three
-    # channels as arrays. Riding the materialized data scopes the memos to exactly the bars they
-    # derive from — ONE memo per CLI run, populated by whichever compute path builds first (the
-    # backtest) and reused by the other (the listing). Cached frames are immutable by contract;
+    # channels as arrays, ``full_memo`` a Condition's fully-initialized mask (every condition
+    # under it past warmup — ``vectorize.fully_initialized``, the gate ``not``/``mask`` read).
+    # Riding the materialized data scopes the memos to exactly the bars they derive from — ONE
+    # memo per CLI run, populated by whichever compute path builds first (the backtest) and
+    # reused by the other (the listing). Cached frames are immutable by contract;
     # in-place per-run state follows the same doctrine as ``report``. The memos live as long as
     # this MarketData, so a long-lived instance reused across many theses accumulates entries —
     # ``clear_memo()`` is the caller's release valve.
@@ -107,12 +109,16 @@ class MarketData:
     array_memo: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] = dataclasses.field(
         default_factory=dict, repr=False, compare=False
     )
+    full_memo: dict[str, np.ndarray] = dataclasses.field(
+        default_factory=dict, repr=False, compare=False
+    )
 
     def clear_memo(self) -> None:
         """Release every memoized series/condition build — the valve for a long-lived instance."""
         self.series_memo.clear()
         self.condition_memo.clear()
         self.array_memo.clear()
+        self.full_memo.clear()
 
     @property
     def index(self) -> pd.DatetimeIndex:

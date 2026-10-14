@@ -789,7 +789,11 @@ def test_mask_apply_nb_known_answers():
     value = _b(0, 1, 1, 0, 1)
     init = _b(0, 1, 1, 1, 1)
     defd = _b(1, 1, 0, 1, 1)
-    _assert(nb.mask_apply_nb(value, init, defd), [np.nan, 1.0, np.nan, 0.0, 1.0])
+    _assert(nb.mask_apply_nb(value, init, defd, init), [np.nan, 1.0, np.nan, 0.0, 1.0])
+    # Only a FULLY-initialized condition is a number: before every branch is live a False is no
+    # claim, and the Trues alone would be a value-selected series — both read NaN.
+    full = _b(0, 0, 0, 0, 1)
+    _assert(nb.mask_apply_nb(value, init, defd, full), [np.nan, np.nan, np.nan, np.nan, 1.0])
 
 
 # ---- grouped cross-sectional kernels --------------------------------------------------------

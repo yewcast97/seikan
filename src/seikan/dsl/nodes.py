@@ -474,7 +474,8 @@ class UnaryOp(_Strict):
 # Before the first event the node is WARMUP (NaN, not initialized — a thesis whose event never
 # fires has no anchor, which is not a data hole). After a post-warmup hole in E — a bar E could not
 # decide — ``s(t)`` is UNKNOWN until the next defined event: the node reads NaN while initialized,
-# so a threshold over it is undefined and lands in ``signal_coverage``, never silently False. Every
+# so a threshold over it is undefined and lands in ``signal_coverage``, never silently False — and
+# so is a threshold over any series computed from it, which ledgers the stretch too. Every
 # node is a deterministic, causal function of E's history and the input series up to ``t`` — the
 # same class of signal-side state ``first_true``, ``ema`` and the expanding extrema already carry:
 # no fill, no P&L, no position, no future bar. ``compiler.nb`` (the event-anchor section) holds
@@ -487,13 +488,19 @@ class UnaryOp(_Strict):
 
 
 class Mask(_Strict):
-    # The Condition as a Series: 1.0 where its tradable signal holds, 0.0 where it was decided
-    # False, NaN while warming or undecidable. Depth-TRANSPARENT (plumbing, like ``shift``): it
-    # converts a decision into a number and nothing else. The bridge every counting recipe rides —
-    # "at least K of A/B/C" is ``mask(A) + mask(B) + mask(C) >= K``, "breadth of a condition" is
-    # ``cross_agg(mask(C), mean)``, "any/all/count of C since S" is ``event_agg(S, mask(C),
-    # max|min|sum)``. Its ``init`` is the condition's OWN latch, so a hole at C's first initialized
-    # bar is ledgered rather than absorbed as warmup.
+    # The Condition as a Series: 1.0 / 0.0 where it was decided True / False with every
+    # condition under it past warmup, NaN otherwise — an ``or`` deciding True on a live branch
+    # while another warms included: its Trues alone would be a value-selected series for every
+    # reader that skips NaN, so the mask waits for every branch. Depth-TRANSPARENT (plumbing, like
+    # ``shift``): it converts a decision into a number and nothing else. The bridge every
+    # counting recipe rides — "at least K of A/B/C" is ``mask(A) + mask(B) + mask(C) >= K``,
+    # "breadth of a condition" is ``cross_agg(mask(C), mean)``, "any/all/count of C since S" is
+    # ``event_agg(S, mask(C), max|min|sum)``. Its ``init`` is the condition's FULLY-initialized
+    # mask (every condition under it past warmup — the gate ``not`` reads, since
+    # ``mask(C) == 0`` is ``not(C)`` as a number): a threshold on it and every series computed
+    # from it wait for that, a cross-section thins the member meanwhile, and a hole at C's first
+    # fully-initialized bar is ledgered rather than absorbed as warmup — by every series computed
+    # from the mask too.
     type: Literal["mask"] = "mask"
     condition: Condition
 

@@ -232,6 +232,32 @@ def test_every_declared_cell_is_on_the_record_including_non_firing_ones(tmp_path
     assert report.to_dict()["n_met"] == 1
 
 
+def test_a_negated_warming_branch_mints_no_observations(tmp_path):
+    # The review's repro end to end: `or(not(ema(close, 40) > 0), close < 0)` over 70 rising
+    # bars closed 39 observations and cleared the support floors — every one a warmup bar whose
+    # `not` read `~False` while the live `close < 0` branch initialized the `or`. Warmup has no
+    # truth value: nothing fires, and nothing is a hole either.
+    path = tmp_path / "px.csv"
+    _write_px(path, np.linspace(100.0, 170.0, 70))
+    warming = {
+        "type": "threshold",
+        "left": {"type": "ema", "input": {"type": "field", "column": "close"}, "window": 40},
+        "op": ">",
+        "right": {"type": "constant", "value": 0.0},
+    }
+    live_false = {
+        "type": "threshold",
+        "left": {"type": "field", "column": "close"},
+        "op": "<",
+        "right": {"type": "constant", "value": 0.0},
+    }
+    entry = {"type": "or", "conditions": [{"type": "not", "condition": warming}, live_false]}
+    cell = _run_entry(path, entry, horizon=1)["cells"][0]
+    assert cell["by_target"]["target"]["n"] == 0
+    assert cell["outcome_coverage"]["target"]["n_attempted"] == 0
+    assert cell["signal_coverage"]["target"]["n_undefined"] == 0
+
+
 def test_an_unmet_run_level_check_leaves_every_cell_unmet(tmp_path):
     # Run-level evidence is the ground every per-cell read stands on, so one unmet run-level
     # check leaves EVERY cell unmet — a caller reading cells[i].met gets the complete answer

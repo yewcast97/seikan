@@ -611,6 +611,34 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   on-disk artifact is numba's JIT cache (see dev commands — `NUMBA_CACHE_DIR` under a read-only
   install): a compilation cache, never run state, and its presence, absence or location changes
   no number in any report.
+- **Warmup is no evidence.** A condition node that is still warming has no truth value
+  (`~init ⇒ ~value`, beside `~init ⇒ defined`), so a warming branch can neither fire an `or`
+  that a live sibling initialized nor absorb it over the sibling's hole. Negation (`not`, and the
+  `mask`, its numeric spelling) is initialized only where EVERY condition under its operand is
+  past warmup: `or` initializes on any branch, and its False while a branch warms is the
+  doctrinal no-signal, not a decided False. Its True there IS decided (T∨U = T) and the `or`
+  fires on it, but `mask` stays warmup (NaN) until every branch is live: a series of those Trues
+  alone, the Falses still unknown, would hand every reader that skips NaN (an `ema`, an expanding
+  aggregate, a cross-section's breadth) a value-selected history. So a history read over a mask
+  begins where every branch is live, and a cross-section thins a member while its mask warms, as
+  it thins a late-listed member (`cross_breadth` records the `k`); the condition-level reads
+  (`rolling`, `first_true`, the event nodes) still see the live branch's firings. A Series
+  computed from other Series initializes only at a finite value on a bar where every input is
+  initialized (for a lagged read — `shift`, `change` — where the bar it reads back to was), or
+  where every input is initialized and one has no value yet (an event node whose anchor became
+  unknowable before its first event, a mask undecided on its first live bar — a hole it then
+  ledgers, as the input's direct readers do, never its own warmup): identical to its own
+  finiteness latch for plain data, and what keeps a reader of a `cross_agg` broadcast into a
+  member whose own input has not started from latching early (the broadcast itself waits for the
+  member's own first value). Over thresholds on window-local operands,
+  `and`/`or`/`not`/`mask`, `rolling` and `lag`, lengthening a hole-free warmup can therefore only
+  remove firings (a path-dependent transform — `ema`, an expanding aggregate, a cross-section —
+  reads a different history when its input starts later, which is no claim about warmup).
+  Signal-level reads (`first_true`, the event anchors, a cross node's `where`) read the tradable
+  signal itself, for which a warming branch is simply not firing: `bars_since_event(or(A, B))`
+  counts B's events while A warms, where `not(rolling(any, or(A, B), N))` waits for A. A `not` /
+  `mask` over a partially warm operand is warmup — it neither fires nor ledgers there (the raw
+  leaves stay under `source_coverage`).
 - **Finite or NaN, everywhere.** Every series value the engine produces is finite or NaN: kernels
   and binary ops sanitize results whose arithmetic can overflow from finite inputs, and
   definedness/warmup latching are minted from `isfinite` — so an overflow lands in the

@@ -817,12 +817,18 @@ def event_agg_apply_nb(
 
 
 def mask_apply_nb(
-    value: npt.NDArray[np.bool_], init: npt.NDArray[np.bool_], defined: npt.NDArray[np.bool_]
+    value: npt.NDArray[np.bool_],
+    init: npt.NDArray[np.bool_],
+    defined: npt.NDArray[np.bool_],
+    full: npt.NDArray[np.bool_],
 ) -> npt.NDArray[np.float64]:
-    """The condition as a number: 1.0 where its tradable signal holds, 0.0 where it was decided
-    False, NaN while warming (``~init``) or undecidable (``init & ~defined``)."""
-    decided = init & defined
-    return np.where(decided & value, 1.0, np.where(decided, 0.0, np.nan))
+    """The condition as a number where it was decided with every condition under it past warmup
+    (``full & defined``): 1.0 where its tradable signal holds (``value & init``), 0.0 where it
+    does not. NaN while ANY branch warms — an ``or`` that is False then has decided nothing, and
+    one that is True then would make a series of its Trues alone (a value-selected history for
+    every reader that skips NaN) — or where it is undecidable."""
+    decided = full & init & defined
+    return np.where(decided, np.where(value, 1.0, 0.0), np.nan)
 
 
 # =============================================================================

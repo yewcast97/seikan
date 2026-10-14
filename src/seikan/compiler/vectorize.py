@@ -25,6 +25,20 @@ Two responsibilities:
    without it a missing decision input would silently become "no signal" (and ``not`` over a
    hole silently a FIRING), so deleting adverse inputs could improve a verdict unseen.
 
+   Warmup also contributes **no truth value**: ``~init ⇒ ~value`` at every node (see
+   ``_channels``), so a still-warming branch can neither fire an ``or`` its live sibling
+   initialized nor absorb that ``or`` over a live sibling's hole. And because ``or`` initializes
+   on ANY branch (a staggered-warmup disjunction fires from its live branch — T∨U = T), its
+   False during a branch's warmup is the doctrinal no-signal, not a decided False: negation
+   has no absorbing element (¬U = U), so ``not`` — and ``mask``, its numeric spelling — is
+   initialized only where EVERY condition under its operand is past warmup
+   (:func:`fully_initialized`). The ``or``'s True there IS decided (T∨U = T) and fires, yet
+   ``mask`` stays warmup (NaN) until every branch is live too: a series carrying only the
+   decided Trues would hand every NaN-skipping reader (an ``ema``, an expanding aggregate, a
+   cross-section) a value-selected history. A Series computed from other Series initializes
+   only where its inputs are (:func:`_derived_latch`), so nothing latches on a value an input
+   carries before its own init (a ``cross_agg`` broadcast into a member not yet started).
+
    A condition's tradable signal is ``value & init & defined`` (see ``signal``).
 """
 
@@ -79,6 +93,7 @@ from seikan.dsl.schema import (
     ThresholdCondition,
     UnaryOp,
     ZScore,
+    iter_embedded_conditions,
 )
 from seikan.types import ParamValue
 
@@ -402,9 +417,16 @@ def _df(arr: np.ndarray, md: MarketData) -> pd.DataFrame:
 def _channels(
     value: np.ndarray, init: np.ndarray, defined: np.ndarray, md: MarketData
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Package a condition's three channels as frames, warmup made vacuously defined — the one
-    return shape every composite condition ends in."""
-    return _df(value, md), _df(init, md), _df(_vacuous(defined, init), md)
+    """Package a condition's three channels as frames under the two warmup invariants — the one
+    return shape EVERY condition node ends in.
+
+    - ``~init ⇒ ~value``: warmup contributes no truth value. Without it a warming node's
+      mechanical value leaks wherever a sibling initializes the parent — ``not <warming>``
+      (``~False``) or a warming ``rolling(any)`` would fire an ``or`` its live branch
+      initialized, and a phantom True would absorb that ``or`` over the live branch's hole.
+    - ``~init ⇒ defined`` (:func:`_vacuous`): warmup is not a data hole.
+    """
+    return _df(value & init, md), _df(init, md), _df(_vacuous(defined, init), md)
 
 
 def _kleene_reduce(
@@ -456,6 +478,45 @@ def _latch(values: np.ndarray) -> npt.NDArray[np.bool_]:
 def _latch_mask(flags: npt.NDArray[np.bool_]) -> npt.NDArray[np.bool_]:
     """The boolean twin of :func:`_latch`: once a column's flag first turns True it stays True."""
     return np.maximum.accumulate(flags.astype(np.int8), axis=0).astype(bool)
+
+
+def _derived_latch(
+    arr: np.ndarray, *inputs: tuple[pd.DataFrame, pd.DataFrame]
+) -> npt.NDArray[np.bool_]:
+    """The warmup latch of a Series computed FROM other Series (each input a ``(value, init)``
+    pair): it initializes at its first finite value on a bar where every input is itself
+    initialized — or on a bar where every input is initialized and one of them has not yet
+    produced a value at all.
+
+    For an input whose init is its own finiteness latch (every data leaf and everything built
+    from them) this IS ``_latch(arr)`` — a causal transform cannot produce a finite value before
+    its inputs have one, and such an input is never initialized without one. The value gate
+    differs only where an input carries values before its own init — a ``cross_agg``
+    broadcasting the group's breadth into a member whose own input has not started — and there
+    it keeps the derived series in warmup instead of latching on that value (which would fire
+    the member before its own data begins). The second arm covers the converse, an input
+    initialized with no value yet: an event node whose anchor became unknowable before its
+    first event, a mask whose condition is undecided on its first live bar. Its direct readers
+    ledger that stretch as a hole; a series computed from it must too, rather than absorb it as
+    its own warmup (where a domain NaN would delete firings with no ledger entry)."""
+    all_init = np.ones(np.shape(arr), dtype=bool)
+    pending = np.zeros(np.shape(arr), dtype=bool)
+    for value, init in inputs:
+        i = init.to_numpy(dtype=bool)
+        all_init = all_init & i
+        pending = pending | (i & ~_latch(value.to_numpy(dtype=float)))
+    return _latch_mask(np.isfinite(arr) & all_init) | _latch_mask(all_init & pending)
+
+
+def _init_at_lag(init: pd.DataFrame, periods: int) -> pd.DataFrame:
+    """An input's init read ``periods`` bars back — for a transform whose value at ``t`` reads the
+    input at ``t − periods`` (``shift``, ``change``): it is initialized only once THAT bar was.
+    Gating on the current bar alone would latch on a still-warming input's value read through the
+    lag and turn the input's next warmup bar into a ledgered hole."""
+    lagged = np.zeros(init.shape, dtype=bool)
+    if periods < init.shape[0]:
+        lagged[periods:] = init.to_numpy(dtype=bool)[: init.shape[0] - periods]
+    return pd.DataFrame(lagged, index=init.index, columns=init.columns)
 
 
 def _all_true(md: MarketData) -> npt.NDArray[np.bool_]:
@@ -622,7 +683,8 @@ def _build_series(node: Series, md: MarketData) -> tuple[pd.DataFrame, pd.DataFr
             # The population model (``dsl.nodes.CrossRank``): the kernel sees the input with
             # every non-member masked to NaN, and reduces within the group labels when given.
             # With neither ``where`` nor ``group`` this is exactly the plain path.
-            x = build_series(node.input, md)[0].to_numpy(dtype=float)
+            xv, xi = build_series(node.input, md)
+            x = xv.to_numpy(dtype=float)
             pop = cross_population(node, md)
             xm = np.where(pop, x, np.nan)
             labels = None
@@ -638,10 +700,13 @@ def _build_series(node: Series, md: MarketData) -> tuple[pd.DataFrame, pd.DataFr
                 # boundary. Letting a warming column latch ``init`` off the broadcast would FIRE
                 # a member before its own data begins (and classify every such firing
                 # ``no_outcome``, hard-refusing the cell), so the warmup latch is gated by the
-                # member's OWN input as well.
+                # member's OWN input as well: both its first value and its init (an event node's
+                # init can precede its first value — a hole before the first event — and the
+                # broadcast must not fire the member from there either).
                 arr = np.where(pop, arr, np.nan)
-                return _df(arr, md), _df(_latch(arr) & _latch(x), md)
-            return _df(arr, md), _df(_latch(arr), md)
+                own = _latch(x) & xi.to_numpy(dtype=bool)
+                return _df(arr, md), _df(_latch(arr) & own, md)
+            return _df(arr, md), _df(_derived_latch(arr, (xv, xi)), md)
         case (
             EMA()
             | ZScore()
@@ -654,26 +719,35 @@ def _build_series(node: Series, md: MarketData) -> tuple[pd.DataFrame, pd.DataFr
             | Shift()
             | UnaryOp()
         ):
-            cv = build_series(node.input, md)[0]
+            cv, ci = build_series(node.input, md)
             arr = xf.transform_values(node, cv.to_numpy(dtype=float))
-            return _df(arr, md), _df(_latch(arr), md)
+            # Trailing windows and NaN-skipping recursions only ever read bars at or after the
+            # one they latch on; a LAGGED read (shift / change) reaches back past it.
+            if isinstance(node, (Shift, Change)):
+                lag = _scalarized(node.periods)
+                ci = _init_at_lag(ci, lag)
+                cv = _df(nb.shift_apply_nb(cv.to_numpy(dtype=float), lag), md)
+            return _df(arr, md), _df(_derived_latch(arr, (cv, ci)), md)
         case RollingCorr(left=lhs, right=rhs, window=w):
-            a = build_series(lhs, md)[0].to_numpy(dtype=float)
-            b = build_series(rhs, md)[0].to_numpy(dtype=float)
+            av, ai = build_series(lhs, md)
+            bv, bi = build_series(rhs, md)
+            a, b = av.to_numpy(dtype=float), bv.to_numpy(dtype=float)
             arr = nb.rolling_corr_apply_nb(a, b, cast("int", w))  # scalarized — see Constant above
-            return _df(arr, md), _df(_latch(arr), md)
+            return _df(arr, md), _df(_derived_latch(arr, (av, ai), (bv, bi)), md)
         case BinaryOp(left=lhs, right=rhs, op=op):
-            a = build_series(lhs, md)[0].to_numpy(dtype=float)
-            b = build_series(rhs, md)[0].to_numpy(dtype=float)
+            av, ai = build_series(lhs, md)
+            bv, bi = build_series(rhs, md)
+            a, b = av.to_numpy(dtype=float), bv.to_numpy(dtype=float)
             with np.errstate(all="ignore"):
                 arr = _ARITH[op](a, b)
             # EVERY op sanitizes, not just `/` (x/0 → inf, 0/0 → nan): finite operands can
             # overflow `+`/`-`/`*` to ±inf too, and an inf that survived here would latch warmup
             # and pass a threshold as a decided True — an overflow must never fire a signal.
             arr = np.where(np.isfinite(arr), arr, np.nan)
-            return _df(arr, md), _df(_latch(arr), md)
+            return _df(arr, md), _df(_derived_latch(arr, (av, ai), (bv, bi)), md)
         # ---- the event-anchor family (channel rules; the kernels are in ``nb``) ----
-        # mask:              warmup → NaN, not init | hole → NaN, init (ledger) | 1.0 / 0.0 decided
+        # mask:              1.0 / 0.0 where C is decided with every branch live | NaN else;
+        #                    init = full(C) — warmup until then, a hole after (ledger)
         # bars_since_event:  warmup / no event yet → NaN, not init | hole in E → NaN, init, until
         #                    the next event | 0 on the event bar | t − s after
         # event_value:       as above; x[t] on the event bar (NaN input there → NaN until the next
@@ -682,10 +756,21 @@ def _build_series(node: Series, md: MarketData) -> tuple[pd.DataFrame, pd.DataFr
         #                    the window poisons until the next event; overflow → NaN
         case Mask(condition=c):
             cv, ci, cd_ = condition_arrays(c, md)
-            arr = nb.mask_apply_nb(cv, ci, cd_)
-            # init is the condition's OWN latch — a superset of ``_latch(arr)`` — so a hole at
-            # C's first initialized bar is ledgered rather than absorbed as warmup.
-            return _df(arr, md), _df(ci, md)
+            # init AND values are gated by C's FULLY-initialized mask, the gate ``not`` reads:
+            # 0.0 claims a decided False, which an ``or`` that is False only because a branch
+            # still warms is not (``mask(C) == 0`` is ``not(C)`` spelled as a number). Its True
+            # there IS decided (the `or` fires on it, T∨U = T), but a series emitting only those
+            # Trues while the Falses stay unknown is a VALUE-SELECTED history: an ema, an
+            # expanding min, a cross-section's breadth — every reader that skips NaN — would read
+            # "C held on every bar it was seen", firings manufactured by how long a branch warms.
+            # So the mask is warmup until every branch is live, like any series that has not
+            # started: history reads begin there and a cross-section thins the member meanwhile
+            # (the cross_breadth k records it). A hole at C's first fully-initialized bar is
+            # ledgered rather than absorbed as warmup, by every series computed from the mask
+            # too (``_derived_latch``).
+            full = fully_initialized(c, md)
+            arr = nb.mask_apply_nb(cv, ci, cd_, full)
+            return _df(arr, md), _df(full, md)
         case BarsSinceEvent() | EventValue() | EventAgg():
             ev = node.event
             cv, ci, cd_ = condition_arrays(ev, md)
@@ -693,16 +778,21 @@ def _build_series(node: Series, md: MarketData) -> tuple[pd.DataFrame, pd.DataFr
             s_idx, known = nb.event_anchor_apply_nb(sig, ci, cd_)
             if isinstance(node, BarsSinceEvent):
                 arr = nb.bars_since_event_apply_nb(s_idx)
-            elif isinstance(node, EventValue):
-                x = build_series(node.input, md)[0].to_numpy(dtype=float)
-                arr = nb.event_value_apply_nb(x, s_idx)
+                latch = _latch(arr)
             else:
-                x = build_series(node.input, md)[0].to_numpy(dtype=float)
-                arr = nb.event_agg_apply_nb(sig, ci, cd_, x, node.agg)
+                xv, xi = build_series(node.input, md)
+                x = xv.to_numpy(dtype=float)
+                if isinstance(node, EventValue):
+                    arr = nb.event_value_apply_nb(x, s_idx)
+                else:
+                    arr = nb.event_agg_apply_nb(sig, ci, cd_, x, node.agg)
+                latch = _derived_latch(arr, (xv, xi))
             # The standard latch OR'd with "the anchor became unknowable after warmup": a hole in
             # E BEFORE the first event (a domain NaN no raw-leaf panel sees) reads as a hole, never
-            # as silent warmup. Strictly more refusals than the plain latch, never fewer.
-            init = _latch(arr) | _latch_mask(ci & ~known)
+            # as silent warmup — here and in every series computed from the node, whose
+            # ``_derived_latch`` initializes on an input initialized with no value yet. Strictly
+            # more refusals than the plain latch, never fewer.
+            init = latch | _latch_mask(ci & ~known)
             return _df(arr, md), _df(init, md)
         case Native(name=name, expr=expr):
             # Evaluate on the feed's own prints, THEN anchor — a shared feed's result broadcasts
@@ -772,11 +862,13 @@ def _build_condition(
             )
             return _channels(value, init, defined, md)
         case NotCondition(condition=c):
-            cv, ci, cd_ = build_condition(c, md)
+            cv, _ci, cd_ = condition_arrays(c, md)
             # Negation preserves definedness (¬U = U). The phantom fire it would otherwise
             # produce — `~False` over a data hole reading as True — dies at the tradable mask
-            # in `signal`.
-            return _df(~cv.to_numpy(), md), ci, cd_
+            # in `signal`. It has no absorbing element either, so it is initialized only where
+            # its operand is FULLY initialized: `not(or(A, B))` while A warms would negate the
+            # doctrinal no-signal of A's warmup into a firing (see the module docstring).
+            return _channels(~cv, fully_initialized(c, md), cd_, md)
         case RollingCondition(window=w, agg=a, min_count=mc, condition=inner):
             wi = _scalarized(w)  # resolved per combo — see the Constant note in `_build_series`
             cv, ci, cd_ = build_condition(inner, md)
@@ -808,8 +900,7 @@ def _build_condition(
                 cd_.to_numpy(dtype=bool),
                 _scalarized(cd),
             )
-            init = ci.to_numpy()
-            return _df(value, md), ci, _df(_vacuous(defined, init), md)
+            return _channels(value, ci.to_numpy(), defined, md)
         case LagCondition(condition=inner, periods=p):
             k = _scalarized(p)
             cv, ci, cd_ = build_condition(inner, md)
@@ -847,6 +938,56 @@ def condition_arrays(
     out = (value.to_numpy(), init.to_numpy(), defined.to_numpy())
     md.array_memo[key] = out
     return out
+
+
+def fully_initialized(node: Condition, md: MarketData) -> npt.NDArray[np.bool_]:
+    """Where EVERY condition under ``node`` is past warmup (rows × targets) — the init of
+    ``not(node)`` and of ``mask(node)``.
+
+    ``init`` is the observer's latch, and ``or`` initializes on ANY branch, so an initialized
+    disjunction can still be reading a warming branch's doctrinal no-signal as False. Harmless
+    for a firing (warmup never fires, and T∨U = T), it is not a decided False — so whatever
+    NEGATES a condition waits for this mask instead: every threshold's own init (and every
+    condition embedded in its operands — ``mask``, the event nodes' ``event``, a cross node's
+    ``where`` — fully initialized on the same column), carried through ``rolling`` windows and
+    ``lag`` shifts exactly as each node carries its own init. Monotone (a latch) and a subset of
+    ``init`` by construction. Memoized through ``md.full_memo``; immutable like the others.
+    """
+    key = node.model_dump_json()
+    hit = md.full_memo.get(key)
+    if hit is not None:
+        return hit
+    out = _fully_initialized(node, md)
+    md.full_memo[key] = out
+    return out
+
+
+def _fully_initialized(node: Condition, md: MarketData) -> npt.NDArray[np.bool_]:
+    match node:
+        case ThresholdCondition(left=lhs, right=rhs):
+            full: npt.NDArray[np.bool_] = condition_arrays(node, md)[1].copy()
+            for operand in (lhs, rhs):
+                for inner in iter_embedded_conditions(operand):
+                    full &= fully_initialized(inner, md)
+            return full
+        case AndCondition(conditions=cs) | OrCondition(conditions=cs):
+            reduced: npt.NDArray[np.bool_] = np.logical_and.reduce(
+                [fully_initialized(c, md) for c in cs]
+            )
+            return reduced
+        case NotCondition(condition=c) | FirstTrueCondition(condition=c):
+            return fully_initialized(c, md)
+        case RollingCondition(window=w, condition=c):
+            return _rolling_full_window(_df(fully_initialized(c, md), md), _scalarized(w))
+        case LagCondition(condition=c, periods=p):
+            k = _scalarized(p)
+            child = fully_initialized(c, md)
+            shifted = np.zeros_like(child)
+            if k < child.shape[0]:
+                shifted[k:] = child[: child.shape[0] - k]
+            return shifted
+        case _:
+            raise TypeError(f"unknown condition node: {node!r}")
 
 
 def signal(node: Condition, md: MarketData) -> pd.DataFrame:

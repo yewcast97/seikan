@@ -468,10 +468,14 @@ def event_agg(
     return out
 
 
-def mask_values(value: np.ndarray, init: np.ndarray, defined: np.ndarray) -> np.ndarray:
+def mask_values(
+    value: np.ndarray, init: np.ndarray, defined: np.ndarray, full: np.ndarray
+) -> np.ndarray:
+    """Only once ``full`` (every branch past warmup) and decided: 1.0 on a True, 0.0 on a False;
+    NaN otherwise — a partially warm condition's decided Trues included."""
     out = np.full(value.shape[0], np.nan)
     for t in range(value.shape[0]):
-        if init[t] and defined[t]:
+        if full[t] and init[t] and defined[t]:
             out[t] = 1.0 if value[t] else 0.0
     return out
 

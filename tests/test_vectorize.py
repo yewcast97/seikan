@@ -23,6 +23,7 @@ from seikan.dsl.schema import (
     BarsSinceEvent,
     BarsSinceExtremum,
     BinaryOp,
+    Calendar,
     Change,
     Constant,
     CrossAgg,
@@ -42,6 +43,7 @@ from seikan.dsl.schema import (
     Percentile,
     RollingAgg,
     RollingCondition,
+    RollingCorr,
     Runup,
     Shift,
     ThresholdCondition,
@@ -109,7 +111,10 @@ def _c(df, name):
 # ``_ref_cond_init`` mirror the builder's warmup-latch semantics (``vectorize._latch``:
 # once a value first turns finite, "initialized" stays true) so ``first_true`` — which fires on a
 # false→true transition of the child's TRADABLE (value & init) signal — can be checked the same way
-# ``build_condition`` computes it.
+# ``build_condition`` computes it. Two warmup rules hold at EVERY condition node: a warming node
+# has no truth value (``_ref_cond`` is gated by ``_ref_cond_init``), and whatever negates a
+# condition — ``not``, ``mask`` — is initialized only where every condition under it is
+# (``_ref_full``), since ``or`` initializes on ANY branch.
 
 
 def _ref_unary(arr: np.ndarray, op: str) -> np.ndarray:
@@ -184,7 +189,8 @@ def _ref_series(node, df) -> np.ndarray:
             out = fn(a, b)
         return np.where(np.isfinite(out), out, np.nan)  # every op sanitizes, like production
     if t == "mask":
-        return ref.mask_values(*_ref_cond_channels(node.condition, df))
+        value, init, defined = _ref_cond_channels(node.condition, df)
+        return ref.mask_values(value, init, defined, _ref_full(node.condition, df))
     if t in _EVENT_NODES:
         v, i, d = _ref_cond_channels(node.event, df)
         s_idx, _known = ref.event_anchor(v & i & d, i, d)
@@ -219,15 +225,39 @@ _LEAF_ALWAYS_INIT = ("constant", "calendar")
 def _ref_init(node, df) -> np.ndarray:
     """Latch-based init mask matching ``vectorize._latch``: always-finite leaves are always
     initialized; every other Series node is initialized once (and forever after) its value first
-    turns finite. ``mask`` carries its condition's OWN latch; an event node additionally latches
-    where its anchor became unknowable after warmup (a post-warmup hole in the event condition
-    before the first event is a hole, not warmup)."""
+    turns finite on a bar where every Series it is computed from is initialized. ``mask`` carries
+    its condition's FULLY-initialized mask; an event node additionally latches where its anchor
+    became unknowable after warmup (a post-warmup hole in the event condition before the first
+    event is a hole, not warmup). A Series computed from others also initializes where every
+    input is initialized and one of them has never had a value yet — that stretch is the input's
+    hole, ledgered by its readers rather than absorbed as their warmup."""
     if node.type in _LEAF_ALWAYS_INIT:
         return np.ones(len(df), dtype=bool)
     if node.type == "mask":
-        return _ref_cond_init(node.condition, df)
+        return _ref_full(node.condition, df)
+
+    def lagged(a, lag, fill):
+        return np.r_[np.full(min(lag, len(a)), fill), a][: len(a)]
+
+    def ever(a):
+        return np.maximum.accumulate(a.astype(np.int8)).astype(bool)
+
     values = _ref_series(node, df)
-    latch = np.maximum.accumulate((~np.isnan(values)).astype(np.int8)).astype(bool)
+    live = ~np.isnan(values)
+    lag = int(node.periods) if node.type in ("shift", "change") else 0
+    all_init = np.ones(len(df), dtype=bool)
+    pending = np.zeros(len(df), dtype=bool)
+    for attr in ("input", "left", "right"):
+        child = getattr(node, attr, None)
+        if child is not None:
+            child_init = _ref_init(child, df)
+            child_seen = ever(~np.isnan(_ref_series(child, df)))
+            if lag:  # a lagged read needs the bar it reads initialized
+                child_init = lagged(child_init, lag, False)
+                child_seen = lagged(child_seen, lag, False)
+            all_init = all_init & child_init
+            pending = pending | (child_init & ~child_seen)
+    latch = ever(live & all_init) | ever(all_init & pending)
     if node.type in _EVENT_NODES:
         v, i, d = _ref_cond_channels(node.event, df)
         _s, known = ref.event_anchor(v & i & d, i, d)
@@ -284,6 +314,12 @@ def _ref_first_true(
 
 
 def _ref_cond(node, df) -> np.ndarray:
+    """The condition's value channel: the mechanical boolean, and False wherever the node itself
+    is still warming (warmup contributes no truth value)."""
+    return _ref_cond_raw(node, df) & _ref_cond_init(node, df)
+
+
+def _ref_cond_raw(node, df) -> np.ndarray:
     t = node.type
     n = len(df)
     if t == "threshold":
@@ -319,10 +355,12 @@ def _ref_cond_init(node, df) -> np.ndarray:
     t = node.type
     if t == "threshold":
         return _ref_init(node.left, df) & _ref_init(node.right, df)
-    if t in ("and", "or"):
+    if t == "and":
         return np.logical_and.reduce([_ref_cond_init(c, df) for c in node.conditions])
+    if t == "or":
+        return np.logical_or.reduce([_ref_cond_init(c, df) for c in node.conditions])
     if t == "not":
-        return _ref_cond_init(node.condition, df)
+        return _ref_full(node.condition, df)
     if t == "rolling":
         inner_init = _ref_cond_init(node.condition, df)
         return ref.rolling_all(inner_init, node.window)
@@ -330,6 +368,50 @@ def _ref_cond_init(node, df) -> np.ndarray:
         return _ref_cond_init(node.condition, df)
     if t == "lag":
         return ref.lag_channels(*_ref_cond_channels(node.condition, df), int(node.periods))[1]
+    raise NotImplementedError(t)
+
+
+def _ref_embedded(series) -> list:
+    """The conditions embedded in a Series tree the oracle evaluates (``mask``'s condition, an
+    event node's event), each once — what they embed in turn is reached through ``_ref_full``."""
+    t = series.type
+    found = []
+    if t == "mask":
+        found.append(series.condition)
+    if t in _EVENT_NODES:
+        found.append(series.event)
+    for attr in ("input", "left", "right"):
+        child = getattr(series, attr, None)
+        if child is not None:
+            found.extend(_ref_embedded(child))
+    return found
+
+
+def _ref_full(node, df) -> np.ndarray:
+    """Where EVERY condition under ``node`` is initialized: each threshold's own init and the full
+    mask of every condition embedded in its operands, AND-ed across ``and``/``or`` (whatever the
+    connective's own init), passed through ``not``/``first_true``, and carried through
+    ``rolling`` windows / ``lag`` shifts like each node's own init."""
+    t = node.type
+    if t == "threshold":
+        out = _ref_cond_init(node, df)
+        for operand in (node.left, node.right):
+            for inner in _ref_embedded(operand):
+                out = out & _ref_full(inner, df)
+        return out
+    if t in ("and", "or"):
+        return np.logical_and.reduce([_ref_full(c, df) for c in node.conditions])
+    if t in ("not", "first_true"):
+        return _ref_full(node.condition, df)
+    if t == "rolling":
+        return ref.rolling_all(_ref_full(node.condition, df), node.window)
+    if t == "lag":
+        full = _ref_full(node.condition, df)
+        out = np.zeros_like(full)
+        k = int(node.periods)
+        if k < len(full):
+            out[k:] = full[: len(full) - k]
+        return out
     raise NotImplementedError(t)
 
 
@@ -379,7 +461,11 @@ def _assert_series(node, df, **kw):
 
 
 def _assert_cond(node, df, **kw):
-    np.testing.assert_array_equal(_cond_val(node, df, **kw), _ref_cond(node, df))
+    got = [f["t"].to_numpy() for f in vz.build_condition(node, _md(df, **kw))]
+    for name, g, w in zip(
+        ("value", "init", "defined"), got, _ref_cond_channels(node, df), strict=True
+    ):
+        np.testing.assert_array_equal(g, w, err_msg=name)
 
 
 # ---- series parity ---------------------------------------------------------
@@ -1682,6 +1768,673 @@ def test_threshold_with_inf_operand_is_undefined():
     np.testing.assert_array_equal(init2, [False, True, True])
 
 
+# ---- warmup has no truth value; negation waits for its whole operand -----------------------
+
+
+def _rising_md(n=70):
+    """Single-target md over ``n`` strictly rising closes, no holes: ``ema(close, 40) > 0`` warms
+    for 39 bars and holds after; ``close < 0`` is live and decided False on every bar."""
+    idx = pd.date_range("2021-01-01", periods=n, freq="1D")
+    close = pd.Series(np.linspace(100.0, 170.0, n), index=idx)
+    df = pd.DataFrame(
+        {"open": close, "high": close, "low": close, "close": close, "volume": 1.0}, index=idx
+    )
+    return _md(df)
+
+
+_WARM40 = ThresholdCondition(
+    left=EMA(input=Field(column="close"), window=40), op=">", right=Constant(value=0.0)
+)
+_LIVE_FALSE = ThresholdCondition(left=Field(column="close"), op="<", right=Constant(value=0.0))
+
+
+def test_negated_warming_branch_does_not_fire_through_or():
+    # The review's repro: `or(not(ema(close, 40) > 0), close < 0)` on 70 rising bars. `not` of
+    # the warming threshold reads `~False`, and `or` initializes on its live sibling — 39 firings
+    # (and 39 closed observations) out of decisions never evaluated. Warmup has no truth value.
+    md = _rising_md()
+    node = OrCondition(conditions=[NotCondition(condition=_WARM40), _LIVE_FALSE])
+    assert not vz.signal(node, md).to_numpy().any()
+    assert not vz.undefined_mask(node, md).any()
+    value, init, _defined = _chan(NotCondition(condition=_WARM40), md)
+    assert not (value & ~init).any()
+
+
+def test_not_of_a_partially_warm_or_is_warmup():
+    # "None of these flags": `not(or(A, B))` while A warms. The `or` is initialized (B is live)
+    # and False — but only because A's warmup is the doctrinal no-signal, not a decided False
+    # (F∨U = U). Negation has no absorbing element, so `not` waits for the WHOLE operand.
+    md = _rising_md()
+    disjunction = OrCondition(conditions=[_WARM40, _LIVE_FALSE])
+    assert vz.build_condition(disjunction, md)[1].to_numpy().all()  # live from bar 0
+    node = NotCondition(condition=disjunction)
+    value, init, defined = _chan(node, md)
+    np.testing.assert_array_equal(init, np.arange(70) >= 39)
+    np.testing.assert_array_equal(init, vz.fully_initialized(disjunction, md)[:, 0])
+    assert defined.all() and not (value & ~init).any()
+    assert not vz.signal(node, md).to_numpy().any()  # after warmup A holds, so `not` is False
+
+
+def test_rolling_warmup_contributes_nothing_to_an_or():
+    # A rolling node's OWN warmup is no truth value either: `rolling(any, A, 5)` reads True from
+    # A's first live bar (39) but its window is fully initialized only from bar 43.
+    md = _rising_md()
+    node = OrCondition(
+        conditions=[RollingCondition(window=5, agg="any", condition=_WARM40), _LIVE_FALSE]
+    )
+    np.testing.assert_array_equal(vz.signal(node, md).to_numpy().ravel(), np.arange(70) >= 43)
+
+
+def test_warming_negation_cannot_absorb_an_or_over_a_live_hole():
+    # T∨U = T only for a DECIDED True. A warming `not` read as True would settle the `or` over
+    # its live sibling's hole — a firing out of missing data that the ledger never sees.
+    values = np.ones(70)
+    values[10] = np.nan
+    md = _hole_md(values)
+    node = OrCondition(conditions=[NotCondition(condition=_WARM40), _x_gt(2.0)])
+    assert not vz.signal(node, md).to_numpy().any()
+    np.testing.assert_array_equal(vz.undefined_mask(node, md).ravel(), np.arange(70) == 10)
+
+
+def test_mask_zero_of_a_partially_warm_or_does_not_fire():
+    # `mask(C) == 0` is `not(C)` spelled as a number, so it carries the same gate.
+    md = _rising_md()
+    cond = OrCondition(conditions=[_WARM40, _LIVE_FALSE])
+    v, i = _series3(Mask(condition=cond), md)
+    np.testing.assert_array_equal(i, np.arange(70) >= 39)
+    assert np.isnan(v[:39]).all() and (v[39:] == 1.0).all()
+    zero = ThresholdCondition(left=Mask(condition=cond), op="==", right=Constant(value=0.0))
+    assert not vz.signal(zero, md).to_numpy().any()
+    assert not vz.undefined_mask(zero, md).any()
+
+
+def test_not_waits_for_a_condition_embedded_in_its_operand():
+    # The gate reaches through a Series into the Condition it embeds: `not` over a threshold on
+    # `bars_since_event(or(A, B))` waits for A as well, though the event series itself reads B's
+    # events (the event doctrine) from bar 0.
+    md = _rising_md()
+    since = BarsSinceEvent(
+        event=OrCondition(
+            conditions=[
+                _WARM40,
+                ThresholdCondition(left=Field(column="close"), op=">", right=Constant(value=0.0)),
+            ]
+        )
+    )
+    node = NotCondition(condition=ThresholdCondition(left=since, op=">", right=Constant(value=5.0)))
+    assert vz.build_series(since, md)[1].to_numpy().all()
+    np.testing.assert_array_equal(_chan(node, md)[1], np.arange(70) >= 39)
+
+
+def test_de_morgan_agreement_under_staggered_warmup(ohlcv_ext):
+    # not(or(not A, B)) ≡ and(A, not B), firings and ledger alike, with A warming 19 bars longer
+    # than B and two holes in A's feed. Gating warmup's value without gating `not` on the WHOLE
+    # operand would break it: the inner `or` reads B alone while A warms, so the left side would
+    # fire on ~B through A's warmup.
+    df = ohlcv_ext.copy()
+    df.loc[df.index[[50, 120]], "_ext_rate"] = np.nan
+    md = _md(df, externals={"rate"})
+    a = ThresholdCondition(
+        left=ZScore(input=External(name="rate"), window=20, mean_type="sma"),
+        op="<",
+        right=Constant(value=-0.5),
+    )
+    b = ThresholdCondition(left=Field(column="close"), op=">", right=Field(column="open"))
+    lhs = NotCondition(condition=OrCondition(conditions=[NotCondition(condition=a), b]))
+    rhs = AndCondition(conditions=[a, NotCondition(condition=b)])
+    np.testing.assert_array_equal(vz.signal(lhs, md).to_numpy(), vz.signal(rhs, md).to_numpy())
+    np.testing.assert_array_equal(vz.undefined_mask(lhs, md), vz.undefined_mask(rhs, md))
+    assert vz.signal(rhs, md).to_numpy().any() and vz.undefined_mask(rhs, md).any()
+    # while A warms (bars 0..18) `not A` has no truth value: the inner `or` is B alone (T∨U = T)
+    inner = OrCondition(conditions=[NotCondition(condition=a), b])
+    np.testing.assert_array_equal(
+        vz.signal(inner, md).to_numpy()[:19], vz.signal(b, md).to_numpy()[:19]
+    )
+
+
+_WARM40_FALSE = ThresholdCondition(  # warms 39 bars on _rising_md, then decided False
+    left=EMA(input=Field(column="close"), window=40), op="<", right=Constant(value=0.0)
+)
+_BOTH_FALSE = OrCondition(conditions=[_WARM40_FALSE, _LIVE_FALSE])  # init from 0, full from 39
+
+
+def test_not_and_mask_wait_through_rolling_lag_and_first_true():
+    # The full-init gate is carried through every condition that wraps the partially warm `or`:
+    # a rolling window (its whole window), a lag (shifted), first_true (its child's).
+    md = _rising_md()
+    for inner, start in (
+        (RollingCondition(window=5, agg="any", condition=_BOTH_FALSE), 43),
+        (LagCondition(condition=_BOTH_FALSE, periods=3), 42),
+        (FirstTrueCondition(condition=_BOTH_FALSE), 39),
+    ):
+        node = NotCondition(condition=inner)
+        live = np.arange(70) >= start
+        np.testing.assert_array_equal(_chan(node, md)[1], live, err_msg=inner.type)
+        np.testing.assert_array_equal(vz.signal(node, md).to_numpy().ravel(), live)
+        np.testing.assert_array_equal(_series3(Mask(condition=inner), md)[1], live)
+
+
+def test_not_waits_for_a_condition_embedded_in_its_right_operand():
+    md = _rising_md()
+    since = BarsSinceEvent(
+        event=OrCondition(
+            conditions=[
+                _WARM40,
+                ThresholdCondition(left=Field(column="close"), op=">", right=Constant(value=0.0)),
+            ]
+        )
+    )
+    node = NotCondition(condition=ThresholdCondition(left=Constant(value=5.0), op="<", right=since))
+    np.testing.assert_array_equal(_chan(node, md)[1], np.arange(70) >= 39)
+    assert not vz.signal(node, md).to_numpy()[:39].any()
+
+
+def _mdk(n, **feeds) -> MarketData:
+    """Four flat-priced targets T0..T3; each keyword is a per-target feed ``[v_T0, …, v_T3]``
+    (a constant or an array over the ``n`` bars per member)."""
+    idx = pd.date_range("2022-01-01", periods=n, freq="1D")
+    targets = ["T0", "T1", "T2", "T3"]
+    close = pd.DataFrame(dict.fromkeys(targets, 100.0), index=idx)
+    ext = {
+        name: pd.DataFrame(
+            {
+                t: np.broadcast_to(np.asarray(v, float), (n,)).copy()
+                for t, v in zip(targets, vals, strict=True)
+            },
+            index=idx,
+        )
+        for name, vals in feeds.items()
+    }
+    return MarketData(
+        close=close, open=close, high=close, low=close, volume=None, externals=ext, targets=targets
+    )
+
+
+_LATE10 = np.r_[np.full(10, np.nan), np.zeros(20)]  # a member's branch that warms 10 bars
+
+
+def test_not_gate_is_per_column_on_a_basket():
+    # Each member's `not` waits for ITS OWN operand: T1's `a` warms 10 bars, nobody else's.
+    md = _mdk(30, a=[0, _LATE10, 0, 0], b=[0, 0, 0, 0])
+    node = NotCondition(condition=OrCondition(conditions=[_e("a", ">", 0.5), _e("b", ">", 0.5)]))
+    sig = vz.signal(node, md).to_numpy()
+    assert sig[:, [0, 2, 3]].all()
+    np.testing.assert_array_equal(sig[:, 1], np.arange(30) >= 10)
+
+
+def test_not_waits_for_a_cross_where_on_the_members_own_column():
+    # The eligibility of every member is decided True by `b` throughout, but T1's `a` branch
+    # warms 10 bars: T1's `not` over its rank waits for its own `where` to be fully live.
+    where = OrCondition(conditions=[_e("a", ">", 0.5), _e("b", ">", 0.5)])
+    md = _mdk(30, x=[100, 90, 80, 70], a=[0, _LATE10, 0, 0], b=[1, 1, 1, 1])
+    node = NotCondition(
+        condition=ThresholdCondition(
+            left=CrossRank(input=_X, where=where), op="<", right=Constant(value=-1.0)
+        )
+    )
+    sig = vz.signal(node, md).to_numpy()
+    assert sig[:, [0, 2, 3]].all()
+    np.testing.assert_array_equal(sig[:, 1], np.arange(30) >= 10)
+
+
+def test_a_late_members_broadcast_breadth_cannot_fire_through_an_or():
+    # cross_agg broadcasts the group's value into a member whose own input has not started — a
+    # value while its init is False. A bare threshold cannot fire on it, and neither can an `or`
+    # a live sibling initializes: the warming threshold has no truth value.
+    late = np.r_[np.full(6, np.nan), np.ones(14)]
+    md = _mdk(20, x=[1, 1, 1, late])
+    never = ThresholdCondition(
+        left=Calendar(field="day_of_week"), op="<", right=Constant(value=0.0)
+    )
+    breadth = ThresholdCondition(
+        left=CrossAgg(input=_X, agg="mean"), op=">", right=Constant(value=0.0)
+    )
+    sig = vz.signal(OrCondition(conditions=[breadth, never]), md).to_numpy()
+    np.testing.assert_array_equal(sig[:, 3], np.arange(20) >= 6)
+    assert sig[:, :3].all()
+
+
+def test_a_series_computed_from_a_broadcast_waits_for_the_members_own_input():
+    # The same guard one Series level up: a transform of cross_agg initializes only where the
+    # member's own input has — it used to latch on the broadcast and fire the late member first.
+    late = np.r_[np.full(6, np.nan), np.ones(14)]
+    md = _mdk(20, x=[1, 1, 1, late])
+    smoothed = EMA(input=CrossAgg(input=_X, agg="mean"), window=2)
+    v, i = vz.build_series(smoothed, md)
+    assert np.isfinite(v.to_numpy()[1:6, 3]).all()  # the value is there …
+    np.testing.assert_array_equal(i.to_numpy()[:, 3], np.arange(20) >= 6)  # … the init is not
+    node = ThresholdCondition(left=smoothed, op=">", right=Constant(value=0.0))
+    np.testing.assert_array_equal(vz.signal(node, md).to_numpy()[:, 3], np.arange(20) >= 6)
+
+
+def _staggered_or_md(b_values, n=30):
+    """One member whose ``a`` warms 12 bars (then 0) and whose ``b`` is ``b_values``."""
+    a = np.r_[np.full(12, np.nan), np.zeros(n - 12)]
+    zeros = np.zeros(n)
+    return _mdk(n, a=[a, zeros, zeros, zeros], b=[np.asarray(b_values, float), zeros, zeros, zeros])
+
+
+def _staggered_c():
+    """C = or(a > 0.5, b > 0.5) over :func:`_staggered_or_md`'s feeds."""
+    return OrCondition(conditions=[_e("a", ">", 0.5), _e("b", ">", 0.5)])
+
+
+def test_a_partially_warm_mask_is_warmup_even_where_c_fires():
+    # T0's C fires on bars 0..3 through `b` while `a` warms (T∨U = T) — the condition tree keeps
+    # those firings. The mask does not: its Trues alone, with the Falses still unknown, would be a
+    # value-selected series, so it is warmup (NaN, not init) until every branch is live, and a
+    # history read over it begins there ("C has not held since the mask started").
+    b = np.r_[np.ones(4), np.zeros(26)]
+    md = _staggered_or_md(b)
+    v, i = (f.to_numpy()[:, 0] for f in vz.build_series(Mask(condition=_staggered_c()), md))
+    assert np.isnan(v[:12]).all() and (v[12:] == 0.0).all()
+    np.testing.assert_array_equal(i, np.arange(30) >= 12)
+    assert vz.signal(_staggered_c(), md).to_numpy()[:4, 0].all()
+    not_since_start = ThresholdCondition(
+        left=RollingAgg(input=Mask(condition=_staggered_c()), window=None, agg="max"),
+        op="<",
+        right=Constant(value=0.5),
+    )
+    np.testing.assert_array_equal(
+        vz.signal(not_since_start, md).to_numpy()[:, 0], np.arange(30) >= 12
+    )
+    # The condition-level read counts the live-branch firings: C held within the last 12 bars.
+    held_lately = vz.signal(RollingCondition(window=12, agg="any", condition=_staggered_c()), md)
+    assert held_lately.to_numpy()[11:15, 0].all()
+
+
+def test_a_nan_skipping_reader_of_a_partially_warm_mask_reads_no_selected_history():
+    # C holds on bars 0..11 only through `b` while `a` warms, and is decided False from bar 12.
+    # An ema over a mask that carried those Trues alone (its unknown bars skipped) would start at
+    # 1.0 and read "C held lately" at bar 12 — a firing bought by how long `a` warms.
+    b = np.r_[np.ones(12), np.zeros(18)]
+    md = _staggered_or_md(b)
+    lately = ThresholdCondition(
+        left=EMA(input=Mask(condition=_staggered_c()), window=3), op=">", right=Constant(value=0.25)
+    )
+    assert not vz.signal(lately, md).to_numpy()[:, 0].any()
+    assert not vz.undefined_mask(lately, md).any()
+
+
+def test_a_windowed_reader_of_a_partially_warm_mask_has_no_false_holes():
+    # Decided Trues on bars 0..3 and 8..11 around unknown bars 4..7, all before every branch is
+    # live: a 3-bar mean over the mask must neither read those Trues nor latch on them (the
+    # unknown bars would then be ledgered holes, refusing the thesis on its own warmup) — it
+    # begins once three bars of the live mask exist.
+    b = np.r_[np.ones(4), np.zeros(4), np.ones(4), np.zeros(18)]
+    md = _staggered_or_md(b)
+    avg = RollingAgg(input=Mask(condition=_staggered_c()), window=3, agg="mean")
+    v, i = (f.to_numpy()[:, 0] for f in vz.build_series(avg, md))
+    assert np.isnan(v[:14]).all() and not i[:14].any() and i[14:].all()
+    node = ThresholdCondition(left=avg, op=">", right=Constant(value=0.5))
+    assert not vz.undefined_mask(node, md).any()
+
+
+@pytest.mark.parametrize("periods", [2, 3])
+def test_a_lagged_read_of_a_partially_warm_mask_has_no_false_holes(periods):
+    # The mask is warmup until bar 12, its decided True two bars earlier included: a shift / change
+    # reading back `periods` bars initializes once the bar it reads is live — no early latch, so
+    # the unknown bar after the True is never a ledgered hole. (The lag rule itself is pinned on
+    # a broadcast, which does carry values before its init.)
+    b = np.zeros(30)
+    b[12 - periods] = 1.0
+    md = _staggered_or_md(b)
+    for node in (
+        Shift(input=Mask(condition=_staggered_c()), periods=periods),
+        Change(input=Mask(condition=_staggered_c()), periods=periods, kind="diff"),
+    ):
+        thr = ThresholdCondition(left=node, op=">", right=Constant(value=-1.0))
+        assert not vz.undefined_mask(thr, md)[:, 0].any(), node.type
+        init = vz.build_series(node, md)[1].to_numpy()[:, 0]
+        np.testing.assert_array_equal(init, np.arange(30) >= 12 + periods)
+
+
+def test_basket_breadth_thins_a_member_while_its_mask_warms():
+    # T0's C holds on bars 0..5 through `b` while T0's `a` warms; T1..T3's C is decided False
+    # from bar 0. T0's mask is warmup until bar 12, so the breadth thins T0 out of the
+    # cross-section — as it thins a late-listed member, and cross_reduced (the cross_breadth k)
+    # records it — and "no member has C" reads the three live members. Counting T0 only on the
+    # bars its C holds would select the members by their value.
+    b = np.r_[np.ones(6), np.zeros(24)]
+    md = _staggered_or_md(b)
+    breadth = CrossAgg(input=Mask(condition=_staggered_c()), agg="mean")
+    none_have_c = NotCondition(
+        condition=ThresholdCondition(left=breadth, op=">", right=Constant(value=0.0))
+    )
+    sig = vz.signal(none_have_c, md).to_numpy()
+    assert sig[:, 1:].all()
+    assert not sig[:12, 0].any() and sig[12:, 0].all()
+    mask_v = vz.build_series(Mask(condition=_staggered_c()), md)[0].to_numpy()
+    assert np.isnan(mask_v[:12, 0]).all() and np.isfinite(mask_v[:, 1:]).all()
+    np.testing.assert_array_equal(vz.build_series(breadth, md)[0].to_numpy()[:12, 1:], 0.0)
+    assert not vz.undefined_mask(none_have_c, md).any()
+
+
+def test_a_broadcast_cannot_fire_a_member_whose_event_input_has_no_value_yet():
+    # bars_since_event initializes on a post-warmup hole BEFORE its first event (a domain NaN —
+    # log(-1) — is a hole, not warmup), so its init can precede its first value. The cross_agg
+    # broadcast must still wait for the member's own first value: T1's first event is bar 25.
+    n = 40
+    z_early = np.r_[np.ones(2), 2.0, np.ones(n - 3)]  # first event at bar 2
+    z_late = np.ones(n)
+    z_late[5] = -1.0
+    z_late[25] = 2.0
+    md = _mdk(n, z=[z_early, z_late, z_early, z_early])
+    bse = BarsSinceEvent(
+        event=ThresholdCondition(
+            left=UnaryOp(input=External(name="z"), op="log"), op=">", right=Constant(value=0.4)
+        )
+    )
+    node = ThresholdCondition(
+        left=CrossAgg(input=bse, agg="mean"), op=">", right=Constant(value=-1.0)
+    )
+    sig = vz.signal(node, md).to_numpy()
+    np.testing.assert_array_equal(sig[:, 1], np.arange(n) >= 25)
+    assert sig[2:, [0, 2, 3]].all()
+
+
+_EARLY_TRUE = np.r_[np.ones(4), np.zeros(26)]  # T0's C: decided True 0..3, unknown 4..11, False 12+
+
+
+@pytest.mark.parametrize("reader", ["cross_agg", "cross_rank", "cross_demean"])
+def test_a_cross_section_of_a_partially_warm_mask_has_no_false_holes(reader):
+    # With the whole basket required (min_valid=4), T0's mask warming until bar 12 keeps every
+    # sibling's cross output from forming — it must not latch on a cross-section T0 joins and
+    # leaves, ledgering T0's warmup as the siblings' holes (signal_coverage would refuse).
+    md = _staggered_or_md(_EARLY_TRUE)
+    m = Mask(condition=_staggered_c())
+    series = {
+        "cross_agg": CrossAgg(input=m, agg="mean", min_valid=4),
+        "cross_rank": CrossRank(input=m, min_valid=4),
+        "cross_demean": CrossDemean(input=m, min_valid=4),
+    }[reader]
+    node = ThresholdCondition(left=series, op=">", right=Constant(value=-9.0))
+    assert not vz.undefined_mask(node, md).any()
+
+
+def test_at_least_k_of_masks_over_a_partially_warm_or_waits_and_has_no_false_holes():
+    # The documented counting recipe (`mask(A) + mask(B) >= K`) over a partially warm `or`: the sum
+    # is warmup until every mask is live — no value, no init, no ledgered hole before bar 12.
+    md = _staggered_or_md(_EARLY_TRUE)
+    total = BinaryOp(
+        left=Mask(condition=_staggered_c()), right=Mask(condition=_e("b", ">", 0.5)), op="+"
+    )
+    v, i = (f.to_numpy()[:, 0] for f in vz.build_series(total, md))
+    assert np.isnan(v[:12]).all()
+    np.testing.assert_array_equal(i, np.arange(30) >= 12)
+    node = ThresholdCondition(left=total, op=">=", right=Constant(value=1.0))
+    assert not vz.undefined_mask(node, md).any()
+
+
+def test_count_since_over_a_partially_warm_mask_has_no_false_holes():
+    # event_agg(S, mask(C), sum) — "count of C since S" — anchored before the mask is live reads
+    # its warmup (NaN poisons the run until the next event): warmup, never a ledgered hole.
+    md = _staggered_or_md(_EARLY_TRUE)
+    since = EventAgg(event=_e("b", ">", 0.5), input=Mask(condition=_staggered_c()), agg="sum")
+    node = ThresholdCondition(left=since, op=">=", right=Constant(value=0.0))
+    assert not vz.undefined_mask(node, md).any()
+
+
+@pytest.mark.parametrize("cls", [CrossAgg, CrossRank])
+def test_a_cross_read_of_a_partially_warm_mask_waits_for_the_members_own_full_init(cls):
+    # T0's own cross output initializes only once T0's mask does.
+    md = _staggered_or_md(_EARLY_TRUE)
+    m = Mask(condition=_staggered_c())
+    node = cls(input=m, agg="mean") if cls is CrossAgg else cls(input=m)
+    i = vz.build_series(node, md)[1].to_numpy()
+    np.testing.assert_array_equal(i[:, 0], np.arange(30) >= 12)
+    assert i[:, 1:].all()
+
+
+def _late_broadcast_md(seed=0):
+    """T3's own input starts at bar 6; every member's `y` is live from bar 0."""
+    rng = np.random.default_rng(seed)
+    late = np.r_[np.full(6, np.nan), rng.normal(size=14)]
+    return _mdk(
+        20,
+        x=[rng.normal(size=20), rng.normal(size=20), rng.normal(size=20), late],
+        y=[rng.normal(size=20) for _ in range(4)],
+    )
+
+
+def test_a_correlation_with_a_broadcast_waits_for_the_members_own_input():
+    # rolling_corr's derived latch: a late member's correlation with the basket breadth carries a
+    # value before its own input starts, but no init (else it fires before its data begins).
+    md = _late_broadcast_md()
+    corr = RollingCorr(left=CrossAgg(input=_X, agg="mean"), right=External(name="y"), window=3)
+    v, i = (f.to_numpy()[:, 3] for f in vz.build_series(corr, md))
+    assert np.isfinite(v[2:6]).all()
+    np.testing.assert_array_equal(i, np.arange(20) >= 6)
+
+
+def test_every_series_reader_of_a_broadcast_waits_for_the_members_own_input():
+    # The same derived latch on every branch that composes Series: a binary_op, an event_value
+    # and a cross_rank over the broadcast all carry values for the late member T3 from bar 0 and
+    # initialize only where T3's own input starts.
+    md = _late_broadcast_md()
+    spread = BinaryOp(left=CrossAgg(input=_X, agg="mean"), right=External(name="y"), op="-")
+    for node in (
+        spread,
+        EventValue(event=_e("y", ">", -9.0), input=CrossAgg(input=_X, agg="mean")),
+        CrossRank(input=spread),
+    ):
+        v, i = (f.to_numpy()[:, 3] for f in vz.build_series(node, md))
+        assert np.isfinite(v[:6]).all(), node.type
+        np.testing.assert_array_equal(i, np.arange(20) >= 6, err_msg=node.type)
+
+
+def test_a_broadcast_of_a_broadcast_waits_for_the_members_own_init():
+    # The `xi` half of the cross_agg latch: T3's own input to the OUTER cross_agg (the inner
+    # breadth minus its live `y`) has a VALUE from bar 0 but is initialized only where T3's `x`
+    # starts (bar 6). Latching on that value alone fires T3 off the outer broadcast six bars
+    # before its own data begins.
+    late = np.r_[np.full(6, np.nan), np.ones(14)]
+    md = _mdk(20, x=[1, 1, 1, late], y=[0.5, 0.5, 0.5, 0.5])
+    spread = BinaryOp(left=CrossAgg(input=_X, agg="mean"), right=External(name="y"), op="-")
+    v, i = (f.to_numpy()[:, 3] for f in vz.build_series(spread, md))
+    assert np.isfinite(v).all() and not i[:6].any()  # a value before its own init
+    node = ThresholdCondition(
+        left=CrossAgg(input=spread, agg="mean"), op=">", right=Constant(value=0.0)
+    )
+    np.testing.assert_array_equal(vz.signal(node, md).to_numpy()[:, 3], np.arange(20) >= 6)
+
+
+def test_a_lagged_read_of_a_broadcast_waits_for_the_bar_it_reads():
+    # `_init_at_lag`: T3's own `x` starts at bar 6 and T3 is decided ineligible at bar 5, so the
+    # breadth broadcast into T3 is 2.0 on bars 0..4 and NaN on bar 5 — all before T3's init. A
+    # 2-bar shift / change initialized on the CURRENT bar's init latches at bar 6 (reading bar 4)
+    # and then reads bar 5's gap at bar 7 as a ledgered hole: T3 refused on its own warmup.
+    late = np.r_[np.full(6, np.nan), np.ones(10)]
+    w3 = np.ones(16)
+    w3[5] = 0.0
+    md = _mdk(16, x=[1, 2, 3, late], w=[1, 1, 1, w3])
+    breadth = CrossAgg(input=_X, agg="mean", where=_e("w", ">", 0.5))
+    for node in (Shift(input=breadth, periods=2), Change(input=breadth, periods=2, kind="diff")):
+        init = vz.build_series(node, md)[1].to_numpy()[:, 3]
+        np.testing.assert_array_equal(init, np.arange(16) >= 8, err_msg=node.type)
+        thr = ThresholdCondition(left=node, op=">", right=Constant(value=-99.0))
+        assert not vz.undefined_mask(thr, md)[:, 3].any(), node.type
+
+
+def test_a_series_reader_keeps_an_event_nodes_unknown_anchor_ledgered():
+    # A domain NaN in E before its first event (log(-1) at bar 5) leaves bars_since_event
+    # initialized with no value until the next event (bar 20): a hole its direct readers ledger.
+    # A series computed from it must ledger the same stretch rather than absorb it as its own
+    # warmup — there the decided E's firings vanished with no signal_coverage entry.
+    z = np.ones(30)
+    z[5], z[20] = -1.0, 2.0
+    md = _ev_md(z)
+    bse = BarsSinceEvent(
+        event=ThresholdCondition(
+            left=UnaryOp(input=External(name="z"), op="log"), op=">", right=Constant(value=0.4)
+        )
+    )
+    unknown = (np.arange(30) >= 5) & (np.arange(30) < 20)
+    for left in (bse, BinaryOp(left=bse, right=Constant(value=0.0), op="+")):
+        node = ThresholdCondition(left=left, op=">=", right=Constant(value=3.0))
+        np.testing.assert_array_equal(vz.undefined_mask(node, md)[:, 0], unknown, left.type)
+    # an ema bridges nothing it never saw: the stretch, then its first live bar's warmup step
+    ema = ThresholdCondition(left=EMA(input=bse, window=2), op=">=", right=Constant(value=3.0))
+    assert vz.undefined_mask(ema, md)[:, 0][unknown].all()
+    # a one-bar shift reads the stretch one bar later
+    shifted = ThresholdCondition(
+        left=Shift(input=bse, periods=1), op=">=", right=Constant(value=3.0)
+    )
+    np.testing.assert_array_equal(
+        vz.undefined_mask(shifted, md)[:, 0], (np.arange(30) >= 6) & (np.arange(30) < 21)
+    )
+
+
+def test_a_series_reader_ledgers_a_masks_undecided_first_live_bar():
+    # C = or(z > 1, close > 1000): `z` warms until bar 3, `close` is live from bar 0 with a hole
+    # on bar 3 — so C is fully live from bar 3 and UNDECIDED there (F ∨ U). The mask's hole on its
+    # first live bar is ledgered by a direct threshold, and a series computed from it (`1 −
+    # mask(C)`, the numeric negation) ledgers it too instead of starting its warmup a bar later.
+    md = _ev_md(
+        [np.nan, np.nan, np.nan, 0.0, 2.0, 0.0],
+        close=[100.0, 100.0, 100.0, np.nan, 100.0, 100.0],
+    )
+    c = OrCondition(
+        conditions=[
+            ThresholdCondition(left=External(name="z"), op=">", right=Constant(value=1.0)),
+            ThresholdCondition(left=Field(column="close"), op=">", right=Constant(value=1e3)),
+        ]
+    )
+    neg = BinaryOp(left=Constant(value=1.0), right=Mask(condition=c), op="-")
+    for left in (Mask(condition=c), neg):
+        node = ThresholdCondition(left=left, op=">", right=Constant(value=0.5))
+        np.testing.assert_array_equal(
+            vz.undefined_mask(node, md)[:, 0], [False, False, False, True, False, False]
+        )
+
+
+def test_a_persistence_read_of_a_partially_warm_mask_fires_nothing_full_knowledge_would_not():
+    # While the slow branch warms, or(slow, B) is decided only when TRUE (T|U = T, F|U = U). An
+    # EMA that read only those Trues would start at 1.0 and read "C persists" at the mask's first
+    # live bar; it must fire nothing the full-knowledge reading (the slow branch live from bar 0,
+    # at the value it takes once warm) does not.
+    n = 60
+    idx = pd.date_range("2021-01-01", periods=n, freq="1D")
+    close = pd.DataFrame({"t": np.linspace(100.0, 160.0, n)}, index=idx)
+    b = np.tile([1.0, 0.0], n // 2)
+    b[38:42] = 1.0
+    md = MarketData(
+        close=close,
+        open=close,
+        high=close,
+        low=close,
+        volume=None,
+        externals={"b": pd.Series(b, index=idx)},
+        targets=["t"],
+    )
+    b_true = ThresholdCondition(left=External(name="b"), op=">", right=Constant(value=0.5))
+    slow_warming = ThresholdCondition(
+        left=EMA(input=Field(column="close"), window=40), op="<", right=Constant(value=0.0)
+    )
+    slow_live = ThresholdCondition(left=Field(column="close"), op="<", right=Constant(value=0.0))
+
+    def persistent(slow):
+        m = Mask(condition=OrCondition(conditions=[slow, b_true]))
+        node = ThresholdCondition(left=EMA(input=m, window=5), op=">", right=Constant(value=0.9))
+        return vz.signal(node, md).to_numpy()[:, 0]
+
+    extra = persistent(slow_warming) & ~persistent(slow_live)
+    assert not extra.any(), np.flatnonzero(extra).tolist()
+
+
+def test_mask_of_a_mask_waits_for_the_inner_operand():
+    md = _rising_md()
+    inner = Mask(condition=OrCondition(conditions=[_WARM40, _LIVE_FALSE]))
+    outer = Mask(condition=ThresholdCondition(left=inner, op="==", right=Constant(value=0.0)))
+    np.testing.assert_array_equal(_series3(outer, md)[1], np.arange(70) >= 39)
+    one = ThresholdCondition(left=outer, op="==", right=Constant(value=1.0))
+    assert not vz.signal(one, md).to_numpy().any()
+
+
+def test_clear_memo_releases_every_memo():
+    import dataclasses
+
+    md = _rising_md()
+    vz.signal(NotCondition(condition=OrCondition(conditions=[_WARM40, _LIVE_FALSE])), md)
+    memos = [f.name for f in dataclasses.fields(md) if f.name.endswith("_memo")]
+    assert "full_memo" in memos and all(getattr(md, m) for m in memos)
+    md.clear_memo()
+    assert not any(getattr(md, m) for m in memos)
+
+
+_FEEDS = ("x1", "x2", "x3")
+
+
+def _warm_md(prefixes, n=60, seed=0):
+    """Three hole-free random-walk feeds, feed ``i`` NaN (warming) on its first ``prefixes[i]``
+    bars — the same values for every ``prefixes``."""
+    rng = np.random.default_rng(seed)
+    idx = pd.date_range("2021-01-01", periods=n, freq="1D")
+    cols: dict[str, object] = {"open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0}
+    for name, k in zip(_FEEDS, prefixes, strict=True):
+        x = rng.standard_normal(n).cumsum()
+        x[:k] = np.nan
+        cols[f"_ext_{name}"] = x
+    return _md(pd.DataFrame(cols, index=idx), externals=set(_FEEDS))
+
+
+def _random_condition(rng, depth):
+    """A random tree over the warmup-monotone vocabulary: thresholds on the raw feeds (and on a
+    ``mask`` of a subtree), ``and``/``or``/``not``, ``rolling`` and ``lag``. ``first_true`` and
+    the event nodes are left out: they read the tradable SIGNAL, whose transitions a longer
+    warmup can move (the documented signal-level reading)."""
+    kind = int(rng.integers(0, 7)) if depth > 0 else 0
+    if kind == 0:
+        return ThresholdCondition(
+            left=External(name=_FEEDS[int(rng.integers(0, 3))]),
+            op=str(rng.choice(["<", ">"])),
+            right=Constant(value=round(float(rng.normal(0.0, 2.0)), 3)),
+        )
+    if kind in (1, 2):
+        children = [_random_condition(rng, depth - 1) for _ in range(int(rng.integers(2, 4)))]
+        return (AndCondition if kind == 1 else OrCondition)(conditions=children)
+    if kind == 3:
+        return NotCondition(condition=_random_condition(rng, depth - 1))
+    if kind == 4:
+        window = int(rng.integers(2, 5))
+        agg = str(rng.choice(["any", "all", "count"]))
+        return RollingCondition(
+            window=window,
+            agg=agg,
+            min_count=int(rng.integers(1, window + 1)) if agg == "count" else None,
+            condition=_random_condition(rng, depth - 1),
+        )
+    if kind == 5:
+        return LagCondition(
+            condition=_random_condition(rng, depth - 1), periods=int(rng.integers(1, 4))
+        )
+    return ThresholdCondition(
+        left=Mask(condition=_random_condition(rng, depth - 1)),
+        op=str(rng.choice(["<", ">"])),
+        right=Constant(value=0.5),
+    )
+
+
+@pytest.mark.parametrize("seed", range(4))
+def test_lengthening_a_warmup_never_adds_a_firing(seed):
+    # The class the review's repro belongs to, as a property: on hole-free feeds, NaN-ing a
+    # longer prefix of ONE feed (extending its warmup) may only REMOVE firings. A firing a
+    # longer warmup creates is one manufactured out of warmup.
+    rng = np.random.default_rng(1000 + seed)
+    fired = 0
+    for _ in range(60):
+        node = _random_condition(rng, depth=3)
+        base = [int(k) for k in rng.integers(0, 12, size=3)]
+        short = vz.signal(node, _warm_md(base, seed=seed)).to_numpy()
+        fired += int(short.sum())
+        for i in range(3):
+            longer = list(base)
+            longer[i] += int(rng.integers(1, 15))
+            extra = vz.signal(node, _warm_md(longer, seed=seed)).to_numpy() & ~short
+            assert not extra.any(), (node.model_dump_json(), base, longer)
+    assert fired > 0
+
+
 # ---- the event algebra: mask / lag / bars_since_event / event_value / event_agg ----------
 
 
@@ -1766,7 +2519,7 @@ def test_event_agg_parity(agg):
 
 def test_event_node_init_channel_parity():
     # The reference init (the standard latch OR "anchor became unknowable post-warmup", and the
-    # condition's own latch for mask) must match the builder's init frame, hole cases included.
+    # condition's full init for mask) must match the builder's init frame, hole cases included.
     df = _ev_fixture(hole_at=(3, 4, 60))
     md = _md(df, externals=("z",))
     for node in (
@@ -1807,15 +2560,17 @@ def test_mask_channels_warmup_hole_false_true():
     )
 
 
-def test_mask_init_is_the_conditions_own_latch():
-    # An `or` initializes when ANY branch does, so mask(or(...)) is initialized before either
-    # branch alone would latch a finite value — the condition's latch, not `_latch(values)`.
+def test_mask_init_is_the_conditions_full_init():
+    # An `or` initializes when ANY branch does — it fires from its live branch on bar 0 (T∨U = T)
+    # — but the mask is warmup (NaN, not init) until EVERY branch is live, like `not`: a 0.0
+    # claims a decided False, and a series of the partial Trues alone would be value-selected.
     md = _ev_md([np.nan, 1.0, 1.0], close=[100.0, 100.0, 100.0])
     cond = OrCondition(conditions=[_z_gt(0.5), _c_gt(50.0)])
-    _v, i = _series3(Mask(condition=cond), md)
-    ci = vz.build_condition(cond, md)[1]["t"].to_numpy()
-    np.testing.assert_array_equal(i, ci)
-    assert i.all()
+    v, i = _series3(Mask(condition=cond), md)
+    np.testing.assert_array_equal(vz.build_condition(cond, md)[1]["t"].to_numpy(), [1, 1, 1])
+    np.testing.assert_array_equal(i, vz.fully_initialized(cond, md)[:, 0])
+    np.testing.assert_array_equal(i, [False, True, True])
+    np.testing.assert_array_equal(v, [np.nan, 1.0, 1.0])
 
 
 def test_lag_shifts_all_three_channels_and_leading_bars_are_warmup():
