@@ -585,7 +585,8 @@ METRIC_ROLES_DOC: dict[str, JsonValue] = {
         "pool mean: overlap-connected [t, t+h) episodes resampled with replacement, so "
         "within-episode dependence is preserved exactly and the interval is as wide as the "
         "EPISODE count warrants; deterministic, content-seeded; below 5 episodes it reports "
-        "null fields with a reason instead of a degenerate interval)",
+        "null fields with a reason instead of a degenerate interval, and past the double range "
+        "with reason not_representable)",
         "per-cell by_target subperiods (n / mean_ret over three equal-bar eras "
         "of the shared index, entry-bar assignment, NO purging: era visibility, not a holdout, "
         "and nothing selects on it)",
@@ -732,7 +733,8 @@ METRIC_ROLES_DOC: dict[str, JsonValue] = {
             "which is honest about within-episode dependence but assumes independence BETWEEN "
             "episodes — adjacent episodes still co-move through slow volatility regimes, so the "
             "CI is less anti-conservative than t_hac, not calibrated. Below 5 episodes there is "
-            "no resampling distribution worth reporting and the block says so with a reason."
+            "no resampling distribution worth reporting and the block says so with a reason — "
+            "as it does past the double range (not_representable)."
         ),
         "pbo": (
             "CSCV describes the SCOREABLE grid, never one cell, and cannot see DSL variants "
@@ -1048,11 +1050,15 @@ REPORT_FIELDS: dict[str, JsonValue] = {
         "nulls": (
             "every non-finite number serializes as null; a target with no closed rows carries "
             "n=0 and null statistics BY CONSTRUCTION — null means 'no evidence', never 'zero' "
-            "(the evidence blocks additionally carry a `reason` string when null); no statistic "
-            "is a finite number read off a sum, mean, quantile or variance that overflowed, nor "
-            "off a variance (or the power of one a moment divides by) below the normal double "
-            "range — x/inf is not 0, and a subnormal variance has lost its bits: such a share, "
-            "ratio, std, t, shape moment, Sharpe, quantile, tail mean or rank read is null too"
+            "(the evidence blocks additionally carry a `reason` string when null — "
+            "`not_representable` where boot nulls a read past the double range or "
+            "benchmark_regression declines one); no statistic is a finite number read off a "
+            "sum, mean, quantile or variance that overflowed, nor off a variance (or the power "
+            "of one a moment divides by) below the normal double range — x/inf is not 0, and a "
+            "subnormal variance has lost its bits: such a share, ratio, std, t, rotation p, "
+            "shape moment, Sharpe, quantile, tail mean or rank read is null too, and so is an "
+            "episode or bucket mean whose finite returns sum past the range (its true value is "
+            "finite, the computed one not even sign-safe)"
         ),
         "units": (
             "every return-valued field (mean_ret, ret, mae, mfe, pre_ret, ci_lo/ci_hi, cvar_5, "
@@ -1199,14 +1205,20 @@ REPORT_FIELDS: dict[str, JsonValue] = {
         "by_target.rot_p / rot_n_null": (
             "one-sided right-tail circular-rotation p, and the number of DEFINED shifts its "
             "null was formed over — the cell's own resolution floor is 1/(1 + rot_n_null), "
-            ">= summary.rotation.p_resolution"
+            ">= summary.rotation.p_resolution. The count is the mask's geometry: beside a null "
+            "rot_p it is still every defined shift, the null's size in exact arithmetic"
         ),
         "by_target.concentration": (
             "{top_share_abs, n_top, top_frac}: |return|-mass share of the top 5% observations"
         ),
         "by_target.boot": (
             "{method, ci_level, n_boot, n_episodes, ci_lo, ci_hi, boot_se, reason} — "
-            "episode-bootstrap percentile CI for the pool mean (evidence-only)"
+            "episode-bootstrap percentile CI for the pool mean (evidence-only); null fields name "
+            "their reason: no_observations, insufficient_episodes (below 5), or "
+            "not_representable — an episode sum or draw past the double range nulls the "
+            "interval and boot_se together, a draws' variance outside the normal range boot_se "
+            "alone; a constant pool's interval is its arithmetic mean — the value itself where "
+            "that mean's sum overflowed — with boot_se exactly 0.0"
         ),
         "by_target.subperiods": (
             "three equal-bar eras [{start, end, n, mean_ret}] — era visibility (evidence-only)"
@@ -1253,7 +1265,8 @@ REPORT_FIELDS: dict[str, JsonValue] = {
             "first, never ranked; truncation past the cap is explicit and mass-conserving; "
             "n_total == episode_stats.n_clusters; in a cross_mean basket an episode's mean_ret "
             "reads a full bar's rows (every member closed) at exactly 0, the identity their "
-            "excesses' sum holds, while share_abs stays each row's own |ret| (evidence-only)"
+            "excesses' sum holds, while share_abs stays each row's own |ret|; an entry's "
+            "mean_ret is null where its rows' sum left the double range (evidence-only)"
         ),
         "episode_profile": (
             "the episode-deduplicated TWIN of the row-level pool statistics: {n_episodes, "
@@ -1269,7 +1282,8 @@ REPORT_FIELDS: dict[str, JsonValue] = {
             "PER-CELL feature conditioning over the cell's own closed rows, pooled across its "
             "targets: per feature {buckets: [{bucket, n, mean_ret, hit_rate}], reason} with "
             "explicit refusal reasons, plus a per-feature Spearman {rho, sign} — there is no "
-            "run-level pooled pair (evidence-only)"
+            "run-level pooled pair; a bucket's mean_ret is null where its returns' sum left the "
+            "double range, and that feature then carries no {rho, sign} (evidence-only)"
         ),
         "feature_association": (
             "per feature × target {rho, n, reason} — Spearman between the entry-time feature "

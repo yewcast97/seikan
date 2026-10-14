@@ -657,6 +657,11 @@ def _pool_panel(
     # per-leg finite subsets would silently mis-pair.
     raw = _finite_column(closed, "ret_raw")
     bench = _finite_column(closed, "ret_bench")
+    # A leg whose sum leaves the double range reads `inf` → null, like every pool mean: an
+    # expected input, never a warning.
+    with np.errstate(over="ignore", invalid="ignore"):
+        mean_raw = float(np.mean(raw)) if raw.size else _NAN
+        mean_bench = float(np.mean(bench)) if bench.size else _NAN
     return {
         "n": moments["n"],
         "n_nonoverlap": int(rc["n_nonoverlap"]),
@@ -672,8 +677,8 @@ def _pool_panel(
         # in both cases: the basket cell's pooled mean_ret is re-summed from the raw legs in
         # `_measure_grid`, and its bar-closed sums read a full bar at 0 via `rets_pool`) — and
         # mean_ret_bench ≈ mean_ret_raw is the basket's own realized drift.
-        "mean_ret_raw": float(np.mean(raw)) if raw.size else _NAN,
-        "mean_ret_bench": float(np.mean(bench)) if bench.size else _NAN,
+        "mean_ret_raw": mean_raw,
+        "mean_ret_bench": mean_bench,
         # The legs' regression attribution (evidence-only): is the excess mean alpha, or
         # beta ≠ 1 riding market drift — the question the two means alone cannot answer.
         # Null fields + reason on an unbenchmarked or degenerate pool.
@@ -882,7 +887,8 @@ def _cells_panel(
                 "n_bars": int(n_bars),
                 "n_undefined": int(undef[:, g].sum()),
             }
-            mass_by_target[tgt] = float(np.abs(rets_t).sum())
+            with np.errstate(over="ignore"):  # an overflowed mass has no shares (see below)
+                mass_by_target[tgt] = float(np.abs(rets_t).sum())
             for fname in feature_names:
                 vals = closed_t[fname].to_numpy(dtype=float) if not closed_t.empty else np.empty(0)
                 fa.setdefault(fname, {})[tgt] = feature_outcome_association(vals, rets_t)
@@ -1344,12 +1350,18 @@ def run_backtest(thesis: Thesis, md: MarketData) -> EventStudyResult:
             # EQUAL (a shared outcome feed broadcast to the basket) has its mean equal to that
             # value — exact zero dispersion, as in the kernels: the rounded row mean is not the
             # value, and every member's excess would read its residue instead of 0.
-            mu = fwd.mean(axis=1, keepdims=True)
-            mu = np.where(
-                fwd.max(axis=1, keepdims=True) == fwd.min(axis=1, keepdims=True), fwd[:, :1], mu
-            )
-            bench = mu
-            fwd = fwd - mu
+            # Legs whose sum leaves the double range overflow the bar's mean, and the bar censors
+            # through the finiteness test below like any other unmeasurable window — silently,
+            # as `_measure`'s own overflow does.
+            with np.errstate(over="ignore", invalid="ignore"):
+                mu = fwd.mean(axis=1, keepdims=True)
+                mu = np.where(
+                    fwd.max(axis=1, keepdims=True) == fwd.min(axis=1, keepdims=True),
+                    fwd[:, :1],
+                    mu,
+                )
+                bench = mu
+                fwd = fwd - mu
             fwd = np.where(np.isfinite(fwd), fwd, np.nan)
         return fwd, tgt_finite, raw, bench
 

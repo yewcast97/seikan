@@ -4,6 +4,7 @@ reads."""
 from __future__ import annotations
 
 import hashlib
+import math
 
 import numpy as np
 
@@ -62,8 +63,11 @@ def episode_bootstrap_ci(
     distribution is reported exactly — ``ci_lo == ci_hi``, ``boot_se`` 0.0 — instead of the
     ulp-scale spread rounding would mint (a ``mean / boot_se`` of ~1e15, the ``t_hac``
     pathology): a pool whose summed values are all equal (its interval is their arithmetic
-    mean), and any pool whose resampled means come out bit-identical on every draw (every
-    episode carrying the same sum and count).
+    mean — the value itself where the computed mean's sum overflowed), and any pool whose
+    resampled means come out bit-identical on every draw (every episode carrying the same sum
+    and count). Out of range, the block says so: an episode sum or a draw past the double range
+    nulls the interval and ``boot_se`` together, and a draws' variance that is not a normal
+    double nulls ``boot_se`` — each with ``reason="not_representable"``.
 
     ``rets_pool`` (row-aligned with ``rets``, finite wherever ``rets`` is; default ``rets``
     itself) is what the episode sums ADD — a ``cross_mean`` basket's pooled panel hands in its
@@ -114,13 +118,17 @@ def episode_bootstrap_ci(
         return out
     if float(pool.max()) == float(pool.min()):
         out["n_boot"] = int(n_boot)
-        out["ci_lo"] = out["ci_hi"] = float(np.mean(pool))
+        # The pool's arithmetic mean, as computed — and where that sum left the double range,
+        # the value itself: every value is equal, so `pool[0]` IS their exact mean (an
+        # overflowed `inf` read a null interval beside `boot_se` 0.0).
+        with np.errstate(over="ignore"):
+            mean = float(np.mean(pool))
+        out["ci_lo"] = out["ci_hi"] = mean if math.isfinite(mean) else float(pool[0])
         out["boot_se"] = 0.0
         return out
     # Clusters partition the sorted rows into CONTIGUOUS runs (the greedy merge walks the rows in
     # order), so each episode is a reduceat segment.
     starts = np.fromiter((c[0] for c in clusters), dtype=np.int64, count=n_ep)
-    ep_sums = np.add.reduceat(pool, starts)
     ep_counts = np.diff(np.append(starts, rets.size))
 
     digest = hashlib.sha256(np.int64(h).tobytes() + bars.tobytes() + rets.tobytes()).digest()
@@ -129,24 +137,34 @@ def episode_bootstrap_ci(
     stats_arr = np.empty(n_boot, dtype=float)
     rows_per_chunk = max(1, _BOOT_CHUNK // n_ep)
     done = 0
-    while done < n_boot:
-        rows = min(rows_per_chunk, n_boot - done)
-        idx = rng.integers(0, n_ep, size=(rows, n_ep))
-        stats_arr[done : done + rows] = ep_sums[idx].sum(axis=1) / ep_counts[idx].sum(axis=1)
-        done += rows
+    # An episode sum, or a draw's sum of them, may leave the double range: the finiteness test
+    # below decides every such read, so the overflow is an expected input, never a warning.
+    with np.errstate(over="ignore", invalid="ignore"):
+        ep_sums = np.add.reduceat(pool, starts)
+        while done < n_boot:
+            rows = min(rows_per_chunk, n_boot - done)
+            idx = rng.integers(0, n_ep, size=(rows, n_ep))
+            stats_arr[done : done + rows] = ep_sums[idx].sum(axis=1) / ep_counts[idx].sum(axis=1)
+            done += rows
 
     out["n_boot"] = int(n_boot)
     # An episode sum that overflowed makes every draw that resamples it ±inf (NaN off inf − inf),
     # ranked at one end, so the percentile read one FINITE bound over draws that left the double
-    # range beside a null one. Any such sum or draw nulls the whole interval and `boot_se` alike.
+    # range beside a null one. Any such sum or draw nulls the whole interval and `boot_se` alike,
+    # and says why: a null evidence block carries its reason.
     if not (np.isfinite(ep_sums).all() and np.isfinite(stats_arr).all()):
         out["ci_lo"] = out["ci_hi"] = out["boot_se"] = _NAN
+        out["reason"] = "not_representable"
         return out
     alpha = (1.0 - ci) / 2.0
     lo, hi = np.percentile(stats_arr, [100.0 * alpha, 100.0 * (1.0 - alpha)])
     out["ci_lo"] = float(lo)
     out["ci_hi"] = float(hi)
     # Exactly 0.0 on bit-identical draws (a degenerate distribution); NaN when the draws'
-    # variance is not a normal double — never a 0.0 read off an overflow or an underflow.
-    out["boot_se"] = _ddof1_std(stats_arr)
+    # variance is not a normal double — never a 0.0 read off an overflow or an underflow — and
+    # then the block names it, as it does the interval's.
+    boot_se = _ddof1_std(stats_arr)
+    out["boot_se"] = boot_se
+    if math.isnan(boot_se):
+        out["reason"] = "not_representable"
     return out

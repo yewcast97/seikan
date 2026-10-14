@@ -100,7 +100,9 @@ def _split_scores(
     lo_g = extrema[:, :, 0, :][:, :, block_idx].min(axis=2)  # (Q, T)
     hi_g = extrema[:, :, 1, :][:, :, block_idx].max(axis=2)
     eps = float(np.finfo(np.float64).eps)
-    with np.errstate(invalid="ignore", divide="ignore"):
+    # `over` too: the expansion's cross terms and products of returns past ~1e154 overflow, and
+    # `_representable` decides every such split — an expected input, never a warning.
+    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
         if mode == "basket":
             n = n_g.sum(axis=1)
             mean = (s1_g + n_g * refs).sum(axis=1) / n
@@ -310,13 +312,16 @@ def cscv_pbo(
             # carry that reference beside the triple — `_split_scores` reconstructs exact means
             # while the variance arithmetic runs centered (level-safe). Per-S by necessity: the
             # purge above depends on this partition's edges.
-            ref = float(r.mean()) if r.size else 0.0
-            r_shift = r - ref
-            stats_by_key[key] = (
-                np.bincount(b, minlength=s).astype(float),
-                np.bincount(b, weights=r_shift, minlength=s),
-                np.bincount(b, weights=r_shift * r_shift, minlength=s),
-            )
+            # A mean or a square past the double range is no input to a score: `_split_scores`
+            # nulls every split it reaches (`_representable`), so it overflows silently here.
+            with np.errstate(over="ignore", invalid="ignore"):
+                ref = float(r.mean()) if r.size else 0.0
+                r_shift = r - ref
+                stats_by_key[key] = (
+                    np.bincount(b, minlength=s).astype(float),
+                    np.bincount(b, weights=r_shift, minlength=s),
+                    np.bincount(b, weights=r_shift * r_shift, minlength=s),
+                )
             refs_by_key[key] = ref
             lo = np.full(s, np.inf)
             hi = np.full(s, -np.inf)

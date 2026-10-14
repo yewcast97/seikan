@@ -5,6 +5,12 @@ attribution and the timing medians.
 Every function here describes ONE observation pool from the arrays it is handed and nothing
 else — per cell × target, or per basket-pooled cell — so nothing in this module can compare,
 rank or aggregate across cells.
+
+Finite returns can sum, square or interpolate past the double range, and every read here
+decides such an operand by finiteness — :func:`_normal`, :func:`_finite_ratio`, or the NaN →
+null emission of a statistic that is not finite — so the reads run under
+``errstate(over, invalid)``: an overflow is an expected input, never a warning (which ``-W
+error`` turns into an exception out of the run).
 """
 
 from __future__ import annotations
@@ -80,11 +86,17 @@ def _ddof1_std(v: np.ndarray) -> float:
     (the bootstrap's draws, whose means can overflow — ``inf == inf`` is no degenerate
     distribution): NaN, never a zero or an infinite dispersion."""
     lo, hi = float(np.min(v)), float(np.max(v))
+    # Every caller hands in a finite pool today (the moment reads filter, the bootstrap nulls
+    # its non-finite draws first); the rule stays HERE, where `inf == inf` would pass for the
+    # all-equal test below, rather than in each caller's filtering.
     if not (math.isfinite(lo) and math.isfinite(hi)):
         return _NAN
     if hi == lo:
         return 0.0
-    var = float(np.var(v, ddof=1))  # np.std IS the root of this variance, bit for bit
+    # Deviations past ~1.3e154 overflow the variance (a sum past the range, its mean first):
+    # `_normal` decides that read, so the overflow is an expected input here, never a warning.
+    with np.errstate(over="ignore", invalid="ignore"):
+        var = float(np.var(v, ddof=1))  # np.std IS the root of this variance, bit for bit
     return math.sqrt(var) if _normal(var) else _NAN
 
 
@@ -101,6 +113,7 @@ def _finite_ratio(num: float, den: float) -> float:
     return q if math.isfinite(q) else _NAN
 
 
+@np.errstate(over="ignore", invalid="ignore")
 def pool_moments(rets: np.ndarray) -> PoolMoments:
     """The moment and shape reads of ONE pool's closed returns — ``{n, mean_ret, std_ret,
     hit_rate, win_loss_ratio, skewness, kurtosis, tail_ratio, cvar_5}``.
@@ -162,9 +175,8 @@ def pool_moments(rets: np.ndarray) -> PoolMoments:
     # for 11.737878 at a 1e-80 scale. Null, never a finite number read off the lost bits.
     shaped3 = shaped4 = False
     if n > 2 and not degenerate:
-        with np.errstate(over="ignore", invalid="ignore"):
-            m2 = np.var(v)
-            shaped3, shaped4 = _normal(float(m2**1.5)), _normal(float(m2 * m2))
+        m2 = np.var(v)
+        shaped3, shaped4 = _normal(float(m2**1.5)), _normal(float(m2 * m2))
     out["skewness"] = float(sps.skew(v)) if shaped3 else _NAN
     out["kurtosis"] = float(sps.kurtosis(v, fisher=False)) if n > 3 and shaped4 else _NAN
     if n > 1:
@@ -178,6 +190,7 @@ def pool_moments(rets: np.ndarray) -> PoolMoments:
     return out
 
 
+@np.errstate(over="ignore", invalid="ignore")
 def concentration(rets: np.ndarray, top_frac: float = 0.05) -> ConcentrationBlock:
     """How much of the pool's return mass sits in its largest few observations — the
     "one-episode thesis" detector. ``top_share_abs`` is the |return| mass of the top ``top_frac``
@@ -206,6 +219,7 @@ def concentration(rets: np.ndarray, top_frac: float = 0.05) -> ConcentrationBloc
 _QUANTILE_PS: tuple[float, ...] = (5.0, 10.0, 25.0, 50.0, 75.0, 90.0, 95.0)
 
 
+@np.errstate(over="ignore", invalid="ignore")
 def pool_quantiles(vals: np.ndarray) -> PoolQuantiles:
     """Order statistics of a pool — ``{p05, p10, p25, p50, p75, p90, p95}``.
 
@@ -233,6 +247,7 @@ def pool_quantiles(vals: np.ndarray) -> PoolQuantiles:
     return {"p05": p05, "p10": p10, "p25": p25, "p50": p50, "p75": p75, "p90": p90, "p95": p95}
 
 
+@np.errstate(over="ignore", invalid="ignore")
 def mae_block(vals: np.ndarray) -> MaeQuantiles:
     """The MAE excursion block — ``{n, mean, p05..p95, worst}`` over the FINITE subset of the
     values handed in (a censored path column contributes nothing; ``n`` counts the subset). One
@@ -247,6 +262,7 @@ def mae_block(vals: np.ndarray) -> MaeQuantiles:
     }
 
 
+@np.errstate(over="ignore", invalid="ignore")
 def mfe_block(vals: np.ndarray) -> MfeQuantiles:
     """The MFE twin of :func:`mae_block` — ``best`` (the max) where MAE carries ``worst``."""
     v = np.asarray(vals, dtype=float)
@@ -259,6 +275,7 @@ def mfe_block(vals: np.ndarray) -> MfeQuantiles:
     }
 
 
+@np.errstate(over="ignore", invalid="ignore")
 def profit_factor(rets: np.ndarray) -> float:
     """Gross win mass over gross loss mass — ``Σ(wins) / |Σ(losses)|`` over a pool's finite
     returns. The MASS-weighted asymmetry partnering ``win_loss_ratio`` (which compares the
@@ -279,6 +296,7 @@ def profit_factor(rets: np.ndarray) -> float:
     return _finite_ratio(float(wins.sum()), abs(float(losses.sum())))
 
 
+@np.errstate(over="ignore", invalid="ignore")
 def edge_ratio(mae_rows: np.ndarray, mfe_rows: np.ndarray) -> float:
     """Mean favorable excursion over mean adverse excursion magnitude —
     ``mean(mfe) / |mean(mae)|`` over the PAIRED RAW post-entry excursion rows of one cell × target.
@@ -357,6 +375,7 @@ def cross_mean_pooled_mean(raw: np.ndarray, closed: np.ndarray) -> float:
     return total / n
 
 
+@np.errstate(over="ignore", invalid="ignore")
 def benchmark_regression(raw: np.ndarray, bench: np.ndarray) -> BenchmarkRegressionBlock:
     """Per-window OLS attribution of the raw leg on the benchmark leg, over PAIRED rows.
 

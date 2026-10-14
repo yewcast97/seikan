@@ -256,6 +256,186 @@ def test_run_writes_complete_report_and_exits_0(tmp_path, capsys):
     assert "trades" not in doc  # no time series ever rides the report
 
 
+@pytest.mark.parametrize("read", ["episodes", "conditional_buckets"])
+def test_run_at_the_double_ceiling_reports_null_means_never_an_internal_error(
+    tmp_path, capsys, read
+):
+    # Finite returns whose SUMS leave the double range: an episode's two pct returns of 1e308 (a
+    # 1e-300 quote into 1e8), and a series target's diff rows of ~-1.6e308 summed per bucket.
+    # The ledger's and the buckets' means were plain floats, so their overflow's null failed the
+    # emission seam: exit 4 `internal`, no report, on admitted input. Exit 0 with the means null —
+    # and in-process under the suite's -W error, so no numpy warning escaped the run either.
+    n = 200
+    idx = pd.date_range("2021-01-01", periods=n, freq="1D")
+    if read == "episodes":
+        px = np.where(np.arange(n) % 2 == 0, 1e-300, 1e8)
+        vol = np.ones(n)
+        vol[[1, 3, 21, 23]] = 2.0  # two episodes of two overlapping rows each at h = 3
+        frame = pd.DataFrame(
+            {"open": px, "high": px, "low": px, "close": px, "volume": vol}, index=idx
+        )
+        left = {"type": "field", "column": "volume"}
+        op, cut, params = ">", 1.5, {"horizon": 3}
+    else:
+        rng = np.random.RandomState(5)
+        lv = np.where(
+            np.arange(n) % 2 == 0, 1e306 * rng.uniform(1, 5, n), 1.7e308 * rng.uniform(0.95, 1, n)
+        )
+        frame = pd.DataFrame({"y": lv}, index=idx)
+        left = {"type": "change", "input": {"type": "field", "column": "close"}, "kind": "diff"}
+        op, cut, params = "<", 0.0, {"horizon": 1, "outcome": {"kind": "diff"}}
+    frame.index.name = "datetime"
+    frame.to_csv(tmp_path / "px.csv")
+    thesis = tmp_path / "t.json"
+    entry = {
+        "type": "threshold",
+        "left": left,
+        "op": op,
+        "right": {"type": "constant", "value": cut},
+    }
+    thesis.write_text(
+        json.dumps(
+            {"name": "ceiling", "data": {"targets": ["target"]}, "entry": entry, "params": params}
+        ),
+        encoding="utf-8",
+    )
+    code, doc = _run_report(capsys, tmp_path, ["run", str(thesis), *_target(tmp_path / "px.csv")])
+    assert code == 0
+    cell = doc["summary"]["cells"][0]
+    if read == "episodes":
+        assert [e["mean_ret"] for e in cell["episodes"]["entries"]] == [None, None]
+    else:
+        buckets = [b for p in cell["conditional_buckets"].values() for b in p["buckets"]]
+        assert len(buckets) == 12 and all(b["mean_ret"] is None for b in buckets)
+        assert cell["bucket_monotonicity"] == {}
+
+
+def test_run_bucketing_a_feature_at_the_double_ceiling_keeps_its_true_bins(tmp_path, capsys):
+    # A 1e-300 <-> 1e8 OHLCV target: its default ret_5 reads -1 on a firing at an even bar and
+    # 1e308·(u/u') on an odd one — a third of the closed rows at -1, so the true qcut forms three
+    # bins. pandas renders a label by rounding each edge through x·10**3, so past ~1.8e305 every
+    # edge read "inf", the colliding "(inf, inf]" labels merged the top two bins, and the
+    # rendering's overflow warned — exit 4 `internal` under -W error, as this in-process run is.
+    # The single-target panel reads its true bins by index now, labelled by ordinal where no
+    # interval string can print them.
+    n = 200
+    idx = pd.date_range("2019-01-01", periods=n, freq="1D")
+    rng = np.random.RandomState(9)
+    bar = np.arange(n)
+    scale = np.where(bar % 2 == 0, 1e-300, 1e8)
+    opn, close = scale * rng.uniform(1, 9, n), scale * rng.uniform(1, 1.5, n)
+    frame = pd.DataFrame(
+        {
+            "open": opn,
+            "high": np.maximum(opn, close),
+            "low": np.minimum(opn, close),
+            "close": close,
+            "volume": np.where((bar % 2 == 1) | (bar % 4 == 0), 2.0, 1.0),
+        },
+        index=idx,
+    )
+    frame.index.name = "datetime"
+    frame.to_csv(tmp_path / "px.csv")
+    entry = {
+        "type": "threshold",
+        "left": {"type": "field", "column": "volume"},
+        "op": ">",
+        "right": {"type": "constant", "value": 1.5},
+    }
+    thesis = tmp_path / "t.json"
+    thesis.write_text(
+        json.dumps(
+            {
+                "name": "ceiling_feature",
+                "data": {"targets": ["target"]},
+                "entry": entry,
+                "params": {"horizon": 4},
+            }
+        ),
+        encoding="utf-8",
+    )
+    trades_out = tmp_path / "trades.csv"
+    code, doc = _run_report(
+        capsys,
+        tmp_path,
+        ["run", str(thesis), *_target(tmp_path / "px.csv"), "--trades-out", str(trades_out)],
+    )
+    assert code == 0
+    trades = pd.read_csv(trades_out)
+    feature = trades.loc[~trades["is_open"] & trades["ret"].notna(), "ret_5"].dropna()
+    assert feature.max() > 1e308 and feature.min() < 0  # the premise: edges past the rendering
+    true_bins = pd.qcut(feature, q=4, labels=False, duplicates="drop").value_counts().sort_index()
+    assert len(true_bins) == 3  # pandas' labels merged the top two
+    panel = doc["summary"]["cells"][0]["conditional_buckets"]["ret_5"]
+    assert panel["reason"] is None
+    assert [(b["bucket"], b["n"]) for b in panel["buckets"]] == [
+        (f"q{i + 1}", int(c)) for i, c in enumerate(true_bins)
+    ]
+
+
+@pytest.mark.parametrize("targets", [["A"], ["A", "B"]], ids=["one_target", "two_targets"])
+def test_run_bucketing_a_feature_spanning_the_double_range_reads_its_true_bins(
+    tmp_path, capsys, targets
+):
+    # A declared feature off a feed alternating ±1.7e308·u: its quantile interpolation crosses
+    # zero between two order statistics whose spread passes the double range, so the median edge
+    # read -inf and both bucket arms cut the panel on it — "(-inf, -inf]" 1 / "(-inf, inf]" 177
+    # / "(inf, inf]" 60 with a rank read off it, beside a warning that is exit 4 `internal` under
+    # -W error, as this in-process run is. Each member's true bins now, by ordinal.
+    n = 240
+    idx = pd.date_range("2018-01-01", periods=n, freq="1D")
+    rng = np.random.RandomState(4)
+    data = {}
+    for name in targets:
+        px = 100.0 * np.exp(np.cumsum(rng.normal(0, 0.01, n)))
+        frame = pd.DataFrame(
+            {"open": px, "high": px, "low": px, "close": px, "volume": np.ones(n)}, index=idx
+        )
+        frame.index.name = "datetime"
+        frame.to_csv(tmp_path / f"{name}.csv")
+        data[name] = tmp_path / f"{name}.csv"
+    feed = pd.DataFrame(
+        {"value": np.where(np.arange(n) % 2 == 0, 1.0, -1.0) * 1.7e308 * rng.uniform(0.95, 1, n)},
+        index=pd.Index(idx, name="datetime"),
+    )
+    feed.to_csv(tmp_path / "F.csv")
+    data["F"] = tmp_path / "F.csv"
+    entry = {
+        "type": "threshold",
+        "left": {"type": "field", "column": "volume"},
+        "op": ">",
+        "right": {"type": "constant", "value": 0.0},
+    }
+    thesis = tmp_path / "t.json"
+    thesis.write_text(
+        json.dumps(
+            {
+                "name": "span_feature",
+                "data": {"targets": targets, "external": {"F": {}}},
+                "entry": entry,
+                "params": {"horizon": 1, "features": {"f": {"type": "external", "name": "F"}}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    trades_out = tmp_path / "trades.csv"
+    code, doc = _run_report(
+        capsys, tmp_path, ["run", str(thesis), *_data(data), "--trades-out", str(trades_out)]
+    )
+    assert code == 0
+    trades = pd.read_csv(trades_out)
+    closed = trades.loc[~trades["is_open"] & trades["ret"].notna()]
+    true_bins = sum(
+        pd.qcut(g["f"] * 2.0**-500, q=4, labels=False).value_counts().sort_index().to_numpy()
+        for _, g in closed.groupby("target")
+    )
+    panel = doc["summary"]["cells"][0]["conditional_buckets"]["f"]
+    assert panel["reason"] is None
+    assert [(b["bucket"], b["n"]) for b in panel["buckets"]] == [
+        (f"q{i + 1}", int(c)) for i, c in enumerate(true_bins)
+    ]
+
+
 def test_report_layers_in_fixed_order(tmp_path, capsys):
     # The layering is FIXED (no variants): the uniform {seikan_version, report_schema_version,
     # command} header, then identity → data_report → outputs → summary → gate → metric_roles.

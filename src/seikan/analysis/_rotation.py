@@ -58,7 +58,10 @@ def _fwd_ffts(fwd: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     finite = np.isfinite(fwd)
     f = np.where(finite, fwd, 0.0)
     valid = finite.astype(float)
-    return np.fft.rfft(f), np.fft.rfft(valid)
+    # A column near the double ceiling overflows its transform; :func:`_reliability_read`
+    # decides that read, so the overflow is an expected input here, never a warning.
+    with np.errstate(over="ignore", invalid="ignore"):
+        return np.fft.rfft(f), np.fft.rfft(valid)
 
 
 def _rotation_num_den(
@@ -78,7 +81,8 @@ def _rotation_num_den(
     it is returned ROUNDED — exact, like the count it is."""
     s = (np.asarray(mask) > 0).astype(float)
     s_conj = np.conj(np.fft.rfft(s))
-    num = np.fft.irfft(f_fft * s_conj, n=n)
+    with np.errstate(over="ignore", invalid="ignore"):  # decided in `_reliability_read`
+        num = np.fft.irfft(f_fft * s_conj, n=n)
     den = np.rint(np.fft.irfft(valid_fft * s_conj, n=n))
     return num, den
 
@@ -158,16 +162,30 @@ def _reliability_read(
         fwd = np.asarray(cell["fwd_col"], dtype=float)
         f_fft, valid_fft, f_norm = _ffts_for(fwd, fft_memo)
         num, den = _rotation_num_den(mask, f_fft, valid_fft, length)
-        num_sum += num
+        with np.errstate(over="ignore", invalid="ignore"):  # decided below
+            num_sum += num
         den_sum += den
         tol_num += _fft_tie_band(length, f_norm, int(np.count_nonzero(mask > 0)))
         t_closed = np.flatnonzero((mask > 0) & np.isfinite(fwd))
         bars_parts.append(t_closed)
         rets_parts.append(fwd[t_closed])
+    defined = den_sum > 0.5
     with np.errstate(divide="ignore", invalid="ignore"):
-        means = np.where(den_sum > 0.5, num_sum / den_sum, _NAN)
-        tol = np.where(den_sum > 0.5, tol_num / den_sum, _NAN)
-    rot_p, rot_n_null = _tail_p(float(means[0]), means[shifts], float(tol[0]), tol[shifts])
+        means = np.where(defined, num_sum / den_sum, _NAN)
+        tol = np.where(defined, tol_num / den_sum, _NAN)
+    # A DEFINED shift — its rotated mask lands on finite forward bars — whose numerator left the
+    # double range (the transform's partial sums overflowed, or the members' sum did) has no
+    # known mean, and the finite ones beside it are read off the same overflowed transform.
+    # Dropped like an undefined shift, it formed the p over the survivors — and the shift that
+    # overflowed can be the very one that beat the observed (a p of 0.143 for 0.222): no null,
+    # no p, exactly as for an overflowed observed mean.
+    observed = float(means[0]) if np.isfinite(means[defined]).all() else _NAN
+    rot_p, _n_finite = _tail_p(observed, means[shifts], float(tol[0]), tol[shifts])
+    # The count is the mask's geometry: every DEFINED shift (its exact, rounded `den`), the
+    # null's size in exact arithmetic — equal to the finite count `_tail_p` formed the p over
+    # wherever a p is formed, and never, beside a voided one, a count of the shifts an overflow
+    # spared.
+    rot_n_null = int(np.count_nonzero(defined[shifts]))
     bars = np.concatenate(bars_parts)
     rets = np.concatenate(rets_parts)
     n_nonoverlap = nonoverlap_count(bars, h)

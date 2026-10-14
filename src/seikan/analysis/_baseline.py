@@ -1,4 +1,9 @@
-"""The unconditional baseline summary and the equal-bar subperiod panels."""
+"""The unconditional baseline summary and the equal-bar subperiod panels.
+
+Both read means of finite returns that can sum past the double range — a statistic that is not
+finite emits as null — so they run under ``errstate(over, invalid)``, as the ``_pools`` reads
+do: an overflow is an expected input, never a warning.
+"""
 
 from __future__ import annotations
 
@@ -15,6 +20,7 @@ from seikan.types import (
 _NAN = float("nan")
 
 
+@np.errstate(over="ignore", invalid="ignore")
 def baseline_summary(rets: np.ndarray) -> BaselineStats:
     """Statistical fields of ONE baseline pool, from its eligible forward returns alone.
 
@@ -68,6 +74,7 @@ def subperiod_edges(length: int, k: int = 3) -> np.ndarray:
     return np.linspace(0, int(length), int(k) + 1).astype(int)
 
 
+@np.errstate(over="ignore", invalid="ignore")
 def subperiod_means(
     rets: np.ndarray, entry_bars: np.ndarray, edges: np.ndarray
 ) -> list[SubperiodCounts]:

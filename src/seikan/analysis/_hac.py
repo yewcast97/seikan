@@ -64,19 +64,23 @@ def newey_west_mean(rets: np.ndarray, entry_bars: np.ndarray, h: int) -> tuple[f
     n = rets.shape[0]
     if n < 2 or h < 1:
         return (_NAN, _NAN)
-    mean = float(rets.mean())
-    if _near_constant(rets, mean):
-        return (_NAN, _NAN)
-    dev = rets - mean
-    s = float(dev @ dev) / (n - 1.0)  # gamma_0 (long-run variance accumulator, ddof=1)
-    for k in range(1, n):
-        d = (bars[k:] - bars[:-k]).astype(float)
-        w = 1.0 - d / h
-        m = w > 0.0
-        if not m.any():
-            # gaps at event lag k are nondecreasing in k (sorted bars) — no later pair overlaps
-            break
-        s += 2.0 * float((w[m] * dev[k:][m] * dev[:-k][m]).sum()) / (n - 1.0)
+    # The mean, the deviations' products and their lag sums may leave the double range:
+    # `_normal(s / n)` below decides every such read, so the overflow is an expected input,
+    # never a warning.
+    with np.errstate(over="ignore", invalid="ignore"):
+        mean = float(rets.mean())
+        if _near_constant(rets, mean):
+            return (_NAN, _NAN)
+        dev = rets - mean
+        s = float(dev @ dev) / (n - 1.0)  # gamma_0 (long-run variance accumulator, ddof=1)
+        for k in range(1, n):
+            d = (bars[k:] - bars[:-k]).astype(float)
+            w = 1.0 - d / h
+            m = w > 0.0
+            if not m.any():
+                # gaps at event lag k are nondecreasing in k (sorted bars) — no later pair overlaps
+                break
+            s += 2.0 * float((w[m] * dev[k:][m] * dev[:-k][m]).sum()) / (n - 1.0)
     # `_normal(s / n)`: deviations past ~1e154 overflow the long-run variance, and `mean / inf`
     # is a FINITE t of 0.0 — an overflow must read as no estimate, never as "no edge"; below
     # ~1e-154 they underflow, into lost bits or an SE of exactly 0.0.

@@ -97,6 +97,22 @@ def _episode_view(trades: pd.DataFrame, rets_pool: np.ndarray | None = None) -> 
     return _EpisodeView(df, entry, exit_, rets, pool, overlap_clusters(entry, exit_))
 
 
+def _episode_means(pool: np.ndarray, clusters: list[list[int]]) -> np.ndarray:
+    """Each episode's MEAN of its rows' pool values — the per-episode read the ledger lists and
+    the profile aggregates — NaN where the rows' sum left the double range. The true mean of
+    finite returns is finite, but the computed one is not even sign-safe: ``1e308 + 1e308`` is
+    ``inf`` before three rows of ``-1.7e308`` can bring the sum below zero, so ``+inf`` would
+    claim a sign the episode does not have. No value, no sign: NaN → null. (Its callers run
+    under ``errstate``, below.)"""
+    means = np.array([float(np.mean(pool[c])) for c in clusters])
+    return np.where(np.isfinite(means), means, _NAN)
+
+
+# The three panels below sum |returns| and episode rows that can leave the double range; each
+# such read is decided by finiteness (the shares' `0 < total < inf` rule, NaN episode means, the
+# NaN → null emission of a statistic that is not finite), so the arithmetic runs under
+# ``errstate(over, invalid)``: an overflow is an expected input, never a warning.
+@np.errstate(over="ignore", invalid="ignore")
 def episode_stats(trades: pd.DataFrame) -> EpisodeStatsBlock:
     """Cluster one cell's CLOSED observations by overlapping ``[entry, exit)`` windows.
 
@@ -173,6 +189,7 @@ def episode_stats(trades: pd.DataFrame) -> EpisodeStatsBlock:
 EPISODE_LIST_MAX = 32
 
 
+@np.errstate(over="ignore", invalid="ignore")
 def episode_ledger(
     trades: pd.DataFrame,
     cap: int = EPISODE_LIST_MAX,
@@ -205,7 +222,10 @@ def episode_ledger(
     ``mean_ret`` sums ``rets_pool`` (row-aligned with ``trades``; default the rows' ``ret``) —
     a ``cross_mean`` basket's rows with every full bar's excesses at 0.0, the identity their sum
     holds exactly; an episode holds each bar's rows entirely, so its mean is exact over them.
-    The |return| shares stay on ``ret``: a row's mass is its own, not its bar's.
+    It is NaN → null where the episode's sum left the double range (:func:`_episode_means` —
+    the same unknown mean ``episode_profile`` nulls its reads over), never an ``inf`` whose sign
+    the overflow picked. The |return| shares stay on ``ret``: a row's mass is its own, not its
+    bar's.
     """
     empty: EpisodeLedgerBlock = {
         "entries": [],
@@ -228,16 +248,17 @@ def episode_ledger(
 
     kept = clusters[: max(int(cap), 0)]
     omitted = clusters[len(kept) :]
+    means = _episode_means(pool, kept)
     return {
         "entries": [
             {
                 "start": _iso(entry[c[0]]),  # rows sorted by entry: c[0] opens the episode
                 "end": _iso(exit_[c].max()),
                 "n": len(c),
-                "mean_ret": float(np.mean(pool[c])),
+                "mean_ret": float(m),
                 "share_abs": _share(c),
             }
-            for c in kept
+            for c, m in zip(kept, means, strict=True)
         ],
         "n_total": len(clusters),
         "n_omitted": len(omitted),
@@ -248,6 +269,7 @@ def episode_ledger(
     }
 
 
+@np.errstate(over="ignore", invalid="ignore")
 def episode_profile(
     trades: pd.DataFrame, *, rets_pool: np.ndarray | None = None
 ) -> EpisodeProfileBlock:
@@ -311,7 +333,7 @@ def episode_profile(
 
     # Clusters arrive in time order (the greedy chain opens them at strictly increasing starts),
     # so the streak walk below IS the calendar walk.
-    ret_means = np.array([float(np.mean(pool[c])) for c in clusters])
+    ret_means = _episode_means(pool, clusters)
     # EPISODE-ALIGNED excursion aggregates — one slot per cluster, NaN where the cluster carries
     # no finite value in that leg. The quantile blocks below read each leg's own finite subset
     # (as ever), while `edge_ratio` reads the ALIGNED pair, so an episode censored on one side

@@ -40,7 +40,10 @@ class ReliabilityRead(TypedDict):
     estimators are known anti-conservative and read by NO check: evidence a reader weighs, never
     a certificate. ``rot_n_null`` is the number of DEFINED shifts the cell's null was formed
     over — its own resolution floor is ``1/(1 + rot_n_null)``, which on a sparse mask sits
-    above the run-level ``rotation.p_resolution``.
+    above the run-level ``rotation.p_resolution``. ``rot_p`` is NaN → null where the rotation
+    transform left the double range at the observed or at any defined shift: a p over the
+    shifts that survived an overflow is no p. ``rot_n_null`` is the mask's geometry either way —
+    beside a null ``rot_p`` still every defined shift, never the shifts an overflow spared.
     """
 
     rot_p: float

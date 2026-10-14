@@ -4025,13 +4025,11 @@ def test_cross_mean_swept_entry_axis_each_cell_mounts_its_own_pooled_mean(tmp_pa
     assert len(set(means)) == len(means) == 6
 
 
-@pytest.mark.filterwarnings("ignore:overflow encountered:RuntimeWarning")
-@pytest.mark.filterwarnings("ignore:invalid value encountered:RuntimeWarning")
 def test_cross_mean_pooled_mean_overflow_is_refused_not_a_crash(tmp_path):
     # pct legs near 1e308 (a quote of 1e-300 beside 1e8): the exact pooled sum leaves the double
-    # range. The run completes, the pooled mean reads NaN (null) and support refuses it. (numpy's
-    # own overflow warnings from the moments and the rotation FFT at these magnitudes predate the
-    # exact mean and are not under test — an exception out of the run is.)
+    # range. The run completes, the pooled mean reads NaN (null) and support refuses it — and
+    # warning-free (the suite's -W error), the moments' and the rotation FFT's overflows at these
+    # magnitudes being expected inputs the engine decides, never warnings.
     from seikan.gate import GateThresholds, evaluate_gate
 
     n = 40
@@ -4069,8 +4067,6 @@ def test_cross_mean_pooled_mean_overflow_is_refused_not_a_crash(tmp_path):
     assert support.met is False
 
 
-@pytest.mark.filterwarnings("ignore:overflow encountered:RuntimeWarning")
-@pytest.mark.filterwarnings("ignore:invalid value encountered:RuntimeWarning")
 def test_overflowed_return_mass_refuses_concentration_never_passes_it(tmp_path):
     # Two members, one closed row each, both a pct return of ~1e308 (a 1e-300 open into 1e8)
     # on disjoint bars: each member's |return| mass is finite, their total overflows. Every
@@ -4110,7 +4106,8 @@ def test_overflowed_return_mass_refuses_concentration_never_passes_it(tmp_path):
     res = run_backtest(thesis, load(thesis, files))
     closed = res.trades[~res.trades["is_open"]]
     assert sorted(closed["target"]) == ["A", "B"]
-    assert (closed["ret"] > 1e307).all() and np.isinf(closed["ret"].abs().sum())  # the premise
+    with np.errstate(over="ignore"):  # the premise (test-side; the run itself was warning-free)
+        assert (closed["ret"] > 1e307).all() and np.isinf(closed["ret"].abs().sum())
     cell = res.summary["cells"][0]
     shares = cell["pooled"]["member_share"]
     assert np.isnan(shares["max_member_share_abs"])
@@ -4128,6 +4125,150 @@ def test_overflowed_return_mass_refuses_concentration_never_passes_it(tmp_path):
         "max_member_share_abs": None,
         "max_cluster_share_abs": None,
     }
+
+
+def test_cross_mean_bar_mean_past_the_double_range_censors_silently(tmp_path):
+    # Two members whose pct legs of 1e308 and 1.5e308 (1e-300 quotes into 1e8 / 1.5e8) sum past
+    # the double range on every firing bar: the bar's cross-sectional mean overflows, its excess
+    # reads -inf, and the bar censors through the finiteness test like any unmeasurable window
+    # (fail-closed: the gate refuses the censoring) — silently, as `_measure`'s own overflow
+    # does, where the mean's overflow warning escaped the run (an exception under -W error).
+    n = 40
+    idx = pd.date_range("2021-01-01", periods=n, freq="1D")
+    files = {}
+    for t, top in (("A", 1e8), ("B", 1.5e8)):
+        files[t] = _write_bars(
+            tmp_path / f"{t}.csv", np.where(np.arange(n) % 2 == 0, 1e-300, top), idx
+        )
+    thesis = Thesis.model_validate(
+        {
+            "name": "cm_bar_overflow",
+            "target_mode": "basket",
+            "data": {"targets": ["A", "B"]},
+            "entry": _gt(5.0),
+            "params": {"horizon": 1, "benchmark": "cross_mean"},
+        }
+    )
+    res = run_backtest(thesis, load(thesis, files))
+    cov = res.summary["cells"][0]["outcome_coverage"]
+    for t in ("A", "B"):
+        assert cov[t]["n_attempted"] == 19 and cov[t]["n_closed"] == 0
+        assert cov[t]["exit_reasons"]["no_benchmark"] == 19
+    assert res.summary["cells"][0]["pooled"]["n"] == 0
+
+
+def _ceiling_episode_files(tmp_path, targets):
+    """OHLCV targets whose open alternates 1e-300 (even bars) / 1e8 (odd bars), firing on
+    ``volume > 1.5`` at bars 1 and 3, 21 and 23, 41 and 43 — each pair one episode at h = 3,
+    whose pct returns of 1e308 (a 1e-300 fill into a 1e8 exit) sum past the double range — and
+    the FIRST target alone at bar 61, one row: an episode whose mean is the finite 1e308."""
+    n = 80
+    idx = pd.date_range("2021-01-01", periods=n, freq="1D")
+    px = np.where(np.arange(n) % 2 == 0, 1e-300, 1e8)
+    files = {}
+    for j, t in enumerate(targets):
+        vol = np.ones(n)
+        vol[[1, 3, 21, 23, 41, 43] + ([61] if j == 0 else [])] = 2.0
+        df = pd.DataFrame(
+            {"open": px, "high": px, "low": px, "close": px, "volume": vol}, index=idx
+        )
+        df.index.name = "datetime"
+        df.to_csv(tmp_path / f"{t}.csv")
+        files[t] = str(tmp_path / f"{t}.csv")
+    return files
+
+
+@pytest.mark.parametrize(
+    ("targets", "mode", "direction"),
+    [
+        (("X",), "conjunction", "longonly"),
+        (("X",), "conjunction", "shortonly"),
+        (("X", "Y"), "conjunction", "longonly"),
+        (("X", "Y"), "basket", "longonly"),
+    ],
+)
+def test_overflowed_episode_mean_reads_null_never_a_crash(tmp_path, targets, mode, direction):
+    # Two finite returns of 1e308 in one episode sum past the double range, and the ledger's
+    # per-episode mean read inf — into a field typed plain `float`, so json_safe's null failed
+    # the emitted contract: ReportContractError out of compile_thesis, exit 4 out of the CLI, no
+    # report, on input the strict loader admits. The mean is unknown (not even its sign is):
+    # NaN → null, the read episode_profile already nulled off the same episodes — and the run is
+    # warning-free under the suite's -W error.
+    from seikan.api import compile_thesis
+
+    thesis = Thesis.model_validate(
+        {
+            "name": "ep_ceiling",
+            "target_mode": mode,
+            "data": {"targets": list(targets)},
+            "entry": {
+                "type": "threshold",
+                "left": {"type": "field", "column": "volume"},
+                "op": ">",
+                "right": {"type": "constant", "value": 1.5},
+            },
+            "params": {"horizon": 3, "direction": direction},
+        }
+    )
+    files = _ceiling_episode_files(tmp_path, targets)
+    cell = compile_thesis(thesis, load(thesis, files)).summary["cells"][0]
+    ledger = cell["episodes"]
+    assert ledger["n_total"] == cell["episode_stats"]["n_clusters"] == 4
+    means = [e["mean_ret"] for e in ledger["entries"]]
+    assert [e["n"] for e in ledger["entries"]] == [2 * len(targets)] * 3 + [1]
+    assert all(np.isnan(m) for m in means[:3])
+    assert means[3] == (1e308 if direction == "longonly" else -1e308)  # finite: its own bits
+    assert [e["mean_ret"] for e in json_safe(ledger)["entries"]] == [None] * 3 + [means[3]]
+    assert np.isnan(cell["episode_profile"]["mean_ret"])  # the sibling read, as before
+
+
+def test_overflowed_bucket_mean_reads_null_never_a_crash(tmp_path):
+    # A series target near the double ceiling, diff outcome: every closed row is a finite
+    # ~ -1.6e308, and each conditional bucket's sum of them overflows. The bucket mean read -inf
+    # into a field typed plain `float` — ReportContractError out of compile_thesis — so the one
+    # consumer fix 5 had taught to stand down (bucket_monotonicity) never reached a report. The
+    # bucket mean is null now, monotonicity carries no entry, and the bootstrap whose episode
+    # draws overflow says why its block is null.
+    from seikan.api import compile_thesis
+
+    rng = np.random.RandomState(5)
+    n = 200
+    levels = np.where(
+        np.arange(n) % 2 == 0, 1e306 * rng.uniform(1, 5, n), 1.7e308 * rng.uniform(0.95, 1, n)
+    )
+    _series_bars(tmp_path / "y.csv", list(levels))
+    thesis = Thesis.model_validate(
+        {
+            "name": "bucket_ceiling",
+            "data": {"targets": ["target"]},
+            "entry": {
+                "type": "threshold",
+                "left": {
+                    "type": "change",
+                    "input": {"type": "field", "column": "close"},
+                    "periods": 1,
+                    "kind": "diff",
+                },
+                "op": "<",
+                "right": {"type": "constant", "value": 0.0},
+            },
+            "params": {"horizon": 1, "outcome": {"kind": "diff"}},
+        }
+    )
+    res = compile_thesis(thesis, load(thesis, {"target": tmp_path / "y.csv"}))
+    cell = res.summary["cells"][0]
+    rets = res.trades.loc[~res.trades["is_open"], "ret"].to_numpy(dtype=float)
+    assert np.isfinite(rets).all() and (rets < -1e308).all()  # the premise: finite rows
+    panels = cell["conditional_buckets"]
+    assert set(panels) == {"ret_5", "ret_20", "vol_14"}
+    for name, panel in panels.items():
+        assert panel["reason"] is None and len(panel["buckets"]) == 4, name
+        assert all(np.isnan(b["mean_ret"]) for b in panel["buckets"]), name
+        assert all(b["hit_rate"] == 0.0 for b in panel["buckets"]), name
+    assert cell["bucket_monotonicity"] == {}
+    boot = cell["by_target"]["target"]["boot"]
+    assert boot["reason"] == "not_representable" and boot["n_episodes"] > 5
+    assert np.isnan(boot["ci_lo"]) and np.isnan(boot["ci_hi"]) and np.isnan(boot["boot_se"])
 
 
 def test_cross_mean_swept_horizons_each_mount_their_own_pooled_mean(tmp_path):

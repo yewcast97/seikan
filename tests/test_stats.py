@@ -165,20 +165,22 @@ def test_ratio_reads_refuse_an_overflowed_operand():
     # Finite returns whose SUM overflows: `x / inf` was a FINITE 0.0 — a win/loss ratio, a
     # profit factor and an edge ratio of exactly zero, a reader takes at face value. An operand
     # past the double range is no evidence: NaN → null.
+    # (No errstate around the engine: its overflows are expected inputs, never warnings.)
     rets = np.array([1.0, -1e308, -1e308])  # the loss mass (and so its mean) overflows to -inf
-    with np.errstate(over="ignore", invalid="ignore"):
-        assert np.isnan(pool_moments(rets)["win_loss_ratio"])
-        assert np.isnan(profit_factor(rets))
-        assert np.isnan(edge_ratio(np.array([-1e308, -1e308]), np.array([1.0, 1.0])))
-        # |p95 / p05| where p05 interpolates across ±1.7e308 and overflows to +inf
-        tail = np.array([-1.7e308] + [1.7e308] * 9)
+    assert np.isnan(pool_moments(rets)["win_loss_ratio"])
+    assert np.isnan(profit_factor(rets))
+    assert np.isnan(edge_ratio(np.array([-1e308, -1e308]), np.array([1.0, 1.0])))
+    # |p95 / p05| where p05 interpolates across ±1.7e308 and overflows to +inf
+    tail = np.array([-1.7e308] + [1.7e308] * 9)
+    with np.errstate(over="ignore"):
         assert np.isinf(np.percentile(tail, 5.0))  # the premise
-        assert np.isnan(pool_moments(tail)["tail_ratio"])
-        # cvar_5 tails off the same p05: `v <= inf` took the WHOLE pool's mean, +2.3e307 — a
-        # positive "lower tail" where the true one is −1e308
-        gap = np.array([-1e308, 8e307, 9e307])
+    assert np.isnan(pool_moments(tail)["tail_ratio"])
+    # cvar_5 tails off the same p05: `v <= inf` took the WHOLE pool's mean, +2.3e307 — a
+    # positive "lower tail" where the true one is −1e308
+    gap = np.array([-1e308, 8e307, 9e307])
+    with np.errstate(over="ignore"):
         assert np.isinf(np.percentile(gap, 5.0))  # the premise
-        assert np.isnan(pool_moments(gap)["cvar_5"])
+    assert np.isnan(pool_moments(gap)["cvar_5"])
 
 
 def test_empty_pool_moments_are_complete():
@@ -254,6 +256,15 @@ def test_pool_quantiles_points_are_ordered():
     for _ in range(20):
         q = pool_quantiles(rng.randn(int(rng.randint(2, 200))) * 0.03)
         assert q["p05"] <= q["p10"] <= q["p25"] <= q["p50"] <= q["p75"] <= q["p90"] <= q["p95"]
+
+
+def test_pool_quantiles_interpolated_past_the_double_range_are_not_finite():
+    # p05 and p10 interpolate between -1.7e308 and 1.7e308, a gap past the double range: the
+    # computed points are ±inf (p10's true 1.36e308 read -inf) → null, never a finite point —
+    # and silently, the overflow an expected input. Points between equal neighbours stand.
+    q = pool_quantiles(np.array([-1.7e308] + [1.7e308] * 9))
+    assert not np.isfinite(q["p05"]) and not np.isfinite(q["p10"])
+    assert q["p25"] == q["p50"] == q["p95"] == 1.7e308
 
 
 # ---- baseline_summary: the statistical half of a baseline row ----------------
@@ -552,6 +563,138 @@ def test_cell_conditional_buckets_single_target_column_is_identical():
     assert all("," in label for label in labels)  # interval labels, never ordinals
 
 
+def test_cell_conditional_bucket_means_past_the_double_range_are_nan():
+    # Finite returns of ~1e308 four to a bucket: each bucket's sum overflows, and its mean read
+    # ±inf — a value the emitted contract (a plain float) then refused, and a sign the overflow
+    # picked. NaN → null instead, on the one-target path and on the ordinal path alike, while a
+    # bucket whose sum stays in range keeps its bits.
+    feat = np.arange(24, dtype=float)
+    rets = np.where(feat < 18, 1e308, 0.25)  # buckets 1-3 overflow; the top one is 0.25
+    one = cell_conditional_buckets(_episodes(list(rets), feature=list(feat)), ["feat"])
+    two = cell_conditional_buckets(
+        pd.DataFrame(
+            {
+                "target": ["A"] * 24 + ["B"] * 24,
+                "feat": np.concatenate([feat, 100.0 + feat]),
+                "ret": np.concatenate([rets, rets]),
+            }
+        ),
+        ["feat"],
+    )
+    for out, n in ((one, 6), (two, 12)):
+        block = out["conditional_buckets"]["feat"]
+        assert block["reason"] is None and [b["n"] for b in block["buckets"]] == [n] * 4
+        means = [b["mean_ret"] for b in block["buckets"]]
+        assert all(np.isnan(m) for m in means[:3]) and means[3] == 0.25
+        assert out["bucket_monotonicity"] == {}  # an unknown mean, so no rank signal either
+
+
+@pytest.mark.parametrize(
+    "feat",
+    [np.linspace(2e306, 1.7e308, 24), np.linspace(1e-320, 5e-307, 24)],
+    ids=["ceiling", "floor"],
+)
+def test_ordinal_buckets_pandas_cannot_label_keep_their_bins(feat):
+    # Per-target edges pandas cannot render: it rounds each interval LABEL's edges through
+    # x·10**precision. Past ~1.8e305 every label read "(inf, inf]" (and warned), and the
+    # categorical's codes, built off those colliding labels, merged all four quartiles into ONE
+    # bucket; under ~1e-306 in magnitude a break read NaN and the labelled qcut raised. Both
+    # were refused as `insufficient_distinct_values`. The ordinal path reads the bin indices
+    # alone: four buckets of six rows per member, silently.
+    frame = pd.DataFrame(
+        {
+            "target": ["A"] * 24 + ["B"] * 24,
+            "feat": np.concatenate([feat, feat]),
+            "ret": np.tile(np.repeat([0.01, 0.02, 0.03, 0.04], 6), 2),
+        }
+    )
+    out = cell_conditional_buckets(frame, ["feat"])
+    block = out["conditional_buckets"]["feat"]
+    assert block["reason"] is None
+    assert [b["n"] for b in block["buckets"]] == [12, 12, 12, 12]
+    assert [b["mean_ret"] for b in block["buckets"]] == pytest.approx([0.01, 0.02, 0.03, 0.04])
+    assert out["bucket_monotonicity"]["feat"] == {"rho": pytest.approx(1.0), "sign": 1}
+
+
+@pytest.mark.parametrize(
+    ("feat", "true_n"),
+    [
+        # Edges past ~1.8e305 rendered "inf": "(-1.001, inf]" 30 / "(inf, inf]" 30 over three
+        # true bins, the two "(inf, inf]" labels' bins merged by the categorical (and warned).
+        (np.r_[np.full(30, -1.0), np.linspace(1e306, 1.7e308, 30)], [30, 15, 15]),
+        # Edges under ~1e-306 in magnitude: 10**digits overflowed, the breaks read NaN, no
+        # interval could be built, and the qcut's ValueError refused a feature with four bins.
+        (np.linspace(1e-320, 5e-307, 40), [10, 10, 10, 10]),
+        # ONE edge past the ceiling, the labels still distinct: pandas' "(0.77, inf]" names a
+        # bin it cannot print — the rendered breaks must be finite, not merely distinct.
+        (np.r_[np.linspace(0.0, 1.0, 39), 1e306], [10, 10, 10, 10]),
+    ],
+    ids=["ceiling", "floor", "top_edge"],
+)
+def test_single_target_buckets_pandas_cannot_label_keep_their_bins(feat, true_n):
+    # The single-target arm passes the frozen kernel's records through, interval labels and all
+    # — but its membership came off pandas' rendered labels, which leave the double range at
+    # both ends of the feature scale. The bins are read by index now; where no interval string
+    # prints them faithfully, each populated bin takes its ordinal, the multi-target arm's
+    # label. Silent: pandas' rendering runs under errstate (the suite's -W error).
+    ret = np.linspace(-0.05, 0.05, feat.size)  # ascending with the feature: a planted rank
+    out = cell_conditional_buckets(pd.DataFrame({"feat": feat, "ret": ret}), ["feat"])
+    block = out["conditional_buckets"]["feat"]
+    assert block["reason"] is None
+    assert [(b["bucket"], b["n"]) for b in block["buckets"]] == [
+        (f"q{i + 1}", n) for i, n in enumerate(true_n)
+    ]
+    if len(true_n) >= 3:
+        assert out["bucket_monotonicity"]["feat"] == {"rho": pytest.approx(1.0), "sign": 1}
+    table = conditional_buckets(pd.DataFrame({"feat": feat, "ret": ret}), "feat")
+    assert list(table.index.astype(str)) == [f"q{i + 1}" for i in range(len(true_n))]
+
+
+def test_single_target_buckets_pandas_can_label_keep_its_intervals():
+    # The ordinary twin: wherever pandas prints the edges, the kernel's table IS pandas' qcut
+    # grouping — the interval categorical as the index, byte for byte.
+    feat = np.r_[np.full(10, 1e-300), np.linspace(1e305, 1.7e305, 30)]
+    frame = pd.DataFrame({"feat": feat, "ret": np.linspace(-1.0, 1.0, feat.size)})
+    table = conditional_buckets(frame, "feat")
+    expected = frame.groupby(pd.qcut(frame["feat"], q=4, duplicates="drop"), observed=True)["ret"]
+    assert table.index.equals(expected.size().index)
+    assert list(table["n"]) == list(expected.size()) == [10, 10, 10, 10]
+    assert str(table.index[-1]).endswith(", 1.7e+305]")  # an edge just short of the ceiling
+
+
+@pytest.mark.parametrize("n_targets", [1, 2], ids=["one_target", "two_targets"])
+def test_buckets_of_a_feature_spanning_the_double_range_are_its_true_bins(n_targets):
+    # A feature whose values span more than the double range: pandas interpolates a quantile as
+    # a + (b − a)·t, and b − a overflows between the two order statistics either side of zero,
+    # so the median edge read -inf (with a warning) and both arms cut their bins on it — 1/17/6
+    # where the true bins are 6/6/6/6, a non-monotone panel with a rank read. Such a pool holds
+    # only values past 2**970 in magnitude, so its halved twin's bins are exactly its own: the
+    # true bins, labelled by ordinal (no interval label prints an edge there), silently.
+    rng = np.random.default_rng(3)
+    feat = np.r_[-1.7e308 * rng.uniform(0.95, 1, 12), 1.7e308 * rng.uniform(0.95, 1, 12)]
+    rng.shuffle(feat)
+    ret = np.argsort(np.argsort(feat)) / 100.0  # the feature's rank: ascending with it
+    with np.errstate(over="ignore", invalid="ignore"):  # the premise: pandas' edge overflows
+        assert not np.isfinite(pd.qcut(feat, 4, retbins=True, labels=False)[1]).all()
+    true = pd.qcut(feat * 2.0**-500, 4, labels=False)  # the same pool, well inside the range
+    true_means = [ret[true == i].mean() for i in range(4)]
+    frame = pd.DataFrame(
+        {
+            "target": np.repeat(["A", "B"][:n_targets], feat.size),
+            "feat": np.tile(feat, n_targets),
+            "ret": np.tile(ret, n_targets),
+        }
+    )
+    out = cell_conditional_buckets(frame, ["feat"])
+    block = out["conditional_buckets"]["feat"]
+    assert block["reason"] is None
+    assert [(b["bucket"], b["n"]) for b in block["buckets"]] == [
+        (f"q{i + 1}", 6 * n_targets) for i in range(4)
+    ]
+    assert [b["mean_ret"] for b in block["buckets"]] == pytest.approx(true_means)
+    assert out["bucket_monotonicity"]["feat"] == {"rho": pytest.approx(1.0), "sign": 1}
+
+
 # ---- feature_outcome_association: per-(cell × feature × target) Spearman ----------
 
 
@@ -759,6 +902,28 @@ def test_tail_p_of_an_overflowed_observed_mean_is_nan_never_the_floor():
     for observed in (float("inf"), float("-inf")):
         p, n_null = _tail_p(observed, np.array([0.1, 0.2, 0.3]))
         assert np.isnan(p) and n_null == 3
+
+
+def test_rotation_null_with_an_overflowed_shift_is_void_never_a_partial_p():
+    # One firing on a forward column holding 5e307 and 1e307: the transform's unscaled partial
+    # sums (~T × 5e307) leave the double range at two DEFINED shifts — one of them the shift
+    # onto 5e307, the only one that beats the observed 1e307. Dropped like an undefined shift,
+    # the p read 1/7 over the six survivors where exact arithmetic gives 2/9: a stronger
+    # rotation read minted from an overflow. No null, no p: NaN, as for an overflowed observed.
+    fwd = np.array([-0.4, -0.75, 0.2, 5e307, -1.6, 2.0, -1.0, -0.2, 1e307])
+    mask = np.zeros(9)
+    mask[8] = 1.0
+    read = reliability_summary(
+        [{"key": ("t",), "mask_col": mask, "fwd_col": fwd, "h": 1}], 9, ["t"]
+    )["per_cell"][("t",)]
+    # ... and its count stays the mask's geometry, all 8 defined shifts — the size exact
+    # arithmetic forms the null over, never the 6 the overflow spared
+    assert np.isnan(read["rot_p"]) and read["rot_n_null"] == 8
+    # the same column a scale below the ceiling keeps the exact-arithmetic p, every shift defined
+    small = reliability_summary(
+        [{"key": ("t",), "mask_col": mask, "fwd_col": fwd * 1e-300, "h": 1}], 9, ["t"]
+    )["per_cell"][("t",)]
+    assert small["rot_p"] == pytest.approx(2 / 9) and small["rot_n_null"] == 8
 
 
 def test_rotation_den_is_an_exact_count():
@@ -1271,6 +1436,23 @@ def test_pooled_reliability_empty_and_short_guards_mirror_reliability_summary():
     ) == {"per_cell": {}, "n_shifts": 0}
 
 
+def test_pooled_rotation_over_opposite_overflowed_members_is_null_and_silent():
+    # Two members firing on one bar whose forward returns are +1.7e308 and -1.7e308: each
+    # member's transform overflows, to +inf and to -inf, and the common-shift null SUMS them —
+    # inf − inf. The pooled mean is exactly 0 there, but no shift's computed mean is known: the
+    # read is null, never a warning.
+    T = 16
+    m = np.zeros(T)
+    m[3] = 1.0
+    cells = []
+    for tgt, v in (("A", 1.7e308), ("B", -1.7e308)):
+        fwd = np.zeros(T)
+        fwd[3] = v
+        cells.append({"key": ("c", tgt), "mask_col": m, "fwd_col": fwd, "h": 1})
+    read = pooled_reliability_summary(cells, T)["per_cell"][("c",)]
+    assert np.isnan(read["rot_p"]) and read["n_nonoverlap"] == 1
+
+
 # ---- CSCV → PBO (grid-level evidence, attached to no hypothesis) ------------
 
 
@@ -1635,8 +1817,7 @@ def test_concentration_hand_computed():
 def test_concentration_of_an_overflowed_mass_is_nan_never_a_passing_zero():
     # 100 returns of 3e306: the top-5 mass (1.5e307) is finite, the total overflows, and the
     # share read 0.0 — "no concentration", which the ceiling check passed. NaN refuses instead.
-    with np.errstate(over="ignore"):
-        out = concentration(np.full(100, 3e306))
+    out = concentration(np.full(100, 3e306))
     assert out["n_top"] == 5 and np.isnan(out["top_share_abs"])
 
 
@@ -1725,9 +1906,8 @@ def test_episode_shares_of_an_overflowed_mass_are_nan_never_a_passing_zero():
             "ret": [1e308, 1e308],
         }
     )
-    with np.errstate(over="ignore"):
-        out = episode_stats(frame)
-        ledger = episode_ledger(frame)
+    out = episode_stats(frame)
+    ledger = episode_ledger(frame)
     assert out["n_clusters"] == 2
     for key in ("largest_cluster_share_abs", "max_cluster_share_abs", "mass_hhi"):
         assert np.isnan(out[key]), key
@@ -1962,13 +2142,38 @@ def test_episode_profile_reads_nothing_off_an_overflowed_episode_mean():
             "ret": [1.2e308, 1.2e308, 1.0, 2.0, -1.0, 3.0],
         }
     )
-    with np.errstate(over="ignore"):
-        prof = episode_profile(trades)
+    prof = episode_profile(trades)
     assert prof["n_episodes"] == 5
     for key in ("hit_rate", "mean_ret", "profit_factor", "worst_ret", "best_ret"):
         assert np.isnan(prof[key]), key
     assert all(np.isnan(v) for v in prof["ret_quantiles"].values())
     assert prof["max_win_streak"] == 2 and prof["max_loss_streak"] == 1
+
+
+def test_episode_ledger_mean_past_the_double_range_is_nan_never_a_signed_inf():
+    # The ledger's per-episode mean over finite rows whose sum leaves the double range. Read off
+    # the overflow it was `inf` — into a field the emitted contract typed plain `float` (the
+    # run died at the seam) — and not even sign-safe: 1e308 + 1e308 is +inf before three rows of
+    # -1.7e308 bring the true sum (and mean, -6.2e307) below zero. NaN → null, the unknown mean
+    # episode_profile already reads nothing off; an episode in range keeps its bits.
+    day = pd.Timedelta(days=1)
+    base = pd.Timestamp("2021-03-01")
+    starts = [0, 1, 2, 3, 4, 40]
+    trades = pd.DataFrame(
+        {
+            "entry_time": [base + d * day for d in starts],
+            "exit_time": [base + (d + 5) * day for d in starts],
+            "ret": [1e308, 1e308, -1.7e308, -1.7e308, -1.7e308, 0.125],
+        }
+    )
+    ledger = episode_ledger(trades)
+    assert [e["n"] for e in ledger["entries"]] == [5, 1]
+    assert np.isnan(ledger["entries"][0]["mean_ret"]) and ledger["entries"][1]["mean_ret"] == 0.125
+    prof = episode_profile(trades)
+    assert np.isnan(prof["mean_ret"]) and prof["max_win_streak"] == 1
+    # a full bar's exact 0 through `rets_pool` stays exactly 0 beside it
+    zeros = episode_ledger(trades, rets_pool=np.array([0.0] * 5 + [0.125]))
+    assert [e["mean_ret"] for e in zeros["entries"]] == [0.0, 0.125]
 
 
 def test_episode_profile_merges_across_targets_exactly_like_episode_stats():
@@ -2258,15 +2463,14 @@ def test_benchmark_regression_out_of_range_moments_decline_never_a_false_fit():
     rng = np.random.RandomState(4)
     raw = rng.randn(30)
     bench = 0.5 * raw + rng.randn(30)
-    with np.errstate(over="ignore", invalid="ignore"):
-        for r, b in ((raw, bench * 1e160), (raw * 1e300, bench * 1e-10)):
-            assert benchmark_regression(r, b) == {
-                "n": 30,
-                "beta": None,
-                "alpha": None,
-                "r2": None,
-                "reason": "not_representable",
-            }
+    for r, b in ((raw, bench * 1e160), (raw * 1e300, bench * 1e-10)):
+        assert benchmark_regression(r, b) == {
+            "n": 30,
+            "beta": None,
+            "alpha": None,
+            "r2": None,
+            "reason": "not_representable",
+        }
 
 
 def test_benchmark_regression_subnormal_variances_decline_never_a_false_fit():
@@ -2482,6 +2686,27 @@ def test_constant_pool_bootstrap_is_degenerate_exactly(c):
     assert ci["ci_lo"] == ci["ci_hi"] == pool_moments(rets)["mean_ret"] and ci["boot_se"] == 0.0
 
 
+@pytest.mark.parametrize("c", [1e308, -1e308, 3e307])
+def test_constant_pool_bootstrap_past_the_range_is_the_value(c):
+    # Eight equal returns whose sum leaves the double range: the degenerate interval read the
+    # overflowed np.mean — a null interval beside boot_se 0.0, no reason. Every value is equal,
+    # so the value IS the exact arithmetic mean: the interval is c, boot_se 0.0, nothing null.
+    ci = episode_bootstrap_ci(np.full(8, c), np.arange(8) * 10, 5)
+    assert ci["n_episodes"] == 8 and ci["n_boot"] > 0 and ci["reason"] is None
+    assert ci["ci_lo"] == ci["ci_hi"] == c and ci["boot_se"] == 0.0
+
+
+def test_ddof1_std_of_a_non_finite_pool_is_nan_never_a_degenerate_zero():
+    # No caller reaches it today (the moment reads filter, the bootstrap nulls its non-finite
+    # draws first), so it is pinned here: `inf == inf` would pass the all-equal test, and an
+    # infinite pool is no zero-dispersion one.
+    from seikan.analysis._pools import _ddof1_std
+
+    for v in ([np.inf, np.inf], [-np.inf, -np.inf], [np.inf, 1.0], [np.nan, 1.0]):
+        assert np.isnan(_ddof1_std(np.array(v))), v
+    assert _ddof1_std(np.array([0.1, 0.1, 0.1])) == 0.0
+
+
 def test_varying_pool_whose_variance_leaves_the_range_has_null_dispersion_never_zero():
     # Deviations of ~1e-170 square below the smallest subnormal: a VARYING pool's computed
     # variance is exactly 0.0 and std_ret / boot_se read 0.0 — the answer reserved for an
@@ -2492,13 +2717,14 @@ def test_varying_pool_whose_variance_leaves_the_range_has_null_dispersion_never_
     assert np.isnan(pool_moments(tiny)["std_ret"])
     assert np.isnan(baseline_summary(tiny)["std_ret"])
     ci = episode_bootstrap_ci(np.arange(10) * 1e-170, np.arange(10) * 10, 5)
-    assert ci["reason"] is None and ci["ci_lo"] < ci["ci_hi"]
+    # the interval stands; the null SE says why it is null
+    assert ci["reason"] == "not_representable" and ci["ci_lo"] < ci["ci_hi"]
     assert np.isnan(ci["boot_se"])
     v = np.random.RandomState(0).standard_t(4, 200)
     assert np.isnan(pool_moments(v * 2.0**-536)["std_ret"])
     assert np.isnan(baseline_summary(v * 2.0**-536)["std_ret"])
-    with np.errstate(over="ignore", invalid="ignore"):
-        assert np.isnan(pool_moments(np.array([1e200, -1e200, 3e200]))["std_ret"])
+    assert np.isnan(pool_moments(np.array([1e200, -1e200, 3e200]))["std_ret"])
+    assert np.isnan(baseline_summary(np.array([1e200, -1e200, 3e200]))["std_ret"])
     # the all-equal pool keeps its exact 0.0 at the same scale, and a normal variance its bits
     assert pool_moments(np.full(4, 1e-170))["std_ret"] == 0.0
     std = pool_moments(v)["std_ret"]
@@ -2509,10 +2735,17 @@ def test_bootstrap_se_of_overflowed_draws_is_null_never_a_degenerate_zero():
     # Twelve returns near 1e308: every resampled mean's episode sum overflows, so every draw is
     # +inf — and `inf == inf` passed the bit-identical-draws test: boot_se 0.0, a degenerate
     # distribution, beside a null interval. Draws past the double range have no spread: null.
-    with np.errstate(over="ignore", invalid="ignore"):
-        ci = episode_bootstrap_ci(np.linspace(0.5e308, 1e308, 12), np.arange(12) * 10, 5)
+    ci = episode_bootstrap_ci(np.linspace(0.5e308, 1e308, 12), np.arange(12) * 10, 5)
     assert ci["n_episodes"] == 12 and np.isnan(ci["ci_lo"]) and np.isnan(ci["ci_hi"])
-    assert np.isnan(ci["boot_se"])
+    assert np.isnan(ci["boot_se"]) and ci["reason"] == "not_representable"
+
+
+def test_bootstrap_se_of_draws_whose_variance_overflows_is_null_with_its_reason():
+    # Returns of ±1e155: every episode sum and draw is finite (the interval stands), but the
+    # draws' squared deviations leave the double range — boot_se null, and the block says why.
+    ci = episode_bootstrap_ci(np.array([1e155, -1e155] * 20), np.arange(40) * 10, 5)
+    assert ci["n_episodes"] == 40 and ci["ci_lo"] < 0.0 < ci["ci_hi"]
+    assert np.isnan(ci["boot_se"]) and ci["reason"] == "not_representable"
 
 
 @pytest.mark.parametrize("sign", [1.0, -1.0])
@@ -2524,13 +2757,13 @@ def test_bootstrap_interval_over_an_overflowed_episode_is_null_never_one_sided(s
     rets = np.array([1.2e308, 1.2e308, 1.0, -2.0, 0.5, 3.0, -1.0, 2.0, 0.25])
     rets[:2] *= sign
     bars = np.array([0, 1, 20, 40, 60, 80, 100, 120, 140])
-    with np.errstate(over="ignore"):
-        ci = episode_bootstrap_ci(rets, bars, 5)
-    assert ci["n_episodes"] == 8 and ci["n_boot"] > 0 and ci["reason"] is None
+    ci = episode_bootstrap_ci(rets, bars, 5)
+    assert ci["n_episodes"] == 8 and ci["n_boot"] > 0 and ci["reason"] == "not_representable"
     assert np.isnan(ci["ci_lo"]) and np.isnan(ci["ci_hi"]) and np.isnan(ci["boot_se"])
     # the same pool one episode short of the overflow keeps a finite, ordered interval
     ok = episode_bootstrap_ci(rets[2:], bars[2:], 5)
     assert ok["n_episodes"] == 7 and ok["ci_lo"] < ok["ci_hi"] and ok["boot_se"] > 0.0
+    assert ok["reason"] is None
 
 
 def test_degenerate_bootstrap_distribution_has_exactly_zero_se():
@@ -2643,8 +2876,10 @@ def test_newey_west_overflowed_long_run_variance_is_null_never_a_zero_t():
     # form is untouched: a power-of-two scale reproduces t exactly and scales the SE exactly.
     rets = np.random.RandomState(3).randn(40)
     bars = np.arange(40) * 10
-    with np.errstate(over="ignore", invalid="ignore"):
-        t, se = newey_west_mean(rets * 2.0**520, bars, 5)
+    t, se = newey_west_mean(rets * 2.0**520, bars, 5)
+    assert np.isnan(t) and np.isnan(se)
+    # contiguous bars: the lag loop's overlapping pairs overflow too, silently
+    t, se = newey_west_mean(rets * 2.0**520, np.arange(40), 5)
     assert np.isnan(t) and np.isnan(se)
     t0, se0 = newey_west_mean(rets, bars, 5)
     assert newey_west_mean(rets * 2.0**500, bars, 5) == (t0, se0 * 2.0**500)
@@ -2828,9 +3063,21 @@ def test_cscv_split_score_of_an_overflowed_sd_is_nan_never_zero():
     moments = np.array([[member(x), member(y)]])
     refs = np.array([[x / 2, y / 2]])
     extrema = np.array([[[[x, 0.0], [x, 0.0]], [[y, 0.0], [y, 0.0]]]])
-    with np.errstate(over="ignore"):
-        score = _split_scores(moments, refs, extrema, "basket", np.array([0]))
+    score = _split_scores(moments, refs, extrema, "basket", np.array([0]))
     assert np.isnan(score).all()
+
+
+def test_cscv_pbo_over_returns_whose_squares_overflow_declines_silently():
+    # Returns of ~1e158 square past the double range in the per-block moment accumulators: every
+    # split's variance overflows and scores NaN, so no split ranks and the block declines — the
+    # overflow an expected input there (`_representable` decides it), never a warning.
+    rng = np.random.RandomState(5)
+    cells = _pbo_cells(rng, 800, 12)
+    for c in cells:
+        c["fwd_col"] = np.asarray(c["fwd_col"]) * 1e160
+    out = cscv_pbo(cells, 800, ["t"], n_combos_declared=12)
+    assert out["pbo"] is None and out["reason"] == "insufficient_data"
+    assert out["n_splits"] == 0 and out["n_combos"] == 12
 
 
 def test_cscv_split_score_of_a_subnormal_variance_is_nan_never_a_sharpe():

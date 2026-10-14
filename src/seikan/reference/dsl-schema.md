@@ -1141,14 +1141,19 @@ and int64 nanosecond counts silently round in IEEE-754 consumers.)
     each `{start, end, n, mean_ret, share_abs}`, capped at 32 with mass-conserving truncation
     (`n_omitted` + `omitted_share_abs`; listed + omitted shares ≈ 1), and `n_total ==
     episode_stats.n_clusters` by construction. A count read off a truncated ledger is a floor.
+    An entry's `mean_ret` is null where its rows' sum left the double range.
   - `conditional_buckets` / `bucket_monotonicity` — per-feature qcut buckets (q=4) over the
     CELL's own closed rows — bucket EDGES per target, records aggregated by ordinal (labels
     `q1..qk` on multi-target cells; one pooled qcut over raw levels would conflate member
-    LEVELS with time variation) — never across cells (see "Not in the report"). Refusals are
+    LEVELS with time variation), interval labels on one target — `q1..qk` there too where an
+    edge is past what an interval label can print (~1.8e305, or under ~1e-306 in magnitude);
+    a feature spanning more than the double range is bucketed exactly off its halved values —
+    never across cells (see "Not in the report"). Refusals are
     explicit, never absent:
     `no_closed_observations` / `insufficient_observations` (below 20 valid rows) /
     `insufficient_distinct_values`. `bucket_monotonicity` carries a Spearman `rho` + `sign` per
-    feature that bucketed with ≥ 3 populated buckets.
+    feature that bucketed with ≥ 3 populated buckets — none where a bucket's `mean_ret` is null,
+    its returns' sum having left the double range.
   - `feature_association` — per (feature × target): Spearman `rho` between the entry-time
     feature snapshot and the realized closed return, with its `n` and an explicit `reason`
     (`insufficient_observations` below 10 pairs; `no_rank_variation` on constant input).
@@ -1329,7 +1334,8 @@ open to quote a statistic honestly.
   rotates, preserving the firing count, temporal clustering and overlap exactly. It answers "was
   THIS mask's timing informative against its own null?" and nothing else — it is **not** a survival
   probability over your search. Beside it, `rot_n_null` is the number of DEFINED shifts the
-  cell's null was formed over, so the cell's own smallest attainable value is
+  cell's null was formed over (a count of the mask's geometry: beside a null `rot_p` still every
+  defined shift), so the cell's own smallest attainable value is
   `1/(1+rot_n_null)` (≥ `summary.rotation.p_resolution` = `1/(1+n_shifts)`, the run-level floor
   over a fully defined null); a `rot_p` sitting at its floor means "no shift beat the
   observation", not "p ≈ 0". A shift whose mean ties the observed one counts as reaching it —
@@ -1374,9 +1380,13 @@ open to quote a statistic honestly.
   to `t_hac`/`rot_p`: within-episode dependence is preserved exactly, so the interval is as wide
   as the EPISODE count warrants — a clustered pool with `n = 80` but 6 episodes gets an honestly
   wide CI. Deterministic (content-seeded); fewer than 5 episodes → null fields with a `reason`
-  instead of a degenerate interval. KNOWN CAVEAT: it assumes episode INDEPENDENCE — adjacent
-  episodes still correlate through slow volatility regimes — so it is less anti-conservative than
-  `t_hac`, not calibrated.
+  instead of a degenerate interval, and so does a read past the double range (`reason:
+  "not_representable"` — an episode sum or draw that overflowed nulls the interval and `boot_se`
+  together, a draws' variance outside the normal range `boot_se` alone); a constant pool's
+  interval is its arithmetic mean — the value itself where that mean's sum overflowed — with
+  `boot_se` exactly 0.0. KNOWN CAVEAT: it assumes episode INDEPENDENCE —
+  adjacent episodes still correlate through slow volatility regimes — so it is less
+  anti-conservative than `t_hac`, not calibrated.
 - `by_target[t].subperiods` — the pool's `{start, end, n, mean_ret}` over three
   equal-bar eras of the shared index (entry-bar assignment, no purging). Era VISIBILITY, not a
   holdout: it shows whether an edge lived in one era, and nothing selects on it.

@@ -130,9 +130,11 @@ class EpisodeBootstrapCI(TypedDict):
     read by no check. The three interval fields are genuinely ``None`` — not NaN — when the pool
     carries no resampling distribution, and ``reason`` says which refusal applied
     (``no_observations`` / ``insufficient_episodes``). They are NaN → null together, ``reason``
-    None, when an episode sum or a draw left the double range — a percentile over such draws is
-    never half an interval — and ``boot_se`` alone is when the draws' variance is not a normal
-    double.
+    ``not_representable``, when an episode sum or a draw left the double range — a percentile
+    over such draws is never half an interval — and ``boot_se`` alone is, with the same reason,
+    when the draws' variance is not a normal double. A constant pool's degenerate interval is
+    its arithmetic mean — the value itself where that mean's sum overflowed, never an
+    overflowed mean's null — with ``ci_lo == ci_hi`` and ``boot_se`` 0.0.
     """
 
     method: Literal["episode_percentile"]
@@ -142,7 +144,7 @@ class EpisodeBootstrapCI(TypedDict):
     ci_lo: float | None
     ci_hi: float | None
     boot_se: float | None
-    reason: Literal["no_observations", "insufficient_episodes"] | None
+    reason: Literal["no_observations", "insufficient_episodes", "not_representable"] | None
 
 
 class SubperiodCounts(TypedDict):
@@ -198,14 +200,16 @@ class EpisodeLedgerEntry(TypedDict):
 
     ``start``/``end`` are the cluster's earliest entry and latest exit (a chain merge can end on
     an interior row's window); ``share_abs`` is its |return| mass over the pool total, NaN → null
-    on a zero-mass pool. ``mean_ret`` stays plain ``float``: the ledger's rows are built over
-    dropna'd returns, so it is finite by construction.
+    on a zero-mass pool or one whose total mass left the double range. ``mean_ret`` is NaN →
+    null where the episode's rows — finite returns — sum past the double range: the true mean
+    is finite there, the computed one is not, and not even its sign is known (the same unknown
+    mean that nulls every ``episode_profile`` read over the episode means).
     """
 
     start: str
     end: str
     n: int
-    mean_ret: float
+    mean_ret: float | None
     share_abs: float | None
 
 
@@ -278,11 +282,16 @@ class BucketRecord(TypedDict):
     ``bucket`` is the rendered interval label when ONE target's rows formed the panel
     (``analysis.stats._bucket_records``), or the ordinal ``q1..qk`` when per-target edges
     aggregated across targets (``_aggregate_bucket_ordinals`` — interval strings are
-    target-relative there and unprintable as one label)."""
+    target-relative there and unprintable as one label) and on one target wherever pandas
+    cannot print an edge (past ~1.8e305 or under ~1e-306 in magnitude, its rendering leaves the
+    double range — ``_qcut_buckets``; a feature spanning more than the double range, whose bins
+    are read exactly off its halved values, is one — ``_qcut_index``). ``mean_ret`` is NaN →
+    null where the bucket's returns sum past the double range — no known value or rank, which
+    is also why ``bucket_monotonicity`` then carries no entry for the feature."""
 
     bucket: str
     n: int
-    mean_ret: float
+    mean_ret: float | None
     hit_rate: float
 
 

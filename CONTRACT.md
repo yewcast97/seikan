@@ -734,8 +734,9 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   its EW z-score decays, keeping the sign exact arithmetic gives it, the deviation carried once
   the mean cannot move and never rounding to zero, instead of locking). In the statistics: a constant pool has `std_ret` 0.0, no
   bucket-monotonicity rank and a degenerate bootstrap (`boot_se` 0.0, `ci_lo == ci_hi` on the
-  pool's own arithmetic mean — as for any pool whose resampled means are bit-identical on every
-  draw), and the reads that divide by dispersion stand down where the spread is within rounding —
+  pool's own arithmetic mean — the value itself where that mean's sum overflowed — as for any
+  pool whose resampled means are bit-identical on every draw), and the reads that divide by
+  dispersion stand down where the spread is within rounding —
   the HAC nulls (largest deviation within ~10 ulps of the mean, the skewness/kurtosis gate), the
   benchmark regression declines a (near-)constant bench leg and fits `beta` exactly 0 on a
   (near-)constant raw leg, and a CSCV split scores NaN when its pool is exactly constant (the
@@ -781,13 +782,24 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   smallest subnormal there, sign kept — decided, imprecise in magnitude. The pool statistics read
   measured returns, which reach that range only off input data at that scale, and hold the
   undecidable line on both sides: a share, ratio, `t_hac`, CSCV split Sharpe, episode-mean read,
-  regression read or `cvar_5` read off a sum, mean, quantile or variance that overflowed, and a
+  regression read or `cvar_5` read off a sum, mean, quantile or variance that overflowed, a
+  `rot_p` whose rotation transform overflowed at any defined shift (its `rot_n_null` still
+  counts every defined shift), and a
   `std_ret`, `boot_se`, `t_hac`, skewness/kurtosis, split Sharpe or `r2`/beta read off a variance
   (or the power of it a moment divides by) outside the normal range, is null —
   `benchmark_regression` declines with reason `not_representable`, an overflowed |return| mass
-  fails the concentration check instead of passing it on 0.0 shares, a bucket mean that overflowed
-  leaves `bucket_monotonicity` null, and an episode sum that overflowed nulls both `boot` bounds
-  with `boot_se`, never one bound. `describe` reports
+  fails the concentration check instead of passing it on 0.0 shares, an episode's or a bucket's
+  mean whose sum overflowed is null itself (the `episodes` ledger entry, the conditional bucket —
+  which leaves `bucket_monotonicity` null), and an episode sum that overflowed nulls both `boot`
+  bounds with `boot_se`, never one bound, with reason `not_representable` (the reason a
+  `boot_se` nulled alone off the draws' variance carries too). A conditional bucket whose
+  feature edge is past what an interval label prints (~1.8e305, or under ~1e-306 in magnitude)
+  keeps its true bin under its ordinal `q1..qk`, never merged with a colliding label, and a
+  feature whose values span more than the double range (its quantile interpolation overflowing
+  across zero) is bucketed off its halved values — exact there, every such value lying past
+  2**970 in magnitude — never cut on an infinite edge. None of these reads warns: an overflow
+  there is an expected input, never a warning (an exception under `python -W error`).
+  `describe` reports
   numbers it never divides by, so it computes them instead: its dispersion `diff` std and its
   trailing volume mean are scaled by a power of two where their squares or sum leave the range (a
   varying series never reads std 0.0, `last_to_mean` never `x / inf`, and finite levels never a
