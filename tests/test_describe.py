@@ -380,8 +380,9 @@ def test_subnormal_quotient_reads_the_exact_log_not_its_rounded_one(tmp_path, ca
 
 
 def test_dispersion_pct_past_the_double_range_refuses_by_name_while_log_lives(tmp_path, capsys):
-    # 1e-300 → 1e10 is a 1-bar ratio of 1e310: the pct std has no double to be (it warned and
-    # emitted a reasonless null), while the log changes stay exact and their std finite.
+    # 1e-300 → 1e10 is a 1-bar ratio of 1e310 — a pct CHANGE with no double to be, the one thing
+    # a pct std refuses on: it has none either (it warned and emitted a reasonless null), while
+    # the log changes stay exact and their std finite.
     y = _write_series(tmp_path / "y.csv", [1e-300, 1e10, 1e10])
     code, doc = _run(capsys, ["describe", str(y), "--windows", "2"])
     assert code == 0
@@ -395,21 +396,41 @@ def test_dispersion_pct_past_the_double_range_refuses_by_name_while_log_lives(tm
     ch2 = blocks["changes"]["2"]
     assert ch2["log"] == math.log(1e10) - math.log(1e-300)
     assert ch2["pct"] is None and ch2["ratio_reason"] == "not_representable"
-    # Every 1-bar pct here is finite (~1e155, then 0.0), but numpy's std squares deviations of
-    # ~5e154, which overflow: the COMPUTATION leaves the double range even though the std itself
-    # (~7.07e154) would fit. No rescaled std is attempted — the read refuses by the same name,
-    # silently (it warned), while the log and diff stds and the changes pct live.
-    levels = [1e-150, 1e5, 1e5]
-    y = _write_series(tmp_path / "z.csv", levels)
-    code, doc = _run(capsys, ["describe", str(y), "--windows", "2"])
-    assert code == 0
-    blocks = _series_profile(doc)
-    d2 = blocks["dispersion"]["2"]
-    assert d2["pct"] is None and d2["ratio_reason"] == "not_representable"
-    assert d2["reason"] is None
-    assert d2["log"] == float(np.std([np.log(1e5 / 1e-150), np.log(1e5 / 1e5)], ddof=1))
-    assert d2["diff"] == float(np.std(np.diff(levels), ddof=1))
-    assert blocks["changes"]["2"]["pct"] == 1e5 / 1e-150 - 1.0
+
+
+def test_dispersion_pct_std_keeps_its_value_where_its_squares_leave_the_range(tmp_path, capsys):
+    # Every 1-bar pct here is a double (~1e155, then 0.0), but np.std squares deviations of
+    # ~5e154, which overflow: the pct std read inf and refused as `not_representable` while the
+    # std itself (~7.07e154) is an ordinary double — and while a diff std over the same kind of
+    # overflow was rescaled and computed. One rule for every dispersion std: scaled by a power
+    # of two, every bit of the unscaled std, scaled; in range, np.std's, bit for bit.
+    from seikan.describe import _dispersion_block
+
+    # 1 → 3·2**600 is a 1-bar pct of exactly 3·2**600 (the −1 rounds away under its ulp), whose
+    # square is past the range: the std of [3·2**600, 0.0] is the std of [3, 0], scaled
+    d2 = _dispersion_block(np.array([1.0, 3.0 * 2.0**600, 3.0 * 2.0**600]), 2)
+    assert d2["pct"] == float(np.std([3.0, 0.0], ddof=1)) * 2.0**600
+    assert d2["reason"] is None and d2["ratio_reason"] is None
+    walk = 100.0 * np.exp(np.cumsum(np.random.RandomState(5).normal(0.0, 0.02, 300)))
+    for w in (2, 5, 21, 63, 252):
+        tail = walk[-(w + 1) :]
+        want = float(np.std(tail[1:] / tail[:-1] - 1.0, ddof=1))
+        assert _dispersion_block(walk, w)["pct"] == want, w
+    # end to end: computed, never refused, while every 1-bar ratio is a double — the alternating
+    # file's pct changes are 1e200 and −1, a std of (1e200 + 1)/√3
+    for name, levels, want in (
+        ("z", [1e-150, 1e5, 1e5], 1e155 / math.sqrt(2.0)),
+        ("alt", [1.0, 1e200, 1.0, 1e200, 1.0], 1e200 / math.sqrt(3.0)),
+    ):
+        w = len(levels) - 1
+        y = _write_series(tmp_path / f"{name}.csv", levels)
+        code, doc = _run(capsys, ["describe", str(y), "--windows", str(w)])
+        assert code == 0
+        blocks = _series_profile(doc)
+        dw = blocks["dispersion"][str(w)]
+        assert dw["pct"] == pytest.approx(want, rel=1e-15), name
+        assert dw["reason"] is None and dw["ratio_reason"] is None
+        assert dw["log"] == float(np.std(np.log(np.divide(levels[1:], levels[:-1])), ddof=1))
 
 
 def test_levels_farther_apart_than_the_double_range_refuse_their_blocks_by_name(tmp_path, capsys):
@@ -620,6 +641,14 @@ def test_volume_mean_of_an_overflowing_window_is_exact_never_a_zero_ratio(tmp_pa
     assert w5["mean"] == pytest.approx(1.28e308, rel=1e-15)  # (3·1.0 + 2·1.7)e308 / 5
     assert w5["last_to_mean"] == pytest.approx(1.0 / 1.28, rel=1e-15)
     assert w5["reason"] is None and w5["ratio_reason"] is None
+    # A CONSTANT overflowing window's mean IS its value: the pre-scaled mean of seven 1.7e308s
+    # rounds an ulp off it on the way back (1.7000000000000001e308, a ratio of 0.999…), and is
+    # held in [min, max] like any convex combination — exact, and the ratio exactly 1.0.
+    path = _write_flat_ohlcv(tmp_path / "c.csv", [10.0 + i for i in range(30)], [1.7e308] * 30)
+    code, doc = _run(capsys, ["describe", str(path), "--windows", "7"])
+    assert code == 0
+    w7 = doc["profiles"][0]["volume"]["windows"]["7"]
+    assert w7["mean"] == 1.7e308 and w7["last_to_mean"] == 1.0
 
 
 def test_dispersion_diff_std_keeps_its_value_where_its_squares_leave_the_range(tmp_path, capsys):
@@ -638,6 +667,12 @@ def test_dispersion_diff_std_keeps_its_value_where_its_squares_leave_the_range(t
         assert _dispersion_block(levels * 2.0**k, 5)["diff"] == unscaled * 2.0**k, k
     # an all-equal change keeps its exact 0.0 down there, and an ordinary walk np.std's bits
     assert _dispersion_block(np.arange(6.0) * 2.0**-1000, 5)["diff"] == 0.0
+    # One step of the smallest subnormal, then a hold: the changes [u, 0, 0, 0, 0] vary, but
+    # their std (~0.447u) rounds to 0.0 on the subnormal grid — the all-equal answer. It floors
+    # at the smallest subnormal instead, as the kernels' lifted std does.
+    u = 5e-324
+    assert _dispersion_block(np.array([0.0, u, u, u, u, u]), 5)["diff"] == u
+    assert _dispersion_block(np.full(6, u), 5)["diff"] == 0.0
     walk = 100.0 + np.random.RandomState(3).randn(300).cumsum()
     for w in (2, 5, 21, 63, 252):
         tail = walk[-(w + 1) :]

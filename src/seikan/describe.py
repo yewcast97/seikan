@@ -21,16 +21,18 @@ Containment, by construction:
   value, a window shorter than requested is NEVER silently shortened, and every refusal is an
   explicit ``reason`` (``insufficient_bars`` / ``endpoint_missing`` / ``not_representable``) or
   ``ratio_reason`` (``non_positive_endpoint`` / ``not_representable``) in the block it refuses —
-  present, never omitted: on a block that did not refuse, a null read is a ratio read carrying
-  its ``ratio_reason``, never a bare one;
+  present, never omitted: on a block that did not refuse, ``diff`` is never null and a null
+  ratio read carries its ``ratio_reason`` (the two rules the emission seam checks); its other
+  reads — an extremum, ``percentile_rank``, a volume ``mean`` — are finite by construction;
 - all three change algebras are emitted with domain-nulls (``pct``/``log`` require both
   endpoints strictly positive — the positivity rule), because choosing ONE
   algebra would be the engine deciding what a series IS. ``log`` is scale-safe, so it is
-  finite for every positive pair; a ``pct`` read whose computation leaves the double range
-  (its ratio, or a dispersion std's squared deviations, overflowing) refuses as
-  ``not_representable``, and a ``diff`` read that does (two finite levels of opposite sign
-  farther apart than the double range, or a dispersion std past it) refuses its whole block by
-  the same name, since ``diff`` rides every block that did not refuse;
+  finite for every positive pair; a ``pct`` read whose ratio leaves the double range (a
+  dispersion std's: any one 1-bar ratio) refuses as ``not_representable``, and a ``diff`` read
+  that does (two finite levels of opposite sign farther apart than the double range, or a
+  dispersion std past it) refuses its whole block by the same name, since ``diff`` rides every
+  block that did not refuse. Every dispersion std is :func:`_std` — squared deviations past the
+  range are rescaled, never refused;
 - BOUNDED OUTPUT: no per-bar array ever rides the document — its size is independent of
   ``n_bars``. Windows are BAR counts, never days; ``bar_spacing`` states the clock.
 """
@@ -129,9 +131,9 @@ def _empty_change_block() -> ChangeBlock:
     return {"diff": None, "pct": None, "log": None, "reason": None, "ratio_reason": None}
 
 
-# Under ``errstate`` as a whole: a 1-bar change or a std's squared deviations may leave the double
-# range here, and each such read refuses BY NAME below — an overflow is an expected input, never
-# a warning (an error under ``-W error``).
+# Under ``errstate`` as a whole: a 1-bar change or ratio may leave the double range here, and
+# each such read refuses BY NAME below — an overflow is an expected input, never a warning (an
+# error under ``-W error``); squared deviations past it are :func:`_std`'s to rescale.
 @np.errstate(over="ignore", invalid="ignore")
 def _dispersion_block(x: np.ndarray, w: int) -> ChangeBlock:
     """ddof=1 std of the w trailing 1-bar changes (the same w+1 trailing levels
@@ -141,8 +143,10 @@ def _dispersion_block(x: np.ndarray, w: int) -> ChangeBlock:
     PER BAR, never annualized — sqrt-time scaling interprets cadence, which is the caller's
     assumption, not this engine's. ``w == 1`` holds a single change and cannot carry a ddof=1
     std, so it refuses as ``insufficient_bars``; a hole anywhere in the window is a 1-bar
-    change with a missing endpoint (``endpoint_missing``), never skipped over. The ``diff`` std
-    is :func:`_std`: finite changes whose squares leave the double range keep their std.
+    change with a missing endpoint (``endpoint_missing``), never skipped over. Every std is
+    :func:`_std`, one rule for the three algebras: finite changes whose squares leave the double
+    range keep their std, so a read refuses only where a CHANGE has no double to be (or, for
+    ``diff`` alone, the std itself).
     """
     out = _empty_change_block()
     if w < 2 or len(x) < w + 1:
@@ -154,16 +158,16 @@ def _dispersion_block(x: np.ndarray, w: int) -> ChangeBlock:
         return out
     out["diff"] = _std(np.diff(tail))
     if (tail > 0).all():
-        # A 1-bar ratio past the double range — or squared pct deviations past it, even where
-        # the std itself would fit (no rescaled std is attempted) — leaves the pct read
-        # non-finite, and it refuses as ``not_representable``; the log changes are scale-safe
-        # (|change| < 1455) and their std always finite here.
-        pct = float(np.std(tail[1:] / tail[:-1] - 1.0, ddof=1))
+        # Only a 1-bar ratio past the double range leaves the pct std non-finite, and it refuses
+        # as ``not_representable``: squared pct deviations past it are rescaled like diff's, and
+        # the std of finite pct changes — each ≥ −1 — stays under ~0.71·DBL_MAX. The log
+        # changes are scale-safe (|change| < 1455), so their std is finite here.
+        pct = _std(tail[1:] / tail[:-1] - 1.0)
         if _finite(pct):
             out["pct"] = pct
         else:
             out["ratio_reason"] = "not_representable"
-        out["log"] = float(np.std(log_ratio_array(tail[1:], tail[:-1]), ddof=1))
+        out["log"] = _std(log_ratio_array(tail[1:], tail[:-1]))
     else:
         out["ratio_reason"] = "non_positive_endpoint"
     # ``diff`` rides every block that did not refuse, so where ITS std has no double to be — a
@@ -328,17 +332,22 @@ _TINY = float(np.finfo(np.float64).tiny)
 
 
 def _std(vals: np.ndarray) -> float:
-    """The ddof=1 std of n ≥ 2 finite values, scale-safe: the direct ``np.std`` wherever its
-    variance is a normal double, bit for bit. Elsewhere the squared deviations left the double
-    range — past it the std read ``inf`` (a null beside finite endpoints, with no reason); below
-    it a VARYING series read the 0.0 an all-equal one owns, or a std off a subnormal variance's
-    lost bits — so the values are scaled by the power of two that brings the largest magnitude
-    into ``[0.5, 1)`` and the std is scaled back: exact on the way up (scaling up by a power of
-    two never rounds), to rounding on the way down, floored at the smallest subnormal as the
-    kernels' lifted std is (``compiler.nb``) — a series that varies never reads zero dispersion.
-    A REPORTED number, never a divisor, so it is computed rather than nulled. Non-finite (→ null)
-    only where the values or the std itself leave the double range (a 1-bar change of two finite
-    levels past it; four changes alternating ±1.7e308, whose std is ~1.96e308)."""
+    """The ddof=1 std of n ≥ 2 values — every dispersion read's, one rule for the three
+    algebras — scale-safe: the direct ``np.std`` wherever its variance is a normal double, bit
+    for bit. Elsewhere the squared deviations left the double range — past it the std read
+    ``inf`` (a null beside finite endpoints, with no reason, or a pct refused as unrepresentable
+    while it was an ordinary double); below it a VARYING series read the 0.0 an all-equal one
+    owns, or a std off a subnormal variance's lost bits — so the values are scaled by the power
+    of two that brings the largest magnitude into ``[0.5, 1)`` and the std is scaled back: exact
+    on the way up (scaling up by a power of two never rounds), to rounding on the way down,
+    floored at the smallest subnormal as the kernels' lifted std is (``compiler.nb``) — a series
+    that varies never reads zero dispersion. A REPORTED number, never a divisor, so it is
+    computed rather than refused. Non-finite only where a value or the std itself leaves the
+    double range — NaN off a non-finite change (a 1-bar change of two finite levels, or a 1-bar
+    ratio, past it), ``inf`` off a std past DBL_MAX (four changes alternating ±1.7e308, whose
+    std is ~1.96e308; a diff std only — pct changes, each ≥ −1, keep theirs under ~0.71·DBL_MAX)
+    — and :func:`_dispersion_block` refuses either by name: a ``pct`` std under its
+    ``ratio_reason``, a ``diff`` std its whole block."""
     with np.errstate(over="ignore", invalid="ignore"):
         var = float(np.var(vals, ddof=1))  # np.std IS the root of this variance, bit for bit
     if _TINY <= var < math.inf:
@@ -349,7 +358,7 @@ def _std(vals: np.ndarray) -> float:
     if lo == hi:
         return 0.0
     e = math.frexp(max(-lo, hi))[1]
-    with np.errstate(over="ignore"):  # a std past DBL_MAX is unrepresentable: inf → null
+    with np.errstate(over="ignore"):  # a std past DBL_MAX is unrepresentable: inf, refused
         return max(float(np.ldexp(np.std(np.ldexp(vals, -e), ddof=1), e)), 5e-324)
 
 

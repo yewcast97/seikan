@@ -17,9 +17,10 @@ from seikan.types.run import (
 # bytes contain and refuses explicitly rather than repairing: ``reason`` names the refusal of the
 # WHOLE block (``insufficient_bars`` / ``endpoint_missing`` / ``not_representable``) and
 # ``ratio_reason`` the refusal of the RATIO algebras alone (``non_positive_endpoint`` /
-# ``not_representable``), both present-never-omitted — the emission seam refuses a null read on a
-# block that did not refuse whole unless it is a ratio read whose ``ratio_reason`` says why
-# (``emitted._check_refusal_reasons``).
+# ``not_representable``), both present-never-omitted — on a block that did not refuse whole the
+# emission seam refuses a null ``diff`` read, and a null ratio read whose ``ratio_reason`` does not
+# say why (``emitted._check_refusal_reasons``); the block's other reads (an extremum,
+# ``percentile_rank``, a volume ``mean``) are finite by construction, never checked there.
 
 #: Why a block refused WHOLE: too few bars for the window, a hole where an endpoint or an
 #: extremum must be read, or a ``diff`` read — the algebra that rides every block that did not
@@ -28,9 +29,10 @@ from seikan.types.run import (
 type BlockReason = Literal["insufficient_bars", "endpoint_missing", "not_representable"]
 
 #: Why a block's ratio reads refused while ``diff`` lives: a non-positive endpoint (the
-#: positivity rule — a ratio through zero mints a garbage sign), or a ``pct`` read whose
-#: computation left the double range (``b/a − 1`` overflowing, or a dispersion std's squared
-#: deviations; ``log`` is scale-safe and never refuses on it).
+#: positivity rule — a ratio through zero mints a garbage sign), or a ``pct`` read whose ratio
+#: left the double range (``b/a − 1`` overflowing — for a dispersion std, any one 1-bar ratio,
+#: its squared deviations past the range being rescaled, never refused; ``log`` is scale-safe and
+#: never refuses on it).
 type RatioReason = Literal["non_positive_endpoint", "not_representable"]
 
 
@@ -41,9 +43,9 @@ class ChangeBlock(TypedDict):
     All three algebras are emitted, because choosing ONE would be the engine deciding what a
     series IS. ``diff`` carries on every block that did not refuse; ``pct``/``log`` are None with
     ``ratio_reason`` set off a positive scale, and ``pct`` alone is None (``not_representable``)
-    where its computation leaves the double range — the ratio, or a dispersion std's squared
-    deviations. A refused block is all-None with ``reason`` set — ``not_representable`` where
-    ``diff`` itself has no double to be.
+    where its ratio leaves the double range — for a dispersion std, any one 1-bar ratio (squared
+    deviations past the range are rescaled, never refused). A refused block is all-None with
+    ``reason`` set — ``not_representable`` where ``diff`` itself has no double to be.
     """
 
     diff: float | None

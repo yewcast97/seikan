@@ -1754,16 +1754,17 @@ change in ALL THREE algebras with domain-nulls — `pct`/`log` refuse non-positi
 while a `pct` past the double range refuses alone (`ratio_reason: "not_representable"`), a NaN
 endpoint refuses as `endpoint_missing` and is NEVER repaired by walking back to the previous
 finite value; a null ratio read on a block that did not refuse whole always carries its
-`ratio_reason`), `dispersion` (ddof=1 std of 1-bar changes, per bar, NEVER annualized),
-`range_position` (trailing high/low with timestamps — most-recent tie rule — distance from each,
-and `percentile_rank` within the window; requires the full window, `insufficient_bars`
-otherwise, never silently shortened), `full_sample` (whole-file extremes plus
-`drawdown_pct = last/high − 1` and `runup_pct`, with diff twins), `missingness` (pure counts),
-and — OHLCV with volume only — `volume` (last, trailing mean, `last_to_mean`; otherwise null).
-The `diff` read rides every block that did not refuse whole: where it has no double to be —
-levels of opposite sign more than ~1.8e308 apart, or a dispersion std past the double range —
-the block refuses whole as `reason: "not_representable"` (`full_sample` keeping its extremes),
-never a null diff.
+`ratio_reason`), `dispersion` (ddof=1 std of 1-bar changes, per bar, NEVER annualized, and
+scale-safe — squared deviations past the double range are rescaled, never refused, so a `pct` std
+refuses as `not_representable` only where a 1-bar ratio leaves the range), `range_position`
+(trailing high/low with timestamps — most-recent tie rule — distance from each, and
+`percentile_rank` within the window; requires the full window, `insufficient_bars` otherwise, never
+silently shortened), `full_sample` (whole-file extremes plus `drawdown_pct = last/high − 1` and
+`runup_pct`, with diff twins), `missingness` (pure counts), and — OHLCV with volume only — `volume`
+(last, trailing mean, `last_to_mean`; otherwise null). The `diff` read rides every block that did
+not refuse whole: where it has no double to be — levels of opposite sign more than ~1.8e308 apart,
+or a dispersion std past the double range — the block refuses whole as
+`reason: "not_representable"` (`full_sample` keeping its extremes), never a null diff.
 
 How to read it honestly (the `describe_roles.caveats` travel in the document): `percentile_rank`
 is position within the window's OWN range, NOT valuation — a trending series sits at its extreme

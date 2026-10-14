@@ -1926,9 +1926,10 @@ DESCRIBE_REPORT: dict[str, JsonValue] = {
         "dispersion[N]": (
             "{diff, pct, log, reason, ratio_reason} — ddof=1 std of the N trailing 1-bar "
             "changes (the same N+1 trailing levels changes[N] reads), one per algebra under "
-            "the same domain gates (a pct std whose computation leaves the double range — "
-            "a 1-bar ratio, or the squared deviations, overflowing — refuses as "
-            "'not_representable'), PER BAR and never annualized. N=1 holds a single change "
+            "the same domain gates (a pct std refuses as 'not_representable' only where a "
+            "1-bar ratio leaves the double range: every std is computed scale-safe, squared "
+            "deviations past the range rescaled by a power of two rather than refused), "
+            "PER BAR and never annualized. N=1 holds a single change "
             "and cannot carry a ddof=1 std (insufficient_bars); a hole in the window is a "
             "change with a missing endpoint (endpoint_missing), never skipped; a diff std "
             "with no double to be (a 1-bar change, or the std itself, past the double range) "

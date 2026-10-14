@@ -722,11 +722,12 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   positive finite levels is always representable even where the quotient `b/a` is not, so it
   reads `ln b − ln a` exactly where the quotient overflowed, underflowed or went subnormal
   (1e200 → 1e-200 is −921.03…, never `ln(0)`), and the direct form — bit for bit — everywhere
-  else. A `pct` (or `diff`) past the double range has no representable value: NaN (a
-  `no_outcome` observation, an undecidable decision bar); a `describe` `pct` past the range is
-  null with `ratio_reason: "not_representable"`, and a `describe` `diff` past it — levels of
-  opposite sign ~1.8e308 apart — refuses its whole block as `reason: "not_representable"`
-  (`diff` rides every block that did not refuse, so it is never a reasonless null).
+  else. A `pct` (or `diff`) past the double range has no representable value: NaN (a `no_outcome`
+  observation, an undecidable decision bar); a `describe` `pct` past the range (for a dispersion
+  std, any one 1-bar ratio past it) is null with `ratio_reason: "not_representable"`, and a
+  `describe` `diff` past it — levels of opposite sign ~1.8e308 apart — refuses its whole block as
+  `reason: "not_representable"` (`diff` rides every block that did not refuse, so it is never a
+  reasonless null).
 - **Zero dispersion is exact.** The floating-point mean of a constant DECIMAL series is not the
   constant, and its rounding residue (~1e-17) used to read as dispersion — a z-score of exactly
   ±1, a correlation of 1, a flat feed drifting off its own EMA, an EW z-score locked at
@@ -819,14 +820,13 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   across zero) is bucketed off its halved values — exact there, every such value lying past
   2**970 in magnitude — never cut on an infinite edge. None of these reads warns: an overflow
   there is an expected input, never a warning (an exception under `python -W error`).
-  `describe` reports
-  numbers it never divides by, so it computes them instead: its dispersion `diff` std and its
-  trailing volume mean are scaled by a power of two where their squares or sum leave the range (a
-  varying series never reads std 0.0, `last_to_mean` never `x / inf`, and finite levels never a
-  null std while their 1-bar changes and the std itself are representable doubles). Every window
-  and pool whose variances and, for `rolling_corr`, their product are normal doubles, and whose
-  sums and means stay finite, and every EW z-score whose plain recurrence stays in the normal
-  range, is computed as before, bit for bit.
+  `describe` reports numbers it never divides by, so it computes them instead: its dispersion stds
+  (`diff`, `pct` and `log` alike) and its trailing volume mean are scaled by a power of two where
+  their squares or sum leave the range (a varying series never reads std 0.0, `last_to_mean` never
+  `x / inf`, and finite levels never a null std while their 1-bar changes and the std itself are
+  representable doubles). Every window and pool whose variances and, for `rolling_corr`, their
+  product are normal doubles, and whose sums and means stay finite, and every EW z-score whose plain
+  recurrence stays in the normal range, is computed as before, bit for bit.
 - **Strict, frozen DSL.** Types are strict (no str/bool/float coerces to an int, no str to a
   bool; int stays legal for a float field — JSON has one number type), instances are frozen
   (`model_copy(update=...)` is the derive path), a duplicate JSON object key at any depth
