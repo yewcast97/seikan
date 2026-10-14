@@ -26,7 +26,12 @@ import pandas as pd
 import pytest
 from pydantic import ValidationError
 
-from seikan.analysis.stats import benchmark_regression, episode_profile, pool_moments
+from seikan.analysis.stats import (
+    benchmark_regression,
+    cell_conditional_buckets,
+    episode_profile,
+    pool_moments,
+)
 from seikan.compiler.runner import run_backtest
 from seikan.dsl.schema import Thesis
 from seikan.emitted import validate_summary
@@ -3993,6 +3998,164 @@ def test_cross_mean_ledger_rebuilds_from_the_trades_csv_past_its_cap(tmp_path):
     # its rows is residue (save on the odd bar whose rounding happens to cancel)
     assert [e["mean_ret"] for e in rebuilt[cap:]] == [0.0] * (52 - cap)
     assert sum(float(np.mean(ret[c])) != 0.0 for c in clusters[cap:]) > (52 - cap) // 2
+
+
+_ALWAYS = {
+    "type": "threshold",
+    "left": {"type": "calendar", "field": "days_to_month_end"},
+    "op": ">=",
+    "right": {"type": "constant", "value": 0.0},
+}
+
+
+def _walk_basket(tmp_path, order, entry, features, *, horizon=(2, 3, 5), n=240):
+    """Members A, B, C on two-decimal random walks (so every pct leg, and every per-row excess,
+    is a rounded value), U rising and W falling strictly — a ``cross_mean`` basket over the
+    members ``order`` names, in that declaration order."""
+    idx = pd.date_range("2021-01-01", periods=n, freq="1D")
+    rng = np.random.RandomState(5)
+    t = np.arange(n, dtype=float)
+    prices = {
+        m: np.round(30.0 + 7.0 * j + np.cumsum(rng.randn(n)) * 0.9, 2) for j, m in enumerate("ABC")
+    }
+    prices["U"] = np.round(20.0 + 0.1 * t + rng.rand(n) * 0.05, 2)
+    prices["W"] = np.round(80.0 - 0.1 * t + rng.rand(n) * 0.05, 2)
+    files = {m: _write_bars(tmp_path / f"{m}.csv", prices[m], idx) for m in order}
+    thesis = Thesis.model_validate(
+        {
+            "name": "cm_full",
+            "target_mode": "basket",
+            "data": {"targets": list(order)},
+            "entry": entry,
+            "params": {"horizon": list(horizon), "benchmark": "cross_mean", "features": features},
+        }
+    )
+    return run_backtest(thesis, load(thesis, files))
+
+
+def _closed_cell_rows(res, h):
+    trades = res.trades
+    return trades[(trades["horizon"] == h) & ~trades["is_open"]]
+
+
+def test_cross_mean_all_full_grid_pbo_and_buckets_take_the_identity_in_any_order(tmp_path):
+    # An always-true entry fires every member on every bar: every closed bar of every cell is
+    # FULL, every pooled mean exactly 0.0. The CSCV split means and the buckets by a basket-wide
+    # feature (the calendar's) sum whole bars, so they read the identity too: every split ties
+    # (pbo, lambda_mean and prob_oos_loss 0.0) and every bucket mean is exactly 0.0 (no rank
+    # signal, so no bucket_monotonicity) — in every declaration order. Over the rounded rows
+    # both ranked residue, and the ranking followed the order the targets were declared in.
+    feats = {
+        "dom": {"type": "calendar", "field": "day_of_month"},
+        "dow": {"type": "calendar", "field": "day_of_week"},
+    }
+    for order in ("ABC", "BCA", "CAB", "CBA"):
+        res = _walk_basket(tmp_path, order, _ALWAYS, feats)
+        pbo = res.summary["pbo"]
+        assert pbo["reason"] is None and pbo["n_combos"] == 3 and pbo["n_splits"] == 70
+        assert pbo["pbo"] == pbo["lambda_mean"] == pbo["prob_oos_loss"] == 0.0, order
+        assert pbo["oos_degradation_slope_reason"] == "degenerate_train_scores"
+        for cell in res.summary["cells"]:
+            assert cell["pooled"]["mean_ret"] == 0.0
+            for name in feats:
+                block = cell["conditional_buckets"][name]
+                assert block["reason"] is None and len(block["buckets"]) == 4
+                assert [b["mean_ret"] for b in block["buckets"]] == [0.0] * 4, (order, name)
+                assert all(0.0 < b["hit_rate"] < 1.0 for b in block["buckets"])  # row-level
+            assert cell["bucket_monotonicity"] == {}, order
+            # the premise: the same rows' plain bucket means are residue
+            plain = cell_conditional_buckets(
+                _closed_cell_rows(res, cell["params"]["horizon"]), ["dom"]
+            )
+            assert any(b["mean_ret"] != 0.0 for b in plain["conditional_buckets"]["dom"]["buckets"])
+
+
+def test_cross_mean_buckets_keep_every_row_a_full_bar_does_not_hold_whole(tmp_path):
+    # A PER-MEMBER feature splits every full bar — U's close ascends with the bar, W's
+    # descends, so U's quartile j and W's 3 - j never coincide: the all-full grid's buckets
+    # are the rows' plain read, byte for byte, while its pbo still ties at 0.0. On a MIXED
+    # grid (U fires only above a level) each cell's buckets are the stats read over the full
+    # bars re-derived from the trades (a bar on which every member has a closed row in the
+    # cell): the split feature still the plain read, the calendar's whole bars at 0.0 — and a
+    # cell without a full bar is the plain read throughout.
+    px = {"px": {"type": "field", "column": "close"}}
+    res = _walk_basket(tmp_path, "UWA", _ALWAYS, px)
+    assert res.summary["pbo"]["pbo"] == 0.0
+    for cell in res.summary["cells"]:
+        assert cell["pooled"]["mean_ret"] == 0.0
+        plain = cell_conditional_buckets(_closed_cell_rows(res, cell["params"]["horizon"]), ["px"])
+        assert cell["conditional_buckets"] == plain["conditional_buckets"]
+        assert cell["bucket_monotonicity"] == plain["bucket_monotonicity"]
+    above = {
+        "type": "threshold",
+        "left": {"type": "field", "column": "close"},
+        "op": ">",
+        "right": {"type": "constant", "value": [0.0, 35.0, 45.0], "name": "lvl"},
+    }
+    feats = {**px, "dow": {"type": "calendar", "field": "day_of_week"}}
+    mixed = _walk_basket(tmp_path, "UWA", above, feats, horizon=(2,))
+    n_full = []
+    for cell in mixed.summary["cells"]:
+        trades = mixed.trades
+        rows = trades[(trades["lvl"] == cell["params"]["lvl"]) & ~trades["is_open"]]
+        per_bar = rows.groupby("entry_bar")["target"].nunique()
+        full = np.zeros(240, dtype=bool)
+        full[per_bar.index[per_bar == 3].to_numpy()] = True
+        n_full.append(int(full.sum()))
+        got = {k: cell[k] for k in ("conditional_buckets", "bucket_monotonicity")}
+        plain = cell_conditional_buckets(rows, list(feats))
+        assert got == cell_conditional_buckets(rows, list(feats), full_bars=full)
+        assert got["conditional_buckets"]["px"] == plain["conditional_buckets"]["px"]
+        moved = got["conditional_buckets"]["dow"] != plain["conditional_buckets"]["dow"]
+        assert moved is bool(full.any()), cell["params"]
+    assert n_full[0] > n_full[1] > n_full[2] == 0  # all-full, mixed, none
+
+
+def test_cross_mean_mixed_grid_pbo_reads_every_partly_full_candidate_s_full_bars(
+    tmp_path, monkeypatch
+):
+    # The CSCV split means read EVERY full bar the runner marks, a partly-full candidate's
+    # included: the runner hands `cscv_pbo` each cell's mask exactly as the trades re-derive it
+    # (a bar on which every member has a closed row in the cell), and on this mixed grid the
+    # partly-full candidates' split means — their full bars at 0, every other row its own
+    # excess — move the degradation slope's last bits off the read that keeps only the
+    # all-full candidate's masks (the coarse ledger is the same: no rank changes hands).
+    from seikan.analysis.stats import cscv_pbo
+
+    calls = []
+
+    def spy(*args, **kwargs):
+        calls.append((args, kwargs))
+        return cscv_pbo(*args, **kwargs)
+
+    monkeypatch.setattr("seikan.compiler.runner.cscv_pbo", spy)
+    above = {
+        "type": "threshold",
+        "left": {"type": "field", "column": "close"},
+        "op": ">",
+        "right": {"type": "constant", "value": [20.0, 35.0, 40.0], "name": "lvl"},
+    }
+    dow = {"dow": {"type": "calendar", "field": "day_of_week"}}
+    res = _walk_basket(tmp_path, "ABC", above, dow, horizon=(2, 5))
+    ((args, kwargs),) = calls
+    closed = res.trades[~res.trades["is_open"]]
+    derived, all_full = {}, {}
+    for (lvl, h), rows in closed.groupby(["lvl", "horizon"]):
+        per_bar = rows.groupby("entry_bar")["target"].nunique()
+        derived[(lvl, h)] = np.zeros(240, dtype=bool)
+        derived[(lvl, h)][per_bar.index[per_bar == 3].to_numpy()] = True
+        all_full[(lvl, h)] = bool((per_bar == 3).all())
+    assert set(kwargs["full_bars"]) == set(derived)
+    for key, mask in kwargs["full_bars"].items():
+        np.testing.assert_array_equal(mask, derived[key])
+    mixed = [k for k, m in derived.items() if m.any() and not all_full[k]]
+    assert sorted(mixed) == [(35.0, 2), (35.0, 5), (40.0, 2), (40.0, 5)]  # lvl 20 is all-full
+    pbo = res.summary["pbo"]
+    assert pbo["reason"] is None and pbo["oos_degradation_slope_reason"] is None
+    only_all_full = {k: m if all_full[k] else np.zeros_like(m) for k, m in derived.items()}
+    without = cscv_pbo(*args, **{**kwargs, "full_bars": only_all_full})
+    assert pbo == {**without, "oos_degradation_slope": pbo["oos_degradation_slope"]}
+    assert pbo["oos_degradation_slope"] != without["oos_degradation_slope"]
 
 
 def test_cross_mean_swept_entry_axis_each_cell_mounts_its_own_pooled_mean(tmp_path):

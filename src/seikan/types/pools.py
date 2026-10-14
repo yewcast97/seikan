@@ -287,7 +287,10 @@ class BucketRecord(TypedDict):
     double range — ``_qcut_buckets``; a feature spanning more than the double range, whose bins
     are read exactly off its halved values, is one — ``_qcut_index``). ``mean_ret`` is NaN →
     null where the bucket's returns sum past the double range — no known value or rank, which
-    is also why ``bucket_monotonicity`` then carries no entry for the feature."""
+    is also why ``bucket_monotonicity`` then carries no entry for the feature. Under a
+    ``cross_mean`` basket the rows of a FULL bar (every member closed) that land wholly in the
+    bucket enter ``mean_ret`` at 0.0, their sum's exact value; ``n`` and ``hit_rate`` are always
+    the rows' own."""
 
     bucket: str
     n: int

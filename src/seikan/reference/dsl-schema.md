@@ -1106,15 +1106,18 @@ and int64 nanosecond counts silently round in IEEE-754 consumers.)
     its FFT tie band — a basket-wide ENTRY (every member firing on the same bars, so every
     rotated pool is full too) on ordinary dispersed legs reads 1, while legs equal but for
     their last bits, one instrument in two quote units, leave it residue-driven. The grid-level
-    `pbo` does not take the identity at all: its CSCV split scores sum each row's rounded
-    excess, so on a grid of all-full cells every candidate scores ±residue and `pbo` follows
-    the targets' declaration order. Nor do the cell's `conditional_buckets` means and
-    `bucket_monotonicity`: they keep each row's rounded excess, so bucketed by a basket-wide
-    feature (a `calendar` field, a shared `external` feed) on an all-full pool every bucket
-    holds whole bars and reads residue, and `bucket_monotonicity` can rank residue in
-    declaration order. The row-level reads — the dispersion, quantile and shape
-    reads, `hit_rate`, `profit_factor`, |return| mass shares — keep each row's ordinary
-    rounding) —
+    `pbo` takes the identity too: a CSCV block holds whole bars, so a split holding a full bar
+    takes its MEAN from the same bar-closed sums over its rows' own sd, and every split a grid
+    of all-full cells scores is a full tie — `pbo`, `lambda_mean` and `prob_oos_loss` 0.0
+    whenever the block scores, in any target order; its tied train winner is the
+    first-declared candidate, so a sparse such grid can score fewer splits, fall back to a
+    coarser S or decline `insufficient_data`. So do the cell's `conditional_buckets` means
+    wherever a full bar's rows all land in ONE bucket: bucketed by a basket-wide feature (a
+    `calendar` field, a shared `external` feed) an all-full pool reads every bucket mean 0.0
+    and no `bucket_monotonicity`, in any declaration order, while a full bar the per-target
+    edges split across buckets, or partly unbucketed, keeps each row's own excess there. The
+    row-level reads — the dispersion, quantile and shape reads, `hit_rate`, `profit_factor`,
+    |return| mass shares, a bucket's `n` and `hit_rate` — keep each row's ordinary rounding) —
     and a selective signal's
     pooled mean IS its cross-sectional selection read; the LEGS still attribute —
     `mean_ret_bench` ≈ `mean_ret_raw` is the basket's own realized drift), `hit_rate`,
@@ -1153,7 +1156,8 @@ and int64 nanosecond counts silently round in IEEE-754 consumers.)
     `no_closed_observations` / `insufficient_observations` (below 20 valid rows) /
     `insufficient_distinct_values`. `bucket_monotonicity` carries a Spearman `rho` + `sign` per
     feature that bucketed with ≥ 3 populated buckets — none where a bucket's `mean_ret` is null,
-    its returns' sum having left the double range.
+    its returns' sum having left the double range. Under a `cross_mean` basket a full bar whose
+    rows all land in one bucket enters that bucket's `mean_ret` at exactly 0 (see `pooled`).
   - `feature_association` — per (feature × target): Spearman `rho` between the entry-time
     feature snapshot and the realized closed return, with its `n` and an explicit `reason`
     (`insufficient_observations` below 10 pairs; `no_rank_variation` on constant input).
@@ -1461,7 +1465,11 @@ open to quote a statistic honestly.
   statistic a caller of the declared mode selects on: under conjunction each train-winner is
   scored by its WEAKEST target's per-observation Sharpe (the weakest-target rule the regime
   implies), under basket by the POOLED per-observation Sharpe over the concatenated member
-  observations — no min, because a basket caller selects on the pooled read.
+  observations — no min, because a basket caller selects on the pooled read; under
+  `cross_mean` its mean reads a full bar at the exact 0 the pooled panel does, so every split a
+  grid of all-full cells scores is a full tie (`pbo` 0.0) — though, every train score tied,
+  the first-declared candidate wins each split, and a sparse such grid can score fewer splits
+  or decline `insufficient_data`.
 - A sweep-axis read — is an effect a plateau across a swept axis or a lone spike, the honest
   analogue of family-wise machinery this engine does not carry — is yours to form from
   `cells[*].params` against `cells[*].by_target[t].mean_ret`, PER HORIZON. There is no rollup

@@ -4,7 +4,7 @@ over the declared grid."""
 from __future__ import annotations
 
 import math
-from collections.abc import Container
+from collections.abc import Container, Mapping
 from itertools import combinations
 from typing import cast
 
@@ -40,6 +40,11 @@ type _MomentTriple = tuple[np.ndarray, np.ndarray, np.ndarray]
 #: empty block): a split's pool is EXACTLY constant iff its chosen blocks' min equals their max.
 type _Extrema = tuple[np.ndarray, np.ndarray]
 
+#: A ``cross_mean`` pool's per-block bar-closed SUM ``(sum, n_full)``, each ``(S,)``: the block's
+#: UNSHIFTED return sum with every full bar's rows at their sum's exact 0, beside its count of
+#: full-bar rows (the blocks a split's mean reads off it — see :func:`_split_scores`).
+type _PoolSums = tuple[np.ndarray, np.ndarray]
+
 
 def _disperses(lo: np.ndarray, hi: np.ndarray, mean: np.ndarray, eps: float) -> np.ndarray:
     """A pool with extrema ``(lo, hi)`` and mean ``mean`` has usable dispersion: it is not exactly
@@ -65,6 +70,7 @@ def _split_scores(
     extrema: np.ndarray,
     mode: str,
     block_idx: np.ndarray,
+    pool: np.ndarray | None = None,
 ) -> np.ndarray:
     """Per-candidate split score over the chosen blocks — the statistic the declared mode's
     caller selects on: the pooled per-observation Sharpe under basket, the weakest-target
@@ -94,6 +100,19 @@ def _split_scores(
     tested against stays finite), an infinite mean would win every ranking, and a subnormal
     variance (returns under ~1e-154, where the floor itself underflows to 0.0) has lost the bits
     the Sharpe divides by.
+
+    ``pool`` (basket only) is a ``cross_mean`` grid's (Q, T, 2, S) per-block bar-closed sum
+    tensor (:data:`_PoolSums` — zeros for a member, or a candidate, with no full bar): a FULL bar
+    (every member closed in the cell) has excesses summing to exactly zero, while its rounded
+    per-row excesses sum to residue, and a CSCV block holds whole bars — its purge reads the
+    bar and the cell's horizon alone, so a full bar's rows land in one block or are all purged.
+    A split whose chosen blocks hold a full bar takes its MEAN from the pool sums (the full
+    bars at 0), divided by the same row count ``n``: on a grid of all-full candidates every such
+    mean is exactly 0.0 and every scoreable candidate ties, where the rounded rows ranked their
+    residue in the order the targets were declared. The second moments, the dispersion gates
+    and the variance floor stay on the rows' own returns about their own mean — a row's excess
+    is its own, only its bar's SUM is 0 — so the Sharpe is the exact mean over the rows' sd.
+    Every split without a full bar, and every candidate without one, scores byte-identically.
     """
     mg = moments[:, :, :, block_idx].sum(axis=3)  # (Q, T, 3) per-member block sums
     n_g, s1_g, s2_g = mg[:, :, 0], mg[:, :, 1], mg[:, :, 2]
@@ -112,6 +131,10 @@ def _split_scores(
             sd = np.sqrt(np.maximum(var, 0.0))
             varies = _disperses(lo_g.min(axis=1), hi_g.max(axis=1), mean, eps)
             resolved = ss > 4.0 * n * eps * (s2_g + n_g * d * d).sum(axis=1)
+            if pool is not None:
+                pg = pool[:, :, :, block_idx].sum(axis=3)  # (Q, T, 2) per-member split sums
+                holds_full = pg[:, :, 1].sum(axis=1) > 0
+                mean = np.where(holds_full, pg[:, :, 0].sum(axis=1) / n, mean)
             scoreable = (n >= 2) & varies & resolved & _representable(mean, var)
             return np.where(scoreable, mean / sd, np.nan)
         mean_shift = s1_g / n_g
@@ -158,6 +181,7 @@ def cscv_pbo(
     off: int = 1,
     mode: str = "conjunction",
     n_combos_declared: int,
+    full_bars: Mapping[CellKey, np.ndarray] | None = None,
 ) -> PboBlock:
     """CSCV over the runner's per-cell (mask, fwd) arrays → ``pbo`` + degradation diagnostics.
 
@@ -205,6 +229,19 @@ def cscv_pbo(
     admissible with ≥ 1 member present — an absent member contributes zero moments, exactly a
     member that never fired — and its score is the POOLED per-observation Sharpe over the
     concatenated member observations. No min: a basket caller selects on the pooled read.
+
+    ``full_bars`` (basket only; the runner's per-cell ``cross_mean`` full-bar masks, keyed by
+    the combo prefix, each over the bar axis) marks the bars on which every member closed in
+    the cell: their excesses sum to exactly zero, and a split's mean reads them so (the pool
+    sums :func:`_split_scores` takes) — the same identity the cell's pooled panel keeps, so on
+    a grid of all-full candidates every scored split is a full tie (λ = 0, no test loss: a
+    scored block reads ``pbo``, ``lambda_mean`` and ``prob_oos_loss`` 0.0) instead of ranking
+    rounding residue. Its tied train winner is the FIRST-declared scoreable candidate (the tie
+    rule above), and a split whose winner holds no test pool is skipped, so a sparse grid can
+    score fewer splits, fall back to a coarser S or decline ``insufficient_data`` — identically
+    in any target declaration order. A grid without a full bar — conjunction, a market or
+    unbenchmarked basket, a ``cross_mean`` grid whose cells never fire basket-wide — scores
+    byte-identically without it.
     """
     if mode not in ("conjunction", "basket"):
         raise ValueError(f"unknown target_mode {mode!r}")
@@ -291,6 +328,13 @@ def cscv_pbo(
         for s in dict.fromkeys((n_blocks, *_PBO_BLOCK_FALLBACKS))
         if s >= 2 and s % 2 == 0 and length >= 2 * s
     ]
+    # The candidates holding a full bar (basket only): every other candidate's split means stay
+    # the shifted reconstruction, byte for byte, and a grid with none builds no pool tensor.
+    full_by_combo = (
+        {combo: m for combo, m in full_bars.items() if m.any()}
+        if mode == "basket" and full_bars is not None
+        else {}
+    )
 
     last_empty = empty
     for s in block_candidates:
@@ -298,6 +342,7 @@ def cscv_pbo(
         stats_by_key: dict[CellKey, _MomentTriple] = {}
         refs_by_key: dict[CellKey, float] = {}
         extrema_by_key: dict[CellKey, _Extrema] = {}
+        pool_by_key: dict[CellKey, _PoolSums] = {}
         for cell in kept_cells:
             key = tuple(cell["key"])
             mask = np.asarray(cell["mask_col"]) > 0
@@ -328,6 +373,19 @@ def cscv_pbo(
             np.minimum.at(lo, b, r)
             np.maximum.at(hi, b, r)
             extrema_by_key[key] = (lo, hi)
+            full = full_by_combo.get(key[:-1])
+            if full is not None:
+                # The bar-closed sums: a full bar's rows at 0.0, every other row its own return,
+                # unshifted (a split's mean is their plain sum over its row count), beside the
+                # full-bar row count that says which splits read them. The purge above kept or
+                # dropped a full bar's rows together — it reads the bar and the cell's horizon
+                # alone — so each block holds whole bars.
+                on_full = full[t]
+                with np.errstate(over="ignore", invalid="ignore"):
+                    pool_by_key[key] = (
+                        np.bincount(b, weights=np.where(on_full, 0.0, r), minlength=s),
+                        np.bincount(b[on_full], minlength=s).astype(float),
+                    )
 
         # Every surviving cell belongs to an admissible, distinct candidate (filtered and
         # collapsed above, S-independently), so the roster here is exactly that candidate set.
@@ -360,6 +418,20 @@ def cscv_pbo(
                 for c in combo_keys
             ]
         )  # (Q, T, 2, S) — an absent member's (+inf, -inf) bounds nothing
+        no_pool = np.zeros((2, s))
+        pool = (
+            np.array(
+                [
+                    [
+                        np.stack(pool_by_key[(*c, tg)]) if (*c, tg) in pool_by_key else no_pool
+                        for tg in targets
+                    ]
+                    for c in combo_keys
+                ]
+            )
+            if pool_by_key
+            else None
+        )  # (Q, T, 2, S) — zeros where no full bar is held: the split means stay the moments'
 
         lambdas: list[float] = []
         pairs: list[tuple[float, float]] = []
@@ -375,11 +447,11 @@ def cscv_pbo(
             n_splits_attempted += 1
             train_idx = np.asarray(train)
             test_idx = np.setdiff1d(np.arange(s), train_idx)
-            tr = _split_scores(moments, refs, extrema, mode, train_idx)
+            tr = _split_scores(moments, refs, extrema, mode, train_idx, pool)
             if np.all(np.isnan(tr)):
                 continue
             bi = int(np.nanargmax(tr))
-            te = _split_scores(moments, refs, extrema, mode, test_idx)
+            te = _split_scores(moments, refs, extrema, mode, test_idx, pool)
             te_best = te[bi]
             finite_te = te[~np.isnan(te)]
             if math.isnan(te_best) or finite_te.shape[0] < 2:

@@ -472,6 +472,7 @@ def _run_summary(
     cross_breadth: list[CrossBreadthEntry],
     n_combos_attempted: int,
     cells: list[SummaryCell],
+    pooled_full_bars: dict[CellKey, np.ndarray],
 ) -> RunSummary:
     """THE summary, built as ONE literal IN EMISSION ORDER (dict insertion is the emitted key
     order): the two grid labels, versions and basis, index geometry, the declared search burden,
@@ -560,9 +561,11 @@ def _run_summary(
         # cell per candidate combo, sans the target dimension), so the block's population
         # ledger can say how far short of the declared grid the scored population fell:
         # rel_cells holds only fired-and-closed cells, and CSCV never sees the rest. Its split
-        # scores sum each member's own excess column: a `cross_mean` full bar adds its rounding
-        # residue here, not the exact 0 the pooled panel's `rets_pool` gives it (a documented
-        # limit — on a grid of all-full cells the ranking is residue).
+        # MEANS take a `cross_mean` cell's full bars at their exact 0, as the pooled panel's
+        # `rets_pool` does (a CSCV block holds whole bars): every split a grid of all-full cells
+        # scores is a full tie, in any declaration order, where the rounded rows ranked their
+        # residue — and its tied train winner is the first-declared candidate, so a sparse such
+        # grid can score fewer splits or decline (`cscv_pbo`).
         "pbo": cscv_pbo(
             rel_cells,
             cfg.n_bars,
@@ -570,6 +573,7 @@ def _run_summary(
             off=cfg.off,
             mode=thesis.target_mode,
             n_combos_declared=len(cells),
+            full_bars=pooled_full_bars,
         ),
         "sources": {
             tgt: source_coverage(src_avail, cfg.index, g) for g, tgt in enumerate(cfg.targets)
@@ -816,8 +820,10 @@ def _cells_panel(
         # rows entirely or not at all: the pooled panel's bootstrap draws, eras and HAC (which
         # reads the rows only through per-bar deviation sums), and the cross-target episodes
         # (one bar, one window, one episode) — never a per-target panel, which holds one row of
-        # the bar. Every row-level read (std and the shape reads, quantiles, hit rates, |ret|
-        # mass, tie order) keeps `ret`: a row's excess is its own, only its bar's SUM is 0.
+        # the bar, nor a bucket, which may hold some of a bar's rows (the buckets read the full
+        # bars themselves, below). Every row-level read (std and the shape reads, quantiles, hit
+        # rates, |ret| mass, tie order) keeps `ret`: a row's excess is its own, only its bar's
+        # SUM is 0.
         rets_pool: np.ndarray | None = None
         full_bars = pooled_full_bars.get(combo_key)
         if full_bars is not None and full_bars.any():
@@ -955,11 +961,14 @@ def _cells_panel(
                 },
             }
         # The two panels `cell_conditional_buckets` computes together, mounted below under the
-        # names it keys them by. Its bucket means average each row's own `ret`, never
-        # `rets_pool`: edges are per target, so on a mixed pool one full bar's rows can land in
-        # different ordinals (a documented limit — bucketed by a basket-wide feature on an
-        # all-full pool, every bucket holds whole bars and its mean is their rounding residue).
-        buckets = cell_conditional_buckets(rows_closed, feature_names)
+        # names it keys them by. Its bucket means are not `rets_pool`: edges are per target, so
+        # one full bar's rows can land in different ordinals, and a bucket holding only some of
+        # them holds no bar-closed sum. It takes the full bars themselves and reads at 0.0 the
+        # rows of each one that lands whole in ONE ordinal (a basket-wide feature on bars the
+        # members fire together), every other row at its `ret`.
+        buckets = cell_conditional_buckets(
+            rows_closed, feature_names, full_bars=full_bars if rets_pool is not None else None
+        )
         cell: SummaryCell = {
             **head,
             # Episode clustering over the cell's CLOSED rows, merged ACROSS targets: one
@@ -1086,7 +1095,7 @@ def _measure_grid(
     # support floor's `mean_ret > 0` graded that residue. Mounted as `pooled.mean_ret`. Beside
     # it the cell's FULL bars (every member closed — the bars that mean's identity zeroes), the
     # ones whose rows the cell's other bar-closed sums then read at 0.0 (`_cells_panel`'s
-    # `rets_pool`).
+    # `rets_pool` and its bucket means, and the grid's CSCV split means).
     pooled_mean_ret: dict[CellKey, float] = {}
     pooled_full_bars: dict[CellKey, np.ndarray] = {}
     exact_pooled_mean = basket and bench_mode == "cross_mean"
@@ -1471,7 +1480,16 @@ def run_backtest(thesis: Thesis, md: MarketData) -> EventStudyResult:
     # algebra — everything that is a property of the run, not of any hypothesis) and the per-cell
     # panel that carries everything that IS a property of a hypothesis, as ONE literal.
     summary = _run_summary(
-        thesis, md, cfg, frames_by_h, rel, rel_cells, cross_breadth, n_combos_attempted, cells
+        thesis,
+        md,
+        cfg,
+        frames_by_h,
+        rel,
+        rel_cells,
+        cross_breadth,
+        n_combos_attempted,
+        cells,
+        grid.pooled_full_bars,
     )
 
     return EventStudyResult(

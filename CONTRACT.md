@@ -303,7 +303,8 @@ canonical CSCV assumes — both ledgers re-checked at emission (every count non-
 chain ordered, `n_combos_declared == n_hypotheses_attempted`) beside the verdict pairing (`pbo`
 null exactly when `reason` is set), where a violation is a seikan bug (exit 4); its split
 score is mode-aware — the weakest-target per-observation Sharpe under conjunction, the pooled
-per-observation Sharpe under basket), and `baseline` (the run-level unconditional base rate per
+per-observation Sharpe under basket, whose mean reads a `cross_mean` full bar at its exact 0 —
+see the pooled panel), and `baseline` (the run-level unconditional base rate per
 horizon × target over every fillable anchor bar, same algebra/benchmark/direction as the cells,
 with an `exclusions` ledger pinned by `n_eligible + Σexclusions == n_anchor_bars`, a `pooled`
 row per horizon in basket, and deliberately NO uplift field — the conditional-vs-base-rate
@@ -378,18 +379,23 @@ at weight 1) are exact where the identity holds and the rows' own values everywh
 pool whose every bar is full has no long-run variance — `t_hac` / `hac_se` null, as on
 identical legs — and any other pool holding a full bar reads `t_hac` as the exact `mean_ret`
 over its `hac_se`; on a pool with no full bar each of these is the plain read over its rows;
-`rot_p` counts the identity's ties only where the demeaning's residue (~ε·|raw|) sits inside
-its FFT tie band (a basket-wide ENTRY on ordinary dispersed legs reads 1 — every member fires on
-the same bars, so every rotated pool is full too — while legs equal but for their last bits, one
-instrument in two quote units, still read a coin flip), the grid-level CSCV does not take it
-at all (its split scores sum each row's rounded excess, so on a grid of all-full cells every
-candidate scores ±residue and `pbo` follows the targets' declaration order), nor do the cell's
-`conditional_buckets` means and `bucket_monotonicity`, which keep each row's rounded excess
-(bucketed by a basket-wide feature — a `calendar` field, a shared `external` feed — on an
-all-full pool every bucket holds whole bars and reads residue, so `bucket_monotonicity` can
-rank residue in declaration order), and row-level reads (`std_ret` and the shape reads,
-quantiles, the row hit rate, `profit_factor`, |ret| mass shares) keep each row's ordinary
-rounding, its excess being its own — and the LEGS still
+the grid-level CSCV takes the identity too — a block holds whole bars (its purge reads the bar
+and the cell's horizon alone), so a split holding a full bar takes its MEAN from the same
+bar-closed sums over the rows' own sd, and every split a grid of all-full cells scores is a
+full tie (`pbo`, `lambda_mean` and `prob_oos_loss` 0.0 whenever the block scores, in any target
+order, where the rounded rows ranked their residue — every train score tied, the first-declared
+candidate wins each split, so a sparse such grid can score fewer splits, fall back to a coarser
+S or decline `insufficient_data`); so do the cell's `conditional_buckets` means wherever a full
+bar's rows all land in ONE bucket (bucketed by a basket-wide feature — a `calendar` field, a shared
+`external` feed — an all-full pool reads every bucket mean 0.0 and no `bucket_monotonicity`, in any
+declaration order), while a full bar the per-target edges split across buckets, or partly
+unbucketed, keeps each row's own excess there (no bucket holds its whole sum); `rot_p` counts
+the identity's ties only where the demeaning's residue (~ε·|raw|) sits inside its FFT tie band
+(a basket-wide ENTRY on ordinary dispersed legs reads 1 — every member fires on the same bars,
+so every rotated pool is full too — while legs equal but for their last bits, one instrument in
+two quote units, still read a coin flip), and row-level reads (`std_ret` and the shape reads,
+quantiles, the row hit rate, `profit_factor`, |ret| mass shares, a bucket's `n` and
+`hit_rate`) keep each row's ordinary rounding, its excess being its own — and the LEGS still
 attribute: `mean_ret_bench` ≈
 `mean_ret_raw`
 is the basket's own realized drift), the panel the
@@ -744,8 +750,8 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   accumulation error. Pool MEANS stay the arithmetic
   mean (a few ulps off a constant pool's value — the summation's rounding — never off its sign;
   the one exception is a `cross_mean` basket's pooled `mean_ret`, summed from the raw legs, and
-  the bar-closed sums beside it, which read a full bar's rows at exactly 0 — see the pooled
-  panel).
+  the bar-closed sums beside it — the CSCV split means and the bucket means over whole bars
+  among them — which read a full bar's rows at exactly 0: see the pooled panel).
   A post-warmup zero-dispersion bar
   is UNDECIDABLE like `x / 0`: its NaN lands in `signal_coverage`, never fires — guard a z-score
   of a series that can sit flat with `rolling_agg(x, N, std) > 0`. "Equal" means bit-identical: a
