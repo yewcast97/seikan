@@ -1318,6 +1318,72 @@ def test_cscv_pbo_single_combo_and_empty_guards():
     assert out["pbo"] is None and out["reason"] == "insufficient_data"
 
 
+def test_cscv_pbo_six_bar_sample_declines_beside_the_real_candidate_counts():
+    # The review's scenario: six bars, h=1, two distinct candidates that both fired. No block
+    # partition fits six bars (S=4 needs eight), so the block declines — but the population is a
+    # property of the cells, not of the partition: 2 distinct / 2 scoreable / 2 declared. The
+    # pre-fix block reported 0 / 0 / 2, a ledger claiming no candidate ever existed.
+    T = 6
+    fwd = np.array([0.01, -0.02, 0.03, 0.01, np.nan, np.nan])
+    cells = []
+    for k in range(2):
+        m = np.zeros(T)
+        m[[k, k + 2]] = 1.0  # distinct masks per combo: two candidates, not one cloned
+        cells.append({"key": (k, "t"), "mask_col": m, "fwd_col": fwd, "h": 1})
+    out = cscv_pbo(cells, T, ["t"], n_combos_declared=2)
+    assert out["pbo"] is None and out["reason"] == "insufficient_data"
+    assert (out["n_combos"], out["n_combos_scoreable"], out["n_combos_declared"]) == (2, 2, 2)
+    # Nothing was split: no partition was offered, so none was attempted.
+    assert (out["n_splits"], out["n_splits_attempted"], out["n_candidates_min"]) == (0, 0, 0)
+    assert out["blocks"] == 8
+
+
+def _thin_ledger_cells(T):
+    """A two-target conjunction grid whose population ledger cannot be 2/2/2 by coincidence:
+    combos 0 and 1 are distinct, combo 2 is a byte-identical clone of combo 0, and combo 3 has no
+    B pool (inadmissible under conjunction) — 2 distinct of 3 scoreable, declared as 5 (one more
+    combo never fired, so it never reaches CSCV). Every firing sits in the first three bars."""
+    fwd = np.linspace(0.01, 0.02, T)
+
+    def _mask(*bars):
+        m = np.zeros(T)
+        m[list(bars)] = 1.0
+        return m
+
+    def _cell(k, tgt, mask):
+        return {"key": (k, tgt), "mask_col": mask, "fwd_col": fwd, "h": 1}
+
+    return [
+        _cell(0, "A", _mask(0)),
+        _cell(0, "B", _mask(1)),
+        _cell(1, "A", _mask(1)),
+        _cell(1, "B", _mask(0)),
+        _cell(2, "A", _mask(0)),
+        _cell(2, "B", _mask(1)),
+        _cell(3, "A", _mask(0, 2)),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("T", "blocks", "n_splits_attempted"),
+    [(3, 8, 0), (6, 8, 0), (8, 4, 6)],
+    ids=["under_four_bars", "no_partition_fits", "every_split_purged"],
+)
+def test_cscv_pbo_every_declined_path_carries_the_population_ledger(T, blocks, n_splits_attempted):
+    # The three ways a block with candidates declines — a sample under 4 bars, a sample no
+    # partition fits (4-7 bars), and a partition whose every split purged away (S=4 over 8 bars:
+    # two-bar blocks cannot hold an off+h=2 window) — must all carry the SAME established
+    # population: the ledger reads the cells, never the sample length.
+    out = cscv_pbo(_thin_ledger_cells(T), T, ["A", "B"], n_combos_declared=5)
+    assert out["pbo"] is None and out["reason"] == "insufficient_data"
+    assert (out["n_combos"], out["n_combos_scoreable"], out["n_combos_declared"]) == (2, 3, 5)
+    assert out["n_splits"] == 0 and out["n_candidates_min"] == 0
+    assert out["n_splits_attempted"] == n_splits_attempted and out["blocks"] == blocks
+    for key in ("lambda_mean", "oos_degradation_slope", "prob_oos_loss"):
+        assert np.isnan(out[key])
+    assert out["oos_degradation_slope_reason"] is None
+
+
 def test_cscv_pbo_purges_boundary_crossing_windows():
     # 80 bars; the adaptive S=8→6→4 fallback tries block widths 10, ~13.3, 20 in turn. A window of
     # off+h=26 bars exceeds even the widest candidate block (20), so EVERY firing purges away at

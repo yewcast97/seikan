@@ -29,6 +29,7 @@ from pydantic import ValidationError
 from seikan.analysis.stats import benchmark_regression, episode_profile, pool_moments
 from seikan.compiler.runner import run_backtest
 from seikan.dsl.schema import Thesis
+from seikan.emitted import validate_summary
 from seikan.serialize import json_safe
 from tests._helpers import bars as _bars
 from tests._helpers import lt as _lt
@@ -1132,6 +1133,35 @@ def test_unswept_thesis_pbo_is_single_combo(tmp_path):
     # a one-combo grid has no selection to overfit
     assert s["pbo"]["pbo"] is None and s["pbo"]["reason"] == "single_combo"
     assert s["pbo"]["n_combos_declared"] == 1 == s["n_hypotheses_attempted"]
+
+
+def test_thin_sample_pbo_declines_beside_the_real_population_ledger(tmp_path):
+    # Six bars, h=1, two swept cuts that both fire AND close (cut 2.5 closes at bars 2-3, cut 3.5
+    # at bar 3): no CSCV partition fits six bars, so the block declines as insufficient_data —
+    # with the population it established from the cells, 2 distinct / 2 scoreable / 2 declared.
+    # The pre-fix block said 0 / 0 / 2 beside cells holding closed observations.
+    path = _series_bars(tmp_path / "y.csv", [1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+    thesis = Thesis.model_validate(
+        {
+            "name": "t",
+            "data": {"targets": ["target"]},
+            "entry": {
+                "type": "threshold",
+                "left": {"type": "field", "column": "close"},
+                "op": ">",
+                "right": {"type": "constant", "value": [2.5, 3.5], "name": "cut"},
+            },
+            "params": {"horizon": 1},
+        }
+    )
+    s = run_backtest(thesis, load(thesis, {"target": path})).summary
+    assert [_closed_n(s, i) for i in range(2)] == [2, 1]
+    pbo = s["pbo"]
+    assert pbo["pbo"] is None and pbo["reason"] == "insufficient_data"
+    assert (pbo["n_combos"], pbo["n_combos_scoreable"], pbo["n_combos_declared"]) == (2, 2, 2)
+    assert pbo["n_combos_declared"] == s["n_hypotheses_attempted"]
+    assert (pbo["n_splits"], pbo["n_splits_attempted"]) == (0, 0)
+    validate_summary(s)  # the seam's ledger check passes on the declined block
 
 
 def test_n_hypotheses_attempted_counts_the_declared_grid(tmp_path):

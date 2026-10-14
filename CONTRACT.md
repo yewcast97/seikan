@@ -295,8 +295,13 @@ grid-level CSCV `pbo` block (ONE nested object: `{pbo, reason, n_splits, n_split
 n_candidates_min, n_combos, n_combos_scoreable, n_combos_declared, blocks, lambda_mean,
 oos_degradation_slope, oos_degradation_slope_reason, prob_oos_loss}` — the ledger `n_combos <=
 n_combos_scoreable <= n_combos_declared` says how far short of the declared grid the scored
-population fell, and `n_splits <= n_splits_attempted` with `n_candidates_min` how far the
-block-local thinning departed from the fixed candidate count canonical CSCV assumes; its split
+population fell (`n_combos` is the DISTINCT candidates entering CSCV, the population a scored
+block ranks over; the ledger reads the cells alone, so a declined block, whatever its reason,
+carries the real counts, never placeholder zeros), and `n_splits <= n_splits_attempted` with
+`n_candidates_min` how far the block-local thinning departed from the fixed candidate count
+canonical CSCV assumes — both ledgers re-checked at emission (every count non-negative, each
+chain ordered, `n_combos_declared == n_hypotheses_attempted`) beside the verdict pairing (`pbo`
+null exactly when `reason` is set), where a violation is a seikan bug (exit 4); its split
 score is mode-aware — the weakest-target per-observation Sharpe under conjunction, the pooled
 per-observation Sharpe under basket), and `baseline` (the run-level unconditional base rate per
 horizon × target over every fillable anchor bar, same algebra/benchmark/direction as the cells,
@@ -848,7 +853,10 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   algebra and `describe`.
 - `types/` — the emitted-shape declarations (TypedDicts), one module per report section behind
   the package facade; `emitted.py` validates every success document against them at emission,
-  so the bytes written are the bytes that type-checked.
+  so the bytes written are the bytes that type-checked, and also checks the cross-field
+  invariants no TypedDict can state (the `summary.pbo` verdict pairing and ledgers; `describe`'s
+  explicit refusals — no null `diff` on a block that did not refuse, a reason beside every null
+  ratio read).
 - `gate/` — a package behind one facade (`from seikan.gate import …` — the policy doctrine
   rides its `__init__` docstring): `_hash` holds `canonical_dsl_hash` (re-exported by `api.py`,
   the supported import site; the `seikan hash` subcommand is the same identity without Python),

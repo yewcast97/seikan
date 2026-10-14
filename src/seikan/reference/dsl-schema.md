@@ -1440,7 +1440,11 @@ open to quote a statistic honestly.
   **scoreable** grid — only combos that fired with at least one closed observation, with
   byte-identical clones collapsed to one candidate; the ledger
   `n_combos <= n_combos_scoreable <= n_combos_declared` says how far short of the declared grid
-  the scored population fell. It is attached to no
+  the scored population fell; `n_combos` is the DISTINCT candidates entering CSCV (the
+  population a scored block ranks over). The ledger reads the cells alone, so a declined block,
+  whatever its reason, carries the real counts, never placeholder zeros — a sample too short to
+  split (CSCV needs 8 bars for its coarsest S = 4 partition) reads `pbo: null` beside the
+  candidates the grid actually offered. It is attached to no
   cell: it is a property of the **search space you are about to select from** — "if I pick the best
   cell off this grid, how often would that pick fail to travel to data it never saw?" — and it is
   the single most relevant number to read *before* you select. Its split score mirrors the

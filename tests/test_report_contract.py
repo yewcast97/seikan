@@ -21,6 +21,7 @@ import pandas as pd
 import pytest
 
 import seikan.cli as cli_module
+import seikan.compiler.runner as runner_module
 from seikan.cli import main
 from seikan.emitted import (
     CheckDataDocument,
@@ -315,6 +316,126 @@ def test_summary_vocabularies_are_closed(run_doc):
         validate_emitted("run", ident)
 
 
+def _patch_pbo(summary: dict, fields: dict) -> None:
+    """Write ``fields`` into a summary's CSCV block: the search burden at the summary level,
+    every other key into the ``pbo`` block."""
+    for key, value in fields.items():
+        (summary if key == "n_hypotheses_attempted" else summary["pbo"])[key] = value
+
+
+# The fixture's block is a one-candidate `single_combo`: 1 / 1 / 1 under a burden of 1, nothing
+# split (0 / 0) and n_candidates_min 0 — so each case below breaks exactly ONE link (a case that
+# raises a rung raises the burden with it wherever the declared rung must stay equal to it; a
+# negative n_combos necessarily breaks the per-split link too, and the population ledger
+# reports first).
+@pytest.mark.parametrize(
+    ("ledger", "message"),
+    [
+        (
+            {
+                "n_combos": 3,
+                "n_combos_scoreable": 2,
+                "n_combos_declared": 2,
+                "n_hypotheses_attempted": 2,
+            },
+            "population ledger .* violated: 3 / 2 / 2 / 2",
+        ),
+        (
+            {
+                "n_combos": 1,
+                "n_combos_scoreable": 3,
+                "n_combos_declared": 2,
+                "n_hypotheses_attempted": 2,
+            },
+            "population ledger .* violated: 1 / 3 / 2 / 2",
+        ),
+        ({"n_combos_declared": 2}, "population ledger .* violated: 1 / 1 / 2 / 1"),
+        ({"n_hypotheses_attempted": 2}, "population ledger .* violated: 1 / 1 / 1 / 2"),
+        ({"n_combos": -1}, "population ledger .* violated: -1 / 1 / 1 / 1"),
+        ({"n_splits": 7, "n_splits_attempted": 6}, "per-split ledger .* violated: 7 / 6, 0 / 1"),
+        ({"n_splits": -1, "n_splits_attempted": -1}, "per-split ledger .* violated: -1 / -1"),
+        ({"n_candidates_min": 2}, "per-split ledger .* violated: 0 / 0, 2 / 1"),
+        ({"n_candidates_min": -1}, "per-split ledger .* violated: 0 / 0, -1 / 1"),
+    ],
+    ids=[
+        "distinct_over_scoreable",
+        "scoreable_over_declared",
+        "declared_over_the_burden",
+        "burden_over_the_declared",
+        "negative_distinct",
+        "splits_over_attempted",
+        "negative_splits",
+        "candidates_over_combos",
+        "negative_candidates_min",
+    ],
+)
+def test_an_impossible_pbo_ledger_refuses_at_both_seams(run_doc, ledger, message):
+    # Every count here is a well-typed non-null int, so the shape validation passes it — only
+    # the cross-field ledger arithmetic (the AfterValidator on both summary-carrying roots) can
+    # see that the block is internally impossible, and it must refuse at the library seam and
+    # at the emission seam alike. The declared rung is the summary's own search burden: a block
+    # whose declared grid disagrees with `n_hypotheses_attempted` ranked a different search.
+    # Both refusals name where the broken rule is declared — the ledger lives in seikan.emitted,
+    # not in the seikan.types shape.
+    summary = copy.deepcopy(run_doc["summary"])
+    _patch_pbo(summary, ledger)
+    with pytest.raises(ReportContractError, match=message) as refused:
+        validate_summary(summary)
+    assert "declared in seikan.types/seikan.emitted" in str(refused.value)
+    doc = copy.deepcopy(run_doc)
+    _patch_pbo(doc["summary"], ledger)
+    with pytest.raises(ReportContractError, match=message) as refused:
+        validate_emitted("run", doc)
+    assert "declared in seikan.types/seikan.emitted" in str(refused.value)
+
+
+@pytest.mark.parametrize(
+    ("verdict", "message"),
+    [
+        ({"pbo": 0.5}, r"verdict pairing .* violated: pbo 0\.5 beside reason 'single_combo'"),
+        ({"reason": None}, "verdict pairing .* violated: pbo None beside reason None"),
+    ],
+    ids=["a_number_beside_a_reason", "a_reasonless_null"],
+)
+def test_a_pbo_verdict_out_of_its_pairing_refuses_at_both_seams(run_doc, verdict, message):
+    # `pbo` and `reason` are each well-typed on their own (a float or null; a reason or null),
+    # so only the pairing can see a block that scored AND declined, or declined without saying
+    # why — a refusal is explicit, never a bare null. The fixture's block is a declined
+    # `single_combo` with its ledger intact, so each case breaks the pairing alone.
+    summary = copy.deepcopy(run_doc["summary"])
+    _patch_pbo(summary, verdict)
+    with pytest.raises(ReportContractError, match=message):
+        validate_summary(summary)
+    doc = copy.deepcopy(run_doc)
+    _patch_pbo(doc["summary"], verdict)
+    with pytest.raises(ReportContractError, match=message):
+        validate_emitted("run", doc)
+
+
+def test_a_scored_pbo_at_equality_on_every_link_validates(run_doc):
+    # The ledgers are `<=` chains, not strict: an all-distinct, all-scoreable grid whose every
+    # offered split scored over the full roster sits at equality on every link and is legal —
+    # the declared rung equal to the burden, as the runner always stamps it, and the block
+    # SCORED (a number beside no reason), the pairing's other legal arm.
+    doc = copy.deepcopy(run_doc)
+    _patch_pbo(
+        doc["summary"],
+        {
+            "pbo": 0.5,
+            "reason": None,
+            "n_combos": 2,
+            "n_combos_scoreable": 2,
+            "n_combos_declared": 2,
+            "n_hypotheses_attempted": 2,
+            "n_splits": 6,
+            "n_splits_attempted": 6,
+            "n_candidates_min": 2,
+        },
+    )
+    validate_summary(doc["summary"])
+    validate_emitted("run", doc)
+
+
 # ---- the refusal reaches the caller as exit 4, never as a caller-blaming class --------------
 
 
@@ -345,6 +466,30 @@ def test_contract_violation_exits_4_with_the_internal_envelope(tmp_path, capsys,
     assert envelope["error"]["type"] == "internal"
     assert "metric_roles" in envelope["error"]["message"]
     assert not report.exists()  # no out-of-contract artifact lands on disk
+
+
+def test_an_impossible_pbo_ledger_from_the_engine_exits_4(tmp_path, capsys, monkeypatch):
+    # The ledger check is a statement about the ENGINE: a CSCV block whose distinct count
+    # outgrew its scoreable count must ride the same catch-all to the exit-4 `internal` envelope
+    # as any other contract violation, and leave no report on disk.
+    real = runner_module.cscv_pbo
+
+    def drifted(*args, **kwargs):
+        out = real(*args, **kwargs)
+        return {**out, "n_combos": out["n_combos_scoreable"] + 1}
+
+    px = tmp_path / "px.csv"
+    thesis = tmp_path / "t.json"
+    report = tmp_path / "report.json"
+    _write_ohlcv(px)
+    _thesis(thesis)
+    monkeypatch.setattr(runner_module, "cscv_pbo", drifted)
+    code = main(["run", str(thesis), "--data", f"target={px}", "--report-out", str(report)])
+    assert code == 4
+    envelope = json.loads(capsys.readouterr().out)
+    assert envelope["error"]["type"] == "internal"
+    assert "population ledger" in envelope["error"]["message"]
+    assert not report.exists()
 
 
 # ---- the roots stay anchored to the assembly shape ------------------------------------------

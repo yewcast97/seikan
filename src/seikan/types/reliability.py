@@ -77,16 +77,21 @@ class PboBlock(TypedDict):
     — fewer than two DISTINCT candidates to select among, a one-combo grid or a grid of
     byte-identical clones; ``insufficient_data`` — too little block-local data even at S=4), and
     the diagnostics are NaN → null there. The population ledger reads left to right:
-    ``n_combos <= n_combos_scoreable <= n_combos_declared`` — the DISTINCT candidates scored
-    (byte-identical combos collapse to one before scoring), the combos admissible with at least
-    one fired-and-closed pool, and the declared combo × horizon grid
-    (``== n_hypotheses_attempted``). CSCV never sees a declared combo that produced no closed
-    pool; the ledger is what says how far short of the declared grid the scored population fell.
-    The per-split ledger sits beside it: ``n_splits_attempted`` is the C(S, S/2) the partition
-    offered against the ``n_splits`` actually scored (a split whose train winner has no finite
-    test score is skipped), and ``n_candidates_min`` the smallest finite candidate population any
-    scored split ranked over — canonical CSCV assumes a fixed count, and this is how far the
-    block-local thinning departed from it.
+    ``n_combos <= n_combos_scoreable <= n_combos_declared`` — the DISTINCT candidates entering
+    CSCV (the population a scored block ranks over; byte-identical combos collapse to one before
+    scoring), the combos admissible with at least one fired-and-closed pool, and the declared
+    combo × horizon grid (``== n_hypotheses_attempted``). CSCV never sees a declared combo that
+    produced no closed pool; the ledger is what says how far short of the declared grid the
+    scored population fell. It reads the cells alone, so a declined block, whatever its reason,
+    carries the real counts, never placeholder zeros. The per-split ledger sits beside it:
+    ``n_splits_attempted`` is the C(S, S/2) the partition offered against the ``n_splits``
+    actually scored (a split whose train winner has no finite test score is skipped), and
+    ``n_candidates_min`` the smallest finite candidate population any scored split ranked over —
+    canonical CSCV assumes a fixed count, and this is how far the block-local thinning departed
+    from it. Both ledgers, and the pairing of a null ``pbo`` with its ``reason``, are re-checked
+    at the emission seam (``seikan.emitted``) — every count non-negative, each chain ordered,
+    ``n_combos_declared`` equal to the summary's ``n_hypotheses_attempted`` — and a block
+    violating them is a seikan bug, never emitted.
     """
 
     pbo: float | None

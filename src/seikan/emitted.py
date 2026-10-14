@@ -15,6 +15,13 @@ an undeclared key ANYWHERE in the tree refuses — that is the drift detector. V
 ``strict``: numeric strings and bools do not coerce into numbers (lax coercion is exactly how
 drift hides), while an ``int`` into a ``float`` field remains valid.
 
+Shape is not the whole contract: the seam also checks the cross-field invariants no
+``TypedDict`` can state, each an ``AfterValidator`` on the annotation that carries them, so it
+runs after the strict shape pass and refuses through the same ``ValidationError`` path — the
+CSCV ``summary.pbo`` block's verdict pairing and ledgers (:func:`_check_pbo`), on both roots
+that carry a summary, and the ``describe`` profiles' explicit refusals
+(:func:`_check_refusal_reasons`).
+
 What is deliberately NOT validated:
 
 - ``schema`` documents — static contract prose (``dict[str, JsonValue]`` blobs); validating
@@ -24,9 +31,10 @@ What is deliberately NOT validated:
   doctrine exists to prevent.
 - ``api.compile_thesis`` returns the raw IN-MEMORY summary (NaN floats, never nulls), but it
   does not return it UNCHECKED: :func:`validate_summary` runs the same strict ``RunSummary``
-  adapter over the ``json_safe``'d copy at that seam, so the engine's output is verified against
-  its declared shape on the library path exactly as the CLI verifies the whole document at
-  emission — the copy is discarded and the caller gets the in-memory dict.
+  adapter, CSCV-block check included, over the ``json_safe``'d copy at that seam, so the
+  engine's output is verified against its declared contract on the library path exactly as the
+  CLI verifies the whole document at emission — the copy is discarded and the caller gets the
+  in-memory dict.
 
 The static blobs a document embeds verbatim (``metric_roles``, ``describe_roles``) are checked by
 EQUALITY against their ``contract.py`` source instead of deep-validated — for a constant, byte
@@ -67,6 +75,55 @@ class ReportContractError(RuntimeError):
     """
 
 
+def _check_pbo(summary: RunSummary) -> RunSummary:
+    """The CSCV block's cross-field invariants — what a ``TypedDict`` cannot state: the verdict
+    pairing (``pbo`` is null exactly when ``reason`` is set — a declined block says why, a scored
+    one names no reason), the population ledger ``0 <= n_combos <= n_combos_scoreable <=
+    n_combos_declared``, closed by ``n_combos_declared == n_hypotheses_attempted`` (the runner
+    hands CSCV the declared cell count, one per declared combo × horizon, so the block's top
+    rung IS the summary's search burden), and the per-split ledger ``0 <= n_splits <=
+    n_splits_attempted``, ``0 <= n_candidates_min <= n_combos``.
+
+    Runs AFTER the strict shape validation (every count is an ``int`` by then; none is nullable)
+    on both roots that carry a summary, the ``run`` document and the library seam's
+    :class:`_SummaryRoot`, and holds on EVERY path ``cscv_pbo`` returns — scored (``pbo`` a
+    fraction over at least six scored splits: never NaN, so never a reasonless null) or
+    declined, a declined block carrying the population it established before declining. A
+    violation raises ``ValueError``, which pydantic folds into the ``ValidationError`` the seam
+    re-raises as :class:`ReportContractError`: an internally impossible block is a seikan bug
+    (exit 4), never a statement about the caller's thesis.
+    """
+    pbo = summary["pbo"]
+    if (pbo["pbo"] is None) != (pbo["reason"] is not None):
+        raise ValueError(
+            "summary.pbo verdict pairing (pbo is null exactly when reason is set) is violated: "
+            f"pbo {pbo['pbo']!r} beside reason {pbo['reason']!r}"
+        )
+    population = (
+        pbo["n_combos"],
+        pbo["n_combos_scoreable"],
+        pbo["n_combos_declared"],
+        summary["n_hypotheses_attempted"],
+    )
+    n_combos, n_scoreable, n_declared, n_attempted = population
+    if not 0 <= n_combos <= n_scoreable <= n_declared == n_attempted:
+        raise ValueError(
+            "summary.pbo population ledger 0 <= n_combos <= n_combos_scoreable <= "
+            "n_combos_declared == summary.n_hypotheses_attempted is violated: "
+            + " / ".join(map(str, population))
+        )
+    if not (
+        0 <= pbo["n_splits"] <= pbo["n_splits_attempted"]
+        and 0 <= pbo["n_candidates_min"] <= n_combos
+    ):
+        raise ValueError(
+            "summary.pbo per-split ledger 0 <= n_splits <= n_splits_attempted, 0 <= "
+            f"n_candidates_min <= n_combos is violated: {pbo['n_splits']} / "
+            f"{pbo['n_splits_attempted']}, {pbo['n_candidates_min']} / {n_combos}"
+        )
+    return summary
+
+
 @with_config(ConfigDict(extra="forbid"))
 class RunReportDocument(TypedDict):
     """The ``--report-out`` document, sections required, in the fixed layer order."""
@@ -77,7 +134,7 @@ class RunReportDocument(TypedDict):
     identity: ReportIdentity
     data_report: DataReport
     outputs: dict[str, OutputEntry]
-    summary: RunSummary
+    summary: Annotated[RunSummary, AfterValidator(_check_pbo)]
     gate: GateSection
     metric_roles: dict[str, JsonValue]
 
@@ -217,29 +274,32 @@ _ADAPTERS: dict[str, TypeAdapter[object]] = {
 class _SummaryRoot(TypedDict):
     """The engine summary's own contract root — the ``run`` document's ``summary`` section
     wrapped so ``extra="forbid"`` propagates into every nested TypedDict, validated on its own at
-    the library seam (``api.compile_thesis``) where no document exists yet."""
+    the library seam (``api.compile_thesis``) where no document exists yet — under the same
+    CSCV-block check (:func:`_check_pbo`) as the document's own ``summary``."""
 
-    summary: RunSummary
+    summary: Annotated[RunSummary, AfterValidator(_check_pbo)]
 
 
 _SUMMARY: TypeAdapter[_SummaryRoot] = TypeAdapter(_SummaryRoot)
 
 
 def validate_summary(summary: RunSummary) -> None:
-    """Refuse an engine summary that violates :class:`~seikan.types.RunSummary`; return nothing.
+    """Refuse an engine summary that violates :class:`~seikan.types.RunSummary` or the
+    cross-field invariants this seam adds to it (:func:`_check_pbo`); return nothing.
 
     Runs over ``json_safe(summary)`` — the emitted form, where every NaN is null — under the
-    same strict, extra-forbidding rules the CLI applies to the whole document, and discards the
-    validated copy (the in-memory summary the caller holds is the record). A refusal is a
-    :class:`ReportContractError`: the engine produced a shape it does not declare, which is a
-    seikan bug and never a statement about the caller's thesis.
+    same strict, extra-forbidding rules and the same CSCV-block check the CLI applies to the
+    whole document, and discards the validated copy (the in-memory summary the caller holds is
+    the record). A refusal is a :class:`ReportContractError`: the engine produced a summary its
+    contract does not admit, which is a seikan bug and never a statement about the caller's
+    thesis.
     """
     try:
         _SUMMARY.validate_python({"summary": json_safe(summary)}, strict=True)
     except ValidationError as exc:
         raise ReportContractError(
-            "the engine summary violates the RunSummary contract declared in seikan.types — "
-            f"this is a seikan bug, not an input problem: {exc}"
+            "the engine summary violates the RunSummary contract declared in "
+            f"seikan.types/seikan.emitted — this is a seikan bug, not an input problem: {exc}"
         ) from exc
 
 

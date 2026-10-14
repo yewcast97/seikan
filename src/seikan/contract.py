@@ -1127,9 +1127,12 @@ REPORT_FIELDS: dict[str, JsonValue] = {
             "lambda_mean, oos_degradation_slope, oos_degradation_slope_reason, prob_oos_loss} "
             "— a property of the search space's SCOREABLE combos, attached to no cell; the "
             "ledger n_combos <= n_combos_scoreable <= n_combos_declared says how far short of "
-            "the declared grid the scored population fell, and n_splits <= n_splits_attempted "
-            "with n_candidates_min <= n_combos how far the block-local thinning departed from "
-            "the fixed candidate count canonical CSCV assumes"
+            "the declared grid the scored population fell (n_combos: the DISTINCT candidates "
+            "entering CSCV, the population a scored block ranks over; the ledger reads the "
+            "cells alone, so a declined block, whatever its reason, carries the real counts, "
+            "never placeholder zeros), and n_splits <= n_splits_attempted with "
+            "n_candidates_min <= n_combos how far the block-local thinning departed from the "
+            "fixed candidate count canonical CSCV assumes"
         ),
         "sources": (
             "per-target per-decision-leaf availability (n_missing, first_available) — the raw "

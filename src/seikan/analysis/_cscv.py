@@ -179,11 +179,14 @@ def cscv_pbo(
     evidence — no cell's grade reads it.
 
     The population is ledgered, never assumed: ``n_combos <= n_combos_scoreable <=
-    n_combos_declared`` — the DISTINCT candidates scored, the combos admissible with at least
-    one fired-and-closed pool (pre-collapse), and the caller's declared combo × horizon grid
-    (the runner passes ``n_hypotheses_attempted``). CSCV never sees a declared combo that
-    produced no closed pool, so the ledger is what says how far short of the declared grid the
-    scored population fell. Byte-identical candidate combos (same per-target masks, forward
+    n_combos_declared`` — the DISTINCT candidates entering CSCV (the population a scored block
+    ranks over), the combos admissible with at least one fired-and-closed pool (pre-collapse),
+    and the caller's declared combo × horizon grid (the runner passes
+    ``n_hypotheses_attempted``). CSCV never sees a declared combo that produced no closed pool,
+    so the ledger is what says how far short of the declared grid the scored population fell.
+    It is a property of the cells alone, established before any length or partition check, so
+    a DECLINED block, whatever its reason, carries the real counts — never zeros that would
+    claim no candidate existed. Byte-identical candidate combos (same per-target masks, forward
     returns and horizons — a sweep axis that never moved the mask) collapse to ONE
     declaration-order representative BEFORE scoring: under selection-rank arithmetic M clones
     would hand the train winner the worst test rank purely for tying with itself. Test ranks
@@ -204,23 +207,6 @@ def cscv_pbo(
     if mode not in ("conjunction", "basket"):
         raise ValueError(f"unknown target_mode {mode!r}")
 
-    empty: PboBlock = {
-        "pbo": None,
-        "reason": "insufficient_data",
-        "n_splits": 0,
-        "n_splits_attempted": 0,
-        "n_candidates_min": 0,
-        "n_combos": 0,
-        "n_combos_scoreable": 0,
-        "n_combos_declared": int(n_combos_declared),
-        "blocks": int(n_blocks),
-        "lambda_mean": _NAN,
-        "oos_degradation_slope": _NAN,
-        "oos_degradation_slope_reason": None,
-        "prob_oos_loss": _NAN,
-    }
-    if not cells or length < 4:
-        return empty
     targets = list(targets)  # one local copy; iterated many times below
 
     # Combo admissibility mirrors the mode's evidence rule: conjunction demands every regime
@@ -269,13 +255,32 @@ def cscv_pbo(
         seen_fingerprints.add(fingerprint)
         n_distinct += 1
         kept_cells.extend(members)
+
+    # The declined block carries the population ledger established ABOVE — admissibility and the
+    # collapse read the cells alone, never a partition or the sample length — so EVERY declined
+    # path (a sample under 4 bars, fewer than two distinct candidates, a sample no block
+    # partition fits, too few scored splits at every S) reports the candidate population a
+    # scored block over these cells would. Zeros there claimed no candidate ever existed when
+    # the sample was merely too thin to split them.
+    empty: PboBlock = {
+        "pbo": None,
+        "reason": "insufficient_data",
+        "n_splits": 0,
+        "n_splits_attempted": 0,
+        "n_candidates_min": 0,
+        "n_combos": n_distinct,
+        "n_combos_scoreable": n_combos_scoreable,
+        "n_combos_declared": int(n_combos_declared),
+        "blocks": int(n_blocks),
+        "lambda_mean": _NAN,
+        "oos_degradation_slope": _NAN,
+        "oos_degradation_slope_reason": None,
+        "prob_oos_loss": _NAN,
+    }
+    if not cells or length < 4:
+        return empty
     if n_distinct < 2:
-        return {
-            **empty,
-            "reason": "single_combo",
-            "n_combos": n_distinct,
-            "n_combos_scoreable": n_combos_scoreable,
-        }
+        return {**empty, "reason": "single_combo"}
 
     # Adaptive block counts: prefer the caller's S, then the coarser fallback partitions for
     # sparse pools; dict.fromkeys dedupes while keeping the preference order.
@@ -389,13 +394,13 @@ def cscv_pbo(
             pairs.append((float(tr[bi]), float(te_best)))
 
         if len(lambdas) < _PBO_MIN_SPLITS:
+            # `empty` already carries the population ledger (`n_combos` IS `n_distinct`: every
+            # kept cell has its triple, so the roster here is exactly the distinct candidates).
             last_empty = {
                 **empty,
                 "n_splits": len(lambdas),
                 "n_splits_attempted": n_splits_attempted,
                 "n_candidates_min": n_candidates_min if lambdas else 0,
-                "n_combos": n_combos,
-                "n_combos_scoreable": n_combos_scoreable,
                 "blocks": s,
             }
             continue
