@@ -10,6 +10,7 @@ from typing import cast
 
 import numpy as np
 
+from seikan.analysis._pools import _NEAR_CONSTANT_ULPS
 from seikan.types import (
     CellKey,
     DegradationSlopeReason,
@@ -35,9 +36,27 @@ _PBO_BLOCK_FALLBACKS = (6, 4)
 #: over a split's blocks is what makes the split score a pure arithmetic reduction.
 type _MomentTriple = tuple[np.ndarray, np.ndarray, np.ndarray]
 
+#: The same pool's per-block return extrema ``(lo, hi)``, each ``(S,)`` (``+inf`` / ``-inf`` on an
+#: empty block): a split's pool is EXACTLY constant iff its chosen blocks' min equals their max.
+type _Extrema = tuple[np.ndarray, np.ndarray]
+
+
+def _disperses(lo: np.ndarray, hi: np.ndarray, mean: np.ndarray, eps: float) -> np.ndarray:
+    """A pool with extrema ``(lo, hi)`` and mean ``mean`` has usable dispersion: it is not exactly
+    constant (``hi > lo``; an empty pool's ``(+inf, -inf)`` is not either) and its largest
+    deviation from the mean exceeds ``_NEAR_CONSTANT_ULPS`` ulps of the mean's magnitude."""
+    with np.errstate(invalid="ignore"):
+        spread = np.maximum(hi - mean, mean - lo)
+        ok: np.ndarray = (hi > lo) & ~(spread < _NEAR_CONSTANT_ULPS * eps * np.abs(mean))
+    return ok
+
 
 def _split_scores(
-    moments: np.ndarray, refs: np.ndarray, mode: str, block_idx: np.ndarray
+    moments: np.ndarray,
+    refs: np.ndarray,
+    extrema: np.ndarray,
+    mode: str,
+    block_idx: np.ndarray,
 ) -> np.ndarray:
     """Per-candidate split score over the chosen blocks — the statistic the declared mode's
     caller selects on: the pooled per-observation Sharpe under basket, the weakest-target
@@ -50,9 +69,24 @@ def _split_scores(
     series (a diff outcome at level 1e9 scored as pure rounding noise). Means are reconstructed
     exactly: per member ``mean = shifted-mean + ref``; pooled through the exact cross-term
     expansion ``Σ(x − m)² = Σ_g [s2_g + 2(ref_g − m)·s1_g + n_g(ref_g − m)²]``.
+
+    ``extrema`` is the (Q, T, 2, S) per-block ``(min, max)`` tensor. A split pool with no usable
+    dispersion scores NaN whatever residual the reconstructed variance carries (a constant
+    decimal column's mean, and so its shift, is not the constant; a subset of a column is shifted
+    by the WHOLE column's mean): one whose chosen blocks' min equals their max is EXACTLY
+    constant, and one whose largest deviation from its mean is within ``_NEAR_CONSTANT_ULPS``
+    ulps of the mean is constant to rounding — the gate the HAC applies to a cell's pool
+    (``_pools._near_constant``), read here off the extrema, so it does not depend on what the
+    column's OTHER blocks hold. A pool whose centered sum of squares does not exceed the
+    accumulation error of the shifted sums it is the difference of (``4·n·ε`` of the shifted sum
+    of squares) is cancellation residue too. The split reads of a real return pool sit many
+    orders of magnitude above both floors.
     """
     mg = moments[:, :, :, block_idx].sum(axis=3)  # (Q, T, 3) per-member block sums
     n_g, s1_g, s2_g = mg[:, :, 0], mg[:, :, 1], mg[:, :, 2]
+    lo_g = extrema[:, :, 0, :][:, :, block_idx].min(axis=2)  # (Q, T)
+    hi_g = extrema[:, :, 1, :][:, :, block_idx].max(axis=2)
+    eps = float(np.finfo(np.float64).eps)
     with np.errstate(invalid="ignore", divide="ignore"):
         if mode == "basket":
             n = n_g.sum(axis=1)
@@ -60,12 +94,16 @@ def _split_scores(
             d = refs - mean[:, None]
             ss = (s2_g + 2.0 * d * s1_g + n_g * d * d).sum(axis=1)
             sd = np.sqrt(np.maximum(ss / (n - 1.0), 0.0))
-            return np.where((n >= 2) & (sd > 0.0), mean / sd, np.nan)
+            varies = _disperses(lo_g.min(axis=1), hi_g.max(axis=1), mean, eps)
+            resolved = ss > 4.0 * n * eps * (s2_g + n_g * d * d).sum(axis=1)
+            return np.where((n >= 2) & varies & resolved & (sd > 0.0), mean / sd, np.nan)
         mean_shift = s1_g / n_g
         mean = mean_shift + refs
-        var = (s2_g - n_g * mean_shift * mean_shift) / (n_g - 1.0)
-        sd = np.sqrt(np.maximum(var, 0.0))
-        sr = np.where((n_g >= 2) & (sd > 0.0), mean / sd, np.nan)
+        ss_g = s2_g - n_g * mean_shift * mean_shift
+        sd = np.sqrt(np.maximum(ss_g / (n_g - 1.0), 0.0))
+        resolved_g = ss_g > 4.0 * n_g * eps * s2_g
+        varies_g = _disperses(lo_g, hi_g, mean, eps)
+        sr = np.where((n_g >= 2) & varies_g & resolved_g & (sd > 0.0), mean / sd, np.nan)
     # The weakest target's Sharpe, one value per combo — an axis-wise reduction, which
     # numpy's own signature can only type as `Any` (its element-wise overload returns a
     # scalar); the cast states the (Q,) array it is here.
@@ -235,6 +273,7 @@ def cscv_pbo(
         edges = np.linspace(0, length, s + 1).astype(int)
         stats_by_key: dict[CellKey, _MomentTriple] = {}
         refs_by_key: dict[CellKey, float] = {}
+        extrema_by_key: dict[CellKey, _Extrema] = {}
         for cell in kept_cells:
             key = tuple(cell["key"])
             mask = np.asarray(cell["mask_col"]) > 0
@@ -257,6 +296,11 @@ def cscv_pbo(
                 np.bincount(b, weights=r_shift * r_shift, minlength=s),
             )
             refs_by_key[key] = ref
+            lo = np.full(s, np.inf)
+            hi = np.full(s, -np.inf)
+            np.minimum.at(lo, b, r)
+            np.maximum.at(hi, b, r)
+            extrema_by_key[key] = (lo, hi)
 
         # Every surviving cell belongs to an admissible, distinct candidate (filtered and
         # collapsed above, S-independently), so the roster here is exactly that candidate set.
@@ -279,6 +323,16 @@ def cscv_pbo(
         refs = np.array(
             [[refs_by_key.get((*c, tg), 0.0) for tg in targets] for c in combo_keys]
         )  # (Q, T) — 0.0 for absent members, whose zero triple contributes exactly nothing
+        no_extrema = np.stack((np.full(s, np.inf), np.full(s, -np.inf)))
+        extrema = np.array(
+            [
+                [
+                    np.stack(extrema_by_key[(*c, tg)]) if (*c, tg) in extrema_by_key else no_extrema
+                    for tg in targets
+                ]
+                for c in combo_keys
+            ]
+        )  # (Q, T, 2, S) — an absent member's (+inf, -inf) bounds nothing
 
         lambdas: list[float] = []
         pairs: list[tuple[float, float]] = []
@@ -294,11 +348,11 @@ def cscv_pbo(
             n_splits_attempted += 1
             train_idx = np.asarray(train)
             test_idx = np.setdiff1d(np.arange(s), train_idx)
-            tr = _split_scores(moments, refs, mode, train_idx)
+            tr = _split_scores(moments, refs, extrema, mode, train_idx)
             if np.all(np.isnan(tr)):
                 continue
             bi = int(np.nanargmax(tr))
-            te = _split_scores(moments, refs, mode, test_idx)
+            te = _split_scores(moments, refs, extrema, mode, test_idx)
             te_best = te[bi]
             finite_te = te[~np.isnan(te)]
             if math.isnan(te_best) or finite_te.shape[0] < 2:

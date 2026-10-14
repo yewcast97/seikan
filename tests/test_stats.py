@@ -1754,9 +1754,20 @@ def test_benchmark_regression_zero_raw_variance_is_nan_r2_not_a_refusal():
     # explain — NaN → null, the computed-as-undefined arm, not a declined-to-compute reason.
     blk = benchmark_regression(np.array([0.01, 0.01, 0.01]), np.array([0.01, 0.02, 0.03]))
     assert blk["reason"] is None
-    assert blk["beta"] == pytest.approx(0.0)
+    assert blk["beta"] == 0.0  # exactly: a constant leg co-varies with nothing
     assert blk["alpha"] == pytest.approx(0.01)
     assert np.isnan(blk["r2"])
+
+
+def test_benchmark_regression_constant_decimal_legs_are_degenerate_exactly():
+    # A constant DECIMAL leg's computed variance is rounding residue (~1e-35), not variation: a
+    # constant bench leg declines (no beta out of dividing by it), a constant raw leg fits
+    # beta == 0.0 exactly with alpha its mean.
+    flat_bench = benchmark_regression(np.array([0.01, 0.03, 0.02, 0.05, 0.04]), np.full(5, 0.007))
+    assert flat_bench["reason"] == "no_benchmark_variation" and flat_bench["beta"] is None
+    flat_raw = benchmark_regression(np.full(5, 0.007), np.array([0.01, 0.03, 0.02, 0.05, 0.04]))
+    assert flat_raw["reason"] is None and flat_raw["beta"] == 0.0
+    assert flat_raw["alpha"] == float(np.mean(np.full(5, 0.007))) and np.isnan(flat_raw["r2"])
 
 
 # ---- timing_summary: path-timing medians (evidence-only) ---------------------
@@ -1925,6 +1936,74 @@ def test_pool_moments_near_constant_pool_moments_are_null_and_silent():
     assert np.isfinite(honest["skewness"]) and np.isfinite(honest["kurtosis"])
 
 
+def test_benchmark_regression_near_constant_legs_are_degenerate():
+    # Not exactly constant, but spread within a few ulps of the mean: no resolvable variation —
+    # an arbitrary beta (1.9e16 before) on the bench side, a false r2 on the raw side.
+    near = 0.007 + np.array([0.0, 1.0, 0.0, 2.0, 1.0]) * np.spacing(0.007)
+    assert np.ptp(near) > 0.0
+    other = np.array([0.01, 0.03, 0.02, 0.05, 0.04])
+    flat_bench = benchmark_regression(other, near)
+    assert flat_bench["reason"] == "no_benchmark_variation" and flat_bench["beta"] is None
+    flat_raw = benchmark_regression(near, other)
+    assert flat_raw["reason"] is None and flat_raw["beta"] == 0.0 and np.isnan(flat_raw["r2"])
+    assert flat_raw["alpha"] == float(np.mean(near))
+
+
+@pytest.mark.parametrize("c", [0.1, 0.007, 0.3])
+def test_constant_pool_bootstrap_is_degenerate_exactly(c):
+    # Every resample of a constant pool has the same mean: the interval has zero width and the
+    # SE is 0 — not the ulp-scale spread of the resampled means' rounding — and it sits on the
+    # pool's own arithmetic mean, the `mean_ret` the cell reports beside it (an ulp off `c`).
+    bars = np.array([0, 1, 2, 10, 20, 21, 30, 40, 41, 42, 43, 50, 60])
+    rets = np.full(bars.size, c)
+    ci = episode_bootstrap_ci(rets, bars, 3)
+    assert ci["reason"] is None and ci["n_boot"] > 0
+    assert ci["ci_lo"] == ci["ci_hi"] == pool_moments(rets)["mean_ret"] and ci["boot_se"] == 0.0
+
+
+def test_degenerate_bootstrap_distribution_has_exactly_zero_se():
+    # A pool that varies, but whose episodes all carry the same (sum, count): every draw's mean
+    # is the same bits, so the distribution is degenerate — an SE of rounding residue (~3e-17,
+    # a mean / boot_se of ~7e15) would be the t_hac pathology again.
+    bars = np.array([[10 * k, 10 * k + 1] for k in range(12)]).ravel()
+    rets = np.tile([0.1, 0.3], 12)
+    ci = episode_bootstrap_ci(rets, bars, 3)
+    assert ci["reason"] is None and ci["n_episodes"] == 12
+    assert ci["ci_lo"] == ci["ci_hi"]
+    assert ci["boot_se"] == 0.0
+
+
+def test_constant_pool_has_no_bucket_monotonicity():
+    # Bucket means of a constant pool round apart (bucket sizes differ); that is no rank signal.
+    rng = np.random.RandomState(3)
+    trades = pd.DataFrame({"ret": np.full(45, 0.7), "feat": rng.normal(0.0, 1.0, 45)})
+    out = cell_conditional_buckets(trades, ["feat"])
+    assert out["conditional_buckets"]["feat"]["reason"] is None
+    assert "feat" not in out["bucket_monotonicity"]
+
+
+@pytest.mark.parametrize(("c", "n"), [(0.1, 3), (0.1, 25), (0.007, 5), (0.007, 40)])
+def test_constant_decimal_pool_has_no_dispersion_to_divide_by(c, n):
+    # The computed mean of a constant DECIMAL pool is not the constant (these (c, n) are the
+    # cases where numpy's is not), so np.std read the rounding residue as ~1e-17 of dispersion
+    # and the HAC divided by it: |t_hac| ~ 1e16 on a pool with no variation at all.
+    rets = np.full(n, c)
+    assert float(np.mean(rets)) != c  # the premise
+    t, se = newey_west_mean(rets, np.arange(n), h=3)
+    assert np.isnan(t) and np.isnan(se)
+    assert pool_moments(rets)["std_ret"] == 0.0
+    assert baseline_summary(rets)["std_ret"] == 0.0
+
+
+def test_newey_west_near_constant_pool_is_null():
+    # Spread at the rounding level of the mean (here a few ulps): the long-run variance is
+    # residue, not dispersion — the same scale-relative gate the moment estimators use.
+    rets = 0.01 + np.array([0.0, 1.0, 0.0, 2.0, 1.0, 0.0]) * np.spacing(0.01)
+    t, se = newey_west_mean(rets, np.arange(6), h=2)
+    assert np.isnan(t) and np.isnan(se)
+    assert pool_moments(rets)["std_ret"] > 0.0  # genuinely non-constant: std stays as computed
+
+
 def test_pool_moments_exact_constant_pool_moments_are_null():
     import warnings
 
@@ -1979,6 +2058,181 @@ def test_cscv_basket_equals_union_at_huge_level():
     assert basket["reason"] is None and union["reason"] is None
     for key in ("pbo", "lambda_mean", "oos_degradation_slope", "prob_oos_loss"):
         assert basket[key] == pytest.approx(union[key], rel=1e-9)
+
+
+def _two_level_cells(mode_targets, T=400, n_noise=4, seed=31):
+    """One candidate (combo 0) whose returns are 0.005 on the first half of the bars and 0.022
+    on the second — constant within every split drawn from one half — beside noise candidates."""
+    rng = np.random.RandomState(seed)
+    level = np.where(np.arange(T) < T // 2, 0.005, 0.022)
+    cells = []
+    for k in range(1 + n_noise):
+        for tg in mode_targets:
+            m = np.zeros(T)
+            m[rng.choice(T - 2, 120, replace=False)] = 1.0
+            fwd = level if k == 0 else rng.normal(0.0, 0.01, T)
+            cells.append({"key": (k, tg), "mask_col": m, "fwd_col": fwd, "h": 1})
+    return cells
+
+
+@pytest.mark.parametrize(("mode", "targets"), [("conjunction", ("t",)), ("basket", ("A", "B"))])
+def test_cscv_constant_split_pool_is_never_ranked(mode, targets):
+    # Combo 0's returns vary across the run but are constant within each half, so the S=8
+    # split whose train blocks are the first half (and its test blocks, the second) scores a
+    # constant pool. Shifted by the WHOLE column's mean, its reconstructed variance is rounding
+    # residue — the Sharpe read ±1e7 there and outranked every honest candidate. A constant
+    # pool has no dispersion: it drops out of that split's ranking like any undefined score.
+    cells = _two_level_cells(targets)
+    out = cscv_pbo(cells, 400, list(targets), mode=mode, n_combos_declared=5)
+    assert out["reason"] is None and out["blocks"] == 8
+    assert out["n_candidates_min"] == 4
+
+
+def _split_tensors(r, b, s=4):
+    """One candidate × one member, built the way ``cscv_pbo`` builds them: block moments of the
+    returns shifted by the column's own mean, and the per-block extrema."""
+    ref_v = float(r.mean())
+    sh = r - ref_v
+    moments = np.stack(
+        [
+            np.bincount(b, minlength=s).astype(float),
+            np.bincount(b, weights=sh, minlength=s),
+            np.bincount(b, weights=sh * sh, minlength=s),
+        ]
+    )[None, None]
+    lo, hi = np.full(s, np.inf), np.full(s, -np.inf)
+    np.minimum.at(lo, b, r)
+    np.maximum.at(hi, b, r)
+    return moments, np.array([[ref_v]]), np.stack([lo, hi])[None, None]
+
+
+def test_cscv_split_score_reads_exact_constancy_per_split():
+    # The column varies (0.1 in blocks 0-1, 0.3 in blocks 2-3), but a split over blocks {0, 1}
+    # alone is a constant pool. Shifted by the WHOLE column's mean, with unequal block counts,
+    # its reconstructed variance is residue that once scored a Sharpe of ~7.6e7; the per-block
+    # extrema (and the rounding floor behind them) leave it undefined, while a split mixing the
+    # two levels varies and scores.
+    from seikan.analysis._cscv import _split_scores
+
+    r = np.array([0.1] * 5 + [0.3] * 5)
+    b = np.array([0, 0, 1, 1, 1, 2, 2, 3, 3, 3])
+    moments, refs, extrema = _split_tensors(r, b)
+    for mode in ("conjunction", "basket"):
+        for blocks in ([0, 1], [2, 3]):
+            assert np.isnan(_split_scores(moments, refs, extrema, mode, np.array(blocks))).all()
+        assert np.isfinite(_split_scores(moments, refs, extrema, mode, np.array([0, 2]))).all()
+
+
+def test_cscv_split_score_nulls_dispersion_below_rounding():
+    # One ulp of spread inside a split pool is below what the shifted accumulation can resolve:
+    # the centered sum of squares is cancellation residue, and the split reads NaN like an
+    # exactly constant one (the extrema alone would let it through as "varying").
+    from seikan.analysis._cscv import _split_scores
+
+    r = np.array([0.005] * 5 + [0.022] * 5)
+    r[1] = np.nextafter(0.005, 1.0)
+    b = np.array([0, 0, 1, 1, 1, 2, 2, 3, 3, 3])
+    moments, refs, extrema = _split_tensors(r, b)
+    for mode in ("conjunction", "basket"):
+        assert np.isnan(_split_scores(moments, refs, extrema, mode, np.array([0, 1]))).all()
+        assert np.isfinite(_split_scores(moments, refs, extrema, mode, np.array([0, 2]))).all()
+
+
+def test_cscv_near_constant_split_pool_is_never_ranked():
+    # The two-level fixture with every other bar of combo 0 nudged up one ulp: no split pool of
+    # it is exactly constant any more, but none varies above rounding either.
+    cells = _two_level_cells(("t",))
+    for cell in cells:
+        if cell["key"][0] == 0:
+            fwd = np.array(cell["fwd_col"], dtype=float)
+            fwd[::2] = np.nextafter(fwd[::2], 1.0)
+            cell["fwd_col"] = fwd
+    out = cscv_pbo(cells, 400, ["t"], n_combos_declared=5)
+    assert out["reason"] is None and out["n_candidates_min"] == 4
+
+
+@pytest.mark.parametrize(("mode", "targets"), [("conjunction", ("t",)), ("basket", ("A", "B"))])
+def test_cscv_single_level_near_constant_pool_is_never_ranked(mode, targets):
+    # Combo 0 sits at ONE level with every other bar one ulp up: the column's own mean lies on
+    # the values, so a split's centered sum of squares is computed accurately — and is still
+    # only rounding-scale spread. It scored a Sharpe of ~1e15, won every split and read pbo 0.0;
+    # the HAC's gate (largest deviation within 10 ulps of the mean, read off the per-block
+    # extrema) leaves it unranked whatever the column's other blocks hold.
+    T = 400
+    rng = np.random.RandomState(9)
+    level = np.full(T, 0.005)
+    level[::2] = np.nextafter(0.005, 1.0)
+    cells = []
+    for k in range(5):
+        for tg in targets:
+            m = np.zeros(T)
+            m[rng.choice(T - 2, 120, replace=False)] = 1.0
+            fwd = level if k == 0 else rng.normal(0.0, 0.01, T)
+            cells.append({"key": (k, tg), "mask_col": m, "fwd_col": fwd, "h": 1})
+    out = cscv_pbo(cells, T, list(targets), mode=mode, n_combos_declared=5)
+    assert out["reason"] is None and out["n_candidates_min"] == 4
+
+
+def test_cscv_split_score_needs_the_extrema_for_an_exact_constant_pool():
+    # A column whose mean sits within ~1e-14 of an exactly constant split's value: rebuilding
+    # the basket's pooled mean is off by ~ε·|c|, so its residue clears the rounding floor and
+    # only the per-block extrema keep the split undefined.
+    from seikan.analysis._cscv import _split_scores
+
+    hi = 0.21
+    for _ in range(103):
+        hi = np.nextafter(hi, 1.0)
+    r = np.array([0.21] * 10 + [hi] * 10)
+    moments, refs, extrema = _split_tensors(r, np.repeat(np.arange(4), 5))
+    for mode in ("basket", "conjunction"):
+        assert np.isnan(_split_scores(moments, refs, extrema, mode, np.array([0, 1]))).all()
+
+
+def test_cscv_basket_absent_member_cannot_widen_an_exact_constant_split():
+    # The same near-level fixture through cscv_pbo, combo 0's member B absent: its (+inf, -inf)
+    # extrema must leave every within-half split exactly constant.
+    T, hi = 400, 0.21
+    for _ in range(300):
+        hi = np.nextafter(hi, 1.0)
+    level = np.where(np.arange(T) < T // 2, 0.21, hi)
+    rng = np.random.RandomState(31)
+    cells = []
+    for k in range(5):
+        for tg in ("A", "B"):
+            m = np.zeros(T)
+            m[rng.choice(T - 2, 120, replace=False)] = 1.0
+            if (k, tg) != (0, "B"):
+                fwd = level if k == 0 else rng.normal(0.0, 0.01, T)
+                cells.append({"key": (k, tg), "mask_col": m, "fwd_col": fwd, "h": 1})
+    out = cscv_pbo(cells, T, ["A", "B"], mode="basket", n_combos_declared=5)
+    assert out["reason"] is None and out["blocks"] == 8 and out["n_candidates_min"] == 4
+
+
+def test_cscv_basket_absent_member_bounds_nothing():
+    # Combo 0 has member A only; its pool is constant within each half. The absent member's
+    # (+inf, -inf) extrema must not widen the pool's range into "varying".
+    cells = [c for c in _two_level_cells(("A", "B")) if c["key"] != (0, "B")]
+    out = cscv_pbo(cells, 400, ["A", "B"], mode="basket", n_combos_declared=5)
+    assert out["reason"] is None and out["blocks"] == 8
+    assert out["n_candidates_min"] == 4
+
+
+@pytest.mark.parametrize(("mode", "expected"), [("basket", 5), ("conjunction", 4)])
+def test_cscv_members_constant_at_different_levels(mode, expected):
+    # Combo 0: member A constant at 0.005, member B at 0.022. The basket POOLS its members — two
+    # values, a pool that varies, ranked in every split; conjunction reads each member alone —
+    # each constant, the combo never ranks.
+    T = 400
+    rng = np.random.RandomState(5)
+    cells = []
+    for k in range(5):
+        for tg, lvl in (("A", 0.005), ("B", 0.022)):
+            m = np.zeros(T)
+            m[rng.choice(T - 2, 120, replace=False)] = 1.0
+            fwd = np.full(T, lvl) if k == 0 else rng.normal(0.0, 0.01, T)
+            cells.append({"key": (k, tg), "mask_col": m, "fwd_col": fwd, "h": 1})
+    out = cscv_pbo(cells, T, ["A", "B"], mode=mode, n_combos_declared=5)
+    assert out["reason"] is None and out["n_candidates_min"] == expected
 
 
 def test_oos_degradation_slope_matches_centered_ols_and_reason():

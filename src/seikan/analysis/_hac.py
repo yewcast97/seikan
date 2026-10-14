@@ -6,6 +6,8 @@ import math
 
 import numpy as np
 
+from seikan.analysis._pools import _near_constant
+
 _NAN = float("nan")
 
 
@@ -26,6 +28,10 @@ def newey_west_mean(rets: np.ndarray, entry_bars: np.ndarray, h: int) -> tuple[f
     Bartlett with lag ≈ n drives the long-run variance toward 0 and fabricates significance).
     Rows are canonically ordered by (entry bar, return) before accumulation, so the estimate is
     bit-identical under any permutation of tied-bar rows (the basket pooled path).
+
+    A (near-)constant pool (:func:`_near_constant`) is ``(NaN, NaN)``, like any other pool
+    without a positive long-run variance: its dispersion is rounding residue — the computed mean
+    of a constant DECIMAL pool is not the constant — and dividing by it minted ``|t| ≈ 1e16``.
 
     No p-value is computed here: a consumer who wants one derives it from ``t_stat`` at
     ``df = n_nonoverlap − 1`` — the row count wildly overstates the information on an
@@ -50,6 +56,8 @@ def newey_west_mean(rets: np.ndarray, entry_bars: np.ndarray, h: int) -> tuple[f
     if n < 2 or h < 1:
         return (_NAN, _NAN)
     mean = float(rets.mean())
+    if _near_constant(rets, mean):
+        return (_NAN, _NAN)
     dev = rets - mean
     s = float(dev @ dev) / (n - 1.0)  # gamma_0 (long-run variance accumulator, ddof=1)
     for k in range(1, n):

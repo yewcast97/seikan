@@ -197,7 +197,13 @@ def cell_conditional_buckets(
             buckets_out[name] = {"buckets": [], "reason": "insufficient_distinct_values"}
             continue
         buckets_out[name] = {"buckets": records, "reason": None}
-        mono = _bucket_monotonicity(records)
+        # A pool whose returns are all equal carries no rank signal, whatever ulp-scale spread
+        # its bucket means' rounding shows (bucket sizes differ, so their means round apart).
+        mono = (
+            None
+            if float(valid["ret"].min()) == float(valid["ret"].max())
+            else _bucket_monotonicity(records)
+        )
         if mono is not None:
             mono_out[name] = mono
     return {"conditional_buckets": buckets_out, "bucket_monotonicity": mono_out}

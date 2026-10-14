@@ -3,7 +3,9 @@
 
 Plain NumPy/Python-loop ports of the vectorized/numba kernels, independent of the
 ``sliding_window_view``/``njit`` implementations, so drift between the two is caught by the parity
-tests in ``tests/test_nb_kernels.py``.
+tests in ``tests/test_nb_kernels.py``. A window or cross-section whose values are ALL EQUAL has
+exact answers — mean the value, std / deviations 0.0, z-score and correlation undefined (NaN) —
+whatever the floating-point mean of a constant decimal window rounds to.
 """
 
 from __future__ import annotations
@@ -61,6 +63,8 @@ def zscore_sma(arr: np.ndarray, window: int) -> np.ndarray:
                 cnt += 1
         if cnt < window:
             continue
+        if len(set(arr[i - window + 1 : i + 1].tolist())) == 1:
+            continue  # a constant window has no dispersion to standardize by
         mean = s / cnt
         # Two-pass centered variance (population), matching the production kernel: the one-pass
         # E[x²] − E[x]² form loses the mantissa to cancellation at large input levels.
@@ -88,26 +92,47 @@ def zscore_ema(arr: np.ndarray, window: int) -> np.ndarray:
     alpha = 2.0 / (window + 1.0)
     # West EW recurrence, matching the production kernel: exact-arithmetic identical to the
     # EW[x²] − EW[x]² pair, but centered, so it stays translation-invariant in floating point.
-    mu = np.nan
-    s = 0.0
+    return _zscore_ema_west(arr, alpha, window)
+
+
+def _zscore_ema_west(arr: np.ndarray, alpha: float, warmup: int) -> np.ndarray:
+    """The West recurrence with the exact-interval rules, written out step by step: the mean's
+    convex update stays between the old mean and the input; on a repeated input whose update
+    cannot move the stored mean (absorbed, or landing on the input) the deviation is tracked on
+    its own and shrinks by (1 − alpha) per repeat, as it does in exact arithmetic."""
+    n = arr.shape[0]
+    out = np.full(n, np.nan, dtype=np.float64)
+    if warmup < 1 or not (0.0 < alpha <= 1.0):
+        return out
+    mean = np.nan
+    var = 0.0
     seen = 0
+    last = np.nan
+    dev = None  # tracked deviation while a repeated input pins the stored mean
     for i in range(n):
         x = arr[i]
         if np.isnan(x):
             continue
-        if np.isnan(mu):
-            mu = x
-            s = 0.0
+        if np.isnan(mean):
+            mean, var, dev = x, 0.0, None
+        elif dev is not None and x == last:
+            var = (1.0 - alpha) * (var + alpha * dev * dev)
+            dev_next = (1.0 - alpha) * dev
+            # exact arithmetic never reaches zero: the smallest subnormal, sign kept
+            var = var if var != 0.0 else 5e-324
+            dev = dev_next if dev_next != 0.0 else math.copysign(5e-324, dev)
         else:
-            d = x - mu
-            mu = mu + alpha * d
-            s = (1.0 - alpha) * (s + alpha * d * d)
+            d = x - mean
+            step = mean + alpha * d
+            step = min(max(step, min(mean, x)), max(mean, x))
+            var = (1.0 - alpha) * (var + alpha * d * d)
+            dev = (1.0 - alpha) * d if (x == last and d != 0.0 and step in (mean, x)) else None
+            mean = step
+        last = x
         seen += 1
-        if seen < window:
+        if seen < warmup or var <= 0.0 or not np.isfinite(var):
             continue
-        if s <= 0.0 or not np.isfinite(s):
-            continue
-        z = (x - mu) / math.sqrt(s)
+        z = ((x - mean) if dev is None else dev) / math.sqrt(var)
         if np.isfinite(z):
             out[i] = z
     return out
@@ -156,16 +181,17 @@ def rolling_agg(arr: np.ndarray, window: int, agg: str) -> np.ndarray:
             vals.append(v)
         if not ok or len(vals) < window:
             continue
+        constant = len(set(vals)) == 1
         vals = np.asarray(vals, dtype=np.float64)
         if agg == "max":
             out[i] = vals.max()
         elif agg == "min":
             out[i] = vals.min()
         elif agg == "mean":
-            out[i] = vals.mean()
+            out[i] = vals[0] if constant else vals.mean()
         else:  # std, population
             m = vals.mean()
-            out[i] = math.sqrt(max(float(np.mean((vals - m) ** 2)), 0.0))
+            out[i] = 0.0 if constant else math.sqrt(max(float(np.mean((vals - m) ** 2)), 0.0))
     return out
 
 
@@ -298,11 +324,21 @@ def ema(arr: np.ndarray, window: int) -> np.ndarray:
         x = arr[i]
         if np.isnan(x):
             continue
-        e = x if np.isnan(e) else alpha * x + (1.0 - alpha) * e
+        e = x if np.isnan(e) else _between(alpha * x + (1.0 - alpha) * e, e, x, alpha)
         seen += 1
         if seen >= window:
             out[i] = e
     return out
+
+
+def _between(v: float, a: float, b: float, alpha: float) -> float:
+    """``v`` (the rounded ``alpha·b + (1 − alpha)·a``) held where the convex combination's exact
+    value lies: inside ``[min(a, b), max(a, b)]``, and — as the exact value never reaches the new
+    input ``b`` when ``a != b`` and ``alpha < 1`` — never ON ``b``: the next float toward ``a``."""
+    held = min(max(v, min(a, b)), max(a, b))
+    if held == b and a != b and alpha < 1.0:
+        return float(np.nextafter(b, a))
+    return held
 
 
 def shift_ref(arr: np.ndarray, periods: int) -> np.ndarray:
@@ -323,28 +359,34 @@ def cross_agg_ref(arr: np.ndarray, agg: str, min_valid: int) -> np.ndarray:
         vals = [x for x in arr[i] if math.isfinite(x)]
         if len(vals) < max(min_valid, 2):
             continue
-        if agg == "mean":
-            v = sum(vals) / len(vals)
-        elif agg == "median":
-            s = sorted(vals)
-            m = len(s) // 2
-            v = s[m] if len(s) % 2 else (s[m - 1] + s[m]) / 2.0
-        elif agg == "std":
-            mu = sum(vals) / len(vals)
-            v = math.sqrt(sum((x - mu) ** 2 for x in vals) / len(vals))
-        elif agg == "frac_positive":
-            v = sum(1.0 for x in vals if x > 0.0) / len(vals)
-        else:
-            raise ValueError(agg)
-        out[i, :] = v
+        out[i, :] = _cross_value(vals, agg)
     return out
+
+
+def _cross_value(vals: list[float], agg: str) -> float:
+    """One cross-section's aggregate (shared by the plain and grouped references)."""
+    constant = len(set(vals)) == 1
+    if agg == "mean":
+        return vals[0] if constant else sum(vals) / len(vals)
+    if agg == "median":
+        s = sorted(vals)
+        m = len(s) // 2
+        return s[m] if len(s) % 2 else (s[m - 1] + s[m]) / 2.0
+    if agg == "std":
+        if constant:
+            return 0.0
+        mu = sum(vals) / len(vals)
+        return math.sqrt(sum((x - mu) ** 2 for x in vals) / len(vals))
+    if agg == "frac_positive":
+        return sum(1.0 for x in vals if x > 0.0) / len(vals)
+    raise ValueError(agg)
 
 
 def rolling_corr_ref(left: np.ndarray, right: np.ndarray, window: int) -> np.ndarray:
     """Row-loop reference for the trailing-window Pearson correlation of two 1D series.
 
     Population moments (ddof=0), NaN unless the whole window is finite in BOTH inputs AND both
-    window stds > 0 — matches ``nb.rolling_corr_apply_nb``.
+    windows vary (neither constant, both window stds > 0) — matches ``nb.rolling_corr_apply_nb``.
     """
     n = left.shape[0]
     out = np.full(n, np.nan, dtype=np.float64)
@@ -354,6 +396,8 @@ def rolling_corr_ref(left: np.ndarray, right: np.ndarray, window: int) -> np.nda
         a = left[i - window + 1 : i + 1]
         b = right[i - window + 1 : i + 1]
         if np.isnan(a).any() or np.isnan(b).any():
+            continue
+        if len(set(a.tolist())) == 1 or len(set(b.tolist())) == 1:
             continue
         ma, mb = a.mean(), b.mean()
         va = float(np.mean((a - ma) ** 2))
@@ -460,7 +504,7 @@ def event_agg(
         elif agg == "min":
             v = float(np.min(win))
         elif agg == "mean":
-            v = float(np.sum(win)) / len(win)
+            v = float(win[0]) if len(set(win.tolist())) == 1 else float(np.sum(win)) / len(win)
         else:
             raise ValueError(agg)
         if math.isfinite(v):
@@ -548,9 +592,10 @@ def cross_demean_grouped_ref(arr: np.ndarray, labels: np.ndarray, min_valid: int
         for members in _groups(arr[i], labels[i]).values():
             if len(members) < max(min_valid, 2):
                 continue
-            mean = sum(float(arr[i, g]) for g in members) / len(members)
+            vals = [float(arr[i, g]) for g in members]
+            mean = sum(vals) / len(vals)
             for g in members:
-                out[i, g] = arr[i, g] - mean
+                out[i, g] = 0.0 if len(set(vals)) == 1 else arr[i, g] - mean
     return out
 
 
@@ -570,19 +615,7 @@ def cross_agg_grouped_ref(
             vals = [float(arr[i, g]) for g in members if math.isfinite(arr[i, g])]
             if len(vals) < max(min_valid, 2):
                 continue
-            if agg == "mean":
-                v = sum(vals) / len(vals)
-            elif agg == "median":
-                s = sorted(vals)
-                m = len(s) // 2
-                v = s[m] if len(s) % 2 else (s[m - 1] + s[m]) / 2.0
-            elif agg == "std":
-                mu = sum(vals) / len(vals)
-                v = math.sqrt(sum((x - mu) ** 2 for x in vals) / len(vals))
-            elif agg == "frac_positive":
-                v = sum(1.0 for x in vals if x > 0.0) / len(vals)
-            else:
-                raise ValueError(agg)
+            v = _cross_value(vals, agg)
             for g in members:
                 out[i, g] = v
     return out
@@ -632,7 +665,7 @@ def ema_alpha(arr: np.ndarray, alpha: float, warmup: int) -> np.ndarray:
         x = arr[i]
         if np.isnan(x):
             continue
-        e = x if np.isnan(e) else alpha * x + (1.0 - alpha) * e
+        e = x if np.isnan(e) else _between(alpha * x + (1.0 - alpha) * e, e, x, alpha)
         seen += 1
         if seen >= warmup:
             out[i] = e
@@ -640,26 +673,4 @@ def ema_alpha(arr: np.ndarray, alpha: float, warmup: int) -> np.ndarray:
 
 
 def zscore_ema_alpha(arr: np.ndarray, alpha: float, warmup: int) -> np.ndarray:
-    n = arr.shape[0]
-    out = np.full(n, np.nan, dtype=np.float64)
-    mu = np.nan
-    s = 0.0
-    seen = 0
-    for i in range(n):
-        x = arr[i]
-        if np.isnan(x):
-            continue
-        if np.isnan(mu):
-            mu = x
-            s = 0.0
-        else:
-            d = x - mu
-            mu = mu + alpha * d
-            s = (1.0 - alpha) * (s + alpha * d * d)
-        seen += 1
-        if seen < warmup or s <= 0.0 or not np.isfinite(s):
-            continue
-        z = (x - mu) / math.sqrt(s)
-        if np.isfinite(z):
-            out[i] = z
-    return out
+    return _zscore_ema_west(arr, alpha, warmup)

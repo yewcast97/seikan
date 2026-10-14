@@ -6,7 +6,7 @@ from itertools import pairwise
 
 import numpy as np
 
-from seikan.analysis._pools import pool_quantiles
+from seikan.analysis._pools import _ddof1_std, pool_quantiles
 from seikan.types import (
     BaselineStats,
     SubperiodCounts,
@@ -33,7 +33,8 @@ def baseline_summary(rets: np.ndarray) -> BaselineStats:
     it knows which pool it is describing. Non-finite entries are dropped defensively
     (``n_eligible`` counts what was actually described). An EMPTY pool is all-null, NEVER zeros
     — a zero base rate is a measured outcome, and a pool with no observations measured nothing.
-    ``std_ret`` is ddof=1 (NaN below two observations, the same rule as ``pool_moments``);
+    ``std_ret`` is ddof=1 (NaN below two observations, exactly 0.0 on a constant pool — the
+    same rules as ``pool_moments``);
     ``ret_quantiles`` rides :func:`pool_quantiles`, so its ``p50`` agrees with any median a
     caller derives — there is deliberately no ``median_ret`` key, ``ret_quantiles.p50`` IS it.
     """
@@ -52,7 +53,7 @@ def baseline_summary(rets: np.ndarray) -> BaselineStats:
     if n == 0:
         return out
     out["mean_ret"] = float(np.mean(v))
-    out["std_ret"] = float(np.std(v, ddof=1)) if n > 1 else _NAN
+    out["std_ret"] = _ddof1_std(v) if n > 1 else _NAN
     out["hit_rate"] = float(np.mean(v > 0))
     out["worst_ret"] = float(np.min(v))
     out["best_ret"] = float(np.max(v))

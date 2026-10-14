@@ -4,6 +4,9 @@ reference series (``tests/_reference_nb.py``) exactly.
 
 from __future__ import annotations
 
+import math
+from fractions import Fraction
+
 import numpy as np
 import pytest
 from numpy.lib.stride_tricks import sliding_window_view
@@ -614,6 +617,267 @@ def test_kernel_overflow_yields_nan_never_inf():
     ]
     for got in probes:
         assert not np.isinf(got).any()
+
+
+@pytest.mark.parametrize("c", [0.1, 100.1, 0.7, -2.7])
+def test_constant_decimal_window_has_exact_zero_dispersion(c):
+    # The review's probe: the computed mean of a constant DECIMAL window is not the constant
+    # ((0.1 + 0.1 + 0.1) / 3 != 0.1), and the residual minted zscore_sma([0.1]*3) == -1,
+    # [100.1]*3 == +1 and rolling_corr(x, x) == 1. A constant window has exact answers: the mean
+    # is the value, the std and the demeaned values are 0.0, z-score and correlation undefined.
+    flat = np.full(6, c)
+    assert np.isnan(zscore_sma_1d(flat, 3)).all()
+    assert np.isnan(rolling_corr_1d(flat, flat, 3)).all()
+    assert np.isnan(rolling_corr_1d(np.arange(6.0), flat, 3)).all()
+    np.testing.assert_array_equal(rolling_agg_1d(flat, 3, "mean"), [np.nan, np.nan, c, c, c, c])
+    np.testing.assert_array_equal(rolling_agg_1d(flat, 3, "std"), [np.nan, np.nan, 0, 0, 0, 0])
+    row = np.array([[c, c, c, np.nan]])
+    np.testing.assert_array_equal(nb.cross_demean_apply_nb(row, 2), [[0.0, 0.0, 0.0, np.nan]])
+    np.testing.assert_array_equal(nb.cross_agg_apply_nb(row, "mean", 2), np.full((1, 4), c))
+    np.testing.assert_array_equal(nb.cross_agg_apply_nb(row, "std", 2), np.zeros((1, 4)))
+    # the frozen references state the same exact answers
+    np.testing.assert_array_equal(ref.zscore_sma(flat, 3), zscore_sma_1d(flat, 3))
+    np.testing.assert_array_equal(
+        ref.rolling_corr_ref(flat, flat, 3), rolling_corr_1d(flat, flat, 3)
+    )
+    for agg in ("mean", "std"):
+        np.testing.assert_array_equal(ref.rolling_agg(flat, 3, agg), rolling_agg_1d(flat, 3, agg))
+        np.testing.assert_array_equal(
+            ref.cross_agg_ref(row, agg, 2), nb.cross_agg_apply_nb(row, agg, 2)
+        )
+
+
+def test_constant_window_inside_a_varying_series_is_exact_only_there():
+    # Only the windows whose values are all equal change; every other window is computed
+    # exactly as before (bit for bit — a window one ulp off constant is NOT constant).
+    arr = np.array([1.0, 2.0, 0.1, 0.1, 0.1, 0.4, np.nextafter(0.4, 1.0), 0.4])
+    z = zscore_sma_1d(arr, 3)
+    assert np.isnan(z[:2]).all() and np.isnan(z[4])
+    assert np.isfinite(z[[2, 3, 5, 6, 7]]).all()
+    np.testing.assert_array_equal(z, ref.zscore_sma(arr, 3))
+    std = rolling_agg_1d(arr, 3, "std")
+    assert std[4] == 0.0 and (std[[2, 3, 5, 6, 7]] > 0.0).all()
+
+
+def test_grouped_constant_cross_section_is_exact():
+    # Grouping wraps the same kernels, so a group whose members share one value demeans to 0.0
+    # and aggregates exactly — beside a varying group computed as before.
+    a = np.array([[0.1, 0.1, 0.1, 0.2, 0.5]])
+    lab = np.array([[1.0, 1.0, 1.0, 2.0, 2.0]])
+    dm = nb.cross_grouped_apply_nb(lambda x: nb.cross_demean_apply_nb(x, 2), a, lab)
+    np.testing.assert_array_equal(dm[0, :3], [0.0, 0.0, 0.0])
+    np.testing.assert_array_equal(dm, ref.cross_demean_grouped_ref(a, lab))
+    sd = nb.cross_grouped_apply_nb(lambda x: nb.cross_agg_apply_nb(x, "std", 2), a, lab)
+    np.testing.assert_array_equal(sd[0, :3], [0.0, 0.0, 0.0])
+    assert sd[0, 3] == sd[0, 4] > 0.0
+    mean = nb.cross_grouped_apply_nb(lambda x: nb.cross_agg_apply_nb(x, "mean", 2), a, lab)
+    np.testing.assert_array_equal(mean[0, :3], [0.1, 0.1, 0.1])
+
+
+@pytest.mark.parametrize("c", [0.1, 100.1, 0.7, -2.7])
+def test_rolling_corr_constant_left_window_is_nan(c):
+    # Either leg's constancy voids the window: a constant LEFT leg has its own pin.
+    flat = np.full(6, c)
+    varying = np.array([0.3, 0.1, 0.7, 0.2, 0.9, 0.4])
+    assert np.isnan(rolling_corr_1d(flat, np.arange(6.0), 3)).all()
+    assert np.isnan(rolling_corr_1d(flat, varying, 3)).all()
+    np.testing.assert_array_equal(
+        ref.rolling_corr_ref(flat, varying, 3), rolling_corr_1d(flat, varying, 3)
+    )
+
+
+def test_signed_zero_windows_are_constant():
+    # -0.0 == 0.0: a window of signed zeros has no dispersion either.
+    x = np.array([1.0, 0.0, -0.0, 0.0, -0.0, 0.0])
+    assert np.isnan(zscore_sma_1d(x, 3)[3:]).all()
+    np.testing.assert_array_equal(rolling_agg_1d(x, 3, "std")[3:], 0.0)
+    assert np.isnan(rolling_corr_1d(x, np.arange(6.0), 3)[3:]).all()
+    row = np.array([[0.0, -0.0, 0.0]])
+    np.testing.assert_array_equal(nb.cross_demean_apply_nb(row, 2), np.zeros((1, 3)))
+    np.testing.assert_array_equal(nb.cross_agg_apply_nb(row, "std", 2), np.zeros((1, 3)))
+
+
+@pytest.mark.parametrize("c", [0.1, 100.1, 0.7, -2.7])
+def test_cross_agg_median_and_frac_positive_are_exact_on_constant_rows(c):
+    for row in (np.array([[c, c, c, np.nan]]), np.array([[c, c, c, c]])):
+        np.testing.assert_array_equal(
+            nb.cross_agg_apply_nb(row, "median", 2), np.full(row.shape, c)
+        )
+        np.testing.assert_array_equal(
+            nb.cross_agg_apply_nb(row, "frac_positive", 2),
+            np.full(row.shape, 1.0 if c > 0 else 0.0),
+        )
+
+
+@pytest.mark.parametrize("c", [0.1, 0.007, 100.1, 0.7])
+def test_ema_of_a_constant_decimal_feed_is_the_constant(c):
+    # The convex update alpha*x + (1-alpha)*e does not return e when x == e: a flat feed's EMA
+    # drifted to a fixed point a few ulps off the feed, and `x > ema(x)` read a sign on every bar.
+    flat = np.full(400, c)
+    for w in (3, 10, 50):
+        got = nb.ema_1d(flat, *nb.ema_params(w, None))
+        np.testing.assert_array_equal(got[w - 1 :], c)
+        np.testing.assert_array_equal(got, ref.ema(flat, w))
+    got = nb.ema_1d(flat, *nb.ema_params(None, 0.06))
+    np.testing.assert_array_equal(got[32:], c)
+    np.testing.assert_array_equal(got, ref.ema_alpha(flat, 0.06, 33))
+
+
+def test_ema_never_crosses_a_held_value():
+    # Move, then hold: exact arithmetic approaches the held value from the side it came from and
+    # never reaches it. The rounded convex update could land past it (a held stretch read the
+    # opposite sign) or ON it (`x <= ema(x)` fired); held inside the open interval it stays
+    # strictly on its own side, one ulp short of the value at the closest.
+    rng = np.random.default_rng(5)
+    for _ in range(300):
+        c = round(float(rng.uniform(0.01, 200.0)), 2)
+        start = c * (1.0 + float(rng.choice([-1.0, 1.0])) * float(rng.uniform(0.001, 0.2)))
+        x = np.concatenate([np.full(5, start), np.full(600, c)])
+        w = int(rng.integers(2, 60))
+        tail = nb.ema_1d(x, *nb.ema_params(w, None))[300:]
+        assert (tail > c).all() if start > c else (tail < c).all(), (c, start, w)
+        np.testing.assert_array_equal(nb.ema_1d(x, *nb.ema_params(w, None)), ref.ema(x, w))
+
+
+def test_zscore_ema_of_a_held_stretch_decays_instead_of_locking():
+    # A series that moves and then holds: the EW mean converges until its update falls below
+    # half an ulp, then stuck a few ulps off the held value; the deviation froze at that residue,
+    # the variance settled at (1-alpha)*d^2, and the z-score locked at exactly ±1/sqrt(1-alpha)
+    # (1.2247 at window 5) for as long as the input held. Exact arithmetic decays it to 0.
+    rng = np.random.default_rng(6)
+    for _ in range(200):
+        c = round(float(rng.uniform(0.01, 200.0)), 2)
+        x = np.concatenate([c + rng.normal(0.0, 0.05 * c, 30), np.full(700, c)])
+        w = int(rng.integers(2, 40))
+        z = nb.zscore_ema_1d(x, *nb.ema_params(w, None))
+        tail = z[-200:]
+        assert np.all(np.isnan(tail) | (np.abs(tail) < 1e-3)), (c, w, np.nanmax(np.abs(tail)))
+        np.testing.assert_array_equal(z, ref.zscore_ema(x, w))
+    alpha_z = nb.zscore_ema_1d(x, *nb.ema_params(None, 0.06))
+    np.testing.assert_array_equal(alpha_z, ref.zscore_ema_alpha(x, 0.06, 33))
+
+
+def test_zscore_ema_of_a_held_stretch_keeps_its_exact_sign():
+    # Exact arithmetic moves a held input's deviation x − μ to (1 − α)·(x − μ) every bar: it
+    # decays and KEEPS ITS SIGN, so `z > 0` ("above its EW mean") holds on every bar of a hold
+    # reached from below. A mean that rounds onto or past the held value, or a deviation zeroed
+    # once the update is absorbed, read the opposite sign on most held bars.
+    rng = np.random.default_rng(8)
+    for _ in range(40):
+        c = round(float(rng.uniform(0.01, 200.0)), 2)
+        w = int(rng.choice([3, 5, 10, 20]))
+        x = np.concatenate([c + rng.normal(0.0, 0.05 * c, 20), np.full(250, c)])
+        z = nb.zscore_ema_1d(x, *nb.ema_params(w, None))
+        a = Fraction(2.0 / (w + 1.0))
+        mu = Fraction(float(x[0]))
+        for i in range(1, x.size):
+            xi = Fraction(float(x[i]))
+            mu += a * (xi - mu)
+            if i >= 20 and np.isfinite(z[i]):
+                assert (z[i] > 0) == (xi > mu) and (z[i] < 0) == (xi < mu), (c, w, i)
+        np.testing.assert_array_equal(z, ref.zscore_ema(x, w))
+
+
+@pytest.mark.parametrize("c", [0.007, 0.1, 100.1])
+def test_zscore_ema_carry_needs_a_held_input(c):
+    # An update absorbed on an input that MOVED (c and its next float, alternating) is
+    # variation: the plain recurrence runs, bit for bit — only a repeated input carries its
+    # deviation.
+    x = np.tile([c, np.nextafter(c, np.inf)], 200)
+    for w in (3, 10):
+        got = nb.zscore_ema_1d(x, *nb.ema_params(w, None))
+        np.testing.assert_array_equal(got, ref.zscore_ema(x, w))
+        assert np.nanmax(np.abs(got)) > 0.5
+    np.testing.assert_array_equal(
+        nb.zscore_ema_1d(x, *nb.ema_params(None, 0.06)), ref.zscore_ema_alpha(x, 0.06, 33)
+    )
+
+
+def test_event_agg_mean_of_a_run_one_ulp_off_constant_is_sum_over_count():
+    # Only a bit-identical run takes its value as the mean; one ulp off is variation, read as
+    # sum / count like any other run.
+    n = 40
+    x = np.full(n, 0.1)
+    x[10] = np.nextafter(0.1, 1.0)
+    sig = np.zeros(n, dtype=bool)
+    sig[0] = True
+    ones = np.ones(n, dtype=bool)
+    got = nb.event_agg_apply_nb(sig[:, None], ones[:, None], ones[:, None], x[:, None], "mean")
+    np.testing.assert_array_equal(got.ravel()[10:], (np.cumsum(x) / np.arange(1, n + 1))[10:])
+
+
+@pytest.mark.parametrize(("lo", "hi"), [(99.75, 100.0), (1.0, 1.25), (100.25, 100.0), (0.1, 0.2)])
+@pytest.mark.parametrize("w", [3, 5, 10])
+def test_ema_of_a_held_stretch_never_reaches_the_held_value(lo, hi, w):
+    # Exact arithmetic: after a step the EW mean approaches the held value and NEVER reaches it,
+    # so `x > ema(x)` (after a step up) holds on every held bar — the same predicate as the
+    # engine's own `zscore(x, w, ema) > 0`, which carries its deviation to keep exactly that sign.
+    # An ema that lands ON the held value reads `x <= ema(x)` there: firings exact arithmetic
+    # never makes.
+    x = np.r_[np.full(5, lo), np.full(400, hi)]
+    alpha, warm = nb.ema_params(w, None)
+    e = nb.ema_1d(x, alpha, warm)[10:]
+    assert ((e < hi) if hi > lo else (e > hi)).all()
+    z = nb.zscore_ema_1d(x, alpha, warm)[10:]
+    np.testing.assert_array_equal(np.sign(hi - e), np.sign(z))
+
+
+def _plain_west(x, alpha, warmup):
+    """The 4.0.0 West recurrence, no clamp, no carry."""
+    out = np.full(x.size, np.nan)
+    mu, s, seen = np.nan, 0.0, 0
+    for i, xi in enumerate(x):
+        if np.isnan(xi):
+            continue
+        if np.isnan(mu):
+            mu, s = xi, 0.0
+        else:
+            d = xi - mu
+            mu = mu + alpha * d
+            s = (1.0 - alpha) * (s + alpha * d * d)
+        seen += 1
+        if seen >= warmup and s > 0.0:
+            out[i] = (xi - mu) / math.sqrt(s)
+    return out
+
+
+@pytest.mark.parametrize("level", [4500.0, 100.0])
+def test_zscore_ema_carry_leaves_no_trace_once_the_input_moves(level):
+    # Window 3 (alpha = 0.5): the held stretch's last mean update ties onto the held value, so the
+    # deviation is carried from there. Once the input MOVES the recurrence is the plain one again
+    # (no clamp binds on these bars): the post-hold bars read exactly what the plain West
+    # recurrence — and exact arithmetic — reads, not a mean left one ulp short of the held value.
+    x = np.r_[
+        np.full(5, level - 0.25), np.full(200, level), [level + 0.25, level + 0.5, level + 0.25]
+    ]
+    alpha, warm = nb.ema_params(3, None)
+    z = nb.zscore_ema_1d(x, alpha, warm)
+    np.testing.assert_array_equal(z[205:], _plain_west(x, alpha, warm)[205:])
+
+
+@pytest.mark.parametrize("w", [2, 3])
+def test_zscore_ema_long_hold_stays_defined_and_signed(w):
+    # alpha >= 0.5: the carried deviation and the EW variance shrink by (1 - alpha) per held bar
+    # and would round to exactly 0.0 once subnormal (alpha < 0.5 rounds back up to the smallest
+    # subnormal and keeps a signed z for ever). Exact arithmetic keeps z > 0 on every held bar of
+    # a hold reached from below — never 0.0, never undefined (no refusal on its own hold).
+    x = np.r_[np.full(30, 0.05), np.full(3000, 0.0525)]
+    z = nb.zscore_ema_1d(x, *nb.ema_params(w, None))[30:]
+    assert np.isfinite(z).all()
+    assert (z > 0.0).all()
+
+
+def test_event_agg_mean_of_a_constant_run_is_the_value():
+    # The since-event mean is a window mean like rolling_agg's: an all-equal run's mean is its
+    # value, not sum/count (0.1 * k / k drifts an ulp for most k).
+    n = 60
+    x = np.full(n, 0.1)
+    sig = np.zeros(n, dtype=bool)
+    sig[[0, 25]] = True
+    ones = np.ones(n, dtype=bool)
+    got = nb.event_agg_apply_nb(sig[:, None], ones[:, None], ones[:, None], x[:, None], "mean")
+    np.testing.assert_array_equal(got.ravel(), 0.1)
+    np.testing.assert_array_equal(got.ravel(), ref.event_agg(sig, ones, ones, x, "mean"))
 
 
 def test_change_pct_negative_endpoints_are_nan():

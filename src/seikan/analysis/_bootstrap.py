@@ -56,7 +56,12 @@ def episode_bootstrap_ci(
     ``reason="no_observations"``, fewer than ``min_episodes`` episodes reports the honest
     ``n_episodes`` with ``reason="insufficient_episodes"`` (a dense every-bar pool transitively
     chains into ONE episode: there is no resampling distribution over one exchangeable unit,
-    and the null fields say so rather than minting a degenerate interval).
+    and the null fields say so rather than minting a degenerate interval). A degenerate bootstrap
+    distribution is reported exactly — ``ci_lo == ci_hi``, ``boot_se`` 0.0 — instead of the
+    ulp-scale spread rounding would mint (a ``mean / boot_se`` of ~1e15, the ``t_hac``
+    pathology): a pool whose returns are all equal (its interval is the pool's own arithmetic
+    mean, the ``mean_ret`` the cell reports beside it), and any pool whose resampled means come
+    out bit-identical on every draw (every episode carrying the same sum and count).
     """
     rets = np.asarray(rets, dtype=float)
     bars = np.asarray(entry_bars, dtype=np.int64)
@@ -87,6 +92,11 @@ def episode_bootstrap_ci(
     if n_ep < min_episodes:
         out["reason"] = "insufficient_episodes"
         return out
+    if float(rets.max()) == float(rets.min()):
+        out["n_boot"] = int(n_boot)
+        out["ci_lo"] = out["ci_hi"] = float(np.mean(rets))
+        out["boot_se"] = 0.0
+        return out
     # Clusters partition the sorted rows into CONTIGUOUS runs (the greedy merge walks the rows in
     # order), so each episode is a reduceat segment.
     starts = np.fromiter((c[0] for c in clusters), dtype=np.int64, count=n_ep)
@@ -110,5 +120,6 @@ def episode_bootstrap_ci(
     out["n_boot"] = int(n_boot)
     out["ci_lo"] = float(lo)
     out["ci_hi"] = float(hi)
-    out["boot_se"] = float(np.std(stats_arr, ddof=1))
+    degenerate = float(stats_arr.max()) == float(stats_arr.min())
+    out["boot_se"] = 0.0 if degenerate else float(np.std(stats_arr, ddof=1))
     return out

@@ -536,9 +536,10 @@ def _check_cell_signal_coverage(
             unmet.append(f"{tgt}: n_undefined={n_undef} exceeds n_bars={n_bars} — drifted input")
         elif n_undef > 0:
             unmet.append(
-                f"{tgt}: {n_undef} undecidable decision bar(s) of {n_bars} — a missing input "
+                f"{tgt}: {n_undef} undecidable decision bar(s) of {n_bars} — a missing or "
+                "undefined input (a data hole, x/0, an overflow, a zero-dispersion window) "
                 "suppresses firings before any outcome ledger can see them, so adverse firings "
-                "may have been deleted; repair the decision series"
+                "may have been deleted; repair the decision series or guard the operation"
             )
     return GateCheck(
         name="signal_coverage",

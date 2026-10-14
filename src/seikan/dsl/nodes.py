@@ -371,9 +371,10 @@ class RollingCorr(_Strict):
     # target's own history only; ranking across the targets at a bar is ``cross_rank``, basket
     # mode). ``window`` >= 3 (corr of 2 points
     # is always ±1 — degenerate). NaN unless the whole window is finite in BOTH inputs AND both
-    # window stds > 0 (zero-variance → NaN, never ±1) — the standard NaN-gating contract. Counts as
-    # ONE operator level with TWO children. Recipe for "corr(stock daily return, Δ option EOD
-    # IV30)": declare the IV feed in ``data.external``, then
+    # window stds > 0 (zero-variance → NaN, never ±1 — an exactly constant window counts as zero
+    # variance whatever its computed variance rounds to) — the standard NaN-gating contract.
+    # Counts as ONE operator level with TWO children. Recipe for "corr(stock daily return,
+    # Δ option EOD IV30)": declare the IV feed in ``data.external``, then
     # ``rolling_corr(change(close), change(iv30, kind="diff"), window)`` —
     # ``change`` counts as one level, so the whole recipe costs two of the five levels.
     type: Literal["rolling_corr"] = "rolling_corr"
@@ -417,7 +418,8 @@ class CrossDemean(_Strict):
     # NaN where the target's own value is NaN or fewer than min_valid targets are finite. The
     # zscore recipe: ``binary_op(cross_demean(x), "/", cross_agg(x, "std"))`` — the same 1 + d(x)
     # nesting cost as either node alone, and a zero-dispersion bar divides by 0 → NaN via the
-    # ``BinaryOp`` ``/`` contract (never fires).
+    # ``BinaryOp`` ``/`` contract (never fires) — exactly: a constant cross-section demeans to 0.0
+    # and has a std of 0.0, whatever its computed mean rounds to.
     type: Literal["cross_demean"] = "cross_demean"
     input: Series
     min_valid: Ge2Int = 2

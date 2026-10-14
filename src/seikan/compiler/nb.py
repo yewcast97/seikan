@@ -50,7 +50,34 @@ from numpy.lib.stride_tricks import sliding_window_view
 # a Welford/West recurrence), never as E[x²] − E[x]²: the one-pass form cancels catastrophically
 # on large-magnitude series (a price near 5000 with a std near 1 has already lost most of the
 # mantissa).
+#
+# EXACT zero dispersion: a window (or a cross-section) whose finite values are all equal is
+# detected exactly and given its exact answer instead of the arithmetic's: the mean of such a
+# window is the value itself, its deviations and std are 0.0, and every read that divides by its
+# dispersion (z-score, correlation) is undefined → NaN. The computed mean of a constant DECIMAL
+# window is not the constant (``(0.1 + 0.1 + 0.1) / 3 != 0.1``), so without the exact test the
+# residual minted a z-score of exactly ±1 and a correlation of 1 out of a constant series. The
+# recurrences hold the same line (``ema_1d``, ``zscore_ema_1d``, ``event_agg_1d``). Every window
+# with any variation is computed exactly as before, bit for bit (the EW recurrences differ only on
+# the steps whose rounded update left its exact interval, or a held input's carried deviation);
+# "constant" means bit-identical
+# values — arithmetic on decimal levels (a spread ``y1 − y2`` moving in lockstep) leaves residue
+# at the operands' scale, which is variation as far as any kernel can tell.
 # =============================================================================
+
+
+def _constant_windows(a: npt.NDArray[np.float64], window: int) -> npt.NDArray[np.bool_]:
+    """``(rows − window + 1, cols)``: the trailing windows (aligned like ``sliding_window_view``)
+    whose values are all finite and bit-equal — a window is constant iff its ``window − 1``
+    adjacent pairs are, counted with one cumulative sum (O(rows × cols), whatever the window)."""
+    same = np.zeros(a.shape, dtype=np.int64)
+    same[1:] = (a[1:] == a[:-1]) & np.isfinite(a[1:])
+    pairs = np.cumsum(same, axis=0)
+    finite_first = np.isfinite(a[: a.shape[0] - window + 1])
+    constant: npt.NDArray[np.bool_] = finite_first & (
+        pairs[window - 1 :] - pairs[: a.shape[0] - window + 1] == window - 1
+    )
+    return constant
 
 
 def zscore_sma_apply_nb(arr: npt.NDArray[np.float64], window: int) -> npt.NDArray[np.float64]:
@@ -61,6 +88,9 @@ def zscore_sma_apply_nb(arr: npt.NDArray[np.float64], window: int) -> npt.NDArra
         return out
     win = sliding_window_view(a, window, axis=0)  # (n-window+1, cols, window)
     finite_all = ~np.isnan(win).any(axis=-1)
+    # A constant window has no dispersion to standardize by — undefined, whatever residual the
+    # mean's rounding leaves (see the zero-dispersion note above).
+    varies = ~_constant_windows(a, window)
     with np.errstate(all="ignore"):
         mean = win.mean(axis=-1)
         # Two-pass centered population variance (the ``rolling_agg`` std pattern) — stable at any
@@ -68,7 +98,7 @@ def zscore_sma_apply_nb(arr: npt.NDArray[np.float64], window: int) -> npt.NDArra
         var = ((win - mean[..., None]) ** 2).mean(axis=-1)
         x = a[window - 1 :]
         z = (x - mean) / np.sqrt(var)
-    out[window - 1 :] = np.where(finite_all & (var > 0.0) & np.isfinite(z), z, np.nan)
+    out[window - 1 :] = np.where(finite_all & varies & (var > 0.0) & np.isfinite(z), z, np.nan)
     return out
 
 
@@ -111,11 +141,12 @@ def rolling_agg_apply_nb(
         elif agg == "min":
             v = win.min(axis=-1)
         elif agg == "mean":
-            v = win.mean(axis=-1)
+            # A constant window's mean IS its value (the zero-dispersion note above).
+            v = np.where(_constant_windows(a, window), win[..., -1], win.mean(axis=-1))
         elif agg == "std":
             m = win.mean(axis=-1)
             var = ((win - m[..., None]) ** 2).mean(axis=-1)
-            v = np.sqrt(np.maximum(var, 0.0))
+            v = np.where(_constant_windows(a, window), 0.0, np.sqrt(np.maximum(var, 0.0)))
         elif agg == "median":
             v = np.median(win, axis=-1)
         elif agg == "mad":
@@ -273,7 +304,8 @@ def rolling_corr_apply_nb(
     """Trailing-window Pearson correlation of two (rows × targets) series.
 
     NaN unless the whole window is finite in BOTH inputs AND both window stds > 0 (zero-variance
-    → NaN, never ±1) — the standard NaN-gating contract. Population moments (ddof=0) over the
+    → NaN, never ±1; an exactly constant window is zero-variance whatever its computed variance's
+    rounding residual) — the standard NaN-gating contract. Population moments (ddof=0) over the
     window, matching ``rolling_agg`` std.
     """
     a = np.asarray(left, dtype=float)
@@ -295,7 +327,8 @@ def rolling_corr_apply_nb(
         cov = ((wa - ma[..., None]) * (wb - mb[..., None])).mean(axis=-1)
         corr = cov / np.sqrt(va * vb)
     # `isfinite(corr)`: the variance product can underflow to 0 while both factors stay > 0.
-    ok = finite_all & (va > 0.0) & (vb > 0.0) & np.isfinite(corr)
+    varies = ~_constant_windows(a, window) & ~_constant_windows(b, window)
+    ok = finite_all & varies & (va > 0.0) & (vb > 0.0) & np.isfinite(corr)
     out[window - 1 :] = np.where(ok, corr, np.nan)
     return out
 
@@ -368,6 +401,14 @@ def unary_op_apply_nb(arr: npt.NDArray[np.float64], op: str) -> npt.NDArray[np.f
     return np.where(np.isfinite(out), out, np.nan)
 
 
+def _constant_rows(a: npt.NDArray[np.float64], finite: npt.NDArray[np.bool_]) -> np.ndarray:
+    """(rows, 1): the bars whose FINITE members all share one value (False on an empty row)."""
+    hi = np.where(finite, a, -np.inf).max(axis=1, keepdims=True)
+    lo = np.where(finite, a, np.inf).min(axis=1, keepdims=True)
+    constant: np.ndarray = hi == lo
+    return constant
+
+
 def cross_rank_apply_nb(arr: npt.NDArray[np.float64], min_valid: int) -> npt.NDArray[np.float64]:
     """Cross-sectional fraction rank ACROSS targets at each bar (axis=1, no time window).
 
@@ -397,7 +438,8 @@ def cross_demean_apply_nb(arr: npt.NDArray[np.float64], min_valid: int) -> npt.N
     """Cross-sectional demean ACROSS targets at each bar (axis=1, no time window).
 
     Column g gets x_g - mean(finite values at bar t), self included. NaN where x_g is NaN or
-    fewer than max(min_valid, 2) targets are finite. Inherently 2-D — no 1-D form.
+    fewer than max(min_valid, 2) targets are finite. A cross-section whose members all share one
+    value demeans to exactly 0.0 (the zero-dispersion note above). Inherently 2-D — no 1-D form.
     """
     a = np.asarray(arr, dtype=float)
     out = np.full(a.shape, np.nan)
@@ -408,7 +450,7 @@ def cross_demean_apply_nb(arr: npt.NDArray[np.float64], min_valid: int) -> npt.N
     with np.errstate(all="ignore"):
         sums = np.where(finite, a, 0.0).sum(axis=1, keepdims=True)
         mean = sums / k
-        dev = a - mean
+        dev = np.where(_constant_rows(a, finite), 0.0, a - mean)
     # `isfinite(dev)`: the row sum (or the subtraction at the float ceiling) can overflow.
     ok = finite & (k >= float(max(min_valid, 2))) & np.isfinite(dev)
     return np.where(ok, dev, np.nan)
@@ -430,9 +472,13 @@ def cross_agg_apply_nb(
         return out
     finite = np.isfinite(a)
     k = finite.sum(axis=1, keepdims=True).astype(float)
+    # A cross-section whose members all share one value: its mean IS that value and its std is
+    # 0.0 (the zero-dispersion note above).
+    constant = _constant_rows(a, finite)
     with np.errstate(all="ignore"):
         if agg == "mean":
             v = np.where(finite, a, 0.0).sum(axis=1, keepdims=True) / k
+            v = np.where(constant, np.where(finite, a, -np.inf).max(axis=1, keepdims=True), v)
         elif agg == "median":
             masked = np.where(finite, a, np.nan)
             v = np.full((a.shape[0], 1), np.nan)
@@ -445,7 +491,7 @@ def cross_agg_apply_nb(
             mean = np.where(finite, a, 0.0).sum(axis=1, keepdims=True) / k
             dev = np.where(finite, a - mean, 0.0)
             var = (dev * dev).sum(axis=1, keepdims=True) / k
-            v = np.sqrt(np.maximum(var, 0.0))
+            v = np.where(constant, 0.0, np.sqrt(np.maximum(var, 0.0)))
         elif agg == "frac_positive":
             v = (finite & (a > 0.0)).sum(axis=1, keepdims=True) / k
         else:
@@ -518,6 +564,17 @@ def zscore_ema_1d(
     one-pass form lost its mantissa to cancellation at large input levels and drifted with the
     input offset. Same seeding (first finite value → μ = x, s = 0), same NaN-skipping warmup
     (``warmup`` observations, from ``ema_params``), same ``s > 0`` emission gate.
+
+    The mean update is a convex combination, clamped into ``[min(μ, x), max(μ, x)]`` like
+    ``ema_1d``'s. On a HELD input (the same value again) exact arithmetic moves the deviation
+    ``x − μ`` to ``(1−α)·(x − μ)`` every bar — it decays, keeping its sign — which μ can no
+    longer represent once its update is absorbed (``α·d`` below half an ulp of μ) or lands on the
+    value: from there the deviation is CARRIED exactly, ``r ← (1−α)·r``, and the z-score reads
+    ``r / √s`` until the input moves. Without the carry μ sticks a few ulps off, ``d`` freezes at
+    that residue, ``s`` settles at ``(1−α)·d²`` and the z-score reads exactly ``±1/√(1−α)`` for as
+    long as the input holds; zeroing the deviation instead would flip the sign every ``z > 0``
+    read takes on the stretch. Only those held bars and an update that left its exact interval
+    differ from the plain recurrence.
     """
     n = arr.shape[0]
     out = np.full(n, np.nan)
@@ -526,6 +583,8 @@ def zscore_ema_1d(
     mu = np.nan
     s = 0.0
     seen = 0
+    prev = np.nan
+    carry = np.nan  # the exact deviation x − μ while a held input's update cannot move μ
     for i in range(n):
         x = arr[i]
         if np.isnan(x):
@@ -533,16 +592,38 @@ def zscore_ema_1d(
         if np.isnan(mu):
             mu = x
             s = 0.0
+            carry = np.nan
+        elif x == prev and not np.isnan(carry):
+            d = carry
+            s = (1.0 - alpha) * (s + alpha * d * d)
+            carry = (1.0 - alpha) * d
+            # Exact arithmetic never reaches zero: floor the carried pair at the smallest
+            # subnormal, sign kept (round-to-nearest already does so for alpha < 0.5; without it
+            # a long hold at alpha >= 0.5 read undecidable, or lost its sign).
+            if s == 0.0:
+                s = 5e-324
+            if carry == 0.0:
+                carry = 5e-324 if d > 0.0 else -5e-324
         else:
             d = x - mu
-            mu = mu + alpha * d
+            v = mu + alpha * d
+            lo = min(mu, x)
+            hi = max(mu, x)
+            moved = lo if v < lo else (hi if v > hi else v)
             s = (1.0 - alpha) * (s + alpha * d * d)
+            # On a held input whose update cannot move μ (absorbed, or landing on x) the exact
+            # deviation is carried; μ takes the rounded update either way, so a landing leaves
+            # no stale mean once the input moves.
+            held = x == prev and d != 0.0 and moved in (mu, x)
+            carry = (1.0 - alpha) * d if held else np.nan
+            mu = moved
+        prev = x
         seen += 1
         if seen < warmup:
             continue
         if s <= 0.0 or not np.isfinite(s):
             continue
-        z = (x - mu) / np.sqrt(s)
+        z = ((x - mu) if np.isnan(carry) else carry) / np.sqrt(s)
         if np.isfinite(z):
             out[i] = z
     return out
@@ -552,7 +633,15 @@ def zscore_ema_1d(
 def ema_1d(arr: npt.NDArray[np.float64], alpha: float, warmup: int) -> npt.NDArray[np.float64]:
     """EMA with decay ``alpha`` (``ema_params``): seeded at the first finite value, NaN-skipping,
     NaN until ``warmup`` observations — the same warmup convention as the EMA inside
-    ``zscore_ema``."""
+    ``zscore_ema``.
+
+    The update is a convex combination, so its exact value lies between ``e`` and ``x`` —
+    strictly, for ``alpha < 1``: it never reaches ``x``. The rounded one is held there, one ulp
+    short of ``x`` at the closest. Rounding could otherwise leave the interval: a constant input
+    drifted a few ulps off itself (``x > ema(x)`` then read a sign on a flat feed), and a held
+    stretch could settle on the wrong side of the held value or ON it (``x <= ema(x)`` then fired
+    on held bars exact arithmetic keeps above the mean). The guard binds only where the rounded
+    update left the open interval — every other step is bit-identical."""
     n = arr.shape[0]
     out = np.full(n, np.nan)
     if warmup < 1 or not (0.0 < alpha <= 1.0):
@@ -563,7 +652,18 @@ def ema_1d(arr: npt.NDArray[np.float64], alpha: float, warmup: int) -> npt.NDArr
         x = arr[i]
         if np.isnan(x):
             continue
-        e = x if np.isnan(e) else alpha * x + (1.0 - alpha) * e
+        if np.isnan(e):
+            e = x
+        else:
+            v = alpha * x + (1.0 - alpha) * e
+            lo = min(e, x)
+            hi = max(e, x)
+            v = lo if v < lo else (hi if v > hi else v)
+            # The exact update lies STRICTLY between e and x (alpha < 1) — it never reaches x, so
+            # a rounded landing on x keeps the nearest value on e's side instead.
+            if v == x and e != x and alpha < 1.0:
+                v = np.nextafter(x, e)
+            e = v
         seen += 1
         if seen >= warmup:
             out[i] = e
@@ -770,7 +870,8 @@ def event_agg_1d(
         elif mode == 2:
             r = mn
         else:
-            r = acc / cnt
+            # an all-equal stretch's mean IS its value (the zero-dispersion note above)
+            r = mx if mx == mn else acc / cnt
         if np.isfinite(r):
             out[t] = r
     return out

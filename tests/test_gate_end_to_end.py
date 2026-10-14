@@ -24,7 +24,9 @@ import json
 
 import numpy as np
 import pandas as pd
+import pytest
 
+from seikan.compiler import vectorize
 from seikan.compiler.runner import run_backtest
 from seikan.dsl.schema import Thesis
 from seikan.gate import GateThresholds, evaluate_gate
@@ -431,6 +433,160 @@ def _write_feed(path, values, n_bars):
     df = pd.DataFrame({"px": pd.Series(values, index=idx, dtype=float)})
     df.index.name = "datetime"
     df.to_csv(path)
+
+
+_FEED = {"type": "external", "name": "px"}
+
+
+@pytest.mark.parametrize(
+    ("left", "op", "right"),
+    [
+        ({"type": "zscore", "input": _FEED, "window": 3, "mean_type": "sma"}, "<", -0.5),
+        ({"type": "zscore", "input": _FEED, "window": 10, "mean_type": "ema"}, ">", 0.5),
+        (_FEED, ">", {"type": "ema", "input": _FEED, "window": 10}),
+        (_FEED, "<", {"type": "ema", "input": _FEED, "window": 10}),
+        (_FEED, "<", {"type": "rolling_agg", "input": _FEED, "window": 5, "agg": "mean"}),
+    ],
+)
+@pytest.mark.parametrize("level", [0.007, 0.1, 100.1, 0.7])
+def test_a_constant_decimal_feed_mints_no_firings(tmp_path, left, op, right, level):
+    # The review's kernel probe end to end: a feed stuck at a decimal level (a rate at its floor)
+    # has no dispersion and equals every average of itself — but the computed mean of a constant
+    # decimal window is not the constant (0.1, 100.1, 0.7: it read z = ±1 on every bar), and the
+    # convex EMA update drifted off the feed the same way (0.007 settles at 0.006999999999999999
+    # at window 10). Exact zero dispersion: nothing fires, nothing is a hole.
+    n_bars = 300
+    path, feed = tmp_path / "px.csv", tmp_path / "feed.csv"
+    _write_px(path, _planted_dip_px(n_bars, 5, 9))
+    _write_feed(feed, np.full(n_bars, level), n_bars)
+    thesis = Thesis.model_validate(
+        {
+            "name": "constant_feed",
+            "data": {"targets": ["target"], "external": {"px": {}}},
+            "entry": {
+                "type": "threshold",
+                "left": left,
+                "op": op,
+                "right": right if isinstance(right, dict) else {"type": "constant", "value": right},
+            },
+            "params": {"horizon": 3},
+        }
+    )
+    cell = run_backtest(thesis, load(thesis, {"target": path, "px": feed})).summary["cells"][0]
+    assert cell["by_target"]["target"]["n"] == 0
+    assert cell["outcome_coverage"]["target"]["n_attempted"] == 0
+    assert cell["signal_coverage"]["target"]["n_undefined"] == 0
+
+
+def _feed_thesis(name, entry):
+    return Thesis.model_validate(
+        {
+            "name": name,
+            "data": {"targets": ["target"], "external": {"px": {}}},
+            "entry": entry,
+            "params": {"horizon": 3},
+        }
+    )
+
+
+def test_a_feed_pinned_after_moving_does_not_lock_the_ew_zscore(tmp_path):
+    # Move, then pin: the EW mean's update is absorbed a few ulps off the pinned value, and the
+    # z-score used to lock at ±1/√(1−α) (±1.41 at window 3) on every pinned bar. It decays as
+    # exact arithmetic says — nothing fires once the move is far behind, and nothing is a hole.
+    n_bars, n_move = 300, 40
+    values = np.full(n_bars, 0.007)
+    values[:n_move] = 0.007 + np.random.RandomState(0).normal(0.0, 0.0014, n_move)
+    path, feed = tmp_path / "px.csv", tmp_path / "feed.csv"
+    _write_px(path, _planted_dip_px(n_bars, 5, 9))
+    _write_feed(feed, values, n_bars)
+    z = {"type": "zscore", "input": _FEED, "window": 3, "mean_type": "ema"}
+    thesis = _feed_thesis(
+        "pinned_feed_ew",
+        {
+            "type": "threshold",
+            "left": {"type": "unary_op", "input": z, "op": "abs"},
+            "op": ">",
+            "right": {"type": "constant", "value": 0.5},
+        },
+    )
+    res = run_backtest(thesis, load(thesis, {"target": path, "px": feed}))
+    fired = set(res.trades["entry_bar"].astype(int)) if len(res.trades) else set()
+    assert not fired & set(range(n_move + 60, n_bars))
+    assert res.summary["cells"][0]["signal_coverage"]["target"]["n_undefined"] == 0
+
+
+def test_a_stepped_rate_sits_above_its_ew_mean_on_every_held_bar(tmp_path):
+    # A rate that only ever steps UP and holds: exact arithmetic keeps it above its EW mean on
+    # every bar from the first step on (the deviation decays, never changes sign), so
+    # `zscore(rate, 5, ema) > 0` holds on bars 20..299. Zeroing the deviation once the mean's
+    # update was absorbed lost the tail of every hold (250 of 280 bars fired).
+    n_bars = 300
+    values = np.r_[np.full(20, 1.0), np.full(80, 1.25), np.full(100, 1.5), np.full(100, 1.75)]
+    path, feed = tmp_path / "px.csv", tmp_path / "feed.csv"
+    _write_px(path, _planted_dip_px(n_bars, 5, 9))
+    _write_feed(feed, values, n_bars)
+    z = {"type": "zscore", "input": _FEED, "window": 5, "mean_type": "ema"}
+    thesis = _feed_thesis(
+        "stepped_rate",
+        {"type": "threshold", "left": z, "op": ">", "right": {"type": "constant", "value": 0.0}},
+    )
+    sig = vectorize.signal(thesis.entry, load(thesis, {"target": path, "px": feed}))
+    np.testing.assert_array_equal(np.flatnonzero(sig.to_numpy()[:, 0]), np.arange(20, n_bars))
+
+
+def test_a_stepped_rate_crosses_above_its_ema_once(tmp_path):
+    # A rate that only ever steps UP and holds sits above its EW mean on every bar from the first
+    # step on (exact arithmetic never lets the mean reach a held value), so the crossover recipe
+    # `first_true(px > ema(px, 5))` fires ONCE, on the first step. An ema that landed ON the held
+    # value during the hold at 1.5 read `px > ema` False there and fired a second "crossover" on
+    # the step to 1.75 (bar 200).
+    n_bars = 300
+    values = np.r_[np.full(20, 1.0), np.full(80, 1.25), np.full(100, 1.5), np.full(100, 1.75)]
+    path, feed = tmp_path / "px.csv", tmp_path / "feed.csv"
+    _write_px(path, _planted_dip_px(n_bars, 5, 9))
+    _write_feed(feed, values, n_bars)
+    cond = {
+        "type": "threshold",
+        "left": _FEED,
+        "op": ">",
+        "right": {"type": "ema", "input": _FEED, "window": 5},
+    }
+    thesis = _feed_thesis("stepped_rate_cross", {"type": "first_true", "condition": cond})
+    sig = vectorize.signal(thesis.entry, load(thesis, {"target": path, "px": feed}))
+    np.testing.assert_array_equal(np.flatnonzero(sig.to_numpy()[:, 0]), [20])
+
+
+def test_a_feed_pinned_after_warmup_is_undecidable_not_fired(tmp_path):
+    # A feed that moves and then sticks (a rate pinned at its floor): once the z-score has
+    # initialized, a constant window's z is UNDEFINED — no dispersion to standardize by, like
+    # x / 0 — so it never fires and lands in the undecidable ledger, which leaves the cell unmet.
+    n_bars, n_move = 300, 40
+    values = np.full(n_bars, 0.1)
+    values[:n_move] = 0.1 + np.random.RandomState(3).normal(0.0, 0.02, n_move)
+    path, feed = tmp_path / "px.csv", tmp_path / "feed.csv"
+    _write_px(path, _planted_dip_px(n_bars, 5, 9))
+    _write_feed(feed, values, n_bars)
+    thesis = Thesis.model_validate(
+        {
+            "name": "pinned_feed",
+            "data": {"targets": ["target"], "external": {"px": {}}},
+            "entry": {
+                "type": "threshold",
+                "left": {"type": "zscore", "input": _FEED, "window": 3, "mean_type": "sma"},
+                "op": "<",
+                "right": {"type": "constant", "value": -0.5},
+            },
+            "params": {"horizon": 3},
+        }
+    )
+    res = run_backtest(thesis, load(thesis, {"target": path, "px": feed}))
+    fired = set(res.trades["entry_bar"].astype(int)) if len(res.trades) else set()
+    assert not fired & set(range(n_move + 2, n_bars))
+    assert (
+        res.summary["cells"][0]["signal_coverage"]["target"]["n_undefined"] >= n_bars - n_move - 2
+    )
+    report = evaluate_gate(res.summary, GateThresholds())
+    assert _check(report.cells[0], "signal_coverage").met is False
 
 
 def test_deleting_losing_decision_inputs_cannot_improve_a_cell(tmp_path):

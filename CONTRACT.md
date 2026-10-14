@@ -646,6 +646,35 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   (`change(kind="pct")`, `drawdown`, `runup`) are POSITIVE-domain like the pct/log outcome
   algebras: off a positive scale they invert silently, so a non-positive base censors as NaN
   instead of minting a sign-flipped number. Signed series belong to `diff`.
+- **Zero dispersion is exact.** The floating-point mean of a constant DECIMAL series is not the
+  constant, and its rounding residue (~1e-17) used to read as dispersion — a z-score of exactly
+  ±1, a correlation of 1, a flat feed drifting off its own EMA, an EW z-score locked at
+  `±1/√(1−α)` on a held stretch, `|t_hac|` ~ 1e16, a CSCV split Sharpe of ±1e7. Every read that
+  can meet it gives an all-equal (bit-identical) input its exact answer instead. In the kernels: a
+  window, cross-section or since-event run of equal values has its mean equal to the value, a std
+  / `mad` / demeaned value of 0.0 and an undefined (NaN) z-score / correlation, and the EW
+  recurrences never leave the interval their exact update lies in (a constant input stays exactly
+  itself; a held input is approached strictly from its own side — one ulp short of the value at
+  the closest, never on it, so `x > ema(x)` keeps exact arithmetic's answer through a hold — and
+  its EW z-score decays, keeping the sign exact arithmetic gives it, the deviation carried once
+  the mean cannot move and never rounding to zero, instead of locking). In the statistics: a constant pool has `std_ret` 0.0, no
+  bucket-monotonicity rank and a degenerate bootstrap (`boot_se` 0.0, `ci_lo == ci_hi` on the
+  pool's own arithmetic mean — as for any pool whose resampled means are bit-identical on every
+  draw), and the reads that divide by dispersion stand down where the spread is within rounding —
+  the HAC nulls (largest deviation within ~10 ulps of the mean, the skewness/kurtosis gate), the
+  benchmark regression declines a (near-)constant bench leg and fits `beta` exactly 0 on a
+  (near-)constant raw leg, and a CSCV split scores NaN when its pool is exactly constant (the
+  per-block extrema), within the HAC's ~10 ulps, or has a centered sum of squares within its own
+  accumulation error. Pool MEANS stay the arithmetic
+  mean (a few ulps off a constant pool's value — the summation's rounding — never off its sign).
+  A post-warmup zero-dispersion bar
+  is UNDECIDABLE like `x / 0`: its NaN lands in `signal_coverage`, never fires — guard a z-score
+  of a series that can sit flat with `rolling_agg(x, N, std) > 0`. "Equal" means bit-identical: a
+  spread built from decimal levels moving in lockstep carries residue at the operands' scale,
+  which no kernel can tell from variation. Every window, cross-section and pool that varies is
+  computed as before, bit for bit; the EW recurrences differ from the plain recurrence only on the
+  steps where a rounded update left its exact interval or a held input's deviation is carried —
+  rounding-scale steps a varying series with repeated values (tick data) can take too.
 - **Strict, frozen DSL.** Types are strict (no str/bool/float coerces to an int, no str to a
   bool; int stays legal for a float field — JSON has one number type), instances are frozen
   (`model_copy(update=...)` is the derive path), a duplicate JSON object key at any depth

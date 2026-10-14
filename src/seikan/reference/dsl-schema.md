@@ -277,6 +277,27 @@ There is **no Indicator family** (no RSI/ADX/ATR/OBV/VWAP/ROC); compose what you
 primitives. Classic technical indicators are deliberately absent — too widely used to be
 informative once everyone already trades them.
 
+Zero dispersion is EXACT in every windowed, cross-sectional and since-event transform: a window
+(a bar's cross-section, an `event_agg` run) whose values are all equal has its mean equal to that
+value, a `std` / `mad` / `cross_demean` of exactly `0.0`, and an undefined (NaN) `zscore` /
+`rolling_corr` — whatever the floating-point mean of a constant DECIMAL window rounds to
+(`(0.1 + 0.1 + 0.1) / 3 != 0.1`). The EW pair holds the same line: `ema` of a constant is exactly
+the constant and approaches a held value strictly from its own side (one ulp short at the
+closest, never on it, so `x > ema(x)` reads "above its EW mean" through the whole hold), and
+`zscore` with `mean_type: "ema"` decays on a held stretch — keeping the sign exact arithmetic
+gives it, so `z > 0` reads the same through the whole hold, however long — instead of locking at
+`±1/√(1−α)`.
+So a feed stuck at a constant never
+reads as a z-score of ±1, a correlation of 1 or a sign against its own average, and the
+zero-dispersion recipes below divide by an exact zero (→ NaN, never fires). A zero-dispersion bar
+after the series has initialized is UNDECIDABLE, like `x / 0`: it lands in `signal_coverage` and
+leaves the cell unmet — guard a z-score of a series that can sit flat (a rate pinned at its floor)
+with `and(rolling_agg(x, N, "std") > 0, …)`. "Equal" means bit-identical: a spread built from
+decimal levels that move in lockstep (`y1 − y2`) carries residue at the operands' scale, which is
+variation as far as any kernel can tell. Every window with any variation is computed as before,
+bit for bit; the EW pair differs from its plain recurrence only on the steps where a rounded
+update left its exact interval or a held input's deviation is carried.
+
 - `ema` (input, exactly one of `window` / `alpha`) — exponentially weighted mean of any Series,
   seeded at the first finite value, NaN-skipping. `window` sets `alpha = 2/(window+1)` with a
   `window`-observation warmup (the classic span form); `alpha` states the decay directly
@@ -1190,7 +1211,8 @@ open to quote a statistic honestly.
   clusters in the same stretches your signal fires.
 - `t_hac` / `hac_se` — the EVENT-TIME Newey-West t: Bartlett weights on actual entry-bar distances,
   so a sparse pool degrades to the iid SE instead of a collapsed one. df = `n_nonoverlap` − 1; the derived
-  p is not emitted, re-derive it if you need one. KNOWN CAVEAT: anti-conservative on heavily
+  p is not emitted, re-derive it if you need one. Null on a (near-)constant pool — its spread is
+  rounding residue, not dispersion. KNOWN CAVEAT: anti-conservative on heavily
   overlapping pools (the taper understates the long-run variance).
 - `n_nonoverlap` — the greedy non-overlapping observation count. Compare to `n` to see how much of your
   sample is really one event.

@@ -28,6 +28,14 @@ from seikan.types import (
 _NAN = float("nan")
 
 
+_EPS = float(np.finfo(np.float64).eps)
+
+#: The zero-dispersion gate's scale: a pool whose largest deviation from its mean is below this
+#: many ulps of the mean's magnitude has no usable dispersion (:func:`_near_constant`). CSCV's
+#: split scores read the same gate off their per-block extrema.
+_NEAR_CONSTANT_ULPS = 10.0
+
+
 def _near_constant(rets: np.ndarray, mean: float) -> bool:
     """Scale-relative zero-dispersion detector for the moment statistics.
 
@@ -38,9 +46,20 @@ def _near_constant(rets: np.ndarray, mean: float) -> bool:
     pool (mean ≈ 0 included, where the relative test is vacuous); genuine variation around a
     near-zero mean is correctly NOT degenerate. The gate is about the NUMERICAL reliability of
     the two moment estimators, not a policy on thin pools: ``std_ret`` and the order-statistic
-    reads stay as computed (a near-constant pool's dispersion IS tiny)."""
+    reads stay as computed (a near-constant pool's dispersion IS tiny) — save the exactly
+    constant pool, whose ``std_ret`` is exactly 0.0 (:func:`_ddof1_std`). The event-time HAC
+    and the benchmark regression's degeneracy tests read it too."""
     spread = float(np.max(np.abs(rets - mean))) if rets.size else 0.0
-    return spread == 0.0 or bool(spread < 10.0 * float(np.finfo(np.float64).eps) * abs(mean))
+    return spread == 0.0 or bool(spread < _NEAR_CONSTANT_ULPS * _EPS * abs(mean))
+
+
+def _ddof1_std(v: np.ndarray) -> float:
+    """The ddof=1 std of a finite pool of n ≥ 2, exactly 0.0 when every observation is equal —
+    the computed mean of a constant DECIMAL pool is not the constant, and ``np.std`` would read
+    its rounding residue (~1e-17) as dispersion."""
+    if float(np.max(v)) == float(np.min(v)):
+        return 0.0
+    return float(np.std(v, ddof=1))
 
 
 def pool_moments(rets: np.ndarray) -> PoolMoments:
@@ -83,7 +102,7 @@ def pool_moments(rets: np.ndarray) -> PoolMoments:
     degenerate = _near_constant(v, mean_ret)
     wins, losses = v[v > 0], v[v < 0]
     out["mean_ret"] = mean_ret
-    out["std_ret"] = float(np.std(v, ddof=1)) if n > 1 else _NAN
+    out["std_ret"] = _ddof1_std(v) if n > 1 else _NAN
     out["hit_rate"] = float(np.mean(v > 0))
     out["win_loss_ratio"] = (
         float(np.mean(wins) / abs(np.mean(losses))) if wins.size and losses.size else _NAN
@@ -244,9 +263,11 @@ def benchmark_regression(raw: np.ndarray, bench: np.ndarray) -> BenchmarkRegress
     ``reason``: ``no_paired_observations`` (which covers every unbenchmarked run — ``ret_bench``
     is all-NaN there — and every empty pool; the run-level ``benchmark`` stamp stays the
     authoritative "was there a benchmark"), ``insufficient_observations`` below n=3 (two points
-    fit a line exactly — r² ≡ 1 vacuously), ``no_benchmark_variation`` on a constant bench leg.
-    ``r2`` alone is NaN → null when the raw leg has zero variance: nothing to explain, while
-    beta = 0 and alpha = mean(raw) are still real numbers. On overlapping pools the fit is
+    fit a line exactly — r² ≡ 1 vacuously), ``no_benchmark_variation`` on a (near-)constant bench
+    leg (:func:`_near_constant` — a constant DECIMAL leg's computed variance is rounding residue,
+    and dividing by it minted an arbitrary beta). ``r2`` alone is NaN → null when the raw leg has
+    zero variance (likewise near-constant): nothing to explain, while beta = 0 (exactly) and
+    alpha = mean(raw) are still real numbers. On overlapping pools the fit is
     inflated exactly as every row-level read is — the caveat, not a correction, covers it.
     Evidence only, read by no check; a one-regressor attribution, not a factor model."""
     r = np.asarray(raw, dtype=float)
@@ -263,11 +284,14 @@ def benchmark_regression(raw: np.ndarray, bench: np.ndarray) -> BenchmarkRegress
     if n < 3:
         return _declined("insufficient_observations")
     var_b = float(np.var(b, ddof=1))
-    if var_b == 0:
+    if var_b == 0 or _near_constant(b, float(np.mean(b))):
         return _declined("no_benchmark_variation")
+    mean_r = float(np.mean(r))
+    if _near_constant(r, mean_r):
+        return {"n": n, "beta": 0.0, "alpha": mean_r, "r2": _NAN, "reason": None}
     cv = float(np.cov(r, b, ddof=1)[0, 1])
     beta = cv / var_b
-    alpha = float(np.mean(r)) - beta * float(np.mean(b))
+    alpha = mean_r - beta * float(np.mean(b))
     var_r = float(np.var(r, ddof=1))
     r2 = (cv * cv) / (var_r * var_b) if var_r > 0 else _NAN
     return {"n": n, "beta": float(beta), "alpha": float(alpha), "r2": float(r2), "reason": None}

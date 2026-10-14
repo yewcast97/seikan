@@ -920,7 +920,9 @@ METRIC_ROLES_DOC: dict[str, JsonValue] = {
             "precisely as they inflate every row-level statistic (no HAC correction is applied "
             "to the regression — it is attribution, not inference), so r2 and beta are "
             "descriptions of this pool, never factor loadings; null fields with n and a reason "
-            "when unbenchmarked, below three pairs, or over a constant bench leg."
+            "when unbenchmarked, below three pairs, or over a (near-)constant bench leg; over a "
+            "(near-)constant raw leg beta is exactly 0.0, alpha the raw leg's mean and r2 null "
+            "(nothing to explain)."
         ),
         "episode_profile": (
             "The episode-deduplicated TWIN of the row-level statistics: the same frozen "
@@ -1116,8 +1118,9 @@ REPORT_FIELDS: dict[str, JsonValue] = {
             "{n, beta, alpha, r2, reason} — per-window OLS attribution of the raw leg on the "
             "bench leg over PAIRED rows: alpha + beta·mean_ret_bench == mean_ret_raw exactly; "
             "alpha in outcome units per h-bar window, never annualized; null fields + reason "
-            "when unbenchmarked (no_paired_observations), below 3 pairs, or over a constant "
-            "bench leg (evidence-only)"
+            "when unbenchmarked (no_paired_observations), below 3 pairs, or over a "
+            "(near-)constant bench leg; beta 0.0 and r2 null over a (near-)constant raw leg "
+            "(evidence-only)"
         ),
         "by_target.win_loss_ratio / std_ret / skewness / kurtosis / tail_ratio / cvar_5": (
             "the summarize shape/dispersion reads over the SAME closed pool, mounted per cell: "
