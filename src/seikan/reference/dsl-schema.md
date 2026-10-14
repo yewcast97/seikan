@@ -1224,8 +1224,21 @@ open to quote a statistic honestly.
   cell's null was formed over, so the cell's own smallest attainable value is
   `1/(1+rot_n_null)` (≥ `summary.rotation.p_resolution` = `1/(1+n_shifts)`, the run-level floor
   over a fully defined null); a `rot_p` sitting at its floor means "no shift beat the
-  observation", not "p ≈ 0". KNOWN CAVEAT: it assumes shift-exchangeability and over-certifies when volatility
-  clusters in the same stretches your signal fires.
+  observation", not "p ≈ 0". A shift whose mean ties the observed one counts as reaching it —
+  ties are judged within the FFT's rounding error (an absolute band, `16·ε·log2(T)·‖f‖₂·√k`
+  over the shift's count, ~1e-13 to 1e-11 of the return scale), so when every rotation selects
+  the same mean — a forward series of identical returns — `rot_p` reads exactly `1`. Means that
+  differ by less than the band count as ties whatever caused the difference, so an outcome whose
+  values are exactly representable (a count, a `diff` on a binary-exact tick such as 0.25 or
+  1/32) counts its ties exactly, while a `diff` of decimal-quoted levels — each value carrying
+  representation residue at the level's scale, `100.04 − 100.03 = 0.010000000000005116` —
+  counts its tick-level ties only where that residue sits inside the band, which grows with the
+  series length (~`log2(T)·√(T/k)`): with 0.01 ticks they read as variation from roughly 50 on a
+  year of daily bars to a few hundred on ten years (5-decimal FX quotes always), so such an
+  outcome's `rot_p` can move with the quote level at the margin.
+  KNOWN CAVEAT: it
+  assumes shift-exchangeability and over-certifies when volatility clusters in the same stretches
+  your signal fires.
 - `t_hac` / `hac_se` — the EVENT-TIME Newey-West t: Bartlett weights on actual entry-bar distances,
   so a sparse pool degrades to the iid SE instead of a collapsed one. df = `n_nonoverlap` − 1; the derived
   p is not emitted, re-derive it if you need one. Null on a (near-)constant pool — its spread is

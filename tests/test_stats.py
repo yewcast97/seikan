@@ -709,6 +709,218 @@ def test_tail_p_is_the_corrected_right_tail_fraction():
     assert _tail_p(2.0, np.array([0.0, np.nan, 3.0])) == (pytest.approx(2.0 / 3.0), 2)
 
 
+def test_tail_p_tolerance_counts_near_ties_as_ties():
+    # A null value within the two error bounds below the observed one is a tie the arithmetic
+    # cannot resolve: it counts as >= (conservative — a band only raises p). The tolerances ride
+    # the same NaN filter as the null, and zero tolerance is the exact comparison.
+    null = np.array([1.0 - 3e-16, np.nan, 1.0 - 1e-9, 2.0])
+    assert _tail_p(1.0, null) == (pytest.approx(2.0 / 4.0), 3)
+    tol = np.array([2e-16, 5.0, 2e-16, 2e-16])
+    assert _tail_p(1.0, null, 2e-16, tol) == (pytest.approx(3.0 / 4.0), 3)
+    assert _tail_p(1.0, null, 0.0, np.zeros(4)) == _tail_p(1.0, null)
+
+
+def test_rotation_den_is_an_exact_count():
+    # den counts coincidences of the rotated mask with finite forward bars: an integer the FFT
+    # only approximates, returned rounded so it divides exactly.
+    rng = np.random.RandomState(8)
+    fwd = rng.normal(0.0, 0.01, 2999)
+    fwd[rng.rand(2999) < 0.05] = np.nan
+    mask = (rng.rand(2999) < 0.3).astype(float)
+    _num, den = _rotation_num_den(mask, *_fwd_ffts(fwd), fwd.shape[0])
+    np.testing.assert_array_equal(den, np.round(den))
+    finite = np.isfinite(fwd)
+    for tau in (0, 1, 777, 2998):
+        assert den[tau] == float(np.sum(np.roll(mask > 0, tau) & finite))
+
+
+@pytest.mark.parametrize("c", [0.1, float(np.log(2.0)), 0.3, 0.013])
+def test_constant_return_pool_rotation_p_is_one(c):
+    # Every rotated mask of a constant-return pool selects the SAME conditional mean: the whole
+    # null ties the observed value and rot_p is exactly 1. The FFT's rounding residue (~1e-16)
+    # used to break those ties at random — a constant pool read rot_p as low as 0.016.
+    rng = np.random.RandomState(4)
+    T = 61
+    fwd = np.full(T, c)
+    for _ in range(5):
+        mask = np.zeros(T)
+        mask[rng.choice(T, int(rng.randint(5, 30)), replace=False)] = 1.0
+        cells = [{"key": ("k", "t"), "mask_col": mask, "fwd_col": fwd, "h": 1}]
+        read = reliability_summary(cells, T, ["t"])["per_cell"][("k", "t")]
+        assert read["rot_p"] == 1.0 and read["rot_n_null"] == T - 1
+        pooled = pooled_reliability_summary(
+            [*cells, {"key": ("k", "u"), "mask_col": np.roll(mask, 3), "fwd_col": fwd, "h": 1}], T
+        )["per_cell"][("k",)]
+        assert pooled["rot_p"] == 1.0 and pooled["rot_n_null"] == T - 1
+
+
+def _one_cell_read(mask, fwd):
+    T = fwd.shape[0]
+    cells = [{"key": ("k", "t"), "mask_col": mask, "fwd_col": fwd, "h": 1}]
+    return reliability_summary(cells, T, ["t"])["per_cell"][("k", "t")]
+
+
+def _exact_corr(members, weights=None):
+    """Exact INTEGER circular cross-correlations: ``den[tau]`` = the finite hits of every member's
+    rotated mask, ``num[tau]`` the sum of integer ``weights[g]`` over those hits."""
+    T = members[0][1].shape[0]
+    den = np.zeros(T, dtype=np.int64)
+    num = np.zeros(T, dtype=np.int64)
+    for g, (m, f) in enumerate(members):
+        v2 = np.tile(np.isfinite(f).astype(np.int64), 2)
+        w = None if weights is None else np.tile(weights[g], 2)
+        for i in np.flatnonzero(m > 0):
+            den += v2[i : i + T]
+            if w is not None:
+                num += w[i : i + T]
+    return num, den
+
+
+def _random_mask(rng, T, k):
+    m = np.zeros(T)
+    m[rng.choice(T, k, replace=False)] = 1.0
+    return m
+
+
+@pytest.mark.parametrize("c", [0.1, 0.013, 0.3])
+def test_holed_constant_pool_rotation_p_is_one(c):
+    # Constant finite returns between NaN holes: den differs per shift, so each shift's mean is
+    # num/den with its OWN rounding — still an exact tie with the observed c. Exact counts alone
+    # (rint) do not restore these ties; the tie band does.
+    rng = np.random.RandomState(12)
+    T = 61
+    checked = 0
+    for p_nan in (0.05, 0.3, 0.7):
+        for k in (3, 30):
+            fwd = np.full(T, c)
+            fwd[rng.rand(T) < p_nan] = np.nan
+            mask = _random_mask(rng, T, k)
+            _num, den = _exact_corr([(mask, fwd)])
+            if den[0] == 0:
+                continue
+            read = _one_cell_read(mask, fwd)
+            assert read["rot_p"] == 1.0, (p_nan, k, read["rot_p"])
+            assert read["rot_n_null"] == int(np.sum(den[1:] > 0))
+            checked += 1
+    assert checked >= 4
+
+
+@pytest.mark.parametrize(("c", "k"), [(0.1, 5), (0.1, 100), (1e-4, 10005), (12.5, 10005)])
+def test_long_constant_pool_rotation_p_is_one(c, k):
+    # The FFT's error grows with T and the firing count: a long PRIME-length series (pocketfft's
+    # Bluestein path, less accurate than a power of two) under a sparse and a near-full mask.
+    rng = np.random.RandomState(11)
+    T = 10007
+    read = _one_cell_read(_random_mask(rng, T, k), np.full(T, c))
+    assert read["rot_p"] == 1.0 and read["rot_n_null"] == T - 1
+
+
+def test_quantized_pool_rotation_p_is_the_exact_tie_aware_p():
+    # A `diff` outcome over a step series (a policy rate): exact 0.0 almost everywhere, a few
+    # ±0.25 / +0.5 — a tie-heavy pool whose values are exact multiples of 0.25, so the oracle
+    # compares integer sums (mean_tau >= mean_0  <=>  q_tau·den_0 >= q_0·den_tau).
+    rng = np.random.RandomState(16)
+    T = 500
+    u = rng.rand(T)
+    fwd = np.where(u < 0.0025, 0.25, np.where(u < 0.005, -0.25, 0.0))
+    fwd[rng.rand(T) < 0.01] = 0.5
+    q = np.rint(fwd * 4.0).astype(np.int64)
+    for k in (10, 25, 125):
+        mask = _random_mask(rng, T, k)
+        num, den = _exact_corr([(mask, fwd)], [q])
+        want = (1.0 + int(np.sum(num[1:] * den[0] >= num[0] * den[1:]))) / T
+        read = _one_cell_read(mask, fwd)
+        assert (read["rot_p"], read["rot_n_null"]) == (want, T - 1), (k, read["rot_p"], want)
+
+
+def test_pooled_constant_pool_of_many_holed_members_rotation_p_is_one():
+    # The pooled common-shift null sums num/den over MANY members, each with its own holes: the
+    # members' bands must ADD across the group for every pooled mean to tie the observed c.
+    rng = np.random.RandomState(13)
+    T, G, c = 61, 1000, 0.1
+    members = []
+    for _ in range(G):
+        fwd = np.full(T, c)
+        fwd[rng.rand(T) < 0.3] = np.nan
+        members.append((_random_mask(rng, T, int(rng.randint(2, 20))), fwd))
+    cells = [
+        {"key": ("k", f"t{g}"), "mask_col": m, "fwd_col": f, "h": 1}
+        for g, (m, f) in enumerate(members)
+    ]
+    read = pooled_reliability_summary(cells, T)["per_cell"][("k",)]
+    _num, den = _exact_corr(members)
+    assert read["rot_p"] == 1.0 and read["rot_n_null"] == int(np.sum(den[1:] > 0))
+
+
+def test_rotation_tie_band_does_not_swallow_a_resolvable_gap():
+    # One firing bar lifted by delta: the k shifts landing a firing on it (the observed among
+    # them) tie exactly, every other shift sits delta/k BELOW — a gap ~25x the band and ~1000x
+    # the FFT's actual error. Exact p = k/T: a band inflated past the gap would read 1, a missing
+    # band would break the k-1 null ties.
+    rng = np.random.RandomState(5)
+    T, k, c = 512, 16, 0.01
+    fire = rng.choice(T, k, replace=False)
+    mask = np.zeros(T)
+    mask[fire] = 1.0
+    fwd = np.full(T, c)
+    fwd[fire[0]] = c + c * 2.0**-36
+    read = _one_cell_read(mask, fwd)
+    assert read["rot_p"] == k / T and read["rot_n_null"] == T - 1
+
+
+def test_rotation_tie_band_norm_is_scale_safe():
+    # sqrt(x·x) overflows past ~1.3e154 (an infinite band would count every shift as a tie) and
+    # underflows below ~1e-162 (a zero band would let the residue break ties again).
+    from seikan.analysis._rotation import _fft_tie_band, _norm2
+
+    assert np.isfinite(_norm2(np.full(100, 1e200))) and _norm2(np.full(100, 1e200)) > 0.0
+    assert _norm2(np.full(100, 1e-170)) > 0.0
+    assert _norm2(np.zeros(5)) == 0.0
+    assert _fft_tie_band(100, float("inf"), 10) == 0.0
+
+
+@pytest.mark.parametrize("c", [0.1 * 1e-170, 1e200])
+def test_rotation_tie_band_survives_float_extremes_on_the_read_path(c):
+    # The read path must take the scale-safe norm: a plain sqrt(x·x) underflows to a zero band
+    # (~1e-171) or overflows to the exact fallback (~1e200), and the residue gets its coin flips
+    # back. Many masks, because one mask may leave every computed mean bit-identical — and then
+    # even a band-less read says 1.0.
+    rng = np.random.RandomState(0)
+    T = 61
+    fwd = np.full(T, c)
+    for _ in range(60):
+        read = _one_cell_read(_random_mask(rng, T, int(rng.randint(3, 50))), fwd)
+        assert read["rot_p"] == 1.0 and read["rot_n_null"] == T - 1, c
+
+
+def test_rotation_p_is_scale_invariant_at_float_extremes():
+    # Exact power-of-two rescalings of dispersed returns move no comparison: an infinite band
+    # would count every shift as a tie (rot_p 1.0), a zero one would change nothing here.
+    rng = np.random.RandomState(9)
+    T = 61
+    mask = _random_mask(rng, T, 20)
+    fwd = rng.normal(0.001, 0.01, T)
+    base = _one_cell_read(mask, fwd)["rot_p"]
+    assert base < 0.9
+    for s in (2.0**-560, 2.0**520, 2.0**660):  # ~1e-169, ~3e156, ~5e198
+        assert _one_cell_read(mask, fwd * s)["rot_p"] == base, s
+
+
+def test_rotation_tie_band_leaves_real_dispersion_untouched():
+    # On returns with genuine dispersion the band (~1e-15 here) sits far below the null's spacing:
+    # rot_p equals the exact-comparison tail p of the brute-force null.
+    rng = np.random.RandomState(9)
+    T = 400
+    fwd = rng.normal(0.001, 0.01, T)
+    mask = np.zeros(T)
+    mask[rng.choice(T, 40, replace=False)] = 1.0
+    brute = np.array([fwd[np.roll(mask > 0, tau)].mean() for tau in range(T)])
+    read = reliability_summary(
+        [{"key": ("k", "t"), "mask_col": mask, "fwd_col": fwd, "h": 1}], T, ["t"]
+    )["per_cell"][("k", "t")]
+    assert read["rot_p"] == _tail_p(brute[0], brute[1:])[0]
+
+
 def _rotation_means(mask, fwd):
     """Test-side composition of the production spectra pipeline: the conditional mean under
     every circular shift, ``num[tau] / den[tau]`` off the two memoized cross-correlation

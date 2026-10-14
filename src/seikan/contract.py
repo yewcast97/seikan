@@ -244,8 +244,9 @@ METRIC_ROLES: dict[str, JsonValue] = {
     "caveats": {
         "rot_p": (
             "assumes shift-exchangeability — over-certifies when volatility clusters where the "
-            "signal fires; one-sided, floored at the cell's own 1/(1+rot_n_null); the pooled "
-            "rot_p is a COMMON-SHIFT null with the same caveats; never quote as significance"
+            "signal fires; one-sided (ties within FFT rounding count), floored at the cell's "
+            "own 1/(1+rot_n_null); the pooled rot_p is a COMMON-SHIFT null with the same "
+            "caveats; never quote as significance"
         ),
         "t_hac": (
             "(and hac_se) the Bartlett taper understates the SE on overlapping pools — "
