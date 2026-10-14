@@ -161,8 +161,11 @@ def _zscore_ema_west(arr: np.ndarray, alpha: float, warmup: int) -> np.ndarray:
             step = mean + alpha * d
             step = min(max(step, min(mean, x)), max(mean, x))
             moved_var = (1.0 - alpha) * (var + alpha * d * d)
-            # nor once the input has varied: an update that underflowed floors the same way
-            if moved_var == 0.0 and alpha < 1.0 and (var > 0.0 or d != 0.0):
+            # nor where the step's deviation is known nonzero: an update that underflowed floors the
+            # same way; at d == 0 (the mean on the input, nothing carried: the exact deviation
+            # unknown) it stays undefined once it rounds to 0.0, at alpha >= 0.5 (below, rounding
+            # holds it at a subnormal and the z 0.0 stays decided)
+            if moved_var == 0.0 and alpha < 1.0 and d != 0.0:
                 moved_var = 5e-324
             var = moved_var
             dev = (1.0 - alpha) * d if (raw == last and d != 0.0 and step in (mean, x)) else None

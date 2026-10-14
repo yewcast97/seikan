@@ -785,7 +785,21 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   its warmup, and short of an overflow its recurrence carries forward, it is defined on every window
   `std > 0` admits. Out of the frame's reach is only a held input's decay, whose z exact arithmetic
   has sent under `2**-158/α` by then: its variance and carried deviation are floored at the
-  smallest subnormal there, sign kept — decided, imprecise in magnitude. The pool statistics read
+  smallest subnormal there, sign kept — decided, imprecise in magnitude. The residual is a hold
+  whose mean sits ON the held value from the bar the input moved: nothing is carried, and its exact
+  deviation is unknown (the mean carries rounding), so it reads z 0.0. It has two origins: the
+  LANDING GAP, a step of a few ulps at α ≥ 0.5 (an `ema` converging onto a held price) whose update
+  lands the mean ON the new value, where exact arithmetic keeps the step's sign; and an input that
+  moves exactly onto the mean (5.0, 5.5, then 5.25 held at window 3), whose exact z is 0 where the
+  mean is exact and of either sign where it is not. Its variance decays with nothing to feed it. At
+  α ≥ 0.5 it rounds to 0.0 — never floored into a decided 0.0 — and the z is undefined from there,
+  after ~490 held bars at α 0.75 off a few-ulp step at unit levels and ~1070 at α 0.5 in the example
+  (fewer off a smaller step; under `2**-300`, where the frame lifts that variance, earlier or later
+  with the level); a `std` window longer than that still admits those bars, and `signal_coverage`
+  refuses them. Below α 0.5 round-to-nearest holds that variance at a subnormal, so a hold moved
+  onto the mean there (any `window` ≥ 4, RiskMetrics' 0.06) reads a decided z 0.0 for its whole
+  length — exact where the mean is, of unknown sign where it is not; no landing gap arises there,
+  since the exact update lies nearer the old mean than the new input. The pool statistics read
   measured returns, which reach that range only off input data at that scale, and hold the
   undecidable line on both sides: a share, ratio, `t_hac`, CSCV split Sharpe, episode-mean read,
   regression read or `cvar_5` read off a sum, mean, quantile or variance that overflowed, a
