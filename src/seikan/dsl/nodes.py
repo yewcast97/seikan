@@ -407,8 +407,11 @@ class CrossRank(_Strict):
     # ``cross_agg`` broadcasts each group's aggregate to that group's members only. Labels compare
     # by exact float equality — use integer codes. Nested cross nodes inside ``where``/``group``
     # are legal (a liquidity screen ``where = cross_rank(dollar_volume) >= 0.5``), each with its
-    # own ``cross_breadth`` entry. ``cross_breadth.k`` counts ENTERING members (finite input ∧
-    # eligible ∧ finitely labelled); a bar voided by an undefined eligibility has k = 0.
+    # own ``cross_breadth`` entry. ``cross_breadth.k`` counts the members the kernel REDUCED
+    # over: ENTERING (finite input ∧ eligible ∧ finitely labelled) in a population that cleared
+    # ``min_valid`` and produced a value (per group under ``group``); a bar voided by an
+    # undefined eligibility, or
+    # whose groups all sat below the floor, has k = 0.
     where: Condition | None = None
     group: Series | None = None
 

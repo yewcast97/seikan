@@ -109,23 +109,28 @@ class SourceCoverage(TypedDict):
 
 class CrossBreadthEntry(TypedDict):
     """One (cross node × combo) effective-universe profile — ``summary["cross_breadth"]``,
-    built by ``compiler.runner`` off the node's memoized input frame. Evidence only; read by
+    built by ``compiler.runner`` off the node's memoized frames (its output, and its input /
+    ``where`` / ``group`` selectors). Evidence only; read by
     no check.
 
-    ``k`` is the per-bar count of ENTERING members — finite input, and under the node's
-    ``where``/``group`` selectors eligible and finitely labelled, across every group —
-    recomputed bit-exactly as the cross kernels (``compiler.nb``) see it before reducing, then
-    summarized instead of discarded: member warmup (or an eligibility screen) legally thins the
-    cross-section (a late start is warmup, not a hole), and this panel is what makes the
-    thinning visible. A bar voided by an undefined eligibility has ``k = 0`` and is not
+    ``k`` is the per-bar count of members the cross kernels (``compiler.nb``) REDUCED over —
+    ENTERING members (finite input, and under the node's ``where``/``group`` selectors eligible
+    and finitely labelled) of each population that cleared the kernel floor and whose reduction
+    produced a value (one that overflowed counts nothing): the whole
+    cross-section, or under ``group`` each label on its own (``vectorize.cross_reduced``) —
+    recomputed bit-exactly, then summarized instead of discarded: member warmup (or an
+    eligibility screen) legally thins the cross-section (a late start is warmup, not a hole),
+    and this panel is what makes the thinning visible. A bar voided by an undefined
+    eligibility, or whose every population sat below the floor, has ``k = 0`` and is not
     "evaluated". ``params`` carries the swept
     signal axes only (``{}`` when nothing swept; the horizon has no say in the entry
     condition), so combos that do not move the node's input repeat the same entry — honest
     repetition, the ``signal_coverage`` precedent, never a sum. ``min_valid`` is the effective
-    floor the kernel applied (``max(declared, 2)``); a bar below it emitted no cross-section
-    at all and is not "evaluated". ``k_min``/``k_median``/``k_max`` cover the evaluated bars
-    (null when none); ``n_bars_below_full`` counts evaluated bars with ``k < len(targets)``;
-    ``first_full_bar`` is the first bar the whole declared basket was present (null if never)
+    floor the kernel applied (``max(declared, 2)``, per group under ``group``); a population
+    below it emitted nothing and adds nothing to ``k``. ``k_min``/``k_median``/``k_max`` cover
+    the evaluated bars (null when none); ``n_bars_below_full`` counts evaluated bars with
+    ``k < len(targets)``; ``first_full_bar`` is the first bar the whole declared basket was
+    reduced over (null if never)
     — the warmup-tail mirror of ``first_available``. The list is ALWAYS present and ``[]`` on
     a conjunction run (cross nodes are basket-gated by validation).
     """

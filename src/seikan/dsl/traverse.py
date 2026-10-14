@@ -523,11 +523,13 @@ def iter_cross_series(node: Condition) -> Iterator[CrossRank | CrossDemean | Cro
     condition tree reads, first-seen pre-order.
 
     The breadth companion of :func:`iter_source_leaves`: each cross kernel reduces over the
-    per-bar FINITE member count ``k`` and then discards it, while member warmup legally thins
-    the cross-section (a late start is warmup, not a hole) — so which members a cross read
+    entering members of every population (the whole cross-section, or each ``group`` label) that
+    clears ``max(min_valid, 2)`` and then discards that count ``k``, while member warmup legally
+    thins the cross-section (a late start is warmup, not a hole) — so which members a cross read
     actually stood on is visible nowhere unless it is recorded. The runner walks these nodes
-    per scalarized combo to emit ``summary["cross_breadth"]``, recomputing ``k`` bit-exactly
-    off each node's memoized input frame. Deduplicated by canonical JSON: two identical nodes
+    per scalarized combo to emit ``summary["cross_breadth"]``, recomputing ``k``
+    (``vectorize.cross_reduced``) bit-exactly off each node's memoized frames. Deduplicated by
+    canonical JSON: two identical nodes
     share one memoized frame and one breadth profile, and the JSON carries ``where``/``group``,
     so the same input under two populations stays two nodes with two profiles."""
     seen: set[str] = set()

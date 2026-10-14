@@ -993,10 +993,11 @@ def _measure_grid(
     # no say in it. Horizon siblings therefore legitimately report the same counts — each cell is
     # graded alone, so nothing is ever summed across them.
     undef_by_combo: dict[ComboKey, np.ndarray] = {}
-    # Cross-sectional breadth (evidence-only): the per-bar ENTERING-member count k each cross
-    # kernel reduced over — finite input, and under `where`/`group` eligible and finitely
-    # labelled, across every group — recomputed bit-exactly off the node's memoized frames
-    # (`cross_membership` is memo hits below: the signal build already materialized them) and
+    # Cross-sectional breadth (evidence-only): the per-bar count k of members each cross kernel
+    # REDUCED over — entering (finite input, and under `where`/`group` eligible and finitely
+    # labelled) in a population that cleared the floor and produced a value, summed across
+    # groups — recomputed bit-exactly off the node's memoized frames (`cross_reduced` is memo
+    # hits below: the signal build already materialized them) and
     # SUMMARIZED instead of discarded, so member warmup (or a screen) thinning the effective
     # universe is visible. Keyed per (node × combo): a swept input moves the warmup, so
     # per-combo entries are the only non-understating key — combos that do not move a node's
@@ -1019,9 +1020,13 @@ def _measure_grid(
         undef_by_combo[combo_tuple] = vectorize.undefined_mask(entry, md)
         combo_params = {lvl: combo[lvl] for lvl in sweep_levels}
         for cross_node in iter_cross_series(entry):
-            k = vectorize.cross_membership(cross_node, md).sum(axis=1)
+            # k = the members the kernel REDUCED over: entering, in a population (the whole
+            # cross-section, or each group) that cleared the floor and produced a value — a bar
+            # whose every group sat below it, or overflowed, produced nothing, however many
+            # members entered in total.
+            k = vectorize.cross_reduced(cross_node, md).sum(axis=1)
             eff_min_valid = max(int(cross_node.min_valid), 2)  # the kernels' hard floor
-            evaluated = k >= eff_min_valid
+            evaluated = k > 0
             k_eval = k[evaluated]
             full = k == len(targets)
             cross_breadth.append(

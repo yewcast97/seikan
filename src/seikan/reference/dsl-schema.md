@@ -417,8 +417,11 @@ with a filter bolted on afterwards:
   by `--root-series-out`); `group` counts as a second child like `rolling_corr`'s. Sweeps inside
   either register in the order input → where → group. Rendered as
   `cross_rank(close,3,where=(elig>=1),group=sector)`.
-- `cross_breadth.k` counts ENTERING members — finite input, and eligible and finitely labelled —
-  across all groups; a bar voided by an undefined eligibility has `k = 0`.
+- `cross_breadth.k` counts the members the kernel REDUCED over — ENTERING (finite input, and
+  eligible and finitely labelled) in a population that cleared `min_valid` and whose reduction
+  produced a value (one that overflowed counts nothing), which under `group` is each group on its
+  own, summed across groups; a bar voided by an undefined eligibility, or
+  whose every group sat below the floor, has `k = 0` and is not evaluated.
 - Deferred, by decision: a reference universe OUTSIDE the targets (supply the breakpoints as a
   feed and threshold against them), member weights (`cross_agg(x·w, mean) / cross_agg(w, mean)`
   is the exact weighted mean), and "applicability vs missing data" — a member that leaves the
@@ -1217,8 +1220,10 @@ open to quote a statistic honestly.
 - `summary.cross_breadth` (basket only; `[]` elsewhere) — the effective-universe ledger, one
   entry per cross node × combo: `{node, params, min_valid, n_bars, n_bars_evaluated,
   n_bars_below_full, k_min, k_median, k_max, first_full_bar}` over the per-bar count `k` of
-  ENTERING members the cross kernels reduce over (finite input, and under `where`/`group`
-  eligible and finitely labelled, across every group). Member warmup — or an eligibility
+  members the cross kernels reduce over: ENTERING (finite input, and under `where`/`group`
+  eligible and finitely labelled) in a population that cleared `min_valid` and whose reduction
+  produced a value — each group on its own under `group` — summed across groups. Member warmup —
+  or an eligibility
   screen — legally thins `k` (a late start is warmup, not a hole), so `k_min < len(targets)`
   states coverage, not a defect — what
   the panel makes visible is the effective universe drifting through time: early bars ranked

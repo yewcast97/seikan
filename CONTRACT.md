@@ -279,8 +279,10 @@ produced under; the checklist dispatches its rubric on it), `statistics_version`
 `gate_evidence_basis`, `params`/`targets` (the swept entry axes and the regime — the two grid
 labels), `rotation`, the per-target `sources` availability panel,
 `cross_breadth` (the effective-universe ledger, one entry per cross node × combo summarizing the
-per-bar entering-member count `k` the cross kernels reduce over — finite input, and under the
-node's `where`/`group` selectors eligible and finitely labelled — always present, `[]` outside
+per-bar count `k` of members the cross kernels reduce over — entering (finite input, and under
+the node's `where`/`group` selectors eligible and finitely labelled) in a population that cleared
+`min_valid` and whose reduction produced a value (one that overflowed counts nothing): the whole
+cross-section, or each group on its own — always present, `[]` outside
 basket; evidence-only), the
 grid-level CSCV `pbo` block (ONE nested object: `{pbo, reason, n_splits, n_splits_attempted,
 n_candidates_min, n_combos, n_combos_scoreable, n_combos_declared, blocks, lambda_mean,

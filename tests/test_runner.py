@@ -1606,9 +1606,10 @@ def test_multi_target_bucket_edges_aggregate_by_ordinal(tmp_path):
 
 
 # ---- cross_breadth: the effective-universe ledger -------------------------------------------
-# The cross kernels reduce over the per-bar finite-member count k and discard it; member warmup
-# legally thins the cross-section (a late start is warmup, not a hole), so without this panel
-# the effective universe could drift silently through time. Evidence-only; read by no check.
+# The cross kernels reduce over the entering members of every population (the cross-section, or
+# each group) that clears min_valid, and discard that count k; member warmup legally thins the
+# cross-section (a late start is warmup, not a hole), so without this panel the effective
+# universe could drift silently through time. Evidence-only; read by no check.
 
 
 def _breadth_basket(tmp_path, entry, n=60, late_from=0, horizon=2):
@@ -5320,6 +5321,40 @@ _ELIG_GE1 = {
 _XF = {"type": "external", "name": "x"}
 
 
+def test_cross_agg_breadth_does_not_count_its_broadcast_into_a_late_member(tmp_path):
+    # cross_agg broadcasts the cleared mean into T3 while T3's own x warms: T3 was not reduced
+    # over there, so k is 3 for those bars and the full basket starts at T3's first value.
+    late = np.r_[np.full(10, np.nan), np.ones(20)]
+    entry = {
+        "type": "threshold",
+        "left": {"type": "cross_agg", "input": _XF, "agg": "mean"},
+        "op": ">",
+        "right": {"type": "constant", "value": -1e9},
+    }
+    res = _pop_basket(tmp_path, entry, x=[100, 90, 80, 70 * late])
+    b = res.summary["cross_breadth"][0]
+    assert b["n_bars_evaluated"] == 30 and b["k_min"] == 3 and b["k_max"] == 4
+    assert b["n_bars_below_full"] == 10 and b["first_full_bar"].startswith("2021-01-11")
+
+
+def test_breadth_follows_the_values_a_kernel_reduced_over_not_their_init(tmp_path):
+    # The inner cross_agg broadcasts into T3 while T3's x warms (value finite, init not): the
+    # OUTER cross_rank ranks it, so its k counts T3 on every bar; the inner k does not.
+    late = np.r_[np.full(10, np.nan), np.ones(20)]
+    inner = {"type": "cross_agg", "input": _XF, "agg": "mean"}
+    entry = {
+        "type": "threshold",
+        "left": {"type": "cross_rank", "input": inner},
+        "op": ">=",
+        "right": {"type": "constant", "value": 0.0},
+    }
+    res = _pop_basket(tmp_path, entry, x=[100, 90, 80, 70 * late])
+    by_node = {b["node"]: b for b in res.summary["cross_breadth"]}
+    outer, agg = by_node["cross_rank(cross_agg(x,mean))"], by_node["cross_agg(x,mean)"]
+    assert outer["k_min"] == outer["k_max"] == 4 and outer["n_bars_below_full"] == 0
+    assert agg["k_min"] == 3 and agg["n_bars_below_full"] == 10
+
+
 def _rank_ge(q, **selectors):
     return {
         "type": "threshold",
@@ -5387,6 +5422,96 @@ def test_cross_rank_group_sector_relative_end_to_end(tmp_path):
     assert res.summary["cross_breadth"][0]["node"] == "cross_rank(x,group=sector)"
     res = _pop_basket(tmp_path, _rank_ge(0.8), x=[100, 90, 80, 70])
     assert set(res.trades["target"]) == {"T0"}
+
+
+def test_grouped_breadth_counts_only_groups_that_cleared_the_floor(tmp_path):
+    # The review's case: four members in two sectors of two, min_valid=3 PER GROUP — no group
+    # ever reaches the floor, so the kernel emits nothing on any bar. The ledger used to count
+    # all four entering members against the floor once (k=4 ≥ 3): 30 bars "evaluated", the
+    # full basket "present" from bar 0, for a node that never produced a value.
+    sector = {"type": "external", "name": "sector"}
+    res = _pop_basket(
+        tmp_path,
+        _rank_ge(0.5, group=sector, min_valid=3),
+        x=[100, 90, 80, 70],
+        sector=[1, 1, 2, 2],
+    )
+    assert res.trades.empty
+    entry = res.summary["cross_breadth"][0]
+    assert entry["min_valid"] == 3 and entry["n_bars_evaluated"] == 0
+    assert entry["k_min"] is None and entry["k_median"] is None and entry["k_max"] is None
+    assert entry["n_bars_below_full"] == 0 and entry["first_full_bar"] is None
+
+
+def test_grouped_breadth_k_is_the_members_of_cleared_groups(tmp_path):
+    # Sectors {T0, T1, T2} and {T3}, min_valid=3: the big sector is ranked on every bar, T3's
+    # one-member sector never is — k = 3 (the members actually ranked), never the full basket.
+    sector = {"type": "external", "name": "sector"}
+    res = _pop_basket(
+        tmp_path,
+        _rank_ge(0.5, group=sector, min_valid=3),
+        x=[100, 90, 80, 70],
+        sector=[1, 1, 1, 2],
+    )
+    assert set(res.trades["target"]) == {"T0", "T1"}
+    entry = res.summary["cross_breadth"][0]
+    assert entry["n_bars_evaluated"] == 30 and entry["k_min"] == entry["k_max"] == 3
+    assert entry["n_bars_below_full"] == 30 and entry["first_full_bar"] is None
+
+
+def test_grouped_breadth_a_screened_member_does_not_pad_its_group(tmp_path):
+    # T3 is screened out by `where`: its sector {T2, T3} is left with one ranked member, below the
+    # floor of 2 — sector 2 is never ranked, and k counts sector 1 alone.
+    sector = {"type": "external", "name": "sector"}
+    res = _pop_basket(
+        tmp_path,
+        _rank_ge(0.5, where=_ELIG_GE1, group=sector),
+        x=[100, 90, 80, 70],
+        elig=[1, 1, 1, 0],
+        sector=[1, 1, 2, 2],
+    )
+    assert set(res.trades["target"]) == {"T0"}
+    entry = res.summary["cross_breadth"][0]
+    assert entry["n_bars_evaluated"] == 30 and entry["k_min"] == entry["k_max"] == 2
+    assert entry["first_full_bar"] is None
+
+
+def test_ungrouped_breadth_bars_below_the_floor_are_not_evaluated(tmp_path):
+    # Two members start 10 bars late and min_valid is 3: the first 10 bars hold 2 entering members,
+    # below the floor — nothing was ranked there, and the panel says so.
+    late = np.r_[np.full(10, np.nan), np.ones(20)]
+    res = _pop_basket(tmp_path, _rank_ge(0.5, min_valid=3), x=[100, 90, 80 * late, 70 * late])
+    entry = res.summary["cross_breadth"][0]
+    assert entry["min_valid"] == 3 and entry["n_bars_evaluated"] == 20
+    assert entry["k_min"] == entry["k_max"] == 4 and entry["n_bars_below_full"] == 0
+    assert entry["first_full_bar"].startswith("2021-01-11")
+
+
+@pytest.mark.parametrize(
+    "node",
+    [
+        {"type": "cross_demean", "input": _XF, "group": {"type": "external", "name": "sector"}},
+        {
+            "type": "cross_agg",
+            "input": _XF,
+            "agg": "mean",
+            "group": {"type": "external", "name": "sector"},
+        },
+    ],
+)
+def test_grouped_breadth_of_demean_and_agg_counts_the_reduced_members(tmp_path, node):
+    # The review's case on the other two kernels: the singleton sector {T3} is never reduced over
+    # (cross_agg broadcasts nothing into it either), so k is the three members of sector 1.
+    entry = {
+        "type": "threshold",
+        "left": node,
+        "op": ">",
+        "right": {"type": "constant", "value": -1e9},
+    }
+    res = _pop_basket(tmp_path, entry, x=[100, 90, 80, 70], sector=[1, 1, 1, 2])
+    breadth = res.summary["cross_breadth"][0]
+    assert breadth["n_bars_evaluated"] == 30 and breadth["k_min"] == breadth["k_max"] == 3
+    assert breadth["first_full_bar"] is None
 
 
 # ---- explicit-decay EW forms, robust window statistics, intraday calendar fields -----------

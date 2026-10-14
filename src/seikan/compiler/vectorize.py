@@ -628,11 +628,37 @@ def cross_membership(
     node: CrossRank | CrossDemean | CrossAgg, md: MarketData
 ) -> npt.NDArray[np.bool_]:
     """The ENTERING members of a cross node per bar — :func:`cross_population` with a finite
-    input — exactly the ``k`` the kernel reduces over (across every group), which the runner's
-    ``cross_breadth`` panel summarizes."""
+    input: what the kernel sees before applying its floor (see :func:`cross_reduced`)."""
     x = build_series(node.input, md)[0].to_numpy(dtype=float)
     entering: npt.NDArray[np.bool_] = cross_population(node, md) & np.isfinite(x)
     return entering
+
+
+def cross_reduced(
+    node: CrossRank | CrossDemean | CrossAgg, md: MarketData
+) -> npt.NDArray[np.bool_]:
+    """The members a cross node's kernel actually REDUCED over per bar — the ``k`` the runner's
+    ``cross_breadth`` panel summarizes: the entering members (:func:`cross_membership`) of every
+    population — the whole cross-section, or under ``group`` each label on its bar — whose
+    reduction produced a value. Read off the node's own memoized output rather than re-modelling
+    the kernels' gates, so it is exact by construction: a population that sat below the floor
+    ``max(min_valid, 2)`` (per GROUP, ``nb.cross_grouped_apply_nb``) or whose reduction
+    overflowed emitted nothing and adds nothing, however many members entered; one that emitted
+    counts every member it entered with, even one whose own output overflowed (a demeaned value
+    past the double range — the mean was still taken over it). A ``cross_agg`` broadcast into a
+    population member whose own input is missing is a value it was not reduced over — hence the
+    entering mask."""
+    entering = cross_membership(node, md)
+    emitted = entering & np.isfinite(build_series(node, md)[0].to_numpy(dtype=float))
+    if node.group is None:
+        whole: npt.NDArray[np.bool_] = entering & emitted.any(axis=1, keepdims=True)
+        return whole
+    labels = np.where(entering, build_series(node.group, md)[0].to_numpy(dtype=float), np.nan)
+    reduced: npt.NDArray[np.bool_] = np.zeros_like(entering)
+    for value in np.unique(labels[np.isfinite(labels)]):
+        in_group = labels == value
+        reduced |= in_group & (in_group & emitted).any(axis=1, keepdims=True)
+    return reduced
 
 
 def build_series(node: Series, md: MarketData) -> tuple[pd.DataFrame, pd.DataFrame]:

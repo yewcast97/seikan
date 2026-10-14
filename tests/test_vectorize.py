@@ -3042,6 +3042,64 @@ def test_cross_rank_group_label_changes_over_time():
     np.testing.assert_array_equal(v[-1], [1.0, np.nan, 0.5, 0.0])  # T1 alone in sector 1
 
 
+def test_cross_reduced_is_the_members_whose_group_cleared_the_floor_per_bar():
+    # Point-in-time labels: on the first four bars T0 shares sector 1 with T1 (two members, below
+    # min_valid=3) while T2/T3 sit in sector 2; from bar 4 T0 joins sector 2 (three members). The
+    # kernel's finite outputs are exactly the members cross_reduced names, bar by bar.
+    sector0 = np.array([1, 1, 1, 1, 2, 2, 2, 2])
+    md = _md4(x=[100, 90, 80, 70], sector=[sector0, 1, 2, 2])
+    node = CrossRank(input=_X, group=External(name="sector"), min_valid=3)
+    reduced = vz.cross_reduced(node, md)
+    np.testing.assert_array_equal(reduced[0], [False, False, False, False])
+    np.testing.assert_array_equal(reduced[-1], [True, False, True, True])
+    v = vz.build_series(node, md)[0].to_numpy()
+    np.testing.assert_array_equal(np.isfinite(v), reduced)
+    assert vz.cross_membership(node, md).all()  # every member ENTERED on every bar
+
+
+def test_cross_reduced_for_cross_agg_is_not_its_broadcast():
+    # cross_agg broadcasts a cleared group's aggregate into every member of its population,
+    # including one whose own input is still warming: that member carries a value it was not
+    # reduced over, and k does not count it.
+    x2 = np.array([np.nan] * 4 + [80.0] * 4)
+    md = _md4(x=[100, 90, x2, 70], sector=[1, 1, 1, 2])
+    node = CrossAgg(input=_X, agg="mean", group=External(name="sector"))
+    v = vz.build_series(node, md)[0].to_numpy()
+    reduced = vz.cross_reduced(node, md)
+    assert np.isfinite(v[:4, 2]).all() and not reduced[:4, 2].any()
+    np.testing.assert_array_equal(reduced.sum(axis=1), [2, 2, 2, 2, 3, 3, 3, 3])
+
+
+def test_cross_reduced_records_a_member_thinned_while_its_mask_warms():
+    # The breadth panel makes the thinning visible: T0's mask is warmup until bar 12, so the
+    # cross_agg breadth reduces over T1..T3 alone until then.
+    md = _staggered_or_md(np.r_[np.ones(6), np.zeros(24)])
+    breadth = CrossAgg(input=Mask(condition=_staggered_c()), agg="mean")
+    k = vz.cross_reduced(breadth, md).sum(axis=1)
+    np.testing.assert_array_equal(k, np.where(np.arange(30) < 12, 3, 4))
+
+
+def test_cross_reduced_drops_a_population_whose_reduction_overflowed():
+    # A population above the floor whose mean overflows emits nothing: it was not evaluated.
+    md = _md4(x=[1.7e308, 1.6e308, 1.0, 2.0], sector=[1, 1, 2, 2])
+    node = CrossDemean(input=_X, group=External(name="sector"))
+    v = vz.build_series(node, md)[0].to_numpy()
+    reduced = vz.cross_reduced(node, md)
+    np.testing.assert_array_equal(reduced, np.isfinite(v))
+    np.testing.assert_array_equal(reduced[-1], [False, False, True, True])
+
+
+def test_cross_reduced_counts_a_demean_member_whose_own_deviation_overflowed():
+    # The row mean is finite — all three entering members were reduced over — but T0's x − mean
+    # overflows and the kernel NaNs T0 alone: k counts the population, never below the floor on
+    # a bar the node evaluated.
+    md = _md4(x=[1.79e308, -1.79e308, -1.79e308, np.nan])
+    node = CrossDemean(input=_X, min_valid=3)
+    v = vz.build_series(node, md)[0].to_numpy()
+    assert np.isnan(v[0, 0]) and np.isfinite(v[0, 1:3]).all()
+    np.testing.assert_array_equal(vz.cross_reduced(node, md)[0], [True, True, True, False])
+
+
 def test_cross_rank_group_of_size_one_is_nan():
     md = _md4(x=[100, 90, 80, 70], sector=[1, 2, 2, 2])
     v = vz.build_series(CrossRank(input=_X, group=External(name="sector")), md)[0]
