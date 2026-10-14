@@ -155,6 +155,15 @@ seikan is a verifier for **untrusted external data**: every referenced file is c
 engine sees a number, and a violation exits 2 with a machine-readable `data_report` naming file /
 column / csv line. Pre-flight with `seikan check-data <files…>`. The contract:
 
+- **Record shape**: comma-delimited, `"`-quoted (a quoted comma or line break stays inside one
+  field). The first non-blank line is the header, and every record carries exactly one field per
+  header column: any record with more (a trailing delimiter is one more) or fewer refuses as
+  `field_count_mismatch`, counting every offender and naming the first csv lines — never read as
+  an index, never padded with empty cells. Blank lines (spaces/tabs only) are skipped. Bare
+  carriage-return (`\r`) line endings, NUL bytes, a quote after a line's leading spaces and a
+  byte-order mark past the file's start, where pandas' tokenizer can misread a record, get a
+  cell-by-cell cross-check; a disagreement refuses (`unreadable`) naming the csv line, so save
+  with `\n` or `\r\n` endings.
 - **Timestamps**: a column named `datetime` (case-insensitive), else the first column. Strict
   **ISO-8601** (`YYYY-MM-DD` or a full timestamp), **timezone-naive**, unique, sorted ascending.
   No other date format is ever guessed (`01/02/2021` is rejected, not interpreted).

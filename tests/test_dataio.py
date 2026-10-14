@@ -6,9 +6,14 @@ crash-sized moves and NaN holes are the research subject, not dirt.
 
 from __future__ import annotations
 
+import csv
+import io
+
+import numpy as np
+import pandas as pd
 import pytest
 
-from seikan.dataio import read_strict_csv, sufficiency_check
+from seikan.dataio import MAX_EXAMPLES, read_strict_csv, sufficiency_check
 
 _GOOD = (
     "datetime,open,high,low,close,volume\n"
@@ -53,6 +58,14 @@ REJECTIONS = [
     ("empty_file", ""),
     ("header_only", "datetime,close\n"),
     ("duplicate_column", "datetime,close,Close\n2021-01-01,1,2\n"),
+    # record shape: every record carries exactly the header's field count, more OR fewer refuses
+    (
+        "field_count_mismatch",
+        "datetime,close\n2021-01-01,2021-01-04,100\n2021-01-02,2021-01-05,101\n",
+    ),  # header + 1 on EVERY record: pandas read an implicit index and loaded it clean, shifted
+    ("field_count_mismatch", "datetime,close\n2021-01-01,100,\n2021-01-02,101,\n"),  # trailing
+    ("field_count_mismatch", "datetime,a,b\n2021-01-01,1,2\n2021-01-02,3\n"),  # short: was padded
+    ("field_count_mismatch", "datetime,close\n2021-01-01,100\n2021-01-02,101,7\n"),  # one ragged
     ("bad_timestamp", "datetime,close\n01/02/2021,100\n01/03/2021,100\n"),  # US-style
     ("bad_timestamp", "datetime,close\n02.01.2021,100\n03.01.2021,100\n"),  # EU-style
     (
@@ -128,9 +141,10 @@ def test_sha256_survives_content_refusal(tmp_path):
 
 
 def test_file_is_read_exactly_once(tmp_path, monkeypatch):
-    # Structural TOCTOU regression: digest, header sniff and parse all consume ONE buffer, so a
-    # rewrite between stages cannot make the reported identity describe different bytes than the
-    # ones measured. Counting opens is the only way to assert the property structurally.
+    # Structural TOCTOU regression: digest, header sniff, record-shape scan, parse and its
+    # cross-check all consume ONE buffer, so a rewrite between stages cannot make the reported
+    # identity describe different bytes than the ones measured. Counting opens is the only way to
+    # assert the property structurally.
     import builtins
 
     target = _write(tmp_path, _GOOD)
@@ -175,6 +189,319 @@ def test_utf8_bom_tolerated(tmp_path):
     p.write_bytes(b"\xef\xbb\xbf" + _GOOD.encode())
     df, rep = read_strict_csv(str(p))
     assert rep.ok and "open" in df.columns
+
+
+@pytest.mark.parametrize(
+    "n_before,bom,eol",
+    [
+        (10, b"", "\n"),
+        (10, b"\xef\xbb\xbf", "\r\n"),
+        (5000, b"", "\r"),
+        (25000, b"\xef\xbb\xbf", "\n"),
+    ],
+)  # inside the decoder's first 8 KiB chunk, past it, and past pandas' 256 KiB read buffer
+def test_an_undecodable_byte_is_named_by_its_file_offset_and_line(tmp_path, n_before, bom, eol):
+    # A cp1252 export whose first accented byte sits deep in the file: the streaming decoder counts
+    # its position from the start of its 8 KiB read chunk (and from past a BOM), pandas' from its
+    # 256 KiB buffer, so the codec's own "position" named some other byte. The refusal names the
+    # byte's offset in the FILE and the csv line it sits on.
+    rows = "".join(f"2021-01-01,{i}{eol}" for i in range(n_before)).encode()
+    blob = (
+        bom + f"datetime,close{eol}".encode() + rows + f"2021-02-01,caf\xe9{eol}".encode("cp1252")
+    )
+    p = tmp_path / "f.csv"
+    p.write_bytes(blob + rows)
+    df, rep = read_strict_csv(str(p))
+    assert df is None
+    (err,) = rep.errors
+    assert err["code"] == "unreadable"
+    assert err["message"] == (
+        f"{p}: 'utf-8' codec can't decode byte 0xe9 in position {len(blob) - 1 - len(eol)}: "
+        "invalid continuation byte"
+    )
+    assert err["examples"] == [{"csv_line": n_before + 2}]
+
+
+# ---- record shape: exactly one field per header column ---------------------------------------
+
+
+def test_header_plus_one_on_every_record_refuses_instead_of_shifting(tmp_path):
+    # Every record one field longer than the header: pandas read the first field as an implicit
+    # index, so `datetime` read the SECOND date of each record and the first was discarded — the
+    # file loaded clean and wrong. Now nothing loads, and every offending line is named.
+    text = "datetime,close\n2021-01-01,2021-01-04,100\n2021-01-02,2021-01-05,101\n"
+    df, rep = _run(tmp_path, text)
+    assert df is None and rep.n_rows is None and rep.shape is None
+    (err,) = rep.errors
+    assert err["code"] == "field_count_mismatch"
+    assert "2 record(s) do not carry the header's 2 field(s) (found 3)" in err["message"]
+    assert err["examples"] == [{"csv_line": 2, "value": "3"}, {"csv_line": 3, "value": "3"}]
+
+
+def test_one_ragged_record_is_a_field_count_mismatch_not_unreadable(tmp_path):
+    # pandas refuses a lone ragged record itself, but as a tokenizer error filed under
+    # `unreadable`; the record-shape stage reaches it first, under the precise code.
+    _, rep = _run(tmp_path, "datetime,close\n2021-01-01,100\n2021-01-02,101,7\n2021-01-03,102\n")
+    (err,) = rep.errors
+    assert err["code"] == "field_count_mismatch"
+    assert err["examples"] == [{"csv_line": 3, "value": "3"}]
+
+
+def test_field_count_mismatch_counts_every_offender_and_caps_what_it_names(tmp_path):
+    # Seven offenders with six distinct counts, more AND fewer than the header's three: the total
+    # is exact, the examples are the first MAX_EXAMPLES in file order, the counts are the first
+    # MAX_EXAMPLES in sorted order — a garbage file still gets a bounded message.
+    text = (
+        "datetime,a,b\n"
+        "2021-01-01,1,2\n"
+        "2021-01-02,1\n"  # 2 fields
+        "2021-01-03,1,2,3\n"  # 4
+        "2021-01-04\n"  # 1
+        "2021-01-05,1,2\n"
+        "2021-01-06,1,2,3,4\n"  # 5
+        "2021-01-07,1,2,3,4,5\n"  # 6
+        "2021-01-08,1,2,3,4,5,6\n"  # 7
+        "2021-01-09,1\n"  # 2
+    )
+    _, rep = _run(tmp_path, text)
+    (err,) = rep.errors
+    assert err["code"] == "field_count_mismatch"
+    assert (
+        "7 record(s) do not carry the header's 3 field(s) (found 1, 2, 4, 5, 6, …)"
+        in (err["message"])
+    )
+    assert MAX_EXAMPLES == 5
+    assert err["examples"] == [
+        {"csv_line": 3, "value": "2"},
+        {"csv_line": 4, "value": "4"},
+        {"csv_line": 5, "value": "1"},
+        {"csv_line": 7, "value": "5"},
+        {"csv_line": 8, "value": "6"},
+    ]
+
+
+def test_quoted_delimiter_and_line_break_stay_one_field(tmp_path):
+    # csv.reader parity with pandas' tokenizer: a quoted comma or line break is part of ONE field,
+    # so the stage counts exactly the fields pandas will read — and admits.
+    text = 'datetime,"yield, 10y","spread\n(bp)"\n2021-01-01,"1.5",120\n"2021-01-04",1.6,"118"\n'
+    df, rep = _run(tmp_path, text)
+    assert rep.ok, rep.errors
+    assert list(df.columns) == ["yield, 10y", "spread\n(bp)"]
+    assert df["yield, 10y"].tolist() == [1.5, 1.6]
+    assert df["spread\n(bp)"].tolist() == [120.0, 118.0]
+    # an offender is named by the physical line its record STARTS on: the quoted break spans the
+    # record over lines 3-4, and the clean record after it is line 5
+    _, rep = _run(tmp_path, 'datetime,close\n2021-01-01,1\n2021-01-02,"2\n",9\n2021-01-03,3\n')
+    (err,) = rep.errors
+    assert err["code"] == "field_count_mismatch"
+    assert err["examples"] == [{"csv_line": 3, "value": "3"}]
+
+
+def test_blank_lines_skip_with_pandas_parity(tmp_path):
+    # pandas' skip_blank_lines drops a line of nothing but spaces and tabs, before the header too,
+    # and the stage drops exactly those: interior (and leading, and trailing) blanks still admit.
+    text = "\n \ndatetime,close\n2021-01-01,100\n\n2021-01-02,101\n   \n\t\r\n2021-01-03,102\n \t "
+    df, rep = _run(tmp_path, text)
+    assert rep.ok, rep.errors
+    assert df["close"].tolist() == [100.0, 101.0, 102.0]
+    # a QUOTED blank is a record to pandas (one field — a short row it would pad), so it is one
+    # here too, named on its own line
+    _, rep = _run(tmp_path, 'datetime,close\n2021-01-01,100\n""\n2021-01-02,101\n')
+    (err,) = rep.errors
+    assert err["code"] == "field_count_mismatch"
+    assert err["examples"] == [{"csv_line": 3, "value": "1"}]
+
+
+def test_header_is_the_first_record_pandas_reads(tmp_path):
+    # Leading blank lines skip before the header, so the duplicate-name sniff inspects the header
+    # pandas actually uses: it used to inspect the blank line, and the case-folded duplicate went
+    # on to crash the read.
+    df, rep = _run(tmp_path, "\n  \ndatetime,close,Close\n2021-01-01,1,2\n")
+    assert df is None and [e["code"] for e in rep.errors] == ["duplicate_column"]
+    # with nothing but blank lines there is no header for pandas either ("No columns to parse
+    # from file", which was `unreadable`): empty of records, and said so apart from a 0-byte file
+    for text, says in (
+        ("", "file is empty"),
+        ("\n  \n\t\r\n", "file holds only blank lines, no header"),
+    ):
+        path = _write(tmp_path, text)
+        df, rep = read_strict_csv(path)
+        assert df is None and rep.errors == [{"code": "empty_file", "message": f"{path}: {says}"}]
+
+
+def test_a_field_past_the_csv_field_limit_is_unreadable_not_a_crash(tmp_path):
+    # csv.reader refuses a field longer than csv.field_size_limit(); in the header or in a record,
+    # that is an unreadable file naming the line the record starts on, never an uncaught csv.Error.
+    big = "9" * (csv.field_size_limit() + 1)
+    for line, text in ((1, f"datetime,{big}\n2021-01-01,1\n"), (2, f"datetime,close\n1,{big}\n")):
+        df, rep = _run(tmp_path, text)
+        assert df is None and [e["code"] for e in rep.errors] == ["unreadable"]
+        assert "field larger than field limit" in rep.errors[0]["message"]
+        assert rep.errors[0]["examples"] == [{"csv_line": line}]
+
+
+def test_an_unclosed_quote_is_named_by_the_line_it_opens_on(tmp_path):
+    # csv.reader closes an unterminated quote at EOF, so the quote reads the rest of the file as
+    # one field. A short rest is one record short of fields, named where the quote opens (pandas
+    # said only "EOF inside string starting at row 2", counting lines from 0); a rest past the
+    # field limit is unreadable, again named by that line and pointing at the quote.
+    tail = "".join(f"2021-02-{d:02d},{d}\n" for d in range(1, 29))
+    _, rep = _run(tmp_path, 'datetime,close\n2021-01-01,1\n"2021-01-02,2\n' + tail)
+    (err,) = rep.errors
+    assert err["code"] == "field_count_mismatch"
+    assert err["examples"] == [{"csv_line": 3, "value": "1"}]
+    _, rep = _run(tmp_path, 'datetime,close\n2021-01-01,1\n"2021-01-02,2\n' + tail * 400)
+    (err,) = rep.errors
+    assert err["code"] == "unreadable"
+    assert err["examples"] == [{"csv_line": 3}]
+    assert "the record starting at csv line 3" in err["message"]
+    assert "a quote that never closes" in err["message"]
+
+
+def test_a_doubled_bom_is_dropped_as_pandas_drops_it(tmp_path):
+    # The codec drops one BOM and pandas' tokenizer the next, so a doubled BOM ahead of a blank
+    # line leaves a line pandas skips as blank — and the scan agrees, finding the same header.
+    for text in ("\ufeff\ufeff\ndatetime,close\n", "\ufeff\ufeffdatetime,close\n"):
+        df, rep = _run(tmp_path, text + "2021-01-01,1\n2021-01-02,2\n")
+        assert rep.ok, rep.errors
+        assert list(df.columns) == ["close"] and df["close"].tolist() == [1.0, 2.0]
+
+
+def test_a_record_pandas_reads_differently_after_a_bare_carriage_return_refuses(tmp_path):
+    # Past a blank line ended by a LONE \r, pandas' tokenizer swallows the delimiter that opens the
+    # next record and pads its end: `,2022,5` read as `2022,5,` — a record the scan had counted
+    # right (datetime empty, a=2022, b=5) loaded as datetime=2022, a=5, b=NaN, exit 0. The frame
+    # is cross-checked against the scan wherever a lone \r occurs, and the line is named.
+    for blank in ("\r", " \t\r"):
+        for eol in ("\n", "\r\n"):
+            text = f"datetime,a,b{eol}2021-01-01,1,2{eol}{blank},2022,5{eol}"
+            df, rep = _run(tmp_path, text)
+            assert df is None, (blank, eol)
+            (err,) = rep.errors
+            assert err["code"] == "unreadable"
+            assert err["examples"] == [{"csv_line": 4}]
+    # a space-led record after a lone \r: pandas re-read the header as a data row (refused, but as
+    # a bad timestamp `datetime`); now the line the readings part on is named
+    _, rep = _run(tmp_path, "datetime,close\r 2021-01-01,1\r")
+    (err,) = rep.errors
+    assert err["code"] == "unreadable" and err["examples"] == [{"csv_line": 2}]
+
+
+def test_a_nul_byte_pandas_cuts_a_field_at_refuses(tmp_path):
+    # pandas' tokenizer ends a field at a NUL byte: `1\x002` loaded as close=1.0, exit 0.
+    df, rep = _run(tmp_path, "datetime,close\n2021-01-01,1\x002\n2021-01-02,3\n")
+    assert df is None
+    (err,) = rep.errors
+    assert err["code"] == "unreadable" and err["examples"] == [{"csv_line": 2}]
+
+
+def test_a_quote_pandas_opens_at_its_read_buffer_edge_refuses(tmp_path):
+    # pandas' tokenizer reads 256 KiB at a time, and a space-led line it entered as a possible
+    # blank backs up only to the start of the current buffer: with every leading space before the
+    # edge and a quote opening the next buffer, it opens a QUOTED field where csv.reader — and
+    # pandas anywhere else in the file — reads a literal quote. `   "<date>",5` loaded
+    # quote-stripped, a clean timestamp at exit 0. A space-led quote anywhere now joins the
+    # cross-check and the disagreement refuses; one byte off the edge the readings agree, and the
+    # same line refuses as the bad timestamp it is, exactly as before.
+    edge = 256 * 1024
+    head = "datetime,close\n"
+    dates = pd.date_range("1990-01-01", periods=20200, freq="D").strftime("%Y-%m-%d")
+    for shift, code in ((0, "unreadable"), (1, "bad_timestamp")):
+        n, extra = divmod(edge + shift - 3 - len(head), 13)  # 13-byte `<date>,1\n` filler rows
+        rows = [f"{d},1\n" for d in dates[:n]]
+        rows[-1] = f"{dates[n - 1]},1{'0' * extra}\n"
+        text = head + "".join(rows) + f'   "{dates[n]}",5\n{dates[n + 1]},6\n'
+        assert text.index('"') == edge + shift
+        df, rep = _run(tmp_path, text)
+        assert df is None, shift
+        (err,) = rep.errors
+        assert err["code"] == code
+        assert err["examples"][0]["csv_line"] == n + 2
+
+
+def test_a_bom_pandas_drops_at_its_read_buffer_edge_refuses(tmp_path):
+    # Until its first line closes, pandas' tokenizer drops a BOM that opens a 256 KiB read buffer,
+    # as it drops one opening the file. With a U+FEFF at character 262144 of an over-long header,
+    # `\ufeffclose` — distinct from `close` to the duplicate check — reached pandas as a second
+    # `close`: `close` loaded the other column's values and the file's own `close` became
+    # `close.1`, exit 0. A BOM past the file's start now joins the cross-check and the header
+    # disagreement refuses; one character off the edge the readings agree and the file loads
+    # exactly as before, the BOM kept in its name.
+    edge = 256 * 1024
+    pads = ["a" * 87378, "b" * 87377, "c" * 87377]  # each under the csv field limit (131072)
+    for lead in ("", "\ufeff"):  # the codec drops a leading BOM before the tokenizer counts
+        for shift in (0, 1):
+            head = ",".join(["datetime", *pads[:2], pads[2] + "c" * shift]) + ","
+            text = head + "\ufeffclose,close\n2021-01-01,1,2,3,4,5\n2021-01-04,1,2,3,4,6\n"
+            assert text.index("\ufeff") == edge + shift
+            df, rep = _run(tmp_path, lead + text)
+            if shift == 0:
+                assert df is None, lead
+                (err,) = rep.errors
+                assert err["code"] == "unreadable" and err["examples"] == [{"csv_line": 1}]
+            else:
+                assert rep.ok, rep.errors
+                assert list(df.columns)[-2:] == ["\ufeffclose", "close"]
+                assert df["\ufeffclose"].tolist() == [4.0, 4.0]
+                assert df["close"].tolist() == [5.0, 6.0]
+
+
+def test_bare_carriage_return_files_pandas_reads_faithfully_still_admit(tmp_path):
+    # The cross-check refuses a disagreement, never the line ending: a classic-Mac file with blank
+    # and whitespace lines and quoted cells, and an empty first cell after a record's lone \r
+    # (pandas reads that one right), load exactly as before.
+    df, rep = _run(tmp_path, 'datetime,close\r2021-01-01,1\r\r2021-01-02,"2"\r \r2021-01-03,3\r')
+    assert rep.ok, rep.errors
+    assert df["close"].tolist() == [1.0, 2.0, 3.0]
+    df, rep = _run(tmp_path, "a,datetime\r1,2021-01-01\r,2021-01-02\r")
+    assert rep.ok, rep.errors
+    assert df["a"].tolist()[0] == 1.0 and np.isnan(df["a"].tolist()[1])
+
+
+def test_record_scan_matches_pandas_tokenizer_on_random_text():
+    # The stage's premise, checked rather than asserted: wherever every record carries the
+    # header's field count, pandas reads exactly those records — no implicit index, no padding —
+    # or refuses an unterminated quote (which csv.reader closes at EOF). Random text over every
+    # character the dialect, the codec or the tokenizer treats specially. On \n and \r\n text
+    # without a NUL byte the readings agree exactly, header names and interior BOMs included (text
+    # this short never meets the tokenizer's 256 KiB buffer edge, where a space-led quote or a BOM
+    # in an over-long header can part them); past a lone \r or a NUL byte they do part, and the
+    # cross-check refuses every text where they did.
+    from seikan.dataio import _LONE_CR, FileReport, _records, _tokenizer_parity
+
+    tokens = [",", '"', '""', "\n", "\r\n", "\r", " ", "\t", "a", "1", "\x00", "\ufeff"]
+    rng = np.random.RandomState(0)
+    n_trusted = n_parted = 0
+    for _ in range(4000):
+        blob = "".join(rng.choice(tokens, size=rng.randint(0, 25))).encode()
+        records = [fields for _line, fields in _records(blob)]
+        if not records or any(len(f) != len(records[0]) for f in records[1:]):
+            continue
+        names = [h.strip().lower() for h in records[0]]
+        if len(set(names)) < len(names):
+            continue  # a duplicate header name refuses before pandas reads
+        trusted = b"\x00" not in blob and _LONE_CR.search(blob) is None
+        try:
+            raw = pd.read_csv(
+                io.BytesIO(blob), dtype=str, keep_default_na=False, encoding="utf-8-sig"
+            )
+        except (pd.errors.ParserError, pd.errors.EmptyDataError) as exc:
+            assert not trusted or "EOF inside string" in str(exc), blob
+            continue
+        same = (
+            isinstance(raw.index, pd.RangeIndex)
+            and raw.shape[1] == len(records[0])
+            and all(h in ("", c) for h, c in zip(records[0], raw.columns, strict=True))
+            and raw.values.tolist() == records[1:]
+        )
+        if trusted:
+            n_trusted += 1
+            assert same, blob
+        elif not same:
+            n_parted += 1
+            raw.columns = [str(c).strip().lower() for c in raw.columns]  # as _parse_frame does
+            assert not _tokenizer_parity("f.csv", blob, raw, FileReport(path="f.csv")), blob
+    assert n_trusted > 500 and n_parted > 20  # both properties exercised, not vacuously skipped
 
 
 # ---- warnings: market-shaped anomalies never refuse -----------------------------------------

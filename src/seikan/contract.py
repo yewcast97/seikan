@@ -1330,7 +1330,22 @@ REPORT_FIELDS: dict[str, JsonValue] = {
 }
 
 CSV_FORMAT: dict[str, JsonValue] = {
-    "encoding": "UTF-8 (BOM tolerated)",
+    "encoding": (
+        "UTF-8 (BOM tolerated); a byte that is not UTF-8 refuses as unreadable, naming its byte "
+        "offset in the file and the csv line it sits on"
+    ),
+    "record_shape": (
+        "comma-delimited, '\"'-quoted (a quoted comma or line break stays inside ONE field; '\"\"' "
+        "is a literal quote); the first non-blank line is the header, and every record after it "
+        "carries exactly one field per header column — any record with more (a trailing "
+        "delimiter is one more) or fewer refuses as field_count_mismatch, counting every "
+        "offender and naming the first csv lines; never read as an index, never padded. Lines of "
+        "only spaces/tabs are blank and skipped. Where pandas' tokenizer can read a record "
+        "differently from that scan (after a bare carriage-return line ending, at a NUL byte, at "
+        "a quote after a line's leading spaces, at a byte-order mark past the file's start) its "
+        "read is cross-checked cell by cell, and a disagreement refuses as unreadable naming the "
+        "csv line"
+    ),
     "timestamp_column": "a column named 'datetime' (case-insensitive), else the first column",
     "timestamp_format": (
         "strict ISO-8601 (YYYY-MM-DD or full timestamp), timezone-NAIVE, unique, sorted "

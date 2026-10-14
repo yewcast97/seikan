@@ -2609,6 +2609,35 @@ def test_check_data_pass_and_fail(tmp_path, capsys):
     assert not by_path[str(bad)]["ok"]
 
 
+def test_every_strict_reader_refuses_a_shifted_record_shape(tmp_path, capsys):
+    # Every record one field longer than the header: pandas read the first field as an implicit
+    # index, so this file passed check-data CLEAN (exit 0) with its first dates silently
+    # discarded. check-data, describe and run all admit through read_strict_csv, so each now
+    # exits 2 carrying the same field_count_mismatch error, validated at emission.
+    shifted = tmp_path / "shifted.csv"
+    shifted.write_text(
+        "datetime,close\n2021-01-01,2021-01-04,100\n2021-01-02,2021-01-05,101\n", encoding="utf-8"
+    )
+    thesis = _write_thesis(tmp_path / "t.json")
+    out = tmp_path / "r.json"
+    errors = []
+    for argv in (
+        ["check-data", str(shifted)],
+        ["describe", str(shifted)],
+        ["run", str(thesis), *_target(shifted), "--report-out", str(out)],
+    ):
+        code, doc = _run(capsys, argv)
+        assert code == 2, argv
+        (entry,) = doc["data_report"]["files"]
+        assert entry["ok"] is False and entry["n_rows"] is None
+        errors.append(entry["errors"])
+    (err,) = errors[0]
+    assert err["code"] == "field_count_mismatch"
+    assert err["examples"] == [{"csv_line": 2, "value": "3"}, {"csv_line": 3, "value": "3"}]
+    assert errors[1] == errors[2] == errors[0]
+    assert not out.exists()
+
+
 # ---- schema ---------------------------------------------------------------------------------
 
 

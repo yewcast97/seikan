@@ -623,7 +623,19 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
 - **Strict CSV is never relaxed.** ISO-8601 naive timestamps only (no format guessing — ambiguous
   dates are rejected, not interpreted; `data.start`/`data.end` obey the same strict parse, so a
   malformed bound is exit 3 rather than a silently reinterpreted window), forced-float values,
-  OHLC invariants refuse rather than clamp (the loader never mutates evidence). **Multi-target
+  OHLC invariants refuse rather than clamp (the loader never mutates evidence). Every record
+  carries exactly one field per header column, checked by a `csv.reader` pass in pandas' own
+  dialect before pandas reads the file: any record with more fields (a trailing delimiter is one
+  more) or fewer refuses as `field_count_mismatch`, counting every offender and naming the first
+  few csv lines with their counts — pandas would otherwise pad a short record with empty cells
+  (a hole the file never had) and, when EVERY record runs one long, read the first field as an
+  implicit index, so each header name reads the field one place to its right and the file loads
+  clean and wrong. A quoted delimiter or line break stays one field; blank lines skip as they do
+  for pandas. Where pandas' tokenizer itself can read a record differently from that pass (after
+  a bare `\r` line ending, at a NUL byte, at a quote after a line's leading spaces, which its
+  256 KiB read-buffer edge can open, at a byte-order mark past the file's start, which that edge
+  can drop from an over-long header) its frame is cross-checked cell by cell, and a disagreement
+  refuses as `unreadable` naming the csv line. **Multi-target
   runs require ONE bar clock**: unequal target indices refuse (exit 2, naming what is missing
   where) instead of being intersected — an intersection deletes a bar from EVERY target before any
   coverage ledger exists, so trimming rows under adverse firings would shrink the graded pool

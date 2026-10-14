@@ -23,6 +23,7 @@ type DataIssueCode = Literal[
     "duplicate_timestamp",
     "empty_file",
     "external_coverage",
+    "field_count_mismatch",
     "file_missing",
     "header_only",
     "insufficient_common_index",
@@ -44,7 +45,11 @@ type DataIssueCode = Literal[
 
 class IssueExample(TypedDict):
     """One offending row named by a ``dataio`` error — the CSV line (row index + 2, for the
-    header) and, where the check has one, the raw cell value as read."""
+    header) and, where the check has one, the raw cell value as read. The record-level refusals
+    (``field_count_mismatch``, and an ``unreadable`` one that names a record) are not about a row:
+    their ``csv_line`` is the physical line the record starts on, and ``field_count_mismatch``'s
+    ``value`` is that record's field count. An ``unreadable`` byte that is not UTF-8 names the
+    physical line it sits on."""
 
     csv_line: int
     value: NotRequired[str]
