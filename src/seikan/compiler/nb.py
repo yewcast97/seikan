@@ -685,55 +685,97 @@ def first_true_1d(
     ``cooldown`` suppresses re-fires for that many bars after a fire (0 = every eligible
     transition). Also the crossover recipe: wrap ``threshold(fast > slow)`` in ``first_true``.
 
-    ``defined`` marks bars where the child's truth is KNOWN. A hole breaks the
-    transition state — whether the next True is a false→true edge depends on the missing bar —
-    so it resets the machine like warmup does and taints the bars whose verdict it could still
-    have flipped: ``max(1, cooldown)``, because a fire the hole may have suppressed would have
-    armed a cooldown that long. At ``cooldown == 0`` this is exactly "the current and previous
-    child bars must both be defined". The taint is bounded, not a full transitive closure (a
-    fire INSIDE a tainted stretch re-arms its own cooldown); the gate refuses at the FIRST
-    undefined bar in a pool, so any pool a deeper cascade could reach is already refused.
+    ``defined`` marks bars where the child's truth is KNOWN. A hole (``init & ~defined``) could
+    have been either value, and whether a later True is a false→true edge — or falls inside a
+    cooldown the hole may have armed — can depend on it for as long as the completions' machines
+    stay apart. So the kernel carries EVERY completion forward: the set of machine states
+    ``(prev, seen_false, cool_left)`` some completion of the holes so far is in, each advanced
+    under the known value on a defined bar and under both values on a hole. ``out`` is True where
+    every world fires; ``defined_out`` is True exactly where every world agrees on fire/no-fire —
+    however far from the hole that is (a hole that may have shifted an alternating child's
+    cooldown phase leaves the worlds disagreeing on every other bar for good: genuinely
+    unknowable, and the ledger then refuses — the fail-closed direction). The set re-converges
+    wherever the completions' machines meet (e.g. after a run of ``max(1, cooldown)`` defined
+    Falses); a fire every world agrees on follows that, never causes it — every world fires only
+    when every world is in the one ARMED state ``(F, T, 0)``. Warmup resets it to the one warmup
+    state (warmup wins over a hole: it is vacuously defined). A hole-free series is a single world,
+    i.e. the deterministic machine, bit for bit. A hole bar is therefore decided (False) where no
+    world could fire on it — every world cooling down, already True, or not yet past its first False
+    — and at ``cooldown == 0`` a bar right after a hole is undecided only if it is True. A hole
+    whose worlds agree on every bar — the hole bar included — until they re-converge is ABSORBED, as
+    Kleene ``F∧U = F`` absorbs an operand's: the node reads decided throughout, and a raw leaf's
+    hole there reaches the gate through the source panel (``source_coverage``) alone. Deciding the
+    hole bar is not enough for that: a hole no world could fire on is absorbed where every world's
+    cooldown runs on past it (the later cooldown bars overwrite the ``prev`` it wrote) or a decided
+    False follows it (every free world then lands on ``(F, T)``); otherwise a True right after it is
+    an edge in exactly the hole's False completion — a hole on a cooldown's LAST bar, right after a
+    True, or before the child's first False reads undecided on the True that follows it.
+
+    Representation (exact; O(1) amortized per bar): a COOLING world ignores ``prev`` (every
+    cooldown bar overwrites it before it is read) and has ``seen_false`` set (it fired), so its
+    fire bar alone identifies it. Every world that fires on a bar lands in that one state, so a
+    bar pushes at most one fire bar — in bar order: the cooling worlds form a FIFO — and pops at
+    most one, the world whose cooldown ends on it (``i - fire == cooldown``, which cannot
+    overflow), free from the next bar with this bar's value as ``prev``. The FIFO is a growable
+    ring buffer; the FREE worlds are a 4-bit set over ``(prev, seen_false)``. The live set holds
+    at most ``4 + cooldown`` worlds and the buffer at most ``min(cooldown, bars)`` fire bars —
+    nothing is sized by ``cooldown`` up front.
     """
     n = value.shape[0]
     out = np.zeros(n, dtype=np.bool_)
     defined_out = np.ones(n, dtype=np.bool_)
-    prev = False
-    seen_false = False
-    cool_left = 0
-    taint = 0
+    # Free worlds: bit ``1 << (2*prev + seen_false)`` — 1 is the warmup state (F, F), 2 the one
+    # ARMED state (F, T) a True fires, 4 is (T, F) and 8 is (T, T).
+    free = 1
+    fires = np.empty(8, dtype=np.int64)  # cooling worlds' fire bars, ascending from `head`
+    head = 0
+    size = 0
     for i in range(n):
         if not init[i]:
-            # Warmup: do not arm a transition from pre-init False. Vacuously defined — the
-            # caller's `init` gate already excludes these bars.
-            prev = False
-            seen_false = False
-            cool_left = 0
-            taint = 0
+            # Warmup: do not arm a transition from pre-init False, and forget every world.
+            # Vacuously defined — the caller's `init` gate already excludes these bars.
+            free = 1
+            head = 0
+            size = 0
             continue
-        if not defined[i]:
-            # In-data hole: the transition state cannot be carried across an unknown bar.
-            prev = False
-            seen_false = False
-            cool_left = 0
-            taint = cooldown if cooldown > 1 else 1
-            defined_out[i] = False
-            continue
-        if taint > 0:
-            taint -= 1
-            defined_out[i] = False
-        cur = value[i]
-        if cool_left > 0:
-            cool_left -= 1
-            if not cur:
-                seen_false = True
-            prev = cur
-            continue
-        if cur and (not prev) and seen_false:
-            out[i] = True
-            cool_left = cooldown
-        if not cur:
-            seen_false = True
-        prev = cur
+        known = defined[i]
+        may_true = value[i] or not known
+        may_false = not value[i] or not known
+        armed = (free & 2) != 0
+        some_fire = armed and may_true
+        all_fire = some_fire and known and free == 2 and size == 0
+        out[i] = all_fire
+        defined_out[i] = all_fire or not some_fire
+        nxt = 0
+        if may_false and free != 0:
+            nxt |= 2  # a False latches seen_false, whatever the free world
+        if may_true:
+            if free & 5:
+                nxt |= 4  # (F, F) and (T, F) cannot fire on a True: they move to (T, F)
+            if free & 8:
+                nxt |= 8
+        if size > 0 and i - fires[head] == cooldown:
+            # The oldest cooling world takes its last cooldown step on this bar and is free from
+            # the next, with this bar's value as prev.
+            head = (head + 1) % fires.shape[0]
+            size -= 1
+            if may_false:
+                nxt |= 2
+            if may_true:
+                nxt |= 8
+        if some_fire:
+            if cooldown <= 0:
+                nxt |= 8
+            else:
+                if size == fires.shape[0]:
+                    grown = np.empty(2 * size, dtype=np.int64)
+                    for k in range(size):
+                        grown[k] = fires[(head + k) % size]
+                    fires = grown
+                    head = 0
+                fires[(head + size) % fires.shape[0]] = i
+                size += 1
+        free = nxt
     return out, defined_out
 
 

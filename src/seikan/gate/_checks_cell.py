@@ -486,10 +486,12 @@ def _check_cell_signal_coverage(
     (``init & ~defined``); this check refuses any of them.
 
     This is the POOLED layer — the root condition's decidability. The raw inputs underneath it are
-    graded once, run-level, by ``source_coverage``, which catches the two hole classes this
-    channel cannot see: Kleene absorption (a decisive sibling settles the root while an operand is
-    holed) and a NaN-skipping recursive kernel laundering state carried across a hole into a
-    finite value.
+    graded once, run-level, by ``source_coverage``, which catches the two hole classes this channel
+    cannot see: absorption (every completion of a hole decides the node the same way — a decisive
+    sibling settles the root while an operand is holed, or a ``first_true`` hole's completions
+    re-converge before they disagree on any fire, e.g. one on a cooldown bar other than the
+    cooldown's last) and a NaN-skipping recursive kernel laundering state carried across a hole into
+    a finite value.
 
     ``n_bars`` is pure geometry (the joined index length), so ``n_undefined <= n_bars`` is
     verifiable arithmetic no property of the data can bend. Unconditional: there is no threshold

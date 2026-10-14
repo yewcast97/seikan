@@ -5,6 +5,7 @@ reference series (``tests/_reference_nb.py``) exactly.
 from __future__ import annotations
 
 import math
+import time
 from fractions import Fraction
 
 import numpy as np
@@ -473,11 +474,192 @@ def test_first_true_apply_nb_is_columnwise():
     value = np.array([[False, False], [True, False], [True, True], [False, True]])
     init = np.ones((4, 2), dtype=bool)
     defined = np.ones((4, 2), dtype=bool)
-    got, _def_out = nb.first_true_apply_nb(value, init, defined, 0)
+    defined[1, 1] = False  # one column holed: its worlds never leak into the other
+    got, def_out = nb.first_true_apply_nb(value, init, defined, 0)
     for j in range(2):
-        np.testing.assert_array_equal(
-            got[:, j], nb.first_true_1d(value[:, j], init[:, j], defined[:, j], 0)[0]
-        )
+        want, want_defined = nb.first_true_1d(value[:, j], init[:, j], defined[:, j], 0)
+        np.testing.assert_array_equal(got[:, j], want)
+        np.testing.assert_array_equal(def_out[:, j], want_defined)
+    np.testing.assert_array_equal(def_out[:, 0], [True, True, True, True])
+    np.testing.assert_array_equal(def_out[:, 1], [True, False, False, True])
+
+
+def test_first_true_hole_free_is_the_deterministic_machine():
+    # Without a hole there is exactly one world, so the kernel IS the deterministic machine, bit
+    # for bit, and every bar is decided — across cooldowns and warmup patterns (a leading warmup,
+    # warmup re-entered mid-series).
+    rng = np.random.RandomState(21)
+    for _ in range(400):
+        n = int(rng.randint(1, 120))
+        cooldown = int(rng.choice([0, 1, 2, 3, 5, 8, 40]))
+        value = rng.rand(n) < rng.choice([0.2, 0.5, 0.8])
+        init = rng.rand(n) < 0.9
+        init[: rng.randint(0, 6)] = False
+        got, defined = nb.first_true_1d(value, init, np.ones(n, dtype=bool), cooldown)
+        np.testing.assert_array_equal(got, ref.first_true_machine(value, init, cooldown))
+        assert defined.all()
+
+
+def _holed_child(rng: np.random.RandomState, max_holes: int):
+    """A random child with a warmup prefix (sometimes re-entered mid-series) and at most
+    ``max_holes`` post-warmup holes — placed at random, and often on the first live bar, the last
+    bar and an adjacent pair. A hole stamped on a warmup bar is no hole: warmup wins."""
+    n = int(rng.randint(1, 28))
+    value = rng.rand(n) < rng.choice([0.3, 0.5, 0.7])
+    init = np.ones(n, dtype=bool)
+    init[: rng.randint(0, 4)] = False
+    if n > 6 and rng.rand() < 0.25:
+        start = int(rng.randint(3, n - 2))
+        init[start : start + rng.randint(1, 3)] = False
+    defined = rng.rand(n) >= 0.15
+    live = np.flatnonzero(init)
+    if live.size:
+        if rng.rand() < 0.3:
+            defined[live[0]] = False
+        if rng.rand() < 0.3:
+            defined[-1] = False
+        if rng.rand() < 0.3 and n > 1:
+            at = int(rng.randint(0, n - 1))
+            defined[at : at + 2] = False
+    holes = np.flatnonzero(init & ~defined)
+    defined[holes[max_holes:]] = True
+    return value, init, defined
+
+
+@pytest.mark.parametrize("cooldown", [0, 1, 2, 3, 4])
+def test_first_true_is_every_completion_of_the_holes(cooldown):
+    # The definition, by brute force: run the deterministic machine on all 2**k completions of the
+    # k holes; a bar is decided where they all agree on fire/no-fire, and fires where they all
+    # fire. The polynomial reference (completions merged by machine state) must agree with both.
+    rng = np.random.RandomState(100 + cooldown)
+    for _ in range(300):
+        value, init, defined = _holed_child(rng, max_holes=6)
+        want, want_defined = ref.first_true_completions(value, init, defined, cooldown)
+        got, got_defined = nb.first_true_1d(value, init, defined, cooldown)
+        np.testing.assert_array_equal(got, want)
+        np.testing.assert_array_equal(got_defined, want_defined)
+        merged, merged_defined = ref.first_true(value, init, defined, cooldown)
+        np.testing.assert_array_equal(merged, want)
+        np.testing.assert_array_equal(merged_defined, want_defined)
+
+
+@pytest.mark.parametrize("cooldown", [0, 1, 3, 9, 30])
+def test_first_true_long_holed_series_matches_the_merged_reference(cooldown):
+    # Holes far beyond brute force — scattered, a stretch longer than every cooldown here (up to
+    # 30 cooling worlds at once, past the kernel's initial buffer and around its ring), warmup
+    # re-entered: the kernel's compact world set must equal the reference's full state set.
+    rng = np.random.RandomState(7 + cooldown)
+    n = 1500
+    value = rng.rand(n) < 0.5
+    init = np.ones(n, dtype=bool)
+    init[:10] = False
+    init[700:705] = False
+    defined = rng.rand(n) >= 0.15
+    defined[300:340] = False
+    want, want_defined = ref.first_true(value, init, defined, cooldown)
+    got, got_defined = nb.first_true_1d(value, init, defined, cooldown)
+    np.testing.assert_array_equal(got, want)
+    np.testing.assert_array_equal(got_defined, want_defined)
+    assert want.any() and not want_defined.all()
+
+
+def test_first_true_hole_in_an_alternating_child_is_undefined_while_the_worlds_disagree():
+    # The review's probe: a child alternating F, T with a hole at bar 5, cooldown 3. Had the hole
+    # been True it fired there (then 9, 13, …); had it been False the next edge was bar 7 (then
+    # 11, 15, …). The two phases never meet again, so every True bar from the hole on is
+    # undecidable, while every False bar — no world fires on it — is decided. A taint of
+    # `cooldown` bars declared the decision known again from bar 9, on one world's phase.
+    n = 24
+    value = np.arange(n) % 2 == 1
+    defined = np.ones(n, dtype=bool)
+    defined[5] = False
+    got, got_defined = nb.first_true_1d(value, np.ones(n, dtype=bool), defined, 3)
+    np.testing.assert_array_equal(got_defined, ~((np.arange(n) >= 5) & value))
+    np.testing.assert_array_equal(np.flatnonzero(got), [1])
+
+
+def test_first_true_hole_bar_is_decided_where_no_world_could_fire():
+    ones = np.ones(7, dtype=bool)
+    # Every world cooling down (a cooldown of 3 armed at bar 1): the hole at bar 3 fires in no
+    # completion and changes nothing a later bar reads — every bar is decided, and the first edge
+    # after the cooldown fires.
+    value = np.array([False, True, False, False, False, False, True])
+    defined = ones.copy()
+    defined[3] = False
+    got, got_defined = nb.first_true_1d(value, ones, defined, 3)
+    np.testing.assert_array_equal(np.flatnonzero(got), [1, 6])
+    assert got_defined.all()
+    # The only world already True (it just fired, cooldown 0): the hole cannot be an edge, but
+    # bar 3's True is one exactly when the hole was False.
+    value = np.array([False, True, False, True, True, False, True])
+    defined = ones.copy()
+    defined[2] = False
+    got, got_defined = nb.first_true_1d(value, ones, defined, 0)
+    np.testing.assert_array_equal(got_defined, [True, True, True, False, True, True, True])
+    np.testing.assert_array_equal(np.flatnonzero(got), [1, 6])
+    # No world past its first False: the hole cannot fire either, but its False completion arms
+    # the True after it.
+    value = np.array([True, False, True, False, True, True, True])
+    defined = ones.copy()
+    defined[1] = False
+    got, got_defined = nb.first_true_1d(value, ones, defined, 0)
+    np.testing.assert_array_equal(got_defined, [True, True, False, True, True, True, True])
+    np.testing.assert_array_equal(np.flatnonzero(got), [4])
+
+
+@pytest.mark.parametrize(
+    ("child", "cooldown", "fires", "undecided"),
+    [
+        # Every world cooling and the cooldown running on past the hole: the later cooldown bars
+        # overwrite the prev it wrote, so even a True right after it is no edge in any completion.
+        ("FT?TFTF", 2, [1, 5], []),
+        # The hole on the cooldown's LAST bar writes the prev the first free bar reads: a True
+        # there is an edge in exactly the hole's False completion, whose cooldown then shifts the
+        # next fire too; a False there re-arms every completion alike.
+        ("FTF?TFT", 2, [1], [4, 6]),
+        ("FTF?FTF", 2, [1, 5], []),
+        # Before the child's first False (seen_false) and right after a True (prev): the same split.
+        ("T?TFTFT", 3, [], [2, 4, 6]),
+        ("T?FT", 3, [3], []),
+        ("FT?TFT", 0, [1, 5], [3]),
+        ("FT?FT", 0, [1, 4], []),
+    ],
+)
+def test_first_true_hole_is_absorbed_only_where_its_completions_reconverge_first(
+    child, cooldown, fires, undecided
+):
+    # Deciding the hole bar (no completion could fire on it in any case here) does not absorb the
+    # hole: that takes the completions' machines meeting again before any bar they disagree on.
+    # Only an absorbed hole leaves `signal_coverage` clean and reaches the gate through
+    # `source_coverage` alone.
+    value = np.array([c == "T" for c in child])
+    defined = np.array([c != "?" for c in child])
+    got, got_defined = nb.first_true_1d(value, np.ones(value.size, dtype=bool), defined, cooldown)
+    np.testing.assert_array_equal(np.flatnonzero(got), fires)
+    np.testing.assert_array_equal(np.flatnonzero(~got_defined), undecided)
+
+
+def test_first_true_world_set_stays_cheap_on_a_long_holed_series():
+    # A smoke test against per-bar cost growing with the cooldown or the history, not a benchmark:
+    # the kernel is O(1) amortized per bar (~10 ms for each call here); the bound sits two orders
+    # of magnitude above that so a loaded machine cannot flake it.
+    n = 10**6
+    value = np.random.RandomState(5).rand(n) < 0.5
+    init = np.ones(n, dtype=bool)
+    defined = np.ones(n, dtype=bool)
+    defined[::7] = False  # periodic holes: the worlds keep splitting and re-converging
+    every_bar = np.ones(n, dtype=bool)
+    every_bar[1:] = False  # one False, then nothing but holes: a fire may land on every bar
+    nb.first_true_1d(value[:64], init[:64], defined[:64], 5)  # compile/load outside the clock
+    start = time.perf_counter()
+    _out, got_defined = nb.first_true_1d(value, init, defined, 5)
+    # a cooldown longer than the series keeps a cooling world per bar alive: ~n of them, held in
+    # a buffer sized by the worlds that exist, never by the cooldown
+    _out, all_holes = nb.first_true_1d(np.zeros(n, dtype=bool), init, every_bar, 2**31 - 1)
+    elapsed = time.perf_counter() - start
+    assert elapsed < 2.0, elapsed
+    assert not got_defined.all()
+    assert all_holes[0] and not all_holes[1:].any()
 
 
 # ---- runup / bars_since_extremum (left-side mean-reversion primitives) ------

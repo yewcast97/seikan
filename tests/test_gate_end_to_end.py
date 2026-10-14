@@ -26,6 +26,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from seikan.api import compile_thesis
 from seikan.compiler import vectorize
 from seikan.compiler.runner import run_backtest
 from seikan.dsl.schema import Thesis
@@ -660,6 +661,53 @@ def test_not_over_a_decision_hole_neither_fires_nor_meets(tmp_path):
     assert report.cells[0].met is False
 
 
+def test_a_first_true_hole_stays_undecided_past_the_sibling_that_absorbs_it(tmp_path):
+    # The review's probe, through the public API: `or(first_true(C, cooldown=3), H)` over a child C
+    # alternating F, T with a hole at bar 5, and a sibling H True on bars 5-8 only. Whether the hole
+    # was True decides the cooldown's phase for good (fires at 5, 9, 13, … or at 7, 11, 15, …), so
+    # every True bar of C from the hole on is undecidable. The hole and the `cooldown` bars it
+    # tainted covered 5-8 — exactly where H absorbs the `or` (T∨U = T) — and then declared the
+    # decision known, firing one completion's phase (11, 15, …) with a clean `signal_coverage`. Now
+    # the odd bars from 9 on, where H is a decided False (F∨U = U), are the ledger's undecided bars.
+    n_bars = 60
+    feed_values = (np.arange(n_bars) % 2).astype(float)
+    feed_values[5] = np.nan
+    px = np.full(n_bars, 100.0)
+    px[5:9] = 110.0
+    path, feed = tmp_path / "px.csv", tmp_path / "feed.csv"
+    _write_px(path, px)
+    _write_feed(feed, feed_values, n_bars)
+    child = {
+        "type": "threshold",
+        "left": _FEED,
+        "op": ">",
+        "right": {"type": "constant", "value": 0.5},
+    }
+    sibling = {
+        "type": "threshold",
+        "left": {"type": "field", "column": "close"},
+        "op": ">",
+        "right": {"type": "constant", "value": 105.0},
+    }
+    entry = {
+        "type": "or",
+        "conditions": [{"type": "first_true", "condition": child, "cooldown": 3}, sibling],
+    }
+    thesis = _feed_thesis("first_true_hole_behind_a_sibling", entry)
+    md = load(thesis, {"target": path, "px": feed})
+    result = compile_thesis(thesis, md)
+    undecided = np.flatnonzero(vectorize.undefined_mask(thesis.entry, md)[:, 0])
+    np.testing.assert_array_equal(undecided, np.arange(9, n_bars, 2))
+    assert result.summary["cells"][0]["signal_coverage"]["target"] == {
+        "n_bars": n_bars,
+        "n_undefined": undecided.size,
+    }
+    # every firing left is one each completion agrees on: C's first edge, then H
+    assert sorted(set(result.trades["entry_bar"])) == [1, 5, 6, 7, 8]
+    report = evaluate_gate(result.summary, GateThresholds())
+    assert _check(report.cells[0], "signal_coverage").met is False
+
+
 def test_a_never_available_or_leaf_refuses_source_coverage_end_to_end(tmp_path):
     # The v3 branch's reason for existing, run end-to-end: `dip OR (iv > 0)` where the iv feed's
     # stamps all land AFTER the run window — post-asof-ffill it is NaN on every bar. Kleene
@@ -755,9 +803,8 @@ _AND_ENTRY = {
 def test_kleene_absorbed_operand_hole_leaves_source_coverage_unmet(tmp_path):
     """The headline hole class: ``and`` recovers a verdict from a decisive child
     (``F∧U = F``), so holing the OTHER operand leaves the root condition fully DEFINED and the
-    per-cell pooled counts read a clean zero. The bar is decided — what is unknowable is whether
-    it would have decided the same way with the data present, which only the raw source panel
-    can see."""
+    per-cell pooled counts read a clean zero. The bar is decided whatever the hole held; what is
+    missing is the input itself, which only the raw source panel can see."""
     px = _planted_dip_px(1000, 5, 9)
     clean = tmp_path / "clean.csv"
     _write_px(clean, px)
@@ -780,6 +827,53 @@ def test_kleene_absorbed_operand_hole_leaves_source_coverage_unmet(tmp_path):
     cell = report.cells[0]
     assert _unmet_cell(cell) == []  # every per-cell read is clean; only the run level sees it
     assert cell.met is False  # and the unmet run-level check still leaves the cell unmet
+
+
+@pytest.mark.parametrize(("hole", "sources_met"), [(np.nan, False), (-1.0, True)])
+def test_a_first_true_hole_every_completion_decides_is_absorbed(tmp_path, hole, sources_met):
+    """``first_true``'s face of the same class: a child hole on the first bar of a cooldown is
+    decided — every completion is cooling there, and the cooldown's last step overwrites the
+    ``prev`` the hole wrote — so the node, and the root, read DEFINED and fire exactly the clean
+    run's bars, the pooled ledger clean. A raw NaN print is the source panel's to refuse; a NaN
+    computed inside the expression (``log`` of a negative print) is no raw leaf's, so it moves no
+    decision and is ledgered nowhere — as under ``F∧U = F``. The hole used to read undecided on
+    the hole bar and the ``max(1, cooldown)`` bars after it."""
+    n_bars = 1000
+    px = _planted_dip_px(n_bars, 5, 9)
+    path, feed = tmp_path / "px.csv", tmp_path / "feed.csv"
+    _write_px(path, px)
+    _write_feed(feed, px, n_bars)
+    child = {
+        "type": "threshold",
+        "left": {"type": "unary_op", "op": "log", "input": _FEED},
+        "op": "<",
+        "right": {"type": "constant", "value": float(np.log(95.5))},
+    }
+    thesis = _feed_thesis(
+        "first_true_hole_in_a_cooldown",
+        {"type": "first_true", "condition": child, "cooldown": 2},
+    )
+    files = {"target": path, "px": feed}
+    control = run_backtest(thesis, load(thesis, files))
+    assert evaluate_gate(control.summary, GateThresholds()).cells[0].met is True
+    fired = sorted(set(control.trades["entry_bar"].astype(int)))
+
+    bar = fired[len(fired) // 2] + 1  # the first cooldown bar after a mid-sample fire
+    holed = px.copy()
+    holed[bar] = hole
+    _write_feed(feed, holed, n_bars)
+    result = run_backtest(thesis, load(thesis, files))
+
+    assert result.summary["cells"][0]["signal_coverage"]["target"]["n_undefined"] == 0
+    assert sorted(set(result.trades["entry_bar"].astype(int))) == fired
+    assert result.summary["sources"]["target"]["by_source"]["external:px"]["n_missing"] == (
+        0 if sources_met else 1
+    )
+    report = evaluate_gate(result.summary, GateThresholds())
+    cell = report.cells[0]
+    assert _unmet_cell(cell) == []
+    assert _unmet_run(report) == ([] if sources_met else ["source_coverage"])
+    assert cell.met is sources_met
 
 
 def test_interior_hole_leaves_source_coverage_unmet(tmp_path):

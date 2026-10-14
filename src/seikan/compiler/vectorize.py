@@ -919,7 +919,8 @@ def _build_condition(
         case FirstTrueCondition(condition=inner, cooldown=cd):
             cv, ci, cd_ = build_condition(inner, md)
             # Tradable-signal transitions: kernel sees child's value + init (warmup-safe latch)
-            # + defined, and reports which output bars a hole could still have flipped.
+            # + defined, and leaves undecided exactly the bars on which the completions of the
+            # child's holes disagree.
             value, defined = nb.first_true_apply_nb(
                 cv.to_numpy(dtype=bool),
                 ci.to_numpy(dtype=bool),

@@ -10,6 +10,7 @@ whatever the floating-point mean of a constant decimal window rounds to.
 
 from __future__ import annotations
 
+import itertools
 import math
 
 import numpy as np
@@ -538,6 +539,84 @@ def lag_channels(
         i[t] = init[t - periods]
         d[t] = defined[t - periods]
     return v, i, d
+
+
+# ---- first_true over every completion of the child's holes ---------------------------------
+#
+# Independently authored against the spec in ``nb.first_true_1d``. On a fully known child it is
+# the deterministic false→true machine: warmup resets it; the first True after warmup does not
+# fire (an initialized False must come first); the ``cooldown`` bars after a fire never fire. A
+# hole (``init & ~defined``) could have been either value, so the output is DECIDED exactly where
+# every completion of the holes agrees on fire/no-fire, and its value is that common answer.
+
+_FIRST_TRUE_WARMUP = (False, False, 0)  # (prev, seen_false, cool_left)
+
+
+def _first_true_step(
+    state: tuple[bool, bool, int], cur: bool, cooldown: int
+) -> tuple[tuple[bool, bool, int], bool]:
+    """One bar of the deterministic machine: the next state and whether the bar fired."""
+    prev, seen_false, cool_left = state
+    if cool_left > 0:
+        return (cur, seen_false or not cur, cool_left - 1), False
+    fired = cur and not prev and seen_false
+    return (cur, seen_false or not cur, cooldown if fired else 0), fired
+
+
+def first_true_machine(value: np.ndarray, init: np.ndarray, cooldown: int) -> np.ndarray:
+    """The deterministic machine over a child whose every bar is known: the fires."""
+    out = np.zeros(value.shape[0], dtype=np.bool_)
+    state = _FIRST_TRUE_WARMUP
+    for t in range(value.shape[0]):
+        if not init[t]:
+            state = _FIRST_TRUE_WARMUP
+            continue
+        state, out[t] = _first_true_step(state, bool(value[t]), cooldown)
+    return out
+
+
+def first_true_completions(
+    value: np.ndarray, init: np.ndarray, defined: np.ndarray, cooldown: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """``(out, defined_out)`` by brute force: the machine run on each of the ``2**k`` completions
+    of the ``k`` holes — the definition itself, exponential, so for small ``k`` only."""
+    holes = np.flatnonzero(init & ~defined)
+    runs = []
+    for bits in itertools.product((False, True), repeat=holes.shape[0]):
+        completed = value.astype(np.bool_)
+        completed[holes] = bits
+        runs.append(first_true_machine(completed, init, cooldown))
+    fires = np.array(runs)
+    every = fires.all(axis=0)
+    return every, every | ~fires.any(axis=0)
+
+
+def first_true(
+    value: np.ndarray, init: np.ndarray, defined: np.ndarray, cooldown: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """``first_true_completions`` in polynomial time: completions that reach the same machine
+    state share every future (the machine is deterministic), so they are carried as the SET of
+    states, each advanced under every value its bar may take."""
+    n = value.shape[0]
+    out = np.zeros(n, dtype=np.bool_)
+    defined_out = np.ones(n, dtype=np.bool_)
+    states = {_FIRST_TRUE_WARMUP}
+    for t in range(n):
+        if not init[t]:
+            states = {_FIRST_TRUE_WARMUP}
+            continue
+        values = (bool(value[t]),) if defined[t] else (False, True)
+        successors = set()
+        fired = set()
+        for state in states:
+            for cur in values:
+                nxt, f = _first_true_step(state, cur, cooldown)
+                successors.add(nxt)
+                fired.add(f)
+        states = successors
+        out[t] = fired == {True}
+        defined_out[t] = len(fired) == 1
+    return out, defined_out
 
 
 # ---- grouped cross-sectional kernels --------------------------------------------------------

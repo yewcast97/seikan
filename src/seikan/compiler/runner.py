@@ -487,12 +487,14 @@ def _run_summary(
     # native node reads), counted over the WHOLE evaluated interval from its own first_available
     # on. This is the layer beneath each cell's
     # `signal_coverage`: the root condition's `defined` channel answers "was the condition
-    # DECIDED?", which a decisive sibling can settle (Kleene F∧U = F) and a NaN-skipping recursive
-    # kernel can launder (state carried across a hole, finite output afterwards) — reading the raw
-    # inputs directly puts no operator between the hole and the count. It is combo-independent
-    # (the leaf SET is a property of the entry tree, not of any parameter assignment), so it is a
-    # run-level panel rather than a per-cell one, and it is built whether or not anything fired —
-    # a run whose sources are holed must say so even when the holes suppressed every firing.
+    # DECIDED?", which absorption can settle (every completion of a hole decides the node the same
+    # way: a decisive sibling, Kleene F∧U = F; a `first_true` hole whose completions re-converge
+    # before they disagree on any fire) and a NaN-skipping recursive kernel can launder (state
+    # carried across a hole, finite output afterwards) — reading the raw inputs directly puts no
+    # operator between the hole and the count. It is combo-independent (the leaf SET is a property
+    # of the entry tree, not of any parameter assignment), so it is a run-level panel rather than a
+    # per-cell one, and it is built whether or not anything fired — a run whose sources are holed
+    # must say so even when the holes suppressed every firing.
     src_avail = source_availability(thesis, md)
     return {
         # The two grid labels: the swept ENTRY axes (with "horizon" only when it was swept) and

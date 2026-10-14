@@ -716,7 +716,18 @@ expression that says the thesis.
   on a false→true transition of the child's tradable signal. The first True after warmup does NOT
   count (must have seen an initialized False first). Optional `cooldown`
   (default 0) suppresses re-fires for K bars after a fire; a list sweeps as `first_true_cooldown`
-  (or `{"axis": "<name>"}` reads a shared axis).
+  (or `{"axis": "<name>"}` reads a shared axis). A hole in the child (a bar it could not decide)
+  could have been either value, and `first_true` carries every completion forward: a bar is
+  undecided (→ `signal_coverage`) exactly where the completions disagree on whether it fires,
+  however far from the hole — a cooldown whose phase the hole may have shifted can keep them apart
+  for good — and decided wherever they agree, the hole bar itself included when no completion could
+  fire on it (all cooling down, the bar before it True, or the child not yet past its first False).
+  A hole whose completions re-converge before they disagree on any fire is absorbed like
+  `F ∧ U = F`: it leaves `signal_coverage` clean, and a raw-leaf hole there is refused by
+  `source_coverage` instead. A hole bar no completion could fire on is absorbed when the cooldown
+  runs on past it (a cooldown bar other than the cooldown's last: the later cooldown bars overwrite
+  what it wrote) or a decided False follows it; otherwise a True right after it is an edge in
+  exactly the hole's False completion, and so undecided.
   The episode-entry primitive: measure forward return from the bar a regime is first entered
   (deep drawdown, end-of-bull risk alarm, …), not every bar inside it. Also the **crossover recipe**:
   `first_true(threshold(fast > slow))` (there is no dedicated crossover condition). Sparse episodes
@@ -1132,12 +1143,16 @@ complete statistics are still in `summary.cells[i]` — a checklist result never
   `native:<feed>`, missing on a bar whose interval absorbed a NaN print or whose anchored value
   is missing — a NaN print that stays the latest) over the evaluated
   interval, from its own `first_available` on. This catches
-  what the per-cell `signal_coverage` structurally cannot see: an `and`/`or` operand hole settled by
-  a decisive sibling (`F ∧ U = F` leaves the root DEFINED), and a hole a NaN-skipping recursive
-  transform (`ema`, expanding `rolling_agg`, `bars_since_extremum`) carried its state across before
-  emitting a finite value. **A feed that merely starts late is WARMUP, not a hole** — its
-  `first_available` is reported as evidence and never refuses; ordinary sparse stamping (a weekly
-  feed on daily bars) is available throughout after its first stamp.
+  what the per-cell `signal_coverage` structurally cannot see: a hole every completion of which
+  decides the node the same way — an `and`/`or` operand hole settled by a decisive sibling
+  (`F ∧ U = F` leaves the root DEFINED), or a `first_true` hole whose completions re-converge before
+  they disagree on any fire (e.g. one on a cooldown bar other than the cooldown's last) — and a hole
+  a NaN-skipping recursive transform (`ema`, expanding `rolling_agg`, `bars_since_extremum`) carried
+  its state across before emitting a finite value. A NaN computed INSIDE the expression (`log` of a
+  non-positive value, `x/0`) is no raw leaf's: absorbed, it moves no decision and is ledgered
+  nowhere. **A feed that merely starts late is WARMUP, not a hole** — its `first_available` is
+  reported as evidence and never refuses; ordinary sparse stamping (a weekly feed on daily bars) is
+  available throughout after its first stamp.
 - `search_cap` — `n_hypotheses_attempted` (the DECLARED grid; non-firing combos cannot shrink it)
   ≤ 64. This is the only multiplicity input the policy carries, and a grid above the cap is refused
   at DSL validation (exit 3) before any data is read.

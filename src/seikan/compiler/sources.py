@@ -1,10 +1,12 @@
 """Per-source availability for the runner: the raw decision inputs, counted leaf by leaf.
 
 The root condition's ``defined`` channel answers "was the condition DECIDED?", which is strictly
-weaker than "did the observer have its inputs?" — a decisive sibling settles the root (Kleene
-F∧U = F) and a NaN-skipping recursive kernel carries state across a hole and emits a finite
-value after it. These functions read the raw leaves DIRECTLY, so no operator sits between a hole
-and the count; the runner mounts the result as the run-level ``summary["sources"]`` panel.
+weaker than "did the observer have its inputs?" — a hole is absorbed wherever every completion of
+it decides the node the same way (a decisive sibling settles the root, Kleene F∧U = F; a
+``first_true`` hole whose completions re-converge before they disagree on any fire), and a
+NaN-skipping recursive kernel carries state across a hole and emits a finite value after it.
+These functions read the raw leaves DIRECTLY, so no operator sits between a hole and the count;
+the runner mounts the result as the run-level ``summary["sources"]`` panel.
 """
 
 from __future__ import annotations
@@ -84,10 +86,12 @@ def source_availability(thesis: Thesis, md: MarketData) -> dict[str, LeafMasks]:
     tree reads.
 
     The decision-side completeness contract is enforced HERE, at the sources, rather than at the
-    root condition: the root's Kleene ``defined`` channel is masked by a decisive sibling
-    (``F∧U = F``), and a NaN-skipping recursive kernel (EMA, expanding max/min,
-    ``bars_since_extremum``) silently carries state across a hole and emits a FINITE value
-    afterwards, so a hole can alter later decisions while leaving the root fully decided.
+    root condition: the root's three-valued ``defined`` channel is masked wherever every completion
+    of a hole decides the node the same way — an operand settled by a decisive sibling (Kleene
+    ``F∧U = F``), a ``first_true`` hole whose completions re-converge before they disagree on any
+    fire — and a NaN-skipping recursive kernel (EMA, expanding max/min, ``bars_since_extremum``)
+    silently carries state across a hole and emits a FINITE value afterwards, so a hole can alter
+    later decisions while leaving the root fully decided.
 
     "Available" is the finiteness of the JOINED per-bar value, which is what the decision
     actually reads. For an external feed that is the post-asof-ffill value, so ordinary sparse

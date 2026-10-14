@@ -77,10 +77,13 @@ class FirstTrueCondition(_Strict):
     # (``value & init``). The first True bar after warmup does NOT count as a transition (must have
     # seen an initialized False first), so a regime that is already true when the child warms up
     # does not phantom-fire. Optional ``cooldown`` suppresses re-fires for K bars after a fire
-    # (0 = every transition; a list sweeps as ``first_true_cooldown``). The episode-entry
-    # primitive: measure forward return from the bar a regime is first entered (deep drawdown,
-    # end-of-bull risk alarm, …), not every bar inside it. Also the crossover recipe:
-    # ``first_true(threshold(fast > slow))`` — the DSL has no dedicated ``cross`` condition.
+    # (0 = every transition; a list sweeps as ``first_true_cooldown``). The child's holes are
+    # carried forward as every completion of them: a bar is undecided exactly where the
+    # completions disagree on whether it fires, however far from a hole that is
+    # (``nb.first_true_1d``). The episode-entry primitive: measure forward return from the bar a
+    # regime is first entered (deep drawdown, end-of-bull risk alarm, …), not every bar inside it.
+    # Also the crossover recipe: ``first_true(threshold(fast > slow))`` — the DSL has no dedicated
+    # ``cross`` condition.
     type: Literal["first_true"] = "first_true"
     condition: Condition
     cooldown: NonNegIntParam = 0

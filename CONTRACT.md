@@ -458,9 +458,13 @@ n_bars`. The outcome ledger can only account for bars that FIRED, so a missing d
 suppresses the firing itself and leaves no trace there — without this check, deleting the inputs
 under adverse firings would improve a cell unseen. The raw inputs underneath are graded once,
 run-level, by `source_coverage`, which catches the two hole classes this channel structurally
-cannot see: Kleene absorption (`F∧U = F` leaves the root DEFINED while an operand is holed) and a
-NaN-skipping recursive kernel (EMA, expanding aggregates) carrying contaminated state across a
-hole and emitting a finite value. No knob. BOTH coverage checks — and `source_coverage` — stay
+cannot see: absorption — every completion of a hole decides the node the same way, so the root
+reads DEFINED while an input is holed (Kleene `F∧U = F`; a `first_true` hole whose completions
+re-converge before they disagree on any fire, e.g. one on a cooldown bar other than the
+cooldown's last) — and a NaN-skipping recursive kernel (EMA, expanding aggregates) carrying
+contaminated state across a hole and emitting a finite value. A NaN computed INSIDE the
+expression (`log` of a non-positive value, `x/0`) is no raw leaf's: absorbed, it moves no
+decision and is ledgered nowhere. No knob. BOTH coverage checks — and `source_coverage` — stay
 PER-TARGET in BOTH modes: a hole in one basket member corrupts every member's cross-sectional
 reads, so per-member fail-closed is structurally required even in a basket); `support` (the same
 three sealed floors — `n ≥ 30`, `n_nonoverlap ≥ 8`, `mean_ret > 0` — read from the panel the

@@ -265,54 +265,6 @@ def _ref_init(node, df) -> np.ndarray:
     return latch
 
 
-def _ref_first_true(
-    value: np.ndarray, init: np.ndarray, defined: np.ndarray, cooldown: int
-) -> tuple[np.ndarray, np.ndarray]:
-    """False→true transition of the child's tradable signal, warmup-safe (mirrors
-    ``nb.first_true_1d``'s spec, independently authored): the first True bar after warmup does not
-    fire (must have seen an initialized False first); ``cooldown`` suppresses re-fires. An
-    undefined child bar resets the machine like warmup and taints ``max(1, cooldown)`` following
-    bars. Returns ``(out, defined_out)``."""
-    n = value.shape[0]
-    out = np.zeros(n, dtype=bool)
-    defined_out = np.ones(n, dtype=bool)
-    prev = False
-    seen_false = False
-    cool_left = 0
-    taint = 0
-    for i in range(n):
-        if not init[i]:
-            prev = False
-            seen_false = False
-            cool_left = 0
-            taint = 0
-            continue
-        if not defined[i]:
-            prev = False
-            seen_false = False
-            cool_left = 0
-            taint = max(1, cooldown)
-            defined_out[i] = False
-            continue
-        if taint > 0:
-            taint -= 1
-            defined_out[i] = False
-        cur = bool(value[i])
-        if cool_left > 0:
-            cool_left -= 1
-            if not cur:
-                seen_false = True
-            prev = cur
-            continue
-        if cur and (not prev) and seen_false:
-            out[i] = True
-            cool_left = cooldown
-        if not cur:
-            seen_false = True
-        prev = cur
-    return out, defined_out
-
-
 def _ref_cond(node, df) -> np.ndarray:
     """The condition's value channel: the mechanical boolean, and False wherever the node itself
     is still warming (warmup contributes no truth value)."""
@@ -345,7 +297,7 @@ def _ref_cond_raw(node, df) -> np.ndarray:
         val = _ref_cond(node.condition, df)
         init = _ref_cond_init(node.condition, df)
         defined = _ref_cond_defined(node.condition, df)
-        return _ref_first_true(val, init, defined, int(node.cooldown))[0]
+        return ref.first_true(val, init, defined, int(node.cooldown))[0]
     if t == "lag":
         return ref.lag_channels(*_ref_cond_channels(node.condition, df), int(node.periods))[0]
     raise NotImplementedError(t)
@@ -419,7 +371,8 @@ def _ref_cond_defined(node, df) -> np.ndarray:
     """Kleene definedness, independently authored against ``vectorize``'s spec:
     a comparison is decided where both operands are finite, ``and``/``or`` recover a verdict
     from a decisive child (F∧U=F, T∨U=T), ``not`` passes through, ``rolling`` needs the whole
-    window decided — and warmup is vacuously defined at every node."""
+    window decided, ``first_true`` is decided where every completion of its child's holes agrees
+    (``ref.first_true``) — and warmup is vacuously defined at every node."""
     t = node.type
     init = _ref_cond_init(node, df)
     if t == "threshold":
@@ -438,7 +391,7 @@ def _ref_cond_defined(node, df) -> np.ndarray:
         val = _ref_cond(node.condition, df)
         inner_init = _ref_cond_init(node.condition, df)
         inner_def = _ref_cond_defined(node.condition, df)
-        out = _ref_first_true(val, inner_init, inner_def, int(node.cooldown))[1]
+        out = ref.first_true(val, inner_init, inner_def, int(node.cooldown))[1]
     elif t == "lag":
         out = ref.lag_channels(*_ref_cond_channels(node.condition, df), int(node.periods))[2]
     else:
@@ -1675,13 +1628,18 @@ def test_rolling_defined_requires_the_whole_window_decided():
     np.testing.assert_array_equal(defined[2:], [False, False, False, True])
 
 
-def test_first_true_hole_taints_the_following_bar():
-    # A hole breaks the transition state: whether bar 3's True is a false→true EDGE depends on
-    # the missing bar, so it cannot be reported as decided.
-    md = _hole_md([-1.0, np.nan, 1.0, 1.0])
+def test_first_true_is_undefined_where_the_completions_of_a_hole_disagree():
+    # A hole could have been either value: had it been True it was itself a false→true EDGE, and
+    # bar 2's True is an edge only if it was False — neither can be reported as decided. Bar 3
+    # is no edge in either completion.
     node = FirstTrueCondition(condition=_x_gt(0.0))
-    _v, _i, defined = _chan(node, md)
+    _v, _i, defined = _chan(node, _hole_md([-1.0, np.nan, 1.0, 1.0]))
     np.testing.assert_array_equal(defined, [True, False, False, True])
+    # A False right after the hole fires in no completion, so it is decided (a fixed "taint the
+    # next bar" rule called it undefined), and the True after it is an edge in every completion.
+    value, _i, defined = _chan(node, _hole_md([-1.0, np.nan, -1.0, 1.0]))
+    np.testing.assert_array_equal(defined, [True, False, True, True])
+    np.testing.assert_array_equal(value, [False, False, False, True])
 
 
 def test_defined_channel_parity_with_reference_on_holed_feed(ohlcv_ext):

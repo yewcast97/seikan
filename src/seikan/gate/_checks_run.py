@@ -209,9 +209,15 @@ def _check_source_coverage(s: Mapping[str, object], t: GateThresholds) -> GateCh
     This is the layer the per-cell three-valued ``signal_coverage`` ledger structurally cannot
     see. Two ways a hole reaches a decision while the root condition reads perfectly DEFINED:
 
-    - **Kleene absorption.** ``and``/``or`` recover a decision from a decisive child (``F∧U = F``,
-      ``T∨U = T``), so a hole in one operand leaves the root fully decided. The bar is decided;
-      what is missing is whether it would have decided the SAME WAY with the data present.
+    - **Absorption.** A node is decided wherever every completion of a hole decides it the same way.
+      ``and``/``or`` recover a decision from a decisive child (Kleene ``F∧U = F``, ``T∨U = T``), so
+      a hole in one operand leaves the root fully decided; ``first_true`` is decided wherever every
+      completion of its child's holes agrees on fire/no-fire, so a hole whose completions
+      re-converge before they disagree on any fire (e.g. one on a cooldown bar other than the
+      cooldown's last) is absorbed the same way. The bar is decided whatever the hole held; what is
+      missing is the input itself, which "was the condition decided?" cannot record. A NaN computed
+      INSIDE the expression (``log`` of a non-positive value, ``x/0``) is no raw leaf's: absorbed,
+      it moves no decision and is ledgered nowhere.
     - **Recursive kernels launder state.** ``ema``/``zscore_ema``/expanding aggregates/
       ``bars_since_extremum`` SKIP NaNs and carry their running state across a hole, then emit a
       finite value on the next bar. Definedness is minted at the threshold comparison from
