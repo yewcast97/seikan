@@ -160,8 +160,10 @@ METRIC_ROLES: dict[str, JsonValue] = {
         "worst_ret, best_ret, mae_quantiles, mfe_quantiles, edge_ratio, timing — basket "
         "evidence riders; none gate. Under cross_mean the pooled mean_ret is the FIRING "
         "subset's cross-sectional selection tilt — each closed bar's FULL cross-section demeans "
-        "to zero, but the pool holds only the members that fired, so ≈ 0 appears only when "
-        "firings are basket-wide — while the legs still attribute: mean_ret_bench ≈ "
+        "to zero, but the pool holds only the members that fired, so 0 (exactly — summed "
+        "from the raw legs) appears only when firings are basket-wide or every member's leg is "
+        "the same value (a shared outcome feed) — while the legs still "
+        "attribute: mean_ret_bench ≈ "
         "mean_ret_raw is the basket's own drift)",
         "per-cell pooled.member_share.by_target (the full member-mass decomposition — "
         "attribution, never a ranking; only max_member_share_abs gates)",
@@ -314,8 +316,8 @@ METRIC_ROLES: dict[str, JsonValue] = {
         "baseline": (
             "in-sample base rates over every anchor bar in the cells' own algebra/benchmark/"
             "direction — quote a conditional mean AGAINST it; uplift is never derived; under "
-            "'cross_mean' the pooled BASELINE mean is ~0 by construction (unlike the pooled "
-            "CELL mean, firing rows only: the selection tilt)"
+            "'cross_mean' the pooled BASELINE mean is exactly 0 by construction (unlike the "
+            "pooled CELL mean, firing rows only: the selection tilt)"
         ),
         "episodes": (
             "time-ordered, never ranked by share, and BOUNDED: past the cap the ledger "
@@ -646,8 +648,10 @@ METRIC_ROLES_DOC: dict[str, JsonValue] = {
         "mae_quantiles/mfe_quantiles, edge_ratio: pooled twins of the by_target evidence "
         "riders, none gating — under cross_mean the pooled mean_ret is the FIRING subset's "
         "cross-sectional selection tilt: each closed bar's FULL cross-section demeans to zero, "
-        "but the pool holds only the members that fired, so ≈ 0 appears only when firings are "
-        "basket-wide (an unconditional basket-wide entry), and a selective signal's pooled mean "
+        "but the pool holds only the members that fired, so 0 (exactly — summed from the raw "
+        "legs) appears only when firings are basket-wide (an unconditional basket-wide entry) "
+        "or every member's leg is the same value (a shared outcome feed), "
+        "and a selective signal's pooled mean "
         "IS its cross-sectional selection read. The LEGS still attribute: mean_ret_bench ≈ "
         "mean_ret_raw is the basket's own realized drift, a market-magnitude number and not a "
         "construction artifact)",
@@ -824,12 +828,13 @@ METRIC_ROLES_DOC: dict[str, JsonValue] = {
             "honesty channel: n_eligible + sum(exclusions) == n_anchor_bars is re-checkable "
             "arithmetic. There is deliberately NO uplift or difference field — computing the "
             "comparison is the caller's act. Under benchmark 'cross_mean' the basket's pooled "
-            "BASELINE mean sits at ~0 BY CONSTRUCTION: every member enters every eligible bar, "
+            "BASELINE mean is exactly 0 BY CONSTRUCTION: every member enters every eligible bar, "
             "each member's excess is taken against the members' own cross-sectional mean, and "
             "complete cross-sections sum to zero — an identity, not a market fact. The pooled "
             "CELL mean is NOT that identity: its pool holds only the members that FIRED, so it "
-            "is the firing subset's cross-sectional selection tilt, ≈ 0 only when firings are "
-            "basket-wide."
+            "is the firing subset's cross-sectional selection tilt, 0 only when firings are "
+            "basket-wide or every member's leg is the same value (a shared outcome feed, every "
+            "per-row excess then exactly 0.0)."
         ),
         "episodes": (
             "The ledger lists overlap-merged episodes EARLIEST FIRST — it is never ranked by "
@@ -1258,9 +1263,10 @@ REPORT_FIELDS: dict[str, JsonValue] = {
         "ret_quantiles / worst_ret / best_ret / mae_quantiles / mfe_quantiles / edge_ratio": (
             "pooled twins of the by_target evidence riders (boot resamples cross-member-merged "
             "episodes; every by_target caveat carries over), evidence-only — under cross_mean "
-            "the pooled mean_ret is the FIRING subset's cross-sectional selection tilt (≈ 0 "
-            "only when firings are basket-wide — the full cross-section demeans to zero, the "
-            "firing subset need not) and the legs still attribute: mean_ret_bench ≈ "
+            "the pooled mean_ret is the FIRING subset's cross-sectional selection tilt (0, "
+            "exactly, only when firings are basket-wide — the full cross-section demeans to "
+            "zero, the firing subset need not — or every member's leg is the same value) and the "
+            "legs still attribute: mean_ret_bench ≈ "
             "mean_ret_raw is the basket's own realized drift"
         ),
         "outcome_coverage": (

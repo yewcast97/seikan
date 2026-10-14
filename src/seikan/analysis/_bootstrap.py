@@ -60,7 +60,8 @@ def episode_bootstrap_ci(
     distribution is reported exactly — ``ci_lo == ci_hi``, ``boot_se`` 0.0 — instead of the
     ulp-scale spread rounding would mint (a ``mean / boot_se`` of ~1e15, the ``t_hac``
     pathology): a pool whose returns are all equal (its interval is the pool's own arithmetic
-    mean, the ``mean_ret`` the cell reports beside it), and any pool whose resampled means come
+    mean, the ``mean_ret`` the cell reports beside it — save a ``cross_mean`` pooled panel's,
+    re-summed from the raw legs), and any pool whose resampled means come
     out bit-identical on every draw (every episode carrying the same sum and count).
     """
     rets = np.asarray(rets, dtype=float)

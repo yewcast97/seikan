@@ -3527,8 +3527,9 @@ def test_cross_mean_excess_is_antisymmetric_for_two_targets(tmp_path):
     # the legs attribute the demeaning exactly like the market case: each closed row's bench leg
     # is its bar's basket mean of the signed raw legs, ret == ret_raw − ret_bench bit-exactly,
     # and the pooled mean_ret_bench is the pooled raw mean — THIS fixture fires basket-wide
-    # (_lt(1e9): every member, every bar), the one case the pooled excess mean is ≈ 0 by
-    # construction; a SELECTIVE signal's pooled mean is the firing subset's tilt, not ≈ 0
+    # (_lt(1e9): every member, every bar), where the pooled excess mean is exactly 0 by
+    # construction (as over identical legs — a shared outcome feed); a SELECTIVE signal's pooled
+    # mean over distinct legs is the firing subset's tilt, not 0
     np.testing.assert_array_equal(
         closed["ret"].to_numpy(dtype=float),
         closed["ret_raw"].to_numpy(dtype=float) - closed["ret_bench"].to_numpy(dtype=float),
@@ -3539,10 +3540,361 @@ def test_cross_mean_excess_is_antisymmetric_for_two_targets(tmp_path):
         bench_a.to_numpy(dtype=float), bench_b.to_numpy(dtype=float)[: len(bench_a)], atol=0
     )  # one bar, ONE benchmark leg — both members subtract the same basket mean
     pooled = res.summary["cells"][0]["pooled"]
-    # ≈ 0 BECAUSE the firings are basket-wide (complete cross-sections demean to zero) —
+    # EXACTLY 0 BECAUSE the firings are basket-wide (complete cross-sections demean to zero) —
     # never an identity of cross_mean itself: a selective pool's mean is its selection tilt
-    assert pooled["mean_ret"] == pytest.approx(0.0, abs=1e-12)
+    assert pooled["mean_ret"] == 0.0
     assert pooled["mean_ret_raw"] == pytest.approx(pooled["mean_ret_bench"], abs=1e-12)
+
+
+def _cross_mean_basket(tmp_path, order, entry, *, n=100, horizon=5, seed=21):
+    """Three members (fixed price paths per NAME) declared in ``order``, ``cross_mean``."""
+    idx = pd.date_range("2021-01-01", periods=n, freq="1D")
+    rng = np.random.RandomState(seed)
+    paths = {t: 50.0 + 10.0 * j + rng.randn(n).cumsum() * 0.7 for j, t in enumerate("ABC")}
+    files = {t: _write_bars(tmp_path / f"{t}.csv", np.round(paths[t], 2), idx) for t in "ABC"}
+    thesis = Thesis.model_validate(
+        {
+            "name": "cm_order",
+            "target_mode": "basket",
+            "data": {"targets": list(order)},
+            "entry": entry,
+            "params": {"horizon": horizon, "benchmark": "cross_mean"},
+        }
+    )
+    return run_backtest(thesis, load(thesis, files))
+
+
+def test_cross_mean_full_basket_pooled_mean_is_exactly_zero_in_every_order(tmp_path):
+    # The review's case: every member fires on every bar, so each bar's excess legs sum to zero
+    # and the pooled mean is zero BY CONSTRUCTION. Summed from the rounded per-row excesses it
+    # read ±1e-19 with its sign set by the declaration order — and `support` (mean_ret > 0)
+    # flipped with the order. Computed from the raw legs it is exactly 0.0 in every order, and
+    # the support floor is unmet in every order, as it must be for a zero mean.
+    from seikan.gate import GateThresholds, evaluate_gate
+
+    for order in ("ABC", "BCA", "CAB"):
+        res = _cross_mean_basket(tmp_path, order, _lt(1e9))
+        cell = res.summary["cells"][0]
+        assert cell["pooled"]["n"] > 200 and cell["pooled"]["n_nonoverlap"] >= 8
+        assert cell["pooled"]["mean_ret"] == 0.0, order
+        assert res.summary["baseline"][0]["pooled"]["mean_ret"] == 0.0, order
+        support = next(
+            c
+            for c in evaluate_gate(res.summary, GateThresholds()).cells[0].checks
+            if c.name == "support"
+        )
+        assert support.met is False and "mean_ret=0" in support.detail, order
+
+
+def test_cross_mean_selective_pool_mean_is_its_tilt_and_order_free(tmp_path):
+    # A SELECTIVE pool has no identity: its pooled mean is the firing subset's tilt, the same
+    # number (to rounding) the closed rows average to — and, summed per bar in sorted member
+    # order, bit-identical under any declaration order.
+    entry = {
+        "type": "threshold",
+        "left": {"type": "change", "input": {"type": "field", "column": "close"}, "periods": 3},
+        "op": ">",
+        "right": {"type": "constant", "value": 0.0},
+    }
+    means = set()
+    for order in ("ABC", "BCA", "CAB"):
+        res = _cross_mean_basket(tmp_path, order, entry)
+        pooled = res.summary["cells"][0]["pooled"]
+        closed = res.trades[~res.trades["is_open"]]["ret"].to_numpy(dtype=float)
+        assert pooled["mean_ret"] == pytest.approx(float(np.mean(closed)), rel=1e-12, abs=1e-15)
+        assert pooled["mean_ret"] != 0.0
+        means.add(pooled["mean_ret"])
+    assert len(means) == 1
+
+
+_RISE3 = {
+    "type": "threshold",
+    "left": {"type": "change", "input": {"type": "field", "column": "close"}, "periods": 3},
+    "op": ">",
+    "right": {"type": "constant", "value": 0.0},
+}
+
+
+def _cm_closed_means(res):
+    """Each cell's pooled mean_ret beside the plain mean of that cell's closed rows."""
+    trades = res.trades[~res.trades["is_open"]]
+    out = []
+    for cell in res.summary["cells"]:
+        rows = trades[trades["horizon"] == cell["params"]["horizon"]]
+        out.append((cell["pooled"]["mean_ret"], float(np.mean(rows["ret"].to_numpy(float)))))
+    return out
+
+
+def test_cross_mean_identical_legs_pool_is_exactly_zero(tmp_path):
+    # A SHARED outcome feed is broadcast to every member, so each bar's legs are identical and
+    # every cross_mean excess is exactly zero, whichever members fire: the pooled mean is zero
+    # by construction for a SELECTIVE signal too (k/N of a partial bar does not cancel the sum
+    # in floating point) — and support reads it unmet.
+    from seikan.gate import GateThresholds, evaluate_gate
+
+    n = 120
+    idx = pd.date_range("2021-01-01", periods=n, freq="1D")
+    rng = np.random.RandomState(23)
+    targets = ["A", "B", "C", "D", "E"]
+    files = {
+        t: _write_bars(tmp_path / f"{t}.csv", np.round(50 + rng.randn(n).cumsum(), 2), idx)
+        for t in targets
+    }
+    rate = pd.DataFrame({"rate": np.round(3.0 + rng.randn(n).cumsum() * 0.05, 2)}, index=idx)
+    rate.index.name = "datetime"
+    rate.to_csv(tmp_path / "rate.csv")
+    files["rate"] = str(tmp_path / "rate.csv")
+    thesis = Thesis.model_validate(
+        {
+            "name": "cm_shared",
+            "target_mode": "basket",
+            "data": {"targets": targets, "external": {"rate": {}}},
+            "entry": _RISE3,
+            "params": {
+                "horizon": 5,
+                "benchmark": "cross_mean",
+                "outcome": {"series": "rate", "kind": "log"},
+            },
+        }
+    )
+    res = run_backtest(thesis, load(thesis, files))
+    cell = res.summary["cells"][0]
+    assert cell["pooled"]["n"] > 30
+    assert (res.trades[~res.trades["is_open"]]["ret"] == 0.0).all()  # every excess row is 0
+    assert cell["pooled"]["mean_ret"] == 0.0
+    assert res.summary["baseline"][0]["pooled"]["mean_ret"] == 0.0
+    support = next(
+        c
+        for c in evaluate_gate(res.summary, GateThresholds()).cells[0].checks
+        if c.name == "support"
+    )
+    assert support.met is False
+    # The exact bench leg IS the shared leg, so the row identity ret == ret_raw − ret_bench holds
+    # bit for bit and the bench mean equals the raw mean.
+    closed = res.trades[~res.trades["is_open"]]
+    raw = closed["ret_raw"].to_numpy(dtype=float)
+    bench = closed["ret_bench"].to_numpy(dtype=float)
+    np.testing.assert_array_equal(bench, raw)
+    np.testing.assert_array_equal(closed["ret"].to_numpy(dtype=float), raw - bench)
+    assert cell["pooled"]["mean_ret_bench"] == cell["pooled"]["mean_ret_raw"]
+
+
+def test_cross_mean_pooled_mean_ret_is_the_raw_leg_sum_not_pool_moments(tmp_path):
+    # The documented provenance exception: a basket-wide cross_mean pool's graded mean_ret is the
+    # exact raw-leg sum (0.0), where pool_moments over the same closed rows keeps rounding residue.
+    from seikan.analysis.stats import pool_moments
+
+    idx = pd.date_range("2021-01-01", periods=100, freq="1D")
+    rng = np.random.RandomState(21)
+    paths = {t: 50.0 + 10.0 * j + rng.randn(100).cumsum() * 0.7 for j, t in enumerate("ABC")}
+    files = {t: _write_bars(tmp_path / f"{t}.csv", np.round(paths[t], 2), idx) for t in "ABC"}
+    thesis = Thesis.model_validate(
+        {
+            "name": "cm_provenance",
+            "target_mode": "basket",
+            "data": {"targets": ["A", "B", "C"]},
+            "entry": {
+                "type": "threshold",
+                "left": {"type": "field", "column": "close"},
+                "op": "<",
+                "right": {"type": "constant", "value": 1e9},
+            },
+            "params": {"horizon": 5, "benchmark": "cross_mean"},
+        }
+    )
+    res = run_backtest(thesis, load(thesis, files))
+    closed = res.trades[~res.trades["is_open"]]["ret"].to_numpy(dtype=float)
+    assert res.summary["cells"][0]["pooled"]["mean_ret"] == 0.0
+    assert pool_moments(closed)["mean_ret"] != 0.0
+
+
+def test_cross_mean_swept_entry_axis_each_cell_mounts_its_own_pooled_mean(tmp_path):
+    # The exact pooled mean is keyed per DECLARED cell — the swept entry axes included, not just
+    # the horizon: every (thr × horizon) cell mounts ITS OWN pool's mean.
+    idx = pd.date_range("2021-01-01", periods=100, freq="1D")
+    rng = np.random.RandomState(21)
+    paths = {t: 50.0 + 10.0 * j + rng.randn(100).cumsum() * 0.7 for j, t in enumerate("ABC")}
+    files = {t: _write_bars(tmp_path / f"{t}.csv", np.round(paths[t], 2), idx) for t in "ABC"}
+    entry = {**_RISE3, "right": {"type": "constant", "value": [-0.02, 0.0, 0.02], "name": "thr"}}
+    thesis = Thesis.model_validate(
+        {
+            "name": "cm_entry_sweep",
+            "target_mode": "basket",
+            "data": {"targets": ["A", "B", "C"]},
+            "entry": entry,
+            "params": {"horizon": [2, 5], "benchmark": "cross_mean"},
+        }
+    )
+    res = run_backtest(thesis, load(thesis, files))
+    closed = res.trades[~res.trades["is_open"]]
+    means = []
+    for cell in res.summary["cells"]:
+        p = cell["params"]
+        rows = closed[(closed["thr"] == p["thr"]) & (closed["horizon"] == p["horizon"])]
+        assert len(rows) > 0
+        plain = float(np.mean(rows["ret"].to_numpy(dtype=float)))
+        assert cell["pooled"]["mean_ret"] == pytest.approx(plain, rel=1e-12, abs=1e-15)
+        means.append(cell["pooled"]["mean_ret"])
+    assert len(set(means)) == len(means) == 6
+
+
+@pytest.mark.filterwarnings("ignore:overflow encountered:RuntimeWarning")
+@pytest.mark.filterwarnings("ignore:invalid value encountered:RuntimeWarning")
+def test_cross_mean_pooled_mean_overflow_is_refused_not_a_crash(tmp_path):
+    # pct legs near 1e308 (a quote of 1e-300 beside 1e8): the exact pooled sum leaves the double
+    # range. The run completes, the pooled mean reads NaN (null) and support refuses it. (numpy's
+    # own overflow warnings from the moments and the rotation FFT at these magnitudes predate the
+    # exact mean and are not under test — an exception out of the run is.)
+    from seikan.gate import GateThresholds, evaluate_gate
+
+    n = 40
+    idx = pd.date_range("2021-01-01", periods=n, freq="1D")
+    files = {}
+    for t, px in (("A", np.where(np.arange(n) % 2 == 0, 1e-300, 1e8)), ("B", np.full(n, 1.0))):
+        df = pd.DataFrame(
+            {"open": px, "high": px, "low": px, "close": px, "volume": 1000.0}, index=idx
+        )
+        df.index.name = "datetime"
+        df.to_csv(tmp_path / f"{t}.csv", float_format="%.17g")
+        files[t] = str(tmp_path / f"{t}.csv")
+    thesis = Thesis.model_validate(
+        {
+            "name": "cm_overflow",
+            "target_mode": "basket",
+            "data": {"targets": ["A", "B"]},
+            "entry": {
+                "type": "threshold",
+                "left": {"type": "field", "column": "close"},
+                "op": ">",
+                "right": {"type": "constant", "value": 5.0},
+            },
+            "params": {"horizon": 1, "benchmark": "cross_mean"},
+        }
+    )
+    res = run_backtest(thesis, load(thesis, files))
+    assert len(res.trades[~res.trades["is_open"]]) > 0
+    assert not np.isfinite(res.summary["cells"][0]["pooled"]["mean_ret"])
+    support = next(
+        c
+        for c in evaluate_gate(res.summary, GateThresholds()).cells[0].checks
+        if c.name == "support"
+    )
+    assert support.met is False
+
+
+def test_cross_mean_swept_horizons_each_mount_their_own_pooled_mean(tmp_path):
+    # The exact pooled mean is keyed per declared cell: under a swept horizon every cell mounts
+    # ITS OWN pool's mean (equal to its closed rows' average, to rounding), bit-identical across
+    # declaration orders.
+    def run(order):
+        idx = pd.date_range("2021-01-01", periods=100, freq="1D")
+        rng = np.random.RandomState(21)
+        paths = {t: 50.0 + 10.0 * j + rng.randn(100).cumsum() * 0.7 for j, t in enumerate("ABC")}
+        files = {t: _write_bars(tmp_path / f"{t}.csv", np.round(paths[t], 2), idx) for t in "ABC"}
+        thesis = Thesis.model_validate(
+            {
+                "name": "cm_sweep",
+                "target_mode": "basket",
+                "data": {"targets": list(order)},
+                "entry": _RISE3,
+                "params": {"horizon": [2, 5, 9], "benchmark": "cross_mean"},
+            }
+        )
+        return run_backtest(thesis, load(thesis, files))
+
+    per_order = []
+    for order in ("ABC", "CAB"):
+        pairs = _cm_closed_means(run(order))
+        for got, plain in pairs:
+            assert got == pytest.approx(plain, rel=1e-12, abs=1e-15)
+        assert len({got for got, _ in pairs}) == 3
+        per_order.append([got for got, _ in pairs])
+    assert per_order[0] == per_order[1]
+
+
+def test_market_basket_pooled_mean_is_the_plain_pool_mean(tmp_path):
+    # The raw-leg route is for cross_mean only: a market-benchmarked basket's pooled mean is the
+    # plain mean of its closed rows, bit for bit.
+    n = 100
+    idx = pd.date_range("2021-01-01", periods=n, freq="1D")
+    rng = np.random.RandomState(22)
+    files = {
+        t: _write_bars(tmp_path / f"{t}.csv", np.round(50 + rng.randn(n).cumsum(), 2), idx)
+        for t in ("A", "B", "C", "benchmark")
+    }
+    thesis = Thesis.model_validate(
+        {
+            "name": "mkt",
+            "target_mode": "basket",
+            "data": {"targets": ["A", "B", "C"]},
+            "entry": _RISE3,
+            "params": {"horizon": [3, 6], "benchmark": "market"},
+        }
+    )
+    res = run_backtest(thesis, load(thesis, files))
+    for got, plain in _cm_closed_means(res):
+        assert got == plain
+
+
+def test_cross_mean_full_basket_with_a_holed_member_is_exactly_zero(tmp_path):
+    # A member hole censors its whole bar (no_benchmark); every bar that remains is still a full
+    # cross-section, so the pooled and baseline means stay exactly 0.0 in every order.
+    n = 80
+    idx = pd.date_range("2021-01-01", periods=n, freq="1D")
+    rng = np.random.RandomState(24)
+    for order in ("ABC", "BCA", "CAB"):
+        paths = {t: 50.0 + 5.0 * j + rng.randn(n).cumsum() * 0.3 for j, t in enumerate("ABC")}
+        for t, px in paths.items():
+            df = pd.DataFrame(dict.fromkeys(("open", "high", "low", "close"), px), index=idx)
+            df["volume"] = 1000.0
+            if t == "B":
+                df.iloc[[30, 31], df.columns.get_loc("open")] = np.nan
+            df.index.name = "datetime"
+            df.to_csv(tmp_path / f"{t}.csv")
+        thesis = Thesis.model_validate(
+            {
+                "name": "cm_hole",
+                "target_mode": "basket",
+                "data": {"targets": list(order)},
+                "entry": _lt(1e9),
+                "params": {"horizon": 4, "benchmark": "cross_mean"},
+            }
+        )
+        files = {t: str(tmp_path / f"{t}.csv") for t in "ABC"}
+        res = run_backtest(thesis, load(thesis, files))
+        cell = res.summary["cells"][0]
+        assert cell["outcome_coverage"]["A"]["exit_reasons"]["no_benchmark"] > 0
+        assert res.summary["baseline"][0]["pooled"]["exclusions"]["no_benchmark"] > 0
+        assert cell["pooled"]["mean_ret"] == 0.0, order
+        assert res.summary["baseline"][0]["pooled"]["mean_ret"] == 0.0, order
+
+
+def test_cross_mean_full_basket_short_direction_is_exactly_zero(tmp_path):
+    # The raw legs are SIGNED: under shortonly the identity is the same, and so is the exact 0.
+    from seikan.gate import GateThresholds, evaluate_gate
+
+    idx = pd.date_range("2021-01-01", periods=100, freq="1D")
+    rng = np.random.RandomState(21)
+    paths = {t: 50.0 + 10.0 * j + rng.randn(100).cumsum() * 0.7 for j, t in enumerate("ABC")}
+    files = {t: _write_bars(tmp_path / f"{t}.csv", np.round(paths[t], 2), idx) for t in "ABC"}
+    for order in ("ABC", "BCA"):
+        thesis = Thesis.model_validate(
+            {
+                "name": "cm_short",
+                "target_mode": "basket",
+                "data": {"targets": list(order)},
+                "entry": _lt(1e9),
+                "params": {"horizon": 5, "benchmark": "cross_mean", "direction": "shortonly"},
+            }
+        )
+        res = run_backtest(thesis, load(thesis, files))
+        assert res.summary["cells"][0]["pooled"]["mean_ret"] == 0.0
+        support = next(
+            c
+            for c in evaluate_gate(res.summary, GateThresholds()).cells[0].checks
+            if c.name == "support"
+        )
+        assert support.met is False
 
 
 def test_cross_mean_member_hole_censors_the_whole_bar(tmp_path):

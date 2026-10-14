@@ -30,7 +30,8 @@ def baseline_summary(rets: np.ndarray) -> BaselineStats:
 
     Pool-agnostic on purpose: the same function produces the per-(horizon × target) rows AND a
     basket's pooled row over the concatenated (bar × member) eligible observations — nothing in
-    it knows which pool it is describing. Non-finite entries are dropped defensively
+    it knows which pool it is describing (under ``cross_mean`` the runner replaces the pooled
+    row's ``mean_ret`` with ``cross_mean_pooled_mean``). Non-finite entries are dropped defensively
     (``n_eligible`` counts what was actually described). An EMPTY pool is all-null, NEVER zeros
     — a zero base rate is a measured outcome, and a pool with no observations measured nothing.
     ``std_ret`` is ddof=1 (NaN below two observations, exactly 0.0 on a constant pool — the

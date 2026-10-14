@@ -880,7 +880,7 @@ whether the MARKET went up, not the thesis; long-horizon theses should set `benc
   leg non-finite at a bar censors the WHOLE bar's benchmark leg, so every member's firing there
   exits as `no_benchmark` — never a partial-basket mean, which would quietly demean the surviving
   members by a DIFFERENT basket while their rows escape the censoring ledger. Note the identity
-  it implies — and its boundary: under `cross_mean` the POOLED BASELINE mean is ≈ 0 by
+  it implies — and its boundary: under `cross_mean` the POOLED BASELINE mean is exactly 0 by
   construction (every member enters every eligible bar, and complete cross-sections demean to
   zero — an identity, not a finding), while the pooled CELL mean is NOT that identity: it holds
   only the members that FIRED, so it reads the firing subset's cross-sectional selection tilt.
@@ -1013,7 +1013,15 @@ and int64 nanosecond counts silently round in IEEE-754 consumers.)
     `mean_ret`, `mean_ret_raw` / `mean_ret_bench` (the pooled attribution legs — under
     `cross_mean` the pooled `mean_ret` is the FIRING subset's cross-sectional selection tilt:
     each closed bar's FULL cross-section demeans to zero, but the pool holds only the members
-    that fired, so ≈ 0 appears only when firings are basket-wide, and a selective signal's
+    that fired, so 0 appears only when firings are basket-wide or every member's leg is the same
+    value (a shared or duplicated outcome feed: each per-row excess is then exactly 0.0, and
+    every read of it takes its exact value — means, quantiles and std 0.0, `rot_p` 1.0, `t_hac` /
+    `hac_se`, the shape reads, `concentration` and `member_share` null) — exactly 0, the pooled
+    mean being summed from the raw legs in any
+    declaration order (on a full bar with distinct legs only this mean is re-summed: the pool's
+    OTHER reads — its HAC, `rot_p`, era and episode panels — keep ordinary rounding, so legs equal
+    but for their last bits, one instrument in two quote units, leave them residue-driven) —
+    and a selective signal's
     pooled mean IS its cross-sectional selection read; the LEGS still attribute —
     `mean_ret_bench` ≈ `mean_ret_raw` is the basket's own realized drift), `hit_rate`,
     `profit_factor`, `t_hac` /
@@ -1204,8 +1212,8 @@ open to quote a statistic honestly.
   empty pool is all-null, never zeros; and there is deliberately NO cell-vs-baseline uplift
   field anywhere — the comparison is yours. In basket mode each horizon entry also carries a
   `pooled` row over the concatenated (bar × member) eligible observations, whose counts are the
-  per-target sums — and under `benchmark: "cross_mean"` that pooled baseline mean is ≈ 0 BY
-  CONSTRUCTION (an identity, not a finding).
+  per-target sums — and under `benchmark: "cross_mean"` that pooled baseline mean is exactly 0
+  BY CONSTRUCTION (an identity, not a finding).
 - `summary.cross_breadth` (basket only; `[]` elsewhere) — the effective-universe ledger, one
   entry per cross node × combo: `{node, params, min_valid, n_bars, n_bars_evaluated,
   n_bars_below_full, k_min, k_median, k_max, first_full_bar}` over the per-bar count `k` of
@@ -1573,7 +1581,7 @@ honest measurement.
 
 This declares a two-cell grid (one combo × two horizons). Each cell carries the graded `pooled`
 block beside the per-member `by_target` attribution; `benchmark: "cross_mean"` makes every
-return "excess over the basket", so the POOLED baseline mean sits at ≈ 0 by construction and the
+return "excess over the basket", so the POOLED baseline mean is exactly 0 by construction and the
 per-target baseline rows show which members carried the group. Read the pooled `n_nonoverlap` against
 the pooled `n` — five members firing on the same bar are one market event, not five.
 

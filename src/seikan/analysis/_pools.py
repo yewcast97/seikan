@@ -80,7 +80,8 @@ def pool_moments(rets: np.ndarray) -> PoolMoments:
 
     Overlap caveat, shared with every row-level read: one market move enters ~h rows, so
     these describe the realized pool, never an estimated distribution. Evidence-only; the
-    checklist reads ``n``, ``mean_ret`` and nothing else here.
+    checklist reads ``n``, ``mean_ret`` (a ``cross_mean`` basket's pooled ``mean_ret`` is
+    re-summed by :func:`cross_mean_pooled_mean` instead) and nothing else here.
     """
     v = np.asarray(rets, dtype=float)
     v = v[np.isfinite(v)]
@@ -246,6 +247,46 @@ def edge_ratio(mae_rows: np.ndarray, mfe_rows: np.ndarray) -> float:
     if denom == 0:
         return _NAN
     return float(np.mean(m_f)) / denom
+
+
+def cross_mean_pooled_mean(raw: np.ndarray, closed: np.ndarray) -> float:
+    """The pooled mean of a basket's ``cross_mean`` EXCESS returns, computed from the raw legs so
+    the full-basket identity holds EXACTLY.
+
+    ``raw`` is the (bars × members) signed raw leg of one horizon, ``closed`` the (bars ×
+    members) mask of the pool's closed observations. Under ``cross_mean`` a bar's excess legs
+    are ``raw[t, g] − mean(raw[t, :])``, so the bar contributes ``Σ_{closed} raw − (k_t/N)·Σ_all
+    raw`` to the pooled sum — and a bar on which EVERY member closed contributes ``S − 1.0·S``,
+    exactly ``0.0``. So does a bar on which every member's leg is the SAME value (a shared outcome
+    feed broadcast to the basket), whatever closed: each excess there is exactly zero, which
+    ``fl(k/N)`` would not cancel. Summing the rounded per-row excesses instead left ~1e-19 of
+    residue whose SIGN depended on the members' declaration order, so a pool whose mean is zero by
+    construction could clear ``mean_ret > 0`` in one order and not in another. Each bar's members
+    are summed in SORTED order (the sum cannot depend on the order the targets were declared in)
+    and the bars with ``math.fsum``; NaN on an empty pool. A bar with any closed member has every
+    raw leg finite — a NaN leg voids the bar's whole cross-sectional mean, censoring every member
+    there — so no NaN reaches the sums. Legs so large that a bar's sum, or the exact total, leaves
+    the double range have no finite pooled mean: NaN, which the gate refuses as non-finite —
+    never an exception out of the run."""
+    c = np.asarray(closed, dtype=bool)
+    n = int(c.sum())
+    if n == 0:
+        return _NAN
+    rows = c.any(axis=1)
+    r = np.asarray(raw, dtype=float)[rows]
+    c = c[rows]
+    with np.errstate(over="ignore", invalid="ignore"):
+        s_closed = np.sort(np.where(c, r, 0.0), axis=1).sum(axis=1)
+        s_all = np.sort(r, axis=1).sum(axis=1)
+        excess = s_closed - (c.sum(axis=1) / r.shape[1]) * s_all
+    excess = np.where(r.max(axis=1) == r.min(axis=1), 0.0, excess)  # identical legs: no excess
+    if not np.isfinite(excess).all():
+        return _NAN
+    try:
+        total = math.fsum(excess.tolist())
+    except OverflowError:  # the exact total leaves the double range
+        return _NAN
+    return total / n
 
 
 def benchmark_regression(raw: np.ndarray, bench: np.ndarray) -> BenchmarkRegressionBlock:

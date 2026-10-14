@@ -144,7 +144,9 @@ class CrossBreadthEntry(TypedDict):
 
 class BaselineStats(TypedDict):
     """The statistical fields of ONE unconditional baseline pool —
-    ``analysis.stats.baseline_summary``, computed from the eligible forward returns alone.
+    ``analysis.stats.baseline_summary``, computed from the eligible forward returns alone (under
+    ``cross_mean`` a basket's pooled ``mean_ret`` is ``cross_mean_pooled_mean`` over the same
+    bars' raw legs: exactly 0).
 
     An empty pool is all-NaN → null, never zeros — a zero base rate is a measured outcome, and a
     pool with no observations measured nothing. There is deliberately no ``median_ret`` key:

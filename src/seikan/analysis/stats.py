@@ -50,6 +50,7 @@ from seikan.analysis._hac import newey_west_mean, nonoverlap_count
 from seikan.analysis._pools import (
     benchmark_regression,
     concentration,
+    cross_mean_pooled_mean,
     edge_ratio,
     mae_block,
     mfe_block,
@@ -78,6 +79,7 @@ __all__ = [
     "cell_conditional_buckets",
     "concentration",
     "conditional_buckets",
+    "cross_mean_pooled_mean",
     "cscv_pbo",
     "edge_ratio",
     "episode_bootstrap_ci",

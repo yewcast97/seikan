@@ -356,8 +356,10 @@ class PoolMoments(TypedDict):
     INTERNAL to the pipeline: ``compiler.runner`` mounts these nine fields into every
     :class:`CellTargetPanel` (and pooled panel), which is where they are emitted, so the fields
     stay plain ``float`` and state the in-memory arithmetic (NaN on an empty or degenerate pool;
-    the panel's ``T | None`` is the emitted form). The checklist reads ``n`` and ``mean_ret``;
-    everything else is evidence.
+    the panel's ``T | None`` is the emitted form). The checklist reads ``n`` and ``mean_ret`` —
+    save a ``cross_mean`` basket's pooled panel, whose ``mean_ret`` the runner replaces with
+    ``analysis.stats.cross_mean_pooled_mean`` (summed from the raw legs); everything else is
+    evidence.
     """
 
     n: int

@@ -346,8 +346,17 @@ hac_se / rot_p / concentration / `member_share`
 ret_quantiles / worst_ret / best_ret / mae_quantiles / mfe_quantiles / edge_ratio / timing —
 under
 `cross_mean` the pooled `mean_ret` is the FIRING subset's cross-sectional selection tilt — the
-full cross-section demeans to zero each bar, the firing subset need not, so ≈ 0 appears only
-when firings are basket-wide — and the LEGS still attribute: `mean_ret_bench` ≈ `mean_ret_raw`
+full cross-section demeans to zero each bar, the firing subset need not, so 0 appears only
+when firings are basket-wide or every member's leg is the same value (a shared or duplicated
+outcome feed: every per-row excess is then exactly 0, and every read of it takes its exact value
+— means, quantiles and std 0.0, `rot_p` 1.0, `t_hac` / `hac_se`, the shape reads,
+`concentration` and `member_share` null) — and then EXACTLY:
+the pooled mean is summed from the raw legs, so a full bar contributes `S − 1.0·S`, never
+rounding residue whose sign the targets' declaration order would set; on a full bar with
+distinct legs only this graded `mean_ret` is re-summed, the pool's other reads (`rot_p` and
+`t_hac` among them) keep ordinary
+rounding — and the LEGS still attribute: `mean_ret_bench` ≈
+`mean_ret_raw`
 is the basket's own realized drift), the panel the
 basket rubric grades
 while `by_target` stays as attribution — `episode_profile`, being the cross-target merge
@@ -671,7 +680,9 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   (near-)constant raw leg, and a CSCV split scores NaN when its pool is exactly constant (the
   per-block extrema), within the HAC's ~10 ulps, or has a centered sum of squares within its own
   accumulation error. Pool MEANS stay the arithmetic
-  mean (a few ulps off a constant pool's value — the summation's rounding — never off its sign).
+  mean (a few ulps off a constant pool's value — the summation's rounding — never off its sign;
+  the one exception is a `cross_mean` basket's pooled `mean_ret`, summed from the raw legs — see
+  the pooled panel).
   A post-warmup zero-dispersion bar
   is UNDECIDABLE like `x / 0`: its NaN lands in `signal_coverage`, never fires — guard a z-score
   of a series that can sit flat with `rolling_agg(x, N, std) > 0`. "Equal" means bit-identical: a

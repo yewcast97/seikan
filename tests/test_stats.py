@@ -25,6 +25,7 @@ from seikan.analysis.stats import (
     cell_conditional_buckets,
     concentration,
     conditional_buckets,
+    cross_mean_pooled_mean,
     cscv_pbo,
     edge_ratio,
     episode_bootstrap_ci,
@@ -1914,6 +1915,58 @@ def test_episode_profile_reconciles_with_episode_stats_on_random_pools():
 
 
 # ---- benchmark_regression: paired-leg attribution (evidence-only) ------------
+
+
+def test_cross_mean_pooled_mean_full_bars_are_exactly_zero_in_any_member_order():
+    # A bar on which every member closed contributes S − 1.0·S: exactly zero, in any column order.
+    rng = np.random.RandomState(14)
+    raw = np.round(rng.normal(0.001, 0.02, (300, 5)), 6)
+    full = np.ones_like(raw, dtype=bool)
+    for perm in ([0, 1, 2, 3, 4], [4, 2, 0, 3, 1], [1, 0, 4, 3, 2]):
+        assert cross_mean_pooled_mean(raw[:, perm], full[:, perm]) == 0.0
+    # the per-row route it replaces carries residue whose sign depends on the order
+    excess = raw - raw.mean(axis=1, keepdims=True)
+    assert float(np.mean(excess)) != 0.0
+
+
+def test_cross_mean_pooled_mean_partial_pool_is_the_excess_mean():
+    # A selective pool: the mean of the closed rows' excess legs, to rounding, and bit-identical
+    # under any member order; an empty pool is NaN.
+    rng = np.random.RandomState(15)
+    raw = rng.normal(0.0, 0.02, (200, 4))
+    closed = rng.rand(200, 4) < 0.3
+    excess = raw - raw.mean(axis=1, keepdims=True)
+    want = float(np.mean(excess[closed]))
+    got = cross_mean_pooled_mean(raw, closed)
+    assert got == pytest.approx(want, rel=1e-12)
+    perm = [2, 0, 3, 1]
+    assert cross_mean_pooled_mean(raw[:, perm], closed[:, perm]) == got
+    assert np.isnan(cross_mean_pooled_mean(raw, np.zeros_like(closed)))
+
+
+def test_cross_mean_pooled_mean_identical_rows_are_exactly_zero_whatever_closed():
+    # Every member's leg the same value on a bar (a shared outcome feed): each excess is exactly
+    # zero whichever members closed; one leg off it is ordinary variation again.
+    rng = np.random.RandomState(16)
+    x = np.round(rng.normal(0.0, 0.03, 400), 4)
+    raw = np.repeat(x[:, None], 7, axis=1)
+    closed = rng.rand(400, 7) < 0.4
+    closed[0] = [True, False, False, False, False, False, False]
+    assert cross_mean_pooled_mean(raw, closed) == 0.0
+    raw2 = raw.copy()
+    raw2[0, 6] += 0.01
+    np.testing.assert_allclose(
+        cross_mean_pooled_mean(raw2, closed), (-0.01 / 7) / closed.sum(), rtol=1e-9
+    )
+
+
+def test_cross_mean_pooled_mean_overflow_is_refusable_not_a_crash():
+    # Finite legs whose exact pooled sum leaves the double range: the per-row route read inf
+    # (refused by the gate as non-finite); the exact route must not raise out of the run.
+    assert np.isnan(cross_mean_pooled_mean(np.array([[1.5e308, 0.0]] * 3), np.array([[1, 0]] * 3)))
+    # a bar whose own sum overflows
+    raw = np.array([[1.5e308, 1.5e308, -1.0]] * 2)
+    assert np.isnan(cross_mean_pooled_mean(raw, np.array([[1, 0, 0]] * 2, dtype=bool)))
 
 
 def test_benchmark_regression_recovers_a_planted_beta_and_alpha():

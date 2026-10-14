@@ -49,6 +49,7 @@ from seikan.analysis.stats import (
     benchmark_regression,
     cell_conditional_buckets,
     concentration,
+    cross_mean_pooled_mean,
     cscv_pbo,
     edge_ratio,
     episode_bootstrap_ci,
@@ -276,6 +277,13 @@ def _baseline_panel(
         entry_h: BaselineEntry = {"horizon": h, "by_target": by_target_base}
         if basket:
             bs_p = baseline_summary(np.concatenate(pooled_rets) if pooled_rets else np.empty(0))
+            if bench_mode == "cross_mean":
+                # Every eligible bar is a FULL cross-section (one member's NaN leg voids the
+                # bar's mean, censoring every member), so the pooled excess mean is zero BY
+                # CONSTRUCTION — computed from the raw legs, it IS 0.0, never rounding residue.
+                bs_p["mean_ret"] = cross_mean_pooled_mean(
+                    frames_by_h[h].raw[anchors], np.isfinite(fwd_h[anchors])
+                )
             entry_h["pooled"] = {
                 "n_anchor_bars": int(anchors.size) * len(targets),
                 "n_eligible": bs_p["n_eligible"],
@@ -645,8 +653,11 @@ def _pool_panel(
         # market". Under `cross_mean` the bench leg is each bar's basket mean; the POOLED
         # mean_ret is then the FIRING subset's cross-sectional selection tilt — each closed
         # bar's FULL cross-section demeans to zero, but the pool holds only the members that
-        # fired, so ≈ 0 appears only when firings are basket-wide — and mean_ret_bench ≈
-        # mean_ret_raw is the basket's own realized drift.
+        # fired, so 0 appears only when firings are basket-wide or every member's leg is the
+        # same value — a shared outcome feed, where every per-row excess is exactly 0.0 (exactly
+        # in both cases: the basket cell's pooled mean_ret is re-summed from the raw legs in
+        # `_measure_grid`) — and
+        # mean_ret_bench ≈ mean_ret_raw is the basket's own realized drift.
         "mean_ret_raw": float(np.mean(raw)) if raw.size else _NAN,
         "mean_ret_bench": float(np.mean(bench)) if bench.size else _NAN,
         # The legs' regression attribution (evidence-only): is the excess mean alpha, or
@@ -721,6 +732,7 @@ def _cells_panel(
     per_cell: dict[CellKey, ReliabilityRead],
     pooled_per_cell: dict[CellKey, ReliabilityRead],
     undef_by_combo: dict[ComboKey, np.ndarray],
+    pooled_mean_ret: dict[CellKey, float],
 ) -> list[SummaryCell]:
     """The report's spine: ONE entry per DECLARED combo × horizon, in declaration order,
     non-firing combos included — every per-cell panel, evidence block and coverage ledger (the
@@ -861,8 +873,13 @@ def _cells_panel(
                 tgt: (mass_by_target[tgt] / total_mass if total_mass > 0 else _NAN)
                 for tgt in targets
             }
+            pooled_panel = _pool_panel(rows_closed, prc, dc["h"], sub_edges, sub_windows)
+            if combo_key in pooled_mean_ret:
+                # `cross_mean`: the pool's excess mean from the raw legs, so the full-basket
+                # identity is exact (see `_measure_grid`) — the read the support floor grades.
+                pooled_panel["mean_ret"] = pooled_mean_ret[combo_key]
             head["pooled"] = {
-                **_pool_panel(rows_closed, prc, dc["h"], sub_edges, sub_windows),
+                **pooled_panel,
                 "member_share": {
                     "by_target": member_share,
                     "max_member_share_abs": (
@@ -923,6 +940,7 @@ class _GridResult(NamedTuple):
     n_combos_attempted: int
     undef_by_combo: dict[ComboKey, np.ndarray]
     cross_breadth: list[CrossBreadthEntry]
+    pooled_mean_ret: dict[CellKey, float]
 
 
 def _measure_grid(
@@ -987,6 +1005,13 @@ def _measure_grid(
     # tree only (features are evidence-side snapshots); cross nodes are basket-gated, so a
     # conjunction run emits the empty panel by construction. Read by no check.
     cross_breadth: list[CrossBreadthEntry] = []
+    # The basket's pooled `cross_mean` excess mean per declared cell, from the RAW legs: each
+    # bar's excess legs sum to exactly zero over the full cross-section, so a cell whose members
+    # all fire together has a pooled mean of zero BY CONSTRUCTION — summed from the rounded
+    # per-row excesses it read ±1e-19, its sign set by the targets' declaration order, and the
+    # support floor's `mean_ret > 0` graded that residue. Mounted as `pooled.mean_ret`.
+    pooled_mean_ret: dict[CellKey, float] = {}
+    exact_pooled_mean = basket and bench_mode == "cross_mean"
     for combo, entry in vectorize.iter_param_assignments(thesis.entry, thesis.axes):
         n_combos_attempted += 1
         mask = vectorize.signal(entry, md).to_numpy()  # (bars × targets) bool, warmup-gated
@@ -1028,6 +1053,7 @@ def _measure_grid(
             declared_cells.append(
                 {"params": params, "combo_key": combo_key, "combo_tuple": combo_tuple, "h": h}
             )
+            closed_mask = np.zeros(fwd.shape, dtype=bool) if exact_pooled_mean else None
             for g, target in enumerate(targets):
                 fire = np.flatnonzero(mask[:, g])
                 fire = fire[fire + off <= n_bars - 1]  # must be able to fill the entry
@@ -1048,6 +1074,8 @@ def _measure_grid(
                     )
                 ret = fwd[fire, g]
                 closed = np.isfinite(ret)
+                if closed_mask is not None:
+                    closed_mask[fire[closed], g] = True
                 fe = fire + off
                 exit_full = fe + h
                 exit_capped = np.minimum(exit_full, n_bars - 1)
@@ -1135,6 +1163,8 @@ def _measure_grid(
                             "h": h,
                         }
                     )
+            if closed_mask is not None:
+                pooled_mean_ret[combo_key] = cross_mean_pooled_mean(hf.raw, closed_mask)
 
     return _GridResult(
         frames=frames,
@@ -1144,6 +1174,7 @@ def _measure_grid(
         n_combos_attempted=n_combos_attempted,
         undef_by_combo=undef_by_combo,
         cross_breadth=cross_breadth,
+        pooled_mean_ret=pooled_mean_ret,
     )
 
 
@@ -1224,8 +1255,14 @@ def run_backtest(thesis: Thesis, md: MarketData) -> EventStudyResult:
             # surviving members by a DIFFERENT basket while their rows escape the censoring
             # ledger. `fwd` is already signed, and sign·(tgt − mean(tgt)) ≡ signed − mean(signed),
             # so demeaning after the sign is exact for shortonly too — which is also why the bar's
-            # mean IS the signed benchmark leg, needing no further sign.
+            # mean IS the signed benchmark leg, needing no further sign. A bar whose legs are all
+            # EQUAL (a shared outcome feed broadcast to the basket) has its mean equal to that
+            # value — exact zero dispersion, as in the kernels: the rounded row mean is not the
+            # value, and every member's excess would read its residue instead of 0.
             mu = fwd.mean(axis=1, keepdims=True)
+            mu = np.where(
+                fwd.max(axis=1, keepdims=True) == fwd.min(axis=1, keepdims=True), fwd[:, :1], mu
+            )
             bench = mu
             fwd = fwd - mu
             fwd = np.where(np.isfinite(fwd), fwd, np.nan)
@@ -1328,6 +1365,7 @@ def run_backtest(thesis: Thesis, md: MarketData) -> EventStudyResult:
         rel["per_cell"],
         pooled_per_cell,
         undef_by_combo,
+        grid.pooled_mean_ret,
     )
     # ---- the summary: the run-level stamps (what was measured, over what geometry, in which
     # algebra — everything that is a property of the run, not of any hypothesis) and the per-cell
