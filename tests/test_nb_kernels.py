@@ -13,6 +13,7 @@ import pytest
 from numpy.lib.stride_tricks import sliding_window_view
 
 from seikan.compiler import nb
+from seikan.constants import MAX_BAR_COUNT_PARAM, MIN_EW_ALPHA
 from seikan.numeric import log_ratio, log_ratio_array
 
 from . import _reference_nb as ref
@@ -1779,10 +1780,61 @@ def test_ema_params_window_form_and_alpha_form():
     assert nb.ema_params(None, 1.0) == (1.0, 1)
     for w in range(1, 501):
         assert nb.ema_params(None, 2.0 / (w + 1.0))[1] == w, w
+    # The 9-place rounding absorbs the reciprocal's error for every window below 5,935,198; the
+    # first one past it is where the error outgrows it and the alpha form warms one bar later.
+    assert nb.ema_params(None, 2.0 / 5935198.0)[1] == 5935197
+    assert nb.ema_params(None, 2.0 / 5935199.0)[1] == 5935199
     with pytest.raises(ValueError, match="exactly one of 'window' or 'alpha'"):
         nb.ema_params(20, 0.06)
     with pytest.raises(ValueError, match="exactly one of 'window' or 'alpha'"):
         nb.ema_params(None, None)
+
+
+def test_ema_params_refuses_a_span_past_the_bar_count_ceiling():
+    # Defense in depth for a caller reaching the kernels around the schema: alpha = 1e-19 implied
+    # a 2e19-bar warmup (past 2**64, an integer no machine type holds: a numba TypingError) and
+    # 5e-324 an infinite one (an OverflowError out of math.ceil), while a span just past the
+    # ceiling (window 2**31, the alpha one ulp under the floor) came back and ran all warmup —
+    # as any span short of 2**64 could (from 2**63 on only until the kernel's signed
+    # specialization existed); every one is now the same ValueError naming the EW domain (ema and
+    # zscore-ema share the pair).
+    assert (MAX_BAR_COUNT_PARAM, MIN_EW_ALPHA) == (2**31 - 1, 2.0**-30)
+    for alpha in (1e-19, 5e-324, 0.0, math.nan, math.nextafter(2.0**-30, 0.0)):
+        with pytest.raises(ValueError, match=r"^EW alpha .* alpha >= MIN_EW_ALPHA"):
+            nb.ema_params(None, alpha)
+    for window in (2**31, 10**20):
+        with pytest.raises(ValueError, match=r"^EW window \d+ exceeds the bar-count ceiling"):
+            nb.ema_params(window, None)
+    # The floor IS the ceiling: alpha = 2**-30 warms exactly 2**31 − 1 bars, the window form's own
+    # pair at window = 2**31 − 1, bit for bit.
+    assert nb.ema_params(None, 2.0**-30) == (2.0**-30, 2**31 - 1)
+    assert nb.ema_params(2**31 - 1, None) == (2.0**-30, 2**31 - 1)
+    assert nb.ema_params(None, math.nextafter(2.0**-30, 1.0))[1] == 2**31 - 1
+    # Within the ceiling but longer than the series: every bar is warmup, nothing is emitted.
+    arr = _rand(50, seed=3)
+    assert np.isnan(nb.ema_1d(arr, *nb.ema_params(None, 2.0**-30))).all()
+    assert np.isnan(nb.zscore_ema_1d(arr, *nb.ema_params(2**31 - 1, None))).all()
+
+
+def test_ema_params_refuses_a_window_that_is_not_a_bar_count():
+    # The DSL types every EW window PosInt / Ge2Int; a library caller around it got a decay
+    # outside (0, 1] (0 → alpha 2.0, -5 → -0.5, read as NaN by the kernel guard), a division by
+    # zero (-1), an integer the kernel cannot take (-10**20, an OverflowError), a bare
+    # int-conversion error (NaN, -inf), or a silent truncation (2.5 → alpha 2/3.5 with a 2-bar
+    # warmup). Each is now its own ValueError, distinct from the over-ceiling one.
+    for window in (0, -1, -5, -(10**20), 2.5, np.float64(2.5), math.nan, -math.inf):
+        with pytest.raises(ValueError, match=r"^EW window \S+ is not a bar count"):
+            nb.ema_params(window, None)
+    # A whole bar count of at least one keeps its pair, a numpy integer included.
+    assert nb.ema_params(1, None) == (1.0, 1)
+    assert nb.ema_params(np.int64(20), None) == (2.0 / 21.0, 20)
+    # The alpha form's out-of-domain decays are unchanged: warmup 1, NaN from the kernel guard.
+    arr = _rand(20, seed=4)
+    for alpha in (-0.5, 1.5, math.inf):
+        a, warm = nb.ema_params(None, alpha)
+        assert warm == 1, alpha
+        assert np.isnan(nb.ema_1d(arr, a, warm)).all(), alpha
+        assert np.isnan(nb.zscore_ema_1d(arr, a, warm)).all(), alpha
 
 
 def test_ema_alpha_form_is_bit_exact_with_window_form():

@@ -35,6 +35,7 @@ import numpy.typing as npt
 from numba import njit
 from numpy.lib.stride_tricks import sliding_window_view
 
+from seikan.constants import MAX_BAR_COUNT_PARAM, MIN_EW_ALPHA
 from seikan.numeric import log_ratio_array
 
 # =============================================================================
@@ -718,16 +719,61 @@ def ema_params(window: int | None, alpha: float | None) -> tuple[float, int]:
 
     ``window`` → ``(2/(window+1), window)`` — the classic span form. ``alpha`` →
     ``(alpha, max(1, ceil(2/alpha − 1)))`` — the equivalent span, so ``alpha = 2/(w+1)``
-    reproduces warmup ``w`` exactly (rounded to 9 places before the ceiling, so the float
-    reciprocal cannot land one bar late); RiskMetrics 0.06 warms 33 observations. Wilder's 1/N
+    reproduces warmup ``w`` exactly for every ``w`` below 5,935,198 (rounded to 9 places before
+    the ceiling, so the float reciprocal cannot land one bar late); past that the reciprocal's
+    error, which grows with ``w``, outgrows the 9-place rounding and the alpha form can warm ONE
+    bar later than the window form (the same ``alpha``, so the same values wherever both emit).
+    The ceiling's own pair is exact — ``MIN_EW_ALPHA`` is a power of two, so ``alpha = 2**-30``
+    IS ``window = MAX_BAR_COUNT_PARAM``. RiskMetrics 0.06 warms 33 observations. Wilder's 1/N
     smoother is ``alpha = 1/N`` with THIS seed (the first finite value), not an SMA seed.
+
+    The span is a bar count, held to ``MAX_BAR_COUNT_PARAM`` like every other: a span past it —
+    a window over the ceiling, a positive alpha below ``MIN_EW_ALPHA`` (``1e-19`` implies a
+    2e19-bar warmup), an alpha whose span is not finite (``5e-324``, ``0``, NaN) — raises
+    ``ValueError`` here, naming the domain. One refusal for the whole range: a span short of 2**64
+    used to come back and run all warmup (from 2**63 on numba typed it unsigned, so it crashed
+    instead — "int too big to convert" — wherever the same kernel already held its signed
+    specialization in the process: the outcome hung on evaluation order), a longer one reached a
+    kernel as an integer no machine type holds (a numba ``TypingError`` / ``OverflowError``), and
+    a non-finite one failed inside ``math.ceil`` (or divided by zero at 0). A window that is no
+    bar count at all — below 1, or fractional — raises its own ``ValueError``: ``0`` and the
+    negatives made ``2/(window+1)`` a decay outside ``(0, 1]`` (``-1`` divided by zero,
+    ``-10**20`` reached the kernel as an integer it cannot take) and ``2.5`` was truncated to a
+    2-bar warmup its own decay does not imply. The DSL refuses the same values at parse
+    (``dsl.nodes``: every EW window is a ``PosInt`` / ``Ge2Int``, shared axes and sweep levels
+    re-validated through them); this is defense in depth for a library caller reaching the kernels
+    around the schema (the kernels' own ``0 < alpha <= 1`` guard still answers an alpha outside it
+    — negative, above 1, infinite, warmup 1 here — with NaN). A span within the ceiling but longer
+    than the series is legal and keeps the ordinary outcome: every bar is warmup and the kernel
+    never emits.
     """
     if (window is None) == (alpha is None):
         raise ValueError("ema takes exactly one of 'window' or 'alpha'")
     if window is not None:
+        if window > MAX_BAR_COUNT_PARAM:
+            raise ValueError(
+                f"EW window {window} exceeds the bar-count ceiling MAX_BAR_COUNT_PARAM = "
+                f"{MAX_BAR_COUNT_PARAM}"
+            )
+        # ``>= 1`` first: NaN and -inf fail it, so ``int()`` only ever sees a finite value.
+        if not (window >= 1 and window == int(window)):
+            raise ValueError(
+                f"EW window {window} is not a bar count: the span form takes a whole number of "
+                "bars, at least 1"
+            )
         return 2.0 / (window + 1.0), int(window)
     a = float(alpha)  # type: ignore[arg-type]  # narrowed by the xor above
-    return a, max(1, math.ceil(round(2.0 / a - 1.0, 9)))
+    # Python float division never overflows to an exception (``2.0 / 5e-324 == inf``); only an
+    # exact zero raises, so it is mapped onto the infinite span it denotes.
+    span = round(2.0 / a - 1.0, 9) if a != 0.0 else math.inf
+    if not (math.isfinite(span) and span <= MAX_BAR_COUNT_PARAM):
+        raise ValueError(
+            f"EW alpha {a!r} implies an equivalent span 2/alpha − 1 of {span!r} bars, "
+            f"past the bar-count ceiling: the span must be finite and at most "
+            f"MAX_BAR_COUNT_PARAM = {MAX_BAR_COUNT_PARAM}, i.e. alpha >= MIN_EW_ALPHA = "
+            f"{MIN_EW_ALPHA!r} (2**-30)"
+        )
+    return a, max(1, math.ceil(span))
 
 
 #: The EW z-score's recurrence (``zscore_ema_1d``) runs in a FRAME lifted by ``2**_LIFT`` — at most

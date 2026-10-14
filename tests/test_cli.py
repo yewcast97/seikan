@@ -1620,9 +1620,12 @@ def test_run_bad_data_exits_2_with_report(tmp_path, capsys):
     assert not out.exists()  # a refused run vouches for nothing
 
 
-def test_run_report_insufficient_bars_exits_2(tmp_path, capsys):
+@pytest.mark.parametrize("horizon", [20, 2**31 - 1])
+def test_run_report_insufficient_bars_exits_2(tmp_path, capsys, horizon):
+    # 2**31 − 1 is the bar-count ceiling itself: a legal horizon (refused at parse only past it,
+    # exit 3) that no index closes — the same data refusal as any too-long horizon, never exit 4.
     px = _write_ohlcv(tmp_path / "short.csv", n=6)
-    thesis = _write_thesis(tmp_path / "t.json", horizon=20)
+    thesis = _write_thesis(tmp_path / "t.json", horizon=horizon)
     code, doc = _run(
         capsys, ["run", str(thesis), *_target(px), "--report-out", str(tmp_path / "r.json")]
     )
@@ -3170,6 +3173,7 @@ def _shared_axis_dsl(axes):
     "axes",
     [
         {"N": [0.5, 1.5]},  # a float axis into an int window: the type-fit refusal
+        {"N": [20, 10**20]},  # a value past the bar-count ceiling: the same refusal
         {"N": [20, 60], "M": [1, 2]},  # an unreferenced axis
     ],
 )

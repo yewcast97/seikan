@@ -515,7 +515,9 @@ class Thesis(_Strict):
                 "the dsl_hash without changing the measurement; remove it or reference it"
             )
         # Type-fit by SHALLOW re-validation, per shared site, per axis value: re-runs the field
-        # constraint (PosInt / Ge2 / Ge3 / NonNeg / FiniteFloat / UnitFloat) AND the node's own
+        # constraint (PosInt / Ge2 / Ge3 / NonNeg / FiniteFloat / UnitFloat — the bar-count
+        # ceiling and the EW alpha floor included, so an axis value no kernel can take refuses
+        # here exactly as the same literal would in the param itself) AND the node's own
         # model validators (so ``rolling``'s min_count floor is checked against every value)
         # while reusing the child instances by identity. Cost O(ref sites × axis length),
         # bounded by the 64-cell cap.

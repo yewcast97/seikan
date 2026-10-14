@@ -298,6 +298,67 @@ def test_non_finite_json_literal_exits_3(golden, capsys):
     assert code == 3 and doc["error"]["type"] == "dsl_invalid"
 
 
+def _ema_threshold(**param) -> dict:
+    dsl = _dsl()
+    dsl["entry"]["right"] = {"type": "ema", "input": {"type": "field", "column": "close"}, **param}
+    return dsl
+
+
+def _first_true_cooldown(cooldown: int) -> dict:
+    dsl = _dsl()
+    dsl["entry"] = {"type": "first_true", "cooldown": cooldown, "condition": dsl["entry"]}
+    return dsl
+
+
+@pytest.mark.parametrize(
+    "dsl",
+    [
+        _ema_threshold(alpha=1e-19),
+        _ema_threshold(alpha=5e-324),
+        _ema_threshold(window=10**20),
+        _first_true_cooldown(10**20),
+        _dsl(horizon=10**20),
+        _ema_threshold(alpha=9e-10),
+        _ema_threshold(window=2**31),
+        _first_true_cooldown(2**31),
+        _dsl(horizon=2**31),
+        _ema_threshold(window=[20, 2**63]),
+    ],
+    ids=[
+        "alpha-1e-19",
+        "alpha-5e-324",
+        "window-1e20",
+        "cooldown-1e20",
+        "horizon-1e20",
+        "alpha-below-floor",
+        "window-2**31",
+        "cooldown-2**31",
+        "horizon-2**31",
+        "window-sweep-20-then-2**63",
+    ],
+)
+def test_unexecutable_param_exits_3(golden, capsys, dsl):
+    """A parameter outside the executable domain — an EW warmup or a window, cooldown or horizon
+    past the 2**31 − 1 bar-count ceiling — is invalid input, refused at parse. The first four used
+    to validate and crash (exit 4, the internal-bug tier, from caller input): the 2e19-bar span
+    alpha 1e-19 implies and the 10**20 bars are integers past 2**64, which no machine type a numba
+    kernel takes holds, and 5e-324 implies an infinite span ``math.ceil`` cannot convert. Just past
+    the ceiling they used to RUN — the alpha (9e-10, under the 2**-30 floor) and the window all
+    warmup, the cooldown firing its first edge into a measured report — and the horizon reached the
+    data-sufficiency check (exit 2) as if the data were short. Between 2**63 and 2**64 the outcome
+    hung on evaluation order: numba typed such a value unsigned, so a 2**63 window ran all warmup
+    where it compiled the kernel first and crashed ("int too big to convert") once the signed kernel
+    existed — as it does after the 20 level of this sweep. One refusal now covers the whole range,
+    wherever the machine limit lies."""
+    code, doc = _run(
+        capsys,
+        golden,
+        ["run", str(_write_thesis(golden / "x.json", dsl))],
+        {"target": golden / "px.csv"},
+    )
+    assert code == 3 and doc["error"]["type"] == "dsl_invalid"
+
+
 def test_reserved_feature_name_exits_3(golden, capsys):
     px = _write_px(golden / "px7.csv", _planted_dip_px(N_BARS, 5, 9))
     dsl = _dsl(features={"ret": {"type": "field", "column": "close"}})

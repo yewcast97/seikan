@@ -796,7 +796,14 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   refuses at parse (last-key-wins made the effective document parser-dependent), a lag that
   parses to NaT refuses (it silently degraded a declared publication delay to zero — the
   look-ahead direction), and the public API (`compile_thesis`/`list_entries`) revalidates a
-  private copy at the boundary because freezing is shallow.
+  private copy at the boundary because freezing is shallow. The schema's domain is the
+  EXECUTABLE domain: every bar-count parameter (windows, periods, `cooldown`, `min_count`,
+  `horizon`, shared-axis values read by them — and `min_valid`, a member count sharing their
+  integer type) is at most `MAX_BAR_COUNT_PARAM` = 2^31 − 1 and an EW `alpha` at least
+  `MIN_EW_ALPHA` = 2^-30 (its warmup span is then within the same ceiling), so an ema
+  `window: 10**20` or `alpha: 1e-19` refuses at parse (exit 3) instead of crashing a numba
+  kernel (exit 4); `nb.ema_params` re-refuses an over-ceiling span, and a window that is no
+  bar count (below 1, fractional), with a `ValueError` for library callers.
 - **One spelling per meaning (canonical identity).** `params.outcome` is non-optional with a
   default factory (omitted ≡ `{}` ≡ the spelled-out default — one identity; explicit `null`
   refuses); `params.features` refuses the empty dict; a scalar constant refuses a `name` (the

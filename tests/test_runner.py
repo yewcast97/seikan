@@ -5996,6 +5996,67 @@ def test_ema_riskmetrics_alpha_end_to_end_known_answer(tmp_path):
             assert got[i] == pytest.approx(e)
 
 
+_CEILING = 2**31 - 1  # constants.MAX_BAR_COUNT_PARAM; its alpha twin is 2**-30
+_UP = {
+    "type": "threshold",
+    "left": {"type": "field"},
+    "op": ">",
+    "right": {"type": "constant", "value": 1.5},
+}
+
+
+def _over_close(node: dict) -> dict:
+    return {"type": "threshold", "left": {"type": "field"}, "op": ">", "right": node}
+
+
+@pytest.mark.parametrize(
+    ("entry", "firing_bars"),
+    [
+        (_over_close({"type": "ema", "input": {"type": "field"}, "alpha": 2.0**-30}), []),
+        (
+            _over_close(
+                {
+                    "type": "zscore",
+                    "input": {"type": "field"},
+                    "alpha": 2.0**-30,
+                    "mean_type": "ema",
+                }
+            ),
+            [],
+        ),
+        (_over_close({"type": "ema", "input": {"type": "field"}, "window": _CEILING}), []),
+        (
+            _over_close({"type": "bars_since_extremum", "extremum": "max", "window": _CEILING}),
+            [],
+        ),
+        ({"type": "rolling", "window": _CEILING, "agg": "any", "condition": _UP}, []),
+        ({"type": "lag", "periods": _CEILING, "condition": _UP}, []),
+        # the first false→true edge fires, and a cooldown no sample can outlast holds every other
+        ({"type": "first_true", "cooldown": _CEILING, "condition": _UP}, [1]),
+    ],
+    ids=["ema-alpha", "zscore-alpha", "ema-window", "bse-window", "rolling", "lag", "first_true"],
+)
+def test_params_at_the_executable_ceiling_compile_and_list(tmp_path, entry, firing_bars):
+    # The boundary the DSL admits is executable: alpha = 2**-30 (a 2**31 − 1-bar warmup) and
+    # windows / periods / cooldowns of 2**31 − 1 reach their numba and pandas kernels without a
+    # crash. Over a 40-bar sample they keep the ordinary outcome of a parameter longer than the
+    # data — all warmup, zero firings — and the cooldown its exact one.
+    from seikan.api import compile_thesis, list_entries
+
+    closes = [1.0, 2.0] * 20
+    px = _bars(tmp_path / "px.csv", closes)
+    thesis = Thesis.model_validate(
+        {"name": "ceil", "data": {"targets": ["target"]}, "entry": entry, "params": {"horizon": 1}}
+    )
+    md = load(thesis, {"target": px})
+    idx = pd.date_range("2021-01-01", periods=len(closes), freq="1D")
+    (row,) = list_entries(thesis, md).entries
+    assert row["timestamps"] == [idx[b] for b in firing_bars]
+    cell = compile_thesis(thesis, md).summary["cells"][0]
+    assert cell["by_target"]["target"]["n"] == len(firing_bars)
+    assert cell["signal_coverage"]["target"]["n_undefined"] == 0
+
+
 def test_robust_zscore_recipe_fires_on_a_planted_spike_only(tmp_path):
     # every 5-bar window here has a MAD of 1 (no degenerate zero-dispersion window), and the
     # spike at bar 7 is the only bar more than 5 robust sigmas from its window's median

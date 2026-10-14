@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 
 import pytest
 from pydantic import ValidationError
@@ -403,6 +404,28 @@ def test_json_schema_generation_works():
     assert json.dumps(schema)
 
 
+def test_json_schema_states_the_executable_domain():
+    # The bar-count ceiling (2**31 − 1) and the EW alpha floor (2**-30) are field constraints, so
+    # the emitted schema (`seikan schema`'s dsl_json_schema) carries them as maximum / minimum —
+    # scalar and list forms alike — and a caller can see the domain before submitting a thesis.
+    defs = Thesis.model_json_schema()["$defs"]
+    window = defs["EMA"]["properties"]["window"]["anyOf"]
+    assert window[0] == {"exclusiveMinimum": 0, "maximum": 2**31 - 1, "type": "integer"}
+    assert window[1]["items"] == window[0]
+    alpha = defs["EMA"]["properties"]["alpha"]["anyOf"]
+    assert alpha[0] == {"maximum": 1, "minimum": 2.0**-30, "type": "number"}
+    assert alpha[1]["items"] == alpha[0]
+    assert defs["ZScore"]["properties"]["alpha"]["anyOf"][0] == alpha[0]
+    assert defs["FirstTrueCondition"]["properties"]["cooldown"]["anyOf"][0] == {
+        "maximum": 2**31 - 1,
+        "minimum": 0,
+        "type": "integer",
+    }
+    assert defs["BacktestParams"]["properties"]["horizon"]["anyOf"][0]["maximum"] == 2**31 - 1
+    assert defs["RollingCorr"]["properties"]["window"]["anyOf"][0]["maximum"] == 2**31 - 1
+    assert defs["CrossRank"]["properties"]["min_valid"]["maximum"] == 2**31 - 1
+
+
 # ---- multi-target / multi-param / direction (backtest engine) --------------
 
 
@@ -450,6 +473,84 @@ def test_horizon_keeps_positivity_constraint():
     for bad in (0, -1, [5, 0], []):  # scalar gt=0, list elements gt=0, list min_length>=1
         with pytest.raises(ValidationError):
             BacktestParams(horizon=bad)
+
+
+_CEILING = 2**31 - 1  # constants.MAX_BAR_COUNT_PARAM
+
+
+def _as_left(node: dict):
+    return lambda v: _thesis_with_entry_left(node(v))
+
+
+def _as_condition(cond: dict, param: str):
+    return lambda v: _thesis_with_entry({**cond, param: v, "condition": _CLOSE_GT_0})
+
+
+# site → (thesis builder for a bar-count value v, admitted AT the ceiling): every bar-count alias
+# (PosInt, Ge2, Ge3, NonNeg — the horizon included) at each kind of site that declares one.
+_BAR_COUNT_SITES = {
+    "ema.window": (_as_left(lambda v: {"type": "ema", "input": _FIELD_CLOSE, "window": v}), True),
+    "ema.window list": (
+        _as_left(lambda v: {"type": "ema", "input": _FIELD_CLOSE, "window": [5, v]}),
+        True,
+    ),
+    "zscore.window": (
+        _as_left(lambda v: {"type": "zscore", "input": _FIELD_CLOSE, "window": v}),
+        True,
+    ),
+    "percentile.window": (
+        _as_left(lambda v: {"type": "percentile", "input": _FIELD_CLOSE, "window": v}),
+        True,
+    ),
+    "drawdown.window": (_as_left(lambda v: {"type": "drawdown", "window": v}), True),
+    "change.periods": (
+        _as_left(lambda v: {"type": "change", "input": _FIELD_CLOSE, "periods": v}),
+        True,
+    ),
+    "rolling_corr.window": (
+        _as_left(
+            lambda v: {
+                "type": "rolling_corr",
+                "left": _FIELD_CLOSE,
+                "right": _FIELD_CLOSE,
+                "window": v,
+            }
+        ),
+        True,
+    ),
+    "rolling.window": (_as_condition({"type": "rolling", "agg": "any"}, "window"), True),
+    "rolling.min_count": (
+        _as_condition({"type": "rolling", "agg": "count", "window": _CEILING}, "min_count"),
+        True,
+    ),
+    "first_true.cooldown": (_as_condition({"type": "first_true"}, "cooldown"), True),
+    "lag.periods": (_as_condition({"type": "lag"}, "periods"), True),
+    "params.horizon": (
+        lambda v: {**_thesis_with_entry(_CLOSE_GT_0), "params": {"horizon": v}},
+        True,
+    ),
+    # a MEMBER count, capped only because it shares Ge2Int — and refused AT the ceiling by its own
+    # floor (3 targets declared)
+    "cross_rank.min_valid": (
+        lambda v: _basket_over({"type": "cross_rank", "input": _FIELD_CLOSE, "min_valid": v}),
+        False,
+    ),
+}
+
+
+@pytest.mark.parametrize("site", list(_BAR_COUNT_SITES))
+def test_every_bar_count_param_is_capped_at_parse(site):
+    # The schema's domain is the EXECUTABLE domain. 10**20 used to validate and then, as an ema /
+    # zscore-ema / bars_since_extremum window, a cooldown or a rolling.window, reach a numba
+    # kernel or a pandas window as an integer no machine type holds — a TypingError /
+    # OverflowError, exit 4 from caller input — and elsewhere run all warmup or meet the data
+    # check (the horizon); anything past 2**31 − 1 now refuses at parse.
+    build, admitted_at_ceiling = _BAR_COUNT_SITES[site]
+    for bad in (_CEILING + 1, 10**20):
+        with pytest.raises(ValidationError, match="less than or equal to 2147483647"):
+            Thesis.model_validate(build(bad))
+    if admitted_at_ceiling:
+        Thesis.model_validate(build(_CEILING))
 
 
 def test_horizon_list_json_roundtrip():
@@ -2739,6 +2840,31 @@ def test_ema_alpha_bounds(alpha):
         Thesis.model_validate(_entry_over({"type": "ema", "input": _FIELD_CLOSE, "alpha": alpha}))
 
 
+@pytest.mark.parametrize("alpha", [1e-19, 5e-324, math.nextafter(2.0**-30, 0.0)])
+def test_ew_alpha_below_its_floor_refuses_at_parse(alpha):
+    # An alpha warms over the span ceil(2/alpha − 1), so a decay below 2**-30 is a warmup past
+    # the bar-count ceiling: 1e-19 (2e19 bars, past 2**64) was an integer no machine type numba
+    # compiles for holds and the subnormal 5e-324 an infinite span math.ceil cannot convert —
+    # both exit 4 from a thesis this schema accepted — while the alpha one ulp under the floor ran
+    # all warmup. Every EW alpha site, scalar or swept, refuses at parse instead.
+    for node in (
+        {"type": "ema", "input": _FIELD_CLOSE, "alpha": alpha},
+        {"type": "ema", "input": _FIELD_CLOSE, "alpha": [0.06, alpha]},
+        {"type": "zscore", "input": _FIELD_CLOSE, "alpha": alpha, "mean_type": "ema"},
+    ):
+        with pytest.raises(ValidationError, match="greater than or equal to"):
+            Thesis.model_validate(_entry_over(node))
+
+
+def test_ew_alpha_floor_itself_is_admitted():
+    # The floor is inclusive: 2**-30 warms exactly 2**31 − 1 bars, the longest legal window.
+    for node in (
+        {"type": "ema", "input": _FIELD_CLOSE, "alpha": 2.0**-30},
+        {"type": "zscore", "input": _FIELD_CLOSE, "alpha": 2.0**-30, "mean_type": "ema"},
+    ):
+        assert Thesis.model_validate(_entry_over(node)).entry.left.alpha == 2.0**-30
+
+
 def test_ema_alpha_sweeps_as_its_own_axis_and_refuses_duplicates():
     from seikan.dsl.traverse import _iter_sweep_axis_names
 
@@ -3055,6 +3181,40 @@ def test_axis_type_fit_ge3_window_refuses_value_2():
         match=r"value 2 does not fit rolling_corr\.window: .*greater than or equal to 3",
     ):
         Thesis.model_validate(_axes_doc(_beta_entry(), {"N": [2, 20]}))
+
+
+def test_axis_type_fit_enforces_the_executable_domain():
+    # The bar-count ceiling and the EW alpha floor live in the field types every axis value is
+    # re-validated through, so a value no kernel can take refuses exactly as the literal would.
+    with pytest.raises(
+        ValidationError,
+        match=r"value 100000000000000000000 does not fit rolling_corr\.window: "
+        r".*less than or equal to 2147483647",
+    ):
+        Thesis.model_validate(_axes_doc(_beta_entry(), {"N": [20, 10**20]}))
+    ema_alpha = {"type": "ema", "input": _CLOSE, "alpha": {"axis": "A"}}
+    with pytest.raises(
+        ValidationError, match=r"value 1e-19 does not fit ema\.alpha: .*greater than or equal to"
+    ):
+        Thesis.model_validate(
+            _axes_doc(
+                {"type": "threshold", "left": ema_alpha, "op": ">", "right": _CLOSE},
+                {"A": [0.06, 1e-19]},
+            )
+        )
+    # A constant is no bar count: the same int axis value is an ordinary threshold there.
+    t = Thesis.model_validate(
+        _axes_doc(
+            {
+                "type": "threshold",
+                "left": _CLOSE,
+                "op": ">",
+                "right": {"type": "constant", "value": _AX},
+            },
+            {"N": [20, 10**20]},
+        )
+    )
+    assert t.axes == {"N": [20, 10**20]}
 
 
 def test_axis_int_list_fits_constant_and_window():

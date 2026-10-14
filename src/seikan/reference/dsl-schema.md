@@ -333,8 +333,12 @@ bit for bit.
 - `ema` (input, exactly one of `window` / `alpha`) — exponentially weighted mean of any Series,
   seeded at the first finite value, NaN-skipping. `window` sets `alpha = 2/(window+1)` with a
   `window`-observation warmup (the classic span form); `alpha` states the decay directly
-  (`0 < alpha ≤ 1`, e.g. RiskMetrics `0.06`) with warmup `ceil(2/alpha − 1)` observations, so
-  the two forms agree bit-exactly where `alpha = 2/(window+1)`. Wilder's 1/N smoother is
+  (`2^-30 ≤ alpha ≤ 1`, e.g. RiskMetrics `0.06`) with warmup `ceil(2/alpha − 1)` observations, so
+  the two forms agree bit-exactly where `alpha = 2/(window+1)` for every window below 5,935,198
+  bars (past it the float reciprocal's error can warm the alpha form one bar later, same values).
+  The floor `2^-30` (`9.313225746154785e-10`) is the bar-count ceiling restated — a power of two,
+  its warmup is exactly `2^31 − 1` bars, the longest any window may declare (see "All windows …
+  are bar counts" below) — and a smaller alpha refuses at parse (exit 3). Wilder's 1/N smoother is
   `alpha = 1/N` with THIS seed (not an SMA seed); `alpha = 1` is the input itself. A list sweeps
   as `ema_window` / `ema_alpha` by which field is set. Rendered `ema(x,20)` / `ema(x,a=0.06)`.
 - `zscore` (input, exactly one of `window` / `alpha`, mean_type `"sma"|"ema"` default `"sma"`)
@@ -865,7 +869,17 @@ an eligibility filter bolted on (which fires nobody when every top-ranked name i
    within each sector at each bar; `where` and `group` compose.
 
 All windows (`horizon`, `rolling.window`, transform windows) are **bar counts**, not calendar
-months. Alternative-data feeds are external CSV files, not DSL builtins.
+months. Every bar-count parameter — a transform `window`/`periods`, `rolling.window`/`min_count`,
+`first_true.cooldown`, `lag.periods`, `params.horizon`, and every shared-axis value one of them
+reads — is at most `2^31 − 1` (`2147483647`, the JSON Schema's `maximum`); a larger one refuses
+at parse (exit 3) whatever the data — no series approaches it, and far enough past it no machine
+integer a kernel takes can hold it. A cross node's `min_valid` carries the same `maximum`
+because it shares the integer type, but it is a member count, refused long before by its own
+floor (no more than the declared targets). Within the ceiling a parameter longer than the data
+is legal and keeps its ordinary outcome: a window, `periods` or lag is all warmup and never
+emits, a `cooldown` fires its first edge and holds every later one, and a horizon the common
+index cannot close refuses a measuring run as insufficient data (exit 2). Alternative-data feeds
+are external CSV files, not DSL builtins.
 
 ## BacktestParams (set `horizon` explicitly)
 

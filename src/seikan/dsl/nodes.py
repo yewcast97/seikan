@@ -17,7 +17,9 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, model_validator
 from pydantic import Field as PField
 
 from seikan.constants import (
+    MAX_BAR_COUNT_PARAM,
     MAX_DECLARED_GRID,
+    MIN_EW_ALPHA,
 )
 
 if TYPE_CHECKING:
@@ -95,19 +97,27 @@ class AxisRef(_Strict):
         return self
 
 
-PosInt = Annotated[int, PField(gt=0)]
+# The bar-count aliases. Every one is capped at ``MAX_BAR_COUNT_PARAM`` (2**31 − 1): the schema's
+# domain is the EXECUTABLE domain, so a value no kernel can take (an ema ``window: 10**20``
+# reached numba as an integer no machine type holds — exit 4) refuses here, at parse, exit 3.
+# Within the ceiling a parameter longer than the sample is legal and keeps its ordinary outcome:
+# a window / periods / lag is all warmup and never emits, a cooldown holds every re-fire after its
+# first edge, and a horizon the index cannot close refuses a measuring run as insufficient data
+# (exit 2). ``Ge2Int`` also types the cross nodes' ``min_valid``, a MEMBER count capped only by
+# sharing the alias (its own floor, no more than the declared targets, binds first).
+PosInt = Annotated[int, PField(gt=0, le=MAX_BAR_COUNT_PARAM)]
 
 PosIntParam = PosInt | Annotated[list[PosInt], *_Sweep] | AxisRef
 
-Ge2Int = Annotated[int, PField(ge=2)]
+Ge2Int = Annotated[int, PField(ge=2, le=MAX_BAR_COUNT_PARAM)]
 
 Ge2IntParam = Ge2Int | Annotated[list[Ge2Int], *_Sweep] | AxisRef
 
-Ge3Int = Annotated[int, PField(ge=3)]
+Ge3Int = Annotated[int, PField(ge=3, le=MAX_BAR_COUNT_PARAM)]
 
 Ge3IntParam = Ge3Int | Annotated[list[Ge3Int], *_Sweep] | AxisRef
 
-NonNegInt = Annotated[int, PField(ge=0)]
+NonNegInt = Annotated[int, PField(ge=0, le=MAX_BAR_COUNT_PARAM)]
 
 NonNegIntParam = NonNegInt | Annotated[list[NonNegInt], *_Sweep] | AxisRef
 
@@ -125,14 +135,22 @@ FiniteFloat = Annotated[float, PField(allow_inf_nan=False)]
 
 FloatParam = FiniteFloat | Annotated[list[FiniteFloat], *_Sweep] | AxisRef
 
-#: An EW decay factor stated directly: ``0 < alpha <= 1`` (RiskMetrics 0.06; Wilder's 1/N).
-UnitFloat = Annotated[float, PField(gt=0, le=1, allow_inf_nan=False)]
+#: An EW decay factor stated directly — the ``ema`` / ``zscore`` ``alpha`` and nothing else:
+#: ``MIN_EW_ALPHA <= alpha <= 1`` (RiskMetrics 0.06; Wilder's 1/N). The floor (2**-30) is the
+#: bar-count ceiling restated: ``alpha`` warms over the equivalent span ``ceil(2/alpha − 1)``, so a
+#: smaller decay is a warmup past it (it ran all warmup down to just above ~1.08e-19, ``2**-63``, a
+#: span of 2**64 — at or below ``2**-62`` only while no signed specialization of the kernel came
+#: first; from ``2**-63`` down no machine integer holds the span: ``1e-19`` was a numba
+#: ``TypingError``, ``5e-324`` an infinite span — both exit 4).
+UnitFloat = Annotated[float, PField(ge=MIN_EW_ALPHA, le=1, allow_inf_nan=False)]
 
 UnitFloatParam = UnitFloat | Annotated[list[UnitFloat], *_Sweep] | AxisRef
 
 #: The values a shared axis declares: an int list or a float list (distinct, bounded like every
 #: sweep). Unconstrained on the int side — the constraints are checked where the axis is READ,
-#: against each referencing param's own field type (``Thesis._check_shared_axes``).
+#: against each referencing param's own field type (``Thesis._check_shared_axes``), the bar-count
+#: ceiling included: an int axis may also feed a ``constant.value``, where a value past it is an
+#: ordinary threshold.
 AxisValues = Annotated[list[int], *_Sweep] | Annotated[list[FiniteFloat], *_Sweep]
 
 #: The plain shape the constrained param aliases above erase to: a numeric node param as the
@@ -207,10 +225,13 @@ class EMA(_Strict):
     # Exponentially weighted mean of ``input``, seeded at the first finite value, NaN-skipping.
     # EXACTLY ONE of ``window`` / ``alpha``: ``window`` sets ``alpha = 2/(window+1)`` with a
     # ``window``-observation warmup (the classic span form); ``alpha`` states the decay directly
-    # (``0 < alpha <= 1`` — RiskMetrics 0.06; Wilder's 1/N smoother is ``alpha = 1/N`` with THIS
-    # seed, not an SMA seed) with warmup ``ceil(2/alpha − 1)`` observations, so the two forms
-    # agree bit-exactly where ``alpha = 2/(window+1)``. ``alpha = 1`` is the input itself. A list
-    # sweeps as ``ema_window`` / ``ema_alpha`` by which field is set.
+    # (``2**-30 <= alpha <= 1`` — RiskMetrics 0.06; Wilder's 1/N smoother is ``alpha = 1/N`` with
+    # THIS seed, not an SMA seed) with warmup ``ceil(2/alpha − 1)`` observations, so the two forms
+    # agree bit-exactly where ``alpha = 2/(window+1)`` for every window below 5,935,198 bars (past
+    # it the float reciprocal's error outgrows ``nb.ema_params``' rounding and the alpha form can
+    # warm one bar later, same values); the alpha floor, a power of two, is exactly the window
+    # ceiling (``MAX_BAR_COUNT_PARAM``). ``alpha = 1`` is the input itself. A list sweeps as
+    # ``ema_window`` / ``ema_alpha`` by which field is set.
     type: Literal["ema"] = "ema"
     input: Series
     window: PosIntParam | None = None
@@ -228,8 +249,8 @@ def _require_window_xor_alpha(kind: str, window: object, alpha: object) -> None:
         raise ValueError(
             f"{kind} takes exactly one of 'window' or 'alpha'; got {got} — 'window' sets "
             "alpha = 2/(window+1) with a window-bar warmup, 'alpha' states the decay directly "
-            "(0 < alpha <= 1, e.g. RiskMetrics 0.06) with warmup = ceil(2/alpha − 1) bars; both "
-            "are seeded at the first finite value"
+            "(2**-30 <= alpha <= 1, e.g. RiskMetrics 0.06) with warmup = ceil(2/alpha − 1) "
+            "bars; both are seeded at the first finite value"
         )
 
 

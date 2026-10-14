@@ -54,6 +54,36 @@ DEFAULT_FEATURE_NAMES: tuple[str, ...] = ("ret_5", "ret_20", "vol_14")
 #: thresholds, so the engine owes it no report (and no CPU).
 MAX_DECLARED_GRID = 64
 
+#: The ceiling on every BAR-COUNT parameter a thesis declares — a transform ``window`` /
+#: ``periods``, ``rolling.window`` / ``min_count``, ``first_true.cooldown``, ``lag.periods`` and
+#: ``params.horizon`` — enforced by the ``dsl.nodes`` integer aliases at PARSE time (exit 3), shared
+#: axes included (``Thesis._check_shared_axes`` re-validates every value through the same aliases).
+#: A cross node's ``min_valid`` carries it too, only because it shares the ``Ge2Int`` alias: it is a
+#: MEMBER count, and its own floor (no more than the declared targets) binds long before.
+#: Unbounded, a well-typed thesis was not an executable one: an ema ``window: 10**20`` reached a
+#: numba kernel as a Python int no machine integer holds and died in the compiler (a
+#: ``TypingError``, exit 4 — the internal-bug class — from caller input). ``2**31 − 1`` fits every
+#: integer type the kernels and pandas windows compile for (int32 included) with the index
+#: arithmetic the engine adds to it (``t + 1 + h``) still far inside int64, and no series
+#: approaches it. A STRUCTURAL bound like ``MAX_DECLARED_GRID``: a parameter within it but longer
+#: than the sample is legal and keeps its ordinary outcome — a window, ``periods`` or lag is all
+#: warmup and never emits, a cooldown fires its first edge and holds every later one, and a
+#: horizon the common index cannot close refuses a measuring run as insufficient data (exit 2).
+MAX_BAR_COUNT_PARAM = 2**31 - 1
+
+#: The smallest EW decay ``alpha`` the DSL admits (``ema`` / ``zscore``):
+#: ``2 / (MAX_BAR_COUNT_PARAM + 1)``, which is ``2**-30`` exactly, so the equivalent span
+#: ``ceil(2/alpha − 1)`` an alpha warms over (``compiler.nb.ema_params``) is at most
+#: ``MAX_BAR_COUNT_PARAM`` — and ``alpha = MIN_EW_ALPHA`` is the window form at
+#: ``window = MAX_BAR_COUNT_PARAM``, bit for bit. Below it the span passes the ceiling. Above
+#: ~1.08e-19 (``2**-63``, a span of 2**64) the run was all warmup — from ~2.17e-19 (``2**-62``, a
+#: span of 2**63) down only while no signed specialization of the same kernel had been compiled
+#: first in the process, else "int too big to convert" — and at or below it the span was one no
+#: machine integer holds: ``1e-19`` implied a 2e19-bar warmup (a numba ``TypingError``) and the
+#: subnormal ``5e-324`` an infinite one (an ``OverflowError`` out of ``math.ceil``), both exit 4
+#: from a thesis the schema had accepted.
+MIN_EW_ALPHA = 2.0 / (MAX_BAR_COUNT_PARAM + 1)
+
 #: The ceiling on Series operator-nesting depth, enforced by ``dsl.schema.Thesis`` at PARSE time
 #: (exit 3) on both the entry tree and ``params.features``. Counted levels are the transforms
 #: (ema, zscore, percentile, rolling_agg, drawdown, runup, bars_since_extremum, change,
