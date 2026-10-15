@@ -651,6 +651,34 @@ def test_volume_mean_of_an_overflowing_window_is_exact_never_a_zero_ratio(tmp_pa
     assert w7["mean"] == 1.7e308 and w7["last_to_mean"] == 1.0
 
 
+def test_an_all_equal_window_reads_its_own_mean_and_an_exact_zero_std(tmp_path, capsys):
+    # The computed mean of bit-identical values carries its sum's rounding — 21 copies of
+    # 1234.56, summed and divided back, read 1234.5600000000002 — so a held volume's ratio read
+    # 0.9999999999999998, and the direct variance of identical changes was that residue, not
+    # zero: the 63 log changes of 2**0..2**63 (ln 2 each) read a std of 2.238e-16. Constancy is
+    # decided before either is computed; a varying window keeps the direct form's bits.
+    from seikan.describe import _dispersion_block
+
+    path = _write_flat_ohlcv(tmp_path / "v.csv", [10.0 + i for i in range(30)], [1234.56] * 30)
+    code, doc = _run(capsys, ["describe", str(path), "--windows", "21"])
+    assert code == 0
+    w21 = doc["profiles"][0]["volume"]["windows"]["21"]
+    assert w21["mean"] == 1234.56 and w21["last_to_mean"] == 1.0
+    doubling = np.array([2.0**k for k in range(64)])
+    assert float(np.std(np.log(doubling[1:] / doubling[:-1]), ddof=1)) > 0.0  # the residue
+    d63 = _dispersion_block(doubling, 63)
+    assert d63["log"] == 0.0 and d63["pct"] == 0.0 and d63["reason"] is None
+    assert d63["diff"] == float(np.std(np.diff(doubling), ddof=1))
+    # end to end, on levels every parser reads exactly (integers under 2**53): 30 changes of
+    # ln 2 carry the residue too
+    assert float(np.std(np.full(30, math.log(2.0)), ddof=1)) > 0.0
+    y = _write_series(tmp_path / "y.csv", doubling[:31])
+    code, doc = _run(capsys, ["describe", str(y), "--windows", "30"])
+    assert code == 0
+    d30 = _series_profile(doc)["dispersion"]["30"]
+    assert d30["log"] == 0.0 and d30["pct"] == 0.0 and d30["reason"] is None
+
+
 def test_dispersion_diff_std_keeps_its_value_where_its_squares_leave_the_range(tmp_path, capsys):
     # A VARYING series whose squared 1-bar changes leave the double range: past it the std read
     # inf — a null beside finite endpoints, with no reason (2**520, 1e160); below it they lost
