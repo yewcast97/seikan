@@ -309,23 +309,6 @@ def _thresholds_provenance(args: argparse.Namespace) -> dict[str, ThresholdProve
     return prov
 
 
-def _preflight_output(path: str, command: str) -> None:
-    """Refuse an unwritable nominated output path BEFORE the expensive run (exit 3, an
-    invalid-request usage refusal). Non-destructive: an existing file is opened for APPEND and left
-    untouched; a probe that had to create the file removes it again. A MID-run write failure still
-    surfaces as exit 4 — this only preflights the obvious cases (missing directory, unwritable path,
-    a path that is itself a directory)."""
-    p = Path(path)
-    existed = p.exists()
-    try:
-        with p.open("a"):
-            pass
-    except OSError as exc:
-        raise _UsageError(f"output path {path!r} is not writable: {exc}", command) from exc
-    if not existed:
-        p.unlink(missing_ok=True)
-
-
 def _parse_pairs(
     raw: list[str] | None,
     *,
@@ -474,9 +457,68 @@ def _check_nominated_outputs(
             )
 
 
+def _preflight_outputs(
+    nominated: list[tuple[str, str]], thesis_path: str, resolution: dict[str, str]
+) -> None:
+    """Refuse an unwritable nominated output path BEFORE the expensive run (exit 3, an
+    invalid-request usage refusal), and a nomination the FILESYSTEM resolves to the same file as
+    another nomination or as one of the run's inputs.
+
+    :func:`_check_nominated_outputs` decides every collision a path's spelling shows (one path
+    named twice, ``..`` and symlinks resolved); what only the filesystem knows it is asked here.
+    A case-insensitive volume — the default on macOS and Windows — opens ``OUT.json`` as
+    ``out.json``, and an input named ``prices.csv`` as ``PRICES.csv``; a hard link, or a name the
+    volume normalizes (Unicode forms), is the same file under another spelling. So every
+    nomination is opened for APPEND in flag order (an existing file is left untouched), and two
+    paths are one file when the filesystem reports one (device, inode) for both
+    (``os.path.samestat``) — no spelling heuristic, the volume's own answer.
+
+    Non-destructive: every file the probe had to create is removed again, on every exit. A
+    MID-run write failure still surfaces as exit 4 — this only preflights the obvious cases
+    (missing directory, unwritable path, a path that is itself a directory)."""
+    created: list[Path] = []
+    try:
+        probed: list[tuple[str, str, os.stat_result]] = []
+        for flag, raw in nominated:
+            p = Path(raw)
+            existed = p.exists()
+            try:
+                with p.open("a"):
+                    pass
+                st = p.stat()
+            except OSError as exc:
+                raise _UsageError(f"output path {raw!r} is not writable: {exc}", "run") from exc
+            if not existed:
+                created.append(p)
+            for other_flag, other_raw, other_st in probed:
+                if os.path.samestat(st, other_st):
+                    raise _UsageError(
+                        f"{flag} and {other_flag} name one file ({raw!r} and {other_raw!r}: the "
+                        "filesystem resolves both spellings to the same file) — each output "
+                        "needs its own path, or the later write silently destroys the earlier one",
+                        "run",
+                    )
+            probed.append((flag, raw, st))
+        for path, field in _declared_input_paths(thesis_path, resolution).items():
+            try:
+                ist = path.stat()
+            except OSError:
+                continue  # a missing input is the loader's refusal, not an output collision
+            for flag, raw, st in probed:
+                if os.path.samestat(st, ist):
+                    raise _UsageError(
+                        f"{flag} would overwrite {field} ({raw!r}: the filesystem resolves both "
+                        "spellings to the same file) — a run never writes over its own input",
+                        "run",
+                    )
+    finally:
+        for p in created:
+            p.unlink(missing_ok=True)
+
+
 class _ThesisFileNotFoundError(FileNotFoundError):
     """A missing thesis file → exit 3 (invalid request). A missing *output* directory is caught
-    separately by ``_preflight_output`` (also exit 3), so an ordinary ``FileNotFoundError`` never
+    separately by ``_preflight_outputs`` (also exit 3), so an ordinary ``FileNotFoundError`` never
     reaches the exit-4 internal handler."""
 
 
@@ -607,7 +649,8 @@ def _validate_request(
     nominated: list[tuple[str, str]],
 ) -> tuple[DataFiles, GateThresholds]:
     """Everything exit-3 refusable about the request, in the documented order: key resolution →
-    thresholds → the output-set checks → per-path writability. All before a byte of data."""
+    thresholds → the output-set checks → per-path writability and filesystem aliasing. All
+    before a byte of data."""
     # The DSL names its series; this invocation locates them — which file answers each key, and
     # which column of that file. Resolution refuses a mapping that does not answer the thesis's
     # declared keys EXACTLY, and a column bound to a key the thesis never declares (or to
@@ -625,11 +668,11 @@ def _validate_request(
     thresholds = _thresholds(args)
     # Refuse an unusable path BEFORE the O(grid × length) run, not after it — every nominated path,
     # in flag order, so a caller learns about all-but-the-first without paying for a run twice.
-    # The set is checked as a SET first (empty, colliding, or aiming at the run's own input), then
-    # each path individually for writability.
+    # The set is checked as a SET first by spelling (empty, colliding, or aiming at the run's own
+    # input), then on the filesystem: each path for writability, and every pair the volume
+    # resolves to one file whatever their spellings.
     _check_nominated_outputs(nominated, args.thesis, mapping)
-    for _flag, path in nominated:
-        _preflight_output(path, "run")
+    _preflight_outputs(nominated, args.thesis, mapping)
 
     return files, thresholds
 

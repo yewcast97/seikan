@@ -150,7 +150,10 @@ seikan has not looked at yet. The same refusal covers every nomination that cann
 GIVEN: an empty path, two flags naming ONE file (the writes are sequential, so the later would
 destroy the earlier while the report went on enumerating both), and an output aimed at one of the
 RUN's own inputs — the thesis document itself, or any CSV a `--data` pair pointed a key at
-(resolved, so a different spelling of the same file does not slip through).
+(resolved, so a different spelling of the same file does not slip through: by spelling first —
+`..`, symlinks — and then by the filesystem itself, which reports one device and inode for two
+paths that are one file, so neither `PRICES.csv` for `prices.csv` on a case-insensitive volume
+nor a hard link gets past it).
 That last one is the loader's refuse-never-mutate rule reaching the write side: an engine that will
 not clamp an OHLC violation does not get to overwrite the evidence it is measuring and then stamp a
 `data_digests` sha256 for bytes it deleted. Compute is likewise LAZY, matched to what was nominated:
@@ -879,7 +882,8 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
 
 - `cli.py` / `__main__.py` — argparse CLI, the five subcommands (`run`, `hash`, `check-data`,
   `describe`, `schema`),
-  tiered exit codes, the caller-nominated outputs (`_preflight_output` refuses an unusable path
+  tiered exit codes, the caller-nominated outputs (`_preflight_outputs` refuses an unusable path,
+  and two nominations — or a nomination and an input — the filesystem resolves to one file,
   before the run, not after it) and the JSON report assembly (the honesty invariant lives here: the
   summary is embedded before the checklist runs, and `_cmd_run` returns `EXIT_OK` unconditionally,
   so the only thing a checklist result moves is the content of `gate`).

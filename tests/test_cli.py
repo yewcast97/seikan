@@ -1172,6 +1172,85 @@ def test_run_refuses_an_output_that_would_overwrite_the_benchmark(tmp_path, caps
     assert bench.read_bytes() == before
 
 
+def _case_insensitive(tmp_path: Path) -> bool:
+    """Whether ``tmp_path``'s volume folds case (the default on macOS and Windows)."""
+    probe = tmp_path / "case_probe"
+    probe.touch()
+    try:
+        return (tmp_path / "CASE_PROBE").exists()
+    finally:
+        probe.unlink()
+
+
+def test_run_refuses_an_output_the_filesystem_resolves_to_an_input(tmp_path, capsys):
+    # The spelling check resolved `..` and symlinks, but a case-insensitive volume opens PX.csv
+    # as px.csv — a different string, the same file — and the run wrote over the CSV it measured.
+    # The filesystem decides now: one (device, inode) for both paths is one file. A volume that
+    # keeps case apart holds two files, and the run goes ahead.
+    px = _write_ohlcv(tmp_path / "px.csv")
+    thesis = _write_thesis(tmp_path / "t.json")
+    before = px.read_bytes()
+    alias = tmp_path / "PX.csv"
+    if _case_insensitive(tmp_path):
+        code, doc = _run(capsys, ["run", str(thesis), *_target(px), "--report-out", str(alias)])
+        assert code == 3 and doc["error"]["type"] == "usage"
+        assert "--data target" in doc["error"]["message"]
+        assert "filesystem resolves both spellings" in doc["error"]["message"]
+    else:
+        assert main(["run", str(thesis), *_target(px), "--report-out", str(alias)]) == 0
+        assert alias.read_bytes() != before
+    assert px.read_bytes() == before
+    # a hard link is the same file under any spelling, on every POSIX volume
+    link = tmp_path / "linked.csv"
+    link.hardlink_to(px)
+    code, doc = _run(capsys, ["run", str(thesis), *_target(px), "--trades-out", str(link)])
+    assert code == 3 and "--data target" in doc["error"]["message"]
+    assert px.read_bytes() == before
+    # ... and so is the thesis file
+    tlink = tmp_path / "t_link.json"
+    tlink.hardlink_to(thesis)
+    code, doc = _run(capsys, ["run", str(thesis), *_target(px), "--report-out", str(tlink)])
+    assert code == 3 and "thesis file" in doc["error"]["message"]
+
+
+def test_run_refuses_two_outputs_the_filesystem_resolves_to_one_file(tmp_path, capsys):
+    # out.json and OUT.json are one file on a case-insensitive volume: the later write destroyed
+    # the earlier output while `outputs` went on enumerating both. Refused before any compute,
+    # and the probe removes every file it had to create.
+    px = _write_ohlcv(tmp_path / "px.csv")
+    thesis = _write_thesis(tmp_path / "t.json")
+    out, alias = tmp_path / "out.json", tmp_path / "OUT.json"
+    argv = ["run", str(thesis), *_target(px), "--report-out", str(out), "--trades-out", str(alias)]
+    if _case_insensitive(tmp_path):
+        code, doc = _run(capsys, argv)
+        assert code == 3 and doc["error"]["type"] == "usage"
+        assert "--trades-out and --report-out name one file" in doc["error"]["message"]
+        assert not out.exists() and not alias.exists()
+    else:
+        assert main(argv) == 0
+        assert json.loads(out.read_text(encoding="utf-8"))["command"] == "run"
+        assert alias.read_text(encoding="utf-8").startswith("horizon,")
+    # two hard links to one existing file: refused, and the file left exactly as it was
+    a = tmp_path / "a.out"
+    a.write_text("keep", encoding="utf-8")
+    b = tmp_path / "b.out"
+    b.hardlink_to(a)
+    code, doc = _run(
+        capsys,
+        [
+            "run",
+            str(thesis),
+            *_target(px),
+            "--root-series-out",
+            str(a),
+            "--entry-flags-out",
+            str(b),
+        ],
+    )
+    assert code == 3 and "--entry-flags-out and --root-series-out" in doc["error"]["message"]
+    assert a.read_text(encoding="utf-8") == "keep" and b.exists()
+
+
 # ---- run: locating the series the thesis names (--data KEY=PATH) -------------------------------
 #
 # The document says WHICH series it measures; the invocation says WHERE they are. Everything below
