@@ -293,9 +293,10 @@ produced under; the checklist dispatches its rubric on it), `statistics_version`
 `gate_evidence_basis`, `params`/`targets` (the swept entry axes and the regime — the two grid
 labels), `rotation`, the per-target `sources` availability panel,
 `cross_breadth` (the effective-universe ledger, one entry per cross node × combo summarizing the
-per-bar count `k` of members the cross kernels reduce over — entering (finite input, and under
-the node's `where`/`group` selectors eligible and finitely labelled) in a population that cleared
-`min_valid` and whose reduction produced a value (one that overflowed counts nothing): the whole
+per-bar count `k` of members the cross kernels reduce over — entering (a finite, initialized input,
+and under the node's `where`/`group` selectors eligible with a finite, initialized label) in a
+population that cleared `min_valid` and whose reduction produced a value (one that overflowed
+counts nothing): the whole
 cross-section, or each group on its own — always present, `[]` outside
 basket; evidence-only), the
 grid-level CSCV `pbo` block (ONE nested object: `{pbo, reason, n_splits, n_splits_attempted,
@@ -724,7 +725,12 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   ledgers, as the input's direct readers do, never its own warmup): identical to its own
   finiteness latch for plain data, and what keeps a reader of a `cross_agg` broadcast into a
   member whose own input has not started from latching early (the broadcast itself waits for the
-  member's own first value). Negation's full warmup follows the same bars: a condition embedded
+  member's own first value). A cross node enters a member only with an initialized input, and
+  groups it only by an initialized label: a value either carries before its own init enters no
+  cross-section, so a member whose input reads a broadcast its own data has not joined is neither
+  ranked, demeaned nor averaged against its siblings (nor counted in their `cross_breadth` `k`),
+  and a rank or deviation whose label is initialized with no value yet ledgers that stretch, like
+  every reader of the label. Negation's full warmup follows the same bars: a condition embedded
   in a `shift`ed or `change`d operand must be past warmup on the bar the lag reads, one embedded
   in an event snapshot's input on its event bar (`not(shift(bars_since_event(or(A, B)), 20) >
   1000)` waits for A twenty bars longer, as `lag(not(…), 20)` does). Over thresholds on

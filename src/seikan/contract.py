@@ -138,9 +138,10 @@ METRIC_ROLES: dict[str, JsonValue] = {
         "never corrected; see caveats.episode_profile)",
         "bar_spacing (run-level {min,median,max}_seconds — the index's clock geometry)",
         "summary.cross_breadth (per cross node × combo: the per-bar count k of members the "
-        "cross kernels reduced over — entering (finite input, and under where/group eligible "
-        "and finitely labelled) in a population, the cross-section or each group, that cleared "
-        "min_valid and produced a value — summarized: n_bars_evaluated, n_bars_below_full, "
+        "cross kernels reduced over — entering (a finite, initialized input, and under "
+        "where/group eligible with a finite, initialized label) in a population, the "
+        "cross-section or each group, that cleared min_valid and produced a value — "
+        "summarized: n_bars_evaluated, n_bars_below_full, "
         "k_min/k_median/k_max, first_full_bar. The effective-universe ledger: member warmup "
         "legally thins k, and this panel is what makes the thinning visible; [] outside "
         "basket)",
@@ -636,8 +637,9 @@ METRIC_ROLES_DOC: dict[str, JsonValue] = {
         "cells, with an exclusions ledger and, in basket, a pooled row; NO uplift field ever — "
         "the conditional-vs-base-rate comparison is the caller's, and no check reads it)",
         "summary.cross_breadth (per cross node × combo, basket only — the per-bar count k of "
-        "members the cross kernels reduced over: entering (finite input, and under where/group "
-        "eligible and finitely labelled) in a population — the cross-section, or each group — "
+        "members the cross kernels reduced over: entering (a finite, initialized input, and under "
+        "where/group eligible with a finite, initialized label) in a population — the "
+        "cross-section, or each group — "
         "that cleared min_valid and whose reduction produced a value; recomputed off the "
         "node's own memoized frames and "
         "summarized: n_bars_evaluated (k > 0), "
@@ -763,9 +765,9 @@ METRIC_ROLES_DOC: dict[str, JsonValue] = {
         ),
         "cross_breadth": (
             "k counts the members a cross node's kernel REDUCED over per bar — entering "
-            "(finite input, and under where/group eligible and finitely labelled) in a "
-            "population that cleared min_valid and whose reduction produced a value: the whole "
-            "cross-section, or each group on its "
+            "(a finite, initialized input, and under where/group eligible with a finite, "
+            "initialized label) in a population that cleared min_valid and whose reduction "
+            "produced a value: the whole cross-section, or each group on its "
             "own, so a bar whose groups all sat below the floor counts nothing — recomputed off "
             "the node's own memoized frames. Member warmup or a screen legally thins it (a late "
             "start is warmup, not a hole; "

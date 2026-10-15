@@ -6332,8 +6332,9 @@ def test_cross_agg_breadth_does_not_count_its_broadcast_into_a_late_member(tmp_p
 
 
 def test_breadth_follows_the_values_a_kernel_reduced_over_not_their_init(tmp_path):
-    # The inner cross_agg broadcasts into T3 while T3's x warms (value finite, init not): the
-    # OUTER cross_rank ranks it, so its k counts T3 on every bar; the inner k does not.
+    # The inner cross_agg broadcasts into T3 while T3's x warms (value finite, init not). The
+    # OUTER cross_rank enters only initialized inputs, so neither node reduces over T3 there:
+    # both k read 3 until T3's own x starts (it used to rank T3 on every bar, k 4 throughout).
     late = np.r_[np.full(10, np.nan), np.ones(20)]
     inner = {"type": "cross_agg", "input": _XF, "agg": "mean"}
     entry = {
@@ -6345,8 +6346,34 @@ def test_breadth_follows_the_values_a_kernel_reduced_over_not_their_init(tmp_pat
     res = _pop_basket(tmp_path, entry, x=[100, 90, 80, 70 * late])
     by_node = {b["node"]: b for b in res.summary["cross_breadth"]}
     outer, agg = by_node["cross_rank(cross_agg(x,mean))"], by_node["cross_agg(x,mean)"]
-    assert outer["k_min"] == outer["k_max"] == 4 and outer["n_bars_below_full"] == 0
-    assert agg["k_min"] == 3 and agg["n_bars_below_full"] == 10
+    for b in (outer, agg):
+        assert b["k_min"] == 3 and b["k_max"] == 4 and b["n_bars_below_full"] == 10
+        assert b["first_full_bar"].startswith("2021-01-11")
+
+
+def test_a_label_carried_before_its_init_ranks_nobody_end_to_end(tmp_path):
+    # The review's case through the runner: the group label is a cross_agg broadcast, which
+    # carries sector 1 into T3 from bar 0 while T3's own sector feed starts at bar 10. T3 was
+    # ranked there — the bottom of its group, it fired on all ten bars — on a label it did not
+    # have yet. It is in no group until its label starts, and T2 is its group's bottom meanwhile.
+    late = np.r_[np.full(10, np.nan), np.ones(20)]
+    label = {"type": "cross_agg", "input": {"type": "external", "name": "sector"}, "agg": "mean"}
+    entry = {
+        "type": "threshold",
+        "left": {"type": "cross_rank", "input": _XF, "group": label},
+        "op": "<=",
+        "right": {"type": "constant", "value": 0.0},
+    }
+    res = _pop_basket(tmp_path, entry, x=[100, 90, 80, 70], sector=[1, 1, 1, late])
+    bars = res.trades.groupby("target")["entry_bar"].agg(["min", "max", "count"])
+    assert set(bars.index) == {"T2", "T3"}
+    assert bars.loc["T2"].tolist() == [0, 9, 10]
+    assert bars.loc["T3", "min"] == 10
+    by_node = {b["node"]: b for b in res.summary["cross_breadth"]}
+    ranked = by_node["cross_rank(x,group=cross_agg(sector,mean))"]
+    assert ranked["k_min"] == 3 and ranked["n_bars_below_full"] == 10
+    cell = res.summary["cells"][0]
+    assert all(v["n_undefined"] == 0 for v in cell["signal_coverage"].values())
 
 
 def _rank_ge(q, **selectors):

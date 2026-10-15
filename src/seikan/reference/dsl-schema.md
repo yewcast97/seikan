@@ -492,19 +492,28 @@ with a filter bolted on afterwards:
   (U ∧ U = U) — intended; `source_coverage` reports that feed hole too.
 - `"group": <Series>` — point-in-time LABELS (typically a `per_target` feed of integer codes; a
   `Constant` is legal and is no grouping). The node reduces WITHIN each distinct finite label at
-  each bar; a NaN label excludes the member; `min_valid` applies PER GROUP (a group of one is
+  each bar; a NaN label excludes the member, and so does a label not yet initialized (a value its
+  series carries during its own warmup — a `cross_agg` broadcast into a member whose own data has
+  not started — labels nobody yet); `min_valid` applies PER GROUP (a group of one is
   NaN); `cross_agg` broadcasts each group's aggregate to that group's members only. Labels
   compare by exact float equality — use integer codes. A member's label may change over time.
+- A member ENTERS the kernel only with a finite, INITIALIZED input: a value its input carries
+  before its own init — a `cross_agg` broadcast into a member whose own data has not started, or
+  any series computed from one — is no observation of that member yet, so it is neither ranked,
+  demeaned nor averaged against its siblings there; the late member thins the cross-section as a
+  late-listed one does. A rank or deviation reads its member's label as a second input: a label
+  initialized with no value yet (an event node whose anchor a hole made unknown) is undecidable
+  for that member, ledgered as every reader of the label ledgers it.
 - Nested cross nodes inside `where`/`group` are legal — a liquidity screen selecting the ranking
   population is `where = cross_rank(dollar_volume) >= 0.5` — and each carries its own
   `cross_breadth` entry. `where` operands are decision roots (depth-checked on their own, listed
   by `--root-series-out`); `group` counts as a second child like `rolling_corr`'s. Sweeps inside
   either register in the order input → where → group. Rendered as
   `cross_rank(close,3,where=(elig>=1),group=sector)`.
-- `cross_breadth.k` counts the members the kernel REDUCED over — ENTERING (finite input, and
-  eligible and finitely labelled) in a population that cleared `min_valid` and whose reduction
-  produced a value (one that overflowed counts nothing), which under `group` is each group on its
-  own, summed across groups; a bar voided by an undefined eligibility, or
+- `cross_breadth.k` counts the members the kernel REDUCED over — ENTERING (a finite, initialized
+  input, and eligible with a finite, initialized label) in a population that cleared `min_valid`
+  and whose reduction produced a value (one that overflowed counts nothing), which under `group`
+  is each group on its own, summed across groups; a bar voided by an undefined eligibility, or
   whose every group sat below the floor, has `k = 0` and is not evaluated.
 - Deferred, by decision: a reference universe OUTSIDE the targets (supply the breakpoints as a
   feed and threshold against them), member weights (`cross_agg(x·w, mean) / cross_agg(w, mean)`
@@ -1381,9 +1390,10 @@ open to quote a statistic honestly.
 - `summary.cross_breadth` (basket only; `[]` elsewhere) — the effective-universe ledger, one
   entry per cross node × combo: `{node, params, min_valid, n_bars, n_bars_evaluated,
   n_bars_below_full, k_min, k_median, k_max, first_full_bar}` over the per-bar count `k` of
-  members the cross kernels reduce over: ENTERING (finite input, and under `where`/`group`
-  eligible and finitely labelled) in a population that cleared `min_valid` and whose reduction
-  produced a value — each group on its own under `group` — summed across groups. Member warmup —
+  members the cross kernels reduce over: ENTERING (a finite, initialized input, and under
+  `where`/`group` eligible with a finite, initialized label) in a population that cleared
+  `min_valid` and whose reduction produced a value — each group on its own under `group` —
+  summed across groups. Member warmup —
   or an eligibility
   screen — legally thins `k` (a late start is warmup, not a hole), so `k_min < len(targets)`
   states coverage, not a defect — what

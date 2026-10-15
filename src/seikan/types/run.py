@@ -116,9 +116,10 @@ class CrossBreadthEntry(TypedDict):
     no check.
 
     ``k`` is the per-bar count of members the cross kernels (``compiler.nb``) REDUCED over —
-    ENTERING members (finite input, and under the node's ``where``/``group`` selectors eligible
-    and finitely labelled) of each population that cleared the kernel floor and whose reduction
-    produced a value (one that overflowed counts nothing): the whole
+    ENTERING members (a finite, initialized input, and under the node's ``where``/``group``
+    selectors eligible with a finite, initialized label) of each population that cleared the
+    kernel floor and whose reduction produced a value (one that overflowed counts nothing): the
+    whole
     cross-section, or under ``group`` each label on its own (``vectorize.cross_reduced``) —
     recomputed bit-exactly, then summarized instead of discarded: member warmup (or an
     eligibility screen) legally thins the cross-section (a late start is warmup, not a hole),

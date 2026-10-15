@@ -2281,19 +2281,24 @@ def test_a_correlation_with_a_broadcast_waits_for_the_members_own_input():
 
 
 def test_every_series_reader_of_a_broadcast_waits_for_the_members_own_input():
-    # The same derived latch on every branch that composes Series: a binary_op, an event_value
-    # and a cross_rank over the broadcast all carry values for the late member T3 from bar 0 and
-    # initialize only where T3's own input starts.
+    # The same derived latch on every branch that composes Series: a binary_op and an
+    # event_value over the broadcast carry values for the late member T3 from bar 0 and
+    # initialize only where T3's own input starts. A cross_rank over it does not rank T3 there
+    # at all: a value carried before its input's init is no observation of T3, so T3 does not
+    # enter, and its siblings rank among themselves.
     md = _late_broadcast_md()
     spread = BinaryOp(left=CrossAgg(input=_X, agg="mean"), right=External(name="y"), op="-")
     for node in (
         spread,
         EventValue(event=_e("y", ">", -9.0), input=CrossAgg(input=_X, agg="mean")),
-        CrossRank(input=spread),
     ):
         v, i = (f.to_numpy()[:, 3] for f in vz.build_series(node, md))
         assert np.isfinite(v[:6]).all(), node.type
         np.testing.assert_array_equal(i, np.arange(20) >= 6, err_msg=node.type)
+    v, i = (f.to_numpy() for f in vz.build_series(CrossRank(input=spread), md))
+    assert np.isnan(v[:6, 3]).all() and np.isfinite(v[6:, 3]).all()
+    np.testing.assert_array_equal(i[:, 3], np.arange(20) >= 6)
+    np.testing.assert_array_equal(np.sort(v[:6, :3], axis=1), np.tile([0.0, 0.5, 1.0], (6, 1)))
 
 
 def test_a_broadcast_of_a_broadcast_waits_for_the_members_own_init():
@@ -3235,6 +3240,105 @@ def test_cross_rank_group_of_size_one_is_nan():
     md = _md4(x=[100, 90, 80, 70], sector=[1, 2, 2, 2])
     v = vz.build_series(CrossRank(input=_X, group=External(name="sector")), md)[0]
     assert np.isnan(v.iloc[-1, 0])
+
+
+def _rotating_x(n):
+    """Each bar one member reads 2, the next 1, the third 0 — so every member tops the
+    cross-section on a third of the bars."""
+    x = np.zeros((n, 3))
+    for t in range(n):
+        x[t, t % 3], x[t, (t + 1) % 3] = 2.0, 1.0
+    return x
+
+
+def _md_abc(n, **feeds) -> MarketData:
+    idx = pd.date_range("2022-01-01", periods=n, freq="1D")
+    targets = ["A", "B", "C"]
+    close = pd.DataFrame(dict.fromkeys(targets, 100.0), index=idx)
+    ext = {
+        name: pd.DataFrame(dict(zip(targets, np.asarray(v, float).T, strict=True)), index=idx)
+        for name, v in feeds.items()
+    }
+    return MarketData(
+        close=close, open=close, high=close, low=close, volume=None, externals=ext, targets=targets
+    )
+
+
+def test_a_label_carried_before_its_init_labels_nobody_yet():
+    # The review's case: the label is a cross_agg broadcast, which carries the group's value into
+    # C from bar 0 while C's own label feed starts at bar 60. A label C does not have yet must not
+    # rank C: C sat in the population on all 60 warmup bars and fired on 20 of them.
+    n = 120
+    g = np.ones((n, 3))
+    g[:60, 2] = np.nan
+    md = _md_abc(n, x=_rotating_x(n), g=g)
+    node = CrossRank(input=External(name="x"), group=CrossAgg(input=External(name="g"), agg="mean"))
+    gv, gi = (f.to_numpy() for f in vz.build_series(node.group, md))
+    assert (gv[:60, 2] == 1.0).all() and not gi[:60, 2].any()  # a value before its own init
+    pop = vz.cross_population(node, md)
+    np.testing.assert_array_equal(pop[:, 2], np.arange(n) >= 60)
+    assert pop[:, :2].all()
+    v, i = (f.to_numpy() for f in vz.build_series(node, md))
+    assert np.isnan(v[:60, 2]).all() and not i[:60, 2].any() and i[60:].all()
+    # A and B rank between themselves until C's label starts
+    np.testing.assert_array_equal(np.sort(v[:60, :2], axis=1), np.tile([0.0, 1.0], (60, 1)))
+    np.testing.assert_array_equal(
+        vz.cross_reduced(node, md).sum(axis=1), np.where(np.arange(n) < 60, 2, 3)
+    )
+    top = ThresholdCondition(left=node, op="==", right=Constant(value=1.0))
+    sig = vz.signal(top, md).to_numpy()
+    assert not sig[:60, 2].any() and sig[60:, 2].sum() == 20
+    assert not vz.undefined_mask(top, md).any()
+
+
+def test_an_input_carried_before_its_init_does_not_enter_the_cross_section():
+    # The review's nested case: C's x starts at bar 60, so the inner cross_agg broadcast + z
+    # carries a finite value into C from bar 0 with no init. The outer rank used to enter it,
+    # ranking A and B over three members (one in warmup) and firing `== 0.5` on all 60 warmup
+    # bars; A and B now rank between themselves, as the inner node's own k says.
+    n = 120
+    x_c = np.r_[np.full(60, np.nan), np.ones(60)]
+    z_a = np.where(np.arange(n) % 2 == 0, 0.0, 1.0)
+    md = _md_abc(n, x=np.c_[np.ones(n), np.ones(n), x_c], z=np.c_[z_a, 1.0 - z_a, np.full(n, 2.0)])
+    inner = BinaryOp(
+        left=CrossAgg(input=External(name="x"), agg="mean"), right=External(name="z"), op="+"
+    )
+    outer = CrossRank(input=inner)
+    iv, ii = (f.to_numpy() for f in vz.build_series(inner, md))
+    assert np.isfinite(iv[:60, 2]).all() and not ii[:60, 2].any()
+    v, i = (f.to_numpy() for f in vz.build_series(outer, md))
+    np.testing.assert_array_equal(v[0], [0.0, 1.0, np.nan])
+    np.testing.assert_array_equal(i[0], [True, True, False])
+    np.testing.assert_array_equal(v[61], [0.5, 0.0, 1.0])
+    np.testing.assert_array_equal(vz.cross_reduced(outer, md), vz.cross_reduced(inner.left, md))
+    sig = vz.signal(ThresholdCondition(left=outer, op="==", right=Constant(value=0.5)), md)
+    assert not sig.to_numpy()[:60].any() and sig.to_numpy()[60:].sum() == 60
+
+
+def test_a_group_label_initialized_with_no_value_yet_is_ledgered_by_the_rank():
+    # The label is a second input of the rank's derived latch. T1's label reads a
+    # bars_since_event that a domain NaN (log(-1) at bar 5) left initialized with no value until
+    # its first event at bar 20: T1 sits in no group there, and its rank ledgers that stretch as
+    # undecidable, as every other reader of the label does — never its own warmup.
+    n = 30
+    z1 = np.ones(n)
+    z1[5], z1[20] = -1.0, 2.0
+    md = _mdk(n, x=[4.0, 3.0, 2.0, 1.0], z=[2.0, z1, 2.0, 2.0])
+    since = BarsSinceEvent(
+        event=ThresholdCondition(
+            left=UnaryOp(input=External(name="z"), op="log"), op=">", right=Constant(value=0.4)
+        )
+    )
+    label = BinaryOp(left=since, right=since, op="-")  # 0.0 wherever the anchor is known
+    gv, gi = (f.to_numpy()[:, 1] for f in vz.build_series(label, md))
+    assert np.isnan(gv[:20]).all() and (gv[20:] == 0.0).all()
+    np.testing.assert_array_equal(gi, np.arange(n) >= 5)
+    thr = ThresholdCondition(
+        left=CrossRank(input=_X, group=label), op=">=", right=Constant(value=0.0)
+    )
+    undefined = vz.undefined_mask(thr, md)
+    np.testing.assert_array_equal(undefined[:, 1], (np.arange(n) >= 5) & (np.arange(n) < 20))
+    assert not undefined[:, [0, 2, 3]].any()
 
 
 def test_collect_sweeps_cross_where_and_group_order_is_input_where_group():

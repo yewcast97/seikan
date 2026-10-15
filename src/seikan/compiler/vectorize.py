@@ -656,7 +656,9 @@ def cross_population(
     """The ONE membership definition of a cross node's population (rows × targets): every member,
     narrowed by ``where`` (eligible = its tradable signal; a warming or decided-False member is
     out; ANY member post-warmup undefined voids the WHOLE bar — fail-closed) and by ``group``
-    (a member with a NaN label is out). Input finiteness is NOT part of it: see
+    (a member whose label is NaN or not yet initialized is out: a label series can carry a value
+    before its own init — a ``cross_agg`` broadcast into a member whose own input has not
+    started — and that value labels nobody yet). Input finiteness is NOT part of it: see
     :func:`cross_membership`."""
     pop = _all_true(md)
     if node.where is not None:
@@ -665,17 +667,25 @@ def cross_population(
         voided: npt.NDArray[np.bool_] = np.any(i & ~d, axis=1, keepdims=True)
         pop &= ~voided
     if node.group is not None:
-        pop &= np.isfinite(build_series(node.group, md)[0].to_numpy(dtype=float))
+        gv, gi = build_series(node.group, md)
+        pop &= np.isfinite(gv.to_numpy(dtype=float)) & gi.to_numpy(dtype=bool)
     return pop
 
 
 def cross_membership(
     node: CrossRank | CrossDemean | CrossAgg, md: MarketData
 ) -> npt.NDArray[np.bool_]:
-    """The ENTERING members of a cross node per bar — :func:`cross_population` with a finite
-    input: what the kernel sees before applying its floor (see :func:`cross_reduced`)."""
-    x = build_series(node.input, md)[0].to_numpy(dtype=float)
-    entering: npt.NDArray[np.bool_] = cross_population(node, md) & np.isfinite(x)
+    """The ENTERING members of a cross node per bar — :func:`cross_population` with an input that
+    is finite AND initialized: what the kernel sees before applying its floor (see
+    :func:`cross_reduced`). A value an input carries before its own init (a ``cross_agg``
+    broadcast into a member whose own input has not started, or a series computed from one) is
+    no observation of that member yet; entered, it ranked, demeaned and averaged its initialized
+    siblings over a member still in warmup. For plain data the two coincide (its init is its
+    finiteness latch)."""
+    xv, xi = build_series(node.input, md)
+    entering: npt.NDArray[np.bool_] = (
+        cross_population(node, md) & np.isfinite(xv.to_numpy(dtype=float)) & xi.to_numpy(dtype=bool)
+    )
     return entering
 
 
@@ -691,8 +701,8 @@ def cross_reduced(
     overflowed emitted nothing and adds nothing, however many members entered; one that emitted
     counts every member it entered with, even one whose own output overflowed (a demeaned value
     past the double range — the mean was still taken over it). A ``cross_agg`` broadcast into a
-    population member whose own input is missing is a value it was not reduced over — hence the
-    entering mask."""
+    population member whose own input is missing or still warming is a value it was not reduced
+    over — hence the entering mask."""
     entering = cross_membership(node, md)
     emitted = entering & np.isfinite(build_series(node, md)[0].to_numpy(dtype=float))
     if node.group is None:
@@ -751,17 +761,20 @@ def _build_series(node: Series, md: MarketData) -> tuple[pd.DataFrame, pd.DataFr
             arr = md.days_since_values(name)
             return _df(arr, md), _df(_latch(arr), md)
         case CrossRank() | CrossDemean() | CrossAgg():
-            # The population model (``dsl.nodes.CrossRank``): the kernel sees the input with
-            # every non-member masked to NaN, and reduces within the group labels when given.
-            # With neither ``where`` nor ``group`` this is exactly the plain path.
+            # The population model (``dsl.nodes.CrossRank``): the kernel sees the input of the
+            # ENTERING members alone (``cross_membership`` — in the population, with a finite and
+            # initialized input), every other member masked to NaN, and reduces within the group
+            # labels when given. With neither ``where`` nor ``group``, over an input whose init is
+            # its finiteness latch, this is exactly the plain path.
             xv, xi = build_series(node.input, md)
             x = xv.to_numpy(dtype=float)
             pop = cross_population(node, md)
-            xm = np.where(pop, x, np.nan)
+            xm = np.where(cross_membership(node, md), x, np.nan)
             labels = None
+            group: tuple[pd.DataFrame, pd.DataFrame] | None = None
             if node.group is not None:
-                g = build_series(node.group, md)[0].to_numpy(dtype=float)
-                labels = np.where(pop, g, np.nan)
+                group = build_series(node.group, md)
+                labels = np.where(pop, group[0].to_numpy(dtype=float), np.nan)
             arr = xf.transform_values(node, xm, labels=labels)
             if isinstance(node, CrossAgg):
                 # The aggregate broadcasts a finite value into EVERY member column wherever the
@@ -777,7 +790,11 @@ def _build_series(node: Series, md: MarketData) -> tuple[pd.DataFrame, pd.DataFr
                 arr = np.where(pop, arr, np.nan)
                 own = _latch(x) & xi.to_numpy(dtype=bool)
                 return _df(arr, md), _df(_latch(arr) & own, md)
-            return _df(arr, md), _df(_derived_latch(arr, (xv, xi)), md)
+            # A rank or deviation is read off the member's label as well as its input, so the
+            # label is a second input of the derived latch (``rolling_corr``'s pair): one
+            # initialized with no value yet ledgers that stretch, as every reader of it does.
+            inputs = [(xv, xi)] if group is None else [(xv, xi), group]
+            return _df(arr, md), _df(_derived_latch(arr, *inputs), md)
         case (
             EMA()
             | ZScore()

@@ -1075,10 +1075,10 @@ def _measure_grid(
     # graded alone, so nothing is ever summed across them.
     undef_by_combo: dict[ComboKey, np.ndarray] = {}
     # Cross-sectional breadth (evidence-only): the per-bar count k of members each cross kernel
-    # REDUCED over — entering (finite input, and under `where`/`group` eligible and finitely
-    # labelled) in a population that cleared the floor and produced a value, summed across
-    # groups — recomputed bit-exactly off the node's memoized frames (`cross_reduced` is memo
-    # hits below: the signal build already materialized them) and
+    # REDUCED over — entering (a finite, initialized input, and under `where`/`group` eligible
+    # with a finite, initialized label) in a population that cleared the floor and produced a
+    # value, summed across groups — recomputed bit-exactly off the node's memoized frames
+    # (`cross_reduced` is memo hits below: the signal build already materialized them) and
     # SUMMARIZED instead of discarded, so member warmup (or a screen) thinning the effective
     # universe is visible. Keyed per (node × combo): a swept input moves the warmup, so
     # per-combo entries are the only non-understating key — combos that do not move a node's

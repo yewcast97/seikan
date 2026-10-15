@@ -427,15 +427,19 @@ class CrossRank(_Strict):
     # intended; ``source_coverage`` reports that feed hole too.
     # ``group`` — point-in-time LABELS (typically a ``per_target`` feed of integer codes; a
     # ``Constant`` is legal and equals no grouping): the node reduces WITHIN each distinct finite
-    # label at each bar; a NaN label excludes the member; ``min_valid`` applies PER GROUP;
+    # label at each bar; a NaN label excludes the member, and so does one not yet initialized (a
+    # value its series carries during its own warmup — a ``cross_agg`` broadcast into a member
+    # whose own data has not started — labels nobody yet); ``min_valid`` applies PER GROUP;
     # ``cross_agg`` broadcasts each group's aggregate to that group's members only. Labels compare
-    # by exact float equality — use integer codes. Nested cross nodes inside ``where``/``group``
-    # are legal (a liquidity screen ``where = cross_rank(dollar_volume) >= 0.5``), each with its
-    # own ``cross_breadth`` entry. ``cross_breadth.k`` counts the members the kernel REDUCED
-    # over: ENTERING (finite input ∧ eligible ∧ finitely labelled) in a population that cleared
-    # ``min_valid`` and produced a value (per group under ``group``); a bar voided by an
-    # undefined eligibility, or
-    # whose groups all sat below the floor, has k = 0.
+    # by exact float equality — use integer codes. A member ENTERS only with an initialized input
+    # (a value carried before its input's init is no observation of it), and a rank or deviation
+    # reads its label as a second input (``compiler.vectorize``). Nested cross nodes inside
+    # ``where``/``group`` are legal (a liquidity screen ``where = cross_rank(dollar_volume) >=
+    # 0.5``), each with its own ``cross_breadth`` entry. ``cross_breadth.k`` counts the members
+    # the kernel REDUCED over: ENTERING (finite initialized input ∧ eligible ∧ finite initialized
+    # label) in a population that cleared ``min_valid`` and produced a value (per group under
+    # ``group``); a bar voided by an undefined eligibility, or whose groups all sat below the
+    # floor, has k = 0.
     where: Condition | None = None
     group: Series | None = None
 
