@@ -1015,7 +1015,12 @@ whether the MARKET went up, not the thesis; long-horizon theses should set `benc
   declared members, self included, measured in the outcome's own algebra — the relative-value
   read "did this member beat the basket?". It takes no `benchmark` key (supplying one
   beside it is an error), and it works under `pct` and `log` (`diff` never reaches it — basket
-  refuses `diff` outright). Its missingness is FAIL-CLOSED at whole-bar granularity: any member's
+  refuses `diff` outright). Each excess is the member's deviation about the bar's OWN offset (its
+  legs' range midpoint, the `cross_demean` rule): about the rounded raw mean a spread at the
+  level's ulp was lost — legs `[2**52, 2**52 + 1, 2**52 + 1]` read excesses `[0, 1, 1]` for
+  `[−2/3, 1/3, 1/3]` — and the bench leg is the bar's mean rounded once; legs whose plain sum
+  overflows still have a mean taken this way (only a bar whose centred sum leaves the double
+  range has none). Its missingness is FAIL-CLOSED at whole-bar granularity: any member's
   leg non-finite at a bar censors the WHOLE bar's benchmark leg, so every member's firing there
   exits as `no_benchmark` — never a partial-basket mean, which would quietly demean the surviving
   members by a DIFFERENT basket while their rows escape the censoring ledger. Note the identity
@@ -1106,7 +1111,7 @@ which their rounded `ret` values miss by residue, so the report reads each of th
 | `horizon` | the cell's declared measurement horizon `h` — ALWAYS present, right after the swept axes and before `target`, so a row names its window whether or not the horizon was swept; with the swept axes it is the row's cell identity |
 | `entry_px` / `exit_px` | the measured value at anchor / exit (`exit_px` empty when censored) |
 | `ret` | the signed forward outcome, denominated per `summary.outcome` (excess when benchmarked); empty on censored rows |
-| `ret_raw` | the signed RAW outcome leg — equals `ret` when unbenchmarked; `ret == ret_raw − ret_bench` per row when benchmarked; empty on censored rows |
+| `ret_raw` | the signed RAW outcome leg — equals `ret` when unbenchmarked; `ret == ret_raw − ret_bench` per row under `market`, and to the bench leg's one rounding under `cross_mean` (`ret` is taken about the bar's offset); empty on censored rows |
 | `ret_bench` | the signed benchmark leg the excess subtraction consumed (the market series' same-window return, or the bar's basket mean under `cross_mean`); empty when unbenchmarked or censored |
 | `pre_ret` | RAW drift INTO entry over the same `h`-bar window, sign-aligned — the leakage canary |
 | `mae` | worst interim adverse mark, RAW path, ≤ 0; empty when censored |

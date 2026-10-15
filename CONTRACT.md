@@ -823,7 +823,13 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   rounding (`[2**52, 2**52 + 1]` read a window std of 0.707 for 0.5, a two-point z-score of
   1.414, past its bound of 1, and a ddof=1 `std_ret` of 1.0 for 0.707; legs clustered 31 and 62
   ulps apart read a regression beta of 1.9984 for 2). The pool means stay the exactly rounded
-  sum, and `alpha` stays `mean_raw − beta·mean_bench` on them. The EW recurrences differ from
+  sum, and `alpha` stays `mean_raw − beta·mean_bench` on them. A `cross_mean` excess is the same
+  deviation about its bar's offset (`nb.cross_centre`, the `cross_demean` kernel's own centre):
+  legs `[2**52, 2**52 + 1, 2**52 + 1]` read excesses `[0, 1, 1]` for `[−2/3, 1/3, 1/3]` about
+  their rounded mean, two selected rows "beating the basket" by 1 beside an exact pooled mean of
+  1/3; its bench leg is the bar's mean rounded once, so `ret == ret_raw − ret_bench` holds to that
+  rounding (exactly under `market`), and a bar whose legs' plain sum overflows still has its mean
+  (only a centred sum past the range voids the bar). The EW recurrences differ from
   the plain recurrence only on the steps where a rounded update left its exact interval or a
   held input's deviation is
   carried — rounding-scale steps a varying series with repeated values (tick data) can take too

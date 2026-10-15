@@ -30,6 +30,7 @@ from seikan.analysis.stats import (
     benchmark_regression,
     cell_conditional_buckets,
     episode_profile,
+    exact_mean,
     pool_moments,
 )
 from seikan.compiler.runner import run_backtest
@@ -3716,16 +3717,17 @@ def test_cross_mean_excess_is_antisymmetric_for_two_targets(tmp_path):
     # the benchmark self-description names the mode-gated literal; there is no external source
     assert res.summary["benchmark"] == "cross_mean"
     assert res.summary["benchmark_source"] is None
-    # the legs attribute the demeaning exactly like the market case: each closed row's bench leg
-    # is its bar's basket mean of the signed raw legs, ret == ret_raw − ret_bench bit-exactly,
-    # and the pooled mean_ret_bench is the pooled raw mean — THIS fixture fires basket-wide
-    # (_lt(1e9): every member, every bar), where the pooled excess mean is exactly 0 by
-    # construction (as over identical legs — a shared outcome feed); a SELECTIVE signal's pooled
-    # mean over distinct legs is the firing subset's tilt, not 0
-    np.testing.assert_array_equal(
-        closed["ret"].to_numpy(dtype=float),
-        closed["ret_raw"].to_numpy(dtype=float) - closed["ret_bench"].to_numpy(dtype=float),
-    )
+    # the legs attribute the demeaning like the market case: each closed row's bench leg is its
+    # bar's basket mean of the signed raw legs, rounded once, so ret == ret_raw − ret_bench to
+    # that rounding (ret is the deviation taken about the bar's offset — exact where the mean's
+    # own rounding is the level's ulp), and the pooled mean_ret_bench is the pooled raw mean —
+    # THIS fixture fires basket-wide (_lt(1e9): every member, every bar), where the pooled excess
+    # mean is exactly 0 by construction (as over identical legs — a shared outcome feed); a
+    # SELECTIVE signal's pooled mean over distinct legs is the firing subset's tilt, not 0
+    raw_leg = closed["ret_raw"].to_numpy(dtype=float)
+    bench_leg = closed["ret_bench"].to_numpy(dtype=float)
+    scale = np.spacing(np.maximum(np.abs(raw_leg), np.abs(bench_leg)))
+    assert (np.abs(closed["ret"].to_numpy(dtype=float) - (raw_leg - bench_leg)) <= 2 * scale).all()
     bench_a = closed[closed["target"] == "A"].sort_values("entry_time")["ret_bench"]
     bench_b = closed[closed["target"] == "B"].sort_values("entry_time")["ret_bench"]
     np.testing.assert_allclose(
@@ -3736,6 +3738,53 @@ def test_cross_mean_excess_is_antisymmetric_for_two_targets(tmp_path):
     # never an identity of cross_mean itself: a selective pool's mean is its selection tilt
     assert pooled["mean_ret"] == 0.0
     assert pooled["mean_ret_raw"] == pytest.approx(pooled["mean_ret_bench"], abs=1e-12)
+
+
+def test_cross_mean_excess_is_taken_about_the_bars_offset(tmp_path):
+    # The review's case: legs [B, B + 1, B + 1] at B = 2**52 (pct legs of 1 → 2**52 + 1 and
+    # 1 → 2**52 + 2), the two B + 1 members selected. About the rounded raw mean (2**52, onto a
+    # member) their excesses read 1 each — "both beat the basket by 1" — while the exact pooled
+    # mean read 1/3, outside its own [worst, best]. About the bar's offset each reads 1/3. A bar
+    # of identical legs reads exactly 0.0 with its bench leg the legs' value.
+    n = 40
+    idx = pd.date_range("2021-01-01", periods=n, freq="1D")
+    odd = np.arange(n) % 2 == 1
+    tops = {"A": 2.0**52 + 1.0, "B": 2.0**52 + 2.0, "C": 2.0**52 + 2.0}
+    files = {}
+    for t, top in tops.items():
+        px = np.where(odd, top, 1.0)
+        px[odd & (np.arange(n) >= 30)] = 2.0**52 + 2.0  # identical legs on the late bars
+        files[t] = _write_bars(tmp_path / f"{t}.csv", px, idx)
+
+    def run(end=None):
+        thesis = Thesis.model_validate(
+            {
+                "name": "cm_offset",
+                "target_mode": "basket",
+                "data": {"targets": list(tops), **({"end": end} if end else {})},
+                "entry": {
+                    "type": "threshold",
+                    "left": {"type": "field", "column": "close"},
+                    "op": ">=",
+                    "right": {"type": "constant", "value": 2.0**52 + 2.0},
+                },
+                "params": {"horizon": 1, "benchmark": "cross_mean"},
+            }
+        )
+        return run_backtest(thesis, load(thesis, files))
+
+    closed = run().trades
+    closed = closed[~closed["is_open"]]
+    early = closed[closed["entry_bar"] < 29]
+    assert set(early["target"]) == {"B", "C"} and len(early) == 2 * 14
+    assert early["ret"].to_numpy() == pytest.approx(1.0 / 3.0, rel=1e-15)
+    late = closed[closed["entry_bar"] >= 29]
+    assert set(late["target"]) == {"A", "B", "C"}
+    assert (late["ret"] == 0.0).all() and (late["ret_bench"] == 2.0**52 + 1.0).all()
+    # the early bars alone: the pool's mean, worst and best agree on 1/3
+    pooled = run(end="2021-01-30").summary["cells"][0]["pooled"]
+    for key in ("mean_ret", "worst_ret", "best_ret"):
+        assert pooled[key] == pytest.approx(1.0 / 3.0, rel=1e-15), key
 
 
 def _cross_mean_basket(tmp_path, order, entry, *, n=100, horizon=5, seed=21):
@@ -3951,15 +4000,16 @@ def test_cross_mean_pooled_mean_ret_is_the_raw_leg_sum_not_pool_moments(tmp_path
 
 
 def _pow_basket(tmp_path, order="ABC", *, above=0.0, n=12):
-    """The review's basket: members A, B, C priced 2**t, 4**t, 16**t, declared in ``order``,
-    ``cross_mean`` at h=1. Every pct leg is exactly 1, 3 or 15, so every closed row's excess is
-    one of three NONZERO values whose exact sum is 0 — and whose rounded sum is not. ``close >
+    """The review's basket: members A, B, C priced 2**t, 4**t, 14**t, declared in ``order``,
+    ``cross_mean`` at h=1. Every pct leg is 1, 3 or 13 (exactly while 14**t is a double, t <= 18),
+    so every closed row's excess is one of three NONZERO values whose exact sum is 0 — and whose
+    rounded sum is not, even about the bar's offset (legs 1, 3, 15 cancel there). ``close >
     above`` fires C first, then B, then A: ``above=0`` makes every bar full."""
     idx = pd.date_range("2021-01-01", periods=n, freq="1D")
     t = np.arange(n, dtype=float)
     files = {
         name: _write_bars(tmp_path / f"{name}.csv", base**t, idx)
-        for name, base in (("A", 2.0), ("B", 4.0), ("C", 16.0))
+        for name, base in (("A", 2.0), ("B", 4.0), ("C", 14.0))
     }
     thesis = Thesis.model_validate(
         {
@@ -4049,8 +4099,8 @@ def test_cross_mean_mixed_bars_zero_only_the_full_ones(tmp_path):
     eras = pooled["subperiods"]
     for s, (a, b) in zip(eras, ((0, 10), (10, 20), (20, 30)), strict=True):
         in_era = (bars >= a) & (bars < b)
-        assert s["mean_ret"] == float(np.mean(pool[in_era]))
-        assert (s["mean_ret"] == float(np.mean(rets[in_era]))) is (a < 20)
+        assert s["mean_ret"] == exact_mean(pool[in_era])
+        assert (s["mean_ret"] == exact_mean(rets[in_era])) is (a < 20)
     # the bootstrap sums the pool values on the draw stream the rows alone give
     assert pooled["boot"] == episode_bootstrap_ci(rets, bars, 1, rets_pool=pool)
     assert pooled["boot"]["n_episodes"] == 22
@@ -4084,23 +4134,27 @@ def test_cross_mean_mixed_bars_zero_only_the_full_ones(tmp_path):
 
 
 def test_cross_mean_cancelling_partial_pool_has_no_hac(tmp_path):
-    # The review's basket: four members (a, b, a, b) of log outcomes, only A and B firing, three
-    # bars apart; on every other firing bar they move (0.99, 0.98) and C and D mirror them, so
-    # each firing bar's two excesses cancel exactly — the pooled mean_ret is exactly 0 — while
-    # their two rounded rows sum to residue. Read off those rows, the HAC divided the residue:
-    # t_hac 5.43, hac_se 1.6e-19 beside mean_ret 0.0. Every bar's exact excess sum is 0, so the
-    # pool has no long-run variance: null.
+    # The review's basket, widened: six members (p, q, r, p, q, r) of log outcomes, only the
+    # first three firing, three bars apart; on every other firing bar they move (0.95, 0.96,
+    # 1.02) and the last three mirror them, so each firing bar's three excesses cancel exactly —
+    # the pooled mean_ret is exactly 0 — while their three rounded rows sum to residue (a
+    # mirrored PAIR's two rows cancel about the bar's offset; three rows need not). Read off
+    # those rows, the HAC divided the residue: t_hac 5.43, hac_se 1.6e-19 beside mean_ret 0.0.
+    # Every bar's exact excess sum is 0, so the pool has no long-run variance: null.
     n = 92
     idx = pd.date_range("2024-01-01", periods=n, freq="1D")
-    a, b, fire = np.ones(n), np.ones(n), np.zeros(n)
+    levels = {m: np.ones(n) for m in "ABC"}
+    fire = np.zeros(n)
     for k in range(30):
         fire[3 * k] = 1.0
         if k % 2 == 0:
-            a[3 * k + 2], b[3 * k + 2] = 0.99, 0.98
+            for m, move in zip("ABC", (0.95, 0.96, 1.02), strict=True):
+                levels[m][3 * k + 2] = move
+    targets = ["A", "B", "C", "D", "E", "F"]
     files = {}
-    for name, levels in (("A", a), ("B", b), ("C", a), ("D", b)):
-        files[name] = _write_bars(tmp_path / f"{name}.csv", levels, idx)
-        feed = pd.DataFrame({"fire": fire if name in "AB" else np.zeros(n)}, index=idx)
+    for name, src in zip(targets, "ABCABC", strict=True):
+        files[name] = _write_bars(tmp_path / f"{name}.csv", levels[src], idx)
+        feed = pd.DataFrame({"fire": fire if name in "ABC" else np.zeros(n)}, index=idx)
         feed.index.name = "datetime"
         feed.to_csv(tmp_path / f"fire_{name}.csv")
         files[f"fire@{name}"] = str(tmp_path / f"fire_{name}.csv")
@@ -4108,7 +4162,7 @@ def test_cross_mean_cancelling_partial_pool_has_no_hac(tmp_path):
         {
             "name": "cm_cancel",
             "target_mode": "basket",
-            "data": {"targets": ["A", "B", "C", "D"], "external": {"fire": {"per_target": True}}},
+            "data": {"targets": targets, "external": {"fire": {"per_target": True}}},
             "entry": {
                 "type": "threshold",
                 "left": {"type": "external", "name": "fire"},
@@ -4121,8 +4175,10 @@ def test_cross_mean_cancelling_partial_pool_has_no_hac(tmp_path):
     res = run_backtest(thesis, load(thesis, files))
     pooled = res.summary["cells"][0]["pooled"]
     closed = res.trades[~res.trades["is_open"]]
-    assert pooled["n"] == 60 and set(closed["target"]) == {"A", "B"}
-    assert (closed.groupby("entry_bar")["ret"].sum() != 0.0).any()  # the premise: residue
+    assert pooled["n"] == 90 and set(closed["target"]) == {"A", "B", "C"}
+    # the premise: the rounded rows' exact sum is residue on the moving bars
+    bar_sums = closed.groupby("entry_bar")["ret"].apply(lambda r: math.fsum(r.tolist()))
+    assert (bar_sums != 0.0).sum() == 15
     assert pooled["mean_ret"] == 0.0
     assert math.isnan(pooled["t_hac"]) and math.isnan(pooled["hac_se"])
 
@@ -4244,9 +4300,13 @@ def test_cross_mean_all_full_grid_pbo_and_buckets_take_the_identity_in_any_order
             assert cell["bucket_monotonicity"] == {}, order
             # the premise: the same rows' plain bucket means are residue
             plain = cell_conditional_buckets(
-                _closed_cell_rows(res, cell["params"]["horizon"]), ["dom"]
+                _closed_cell_rows(res, cell["params"]["horizon"]), list(feats)
             )
-            assert any(b["mean_ret"] != 0.0 for b in plain["conditional_buckets"]["dom"]["buckets"])
+            assert any(
+                b["mean_ret"] != 0.0
+                for name in feats
+                for b in plain["conditional_buckets"][name]["buckets"]
+            )
 
 
 def test_cross_mean_buckets_keep_every_row_a_full_bar_does_not_hold_whole(tmp_path):
@@ -4312,7 +4372,7 @@ def test_cross_mean_mixed_grid_pbo_reads_every_partly_full_candidate_s_full_bars
         "type": "threshold",
         "left": {"type": "field", "column": "close"},
         "op": ">",
-        "right": {"type": "constant", "value": [20.0, 35.0, 40.0], "name": "lvl"},
+        "right": {"type": "constant", "value": [20.0, 37.0, 43.0], "name": "lvl"},
     }
     dow = {"dow": {"type": "calendar", "field": "day_of_week"}}
     res = _walk_basket(tmp_path, "ABC", above, dow, horizon=(2, 5))
@@ -4328,7 +4388,7 @@ def test_cross_mean_mixed_grid_pbo_reads_every_partly_full_candidate_s_full_bars
     for key, mask in kwargs["full_bars"].items():
         np.testing.assert_array_equal(mask, derived[key])
     mixed = [k for k, m in derived.items() if m.any() and not all_full[k]]
-    assert sorted(mixed) == [(35.0, 2), (35.0, 5), (40.0, 2), (40.0, 5)]  # lvl 20 is all-full
+    assert sorted(mixed) == [(37.0, 2), (37.0, 5)]  # lvl 20 is all-full, lvl 43 holds none
     pbo = res.summary["pbo"]
     assert pbo["reason"] is None and pbo["oos_degradation_slope_reason"] is None
     only_all_full = {k: m if all_full[k] else np.zeros_like(m) for k, m in derived.items()}
@@ -4469,34 +4529,60 @@ def test_overflowed_return_mass_refuses_concentration_never_passes_it(tmp_path):
     }
 
 
-def test_cross_mean_bar_mean_past_the_double_range_censors_silently(tmp_path):
-    # Two members whose pct legs of 1e308 and 1.5e308 (1e-300 quotes into 1e8 / 1.5e8) sum past
-    # the double range on every firing bar: the bar's cross-sectional mean overflows, its excess
-    # reads -inf, and the bar censors through the finiteness test like any unmeasurable window
-    # (fail-closed: the gate refuses the censoring) — silently, as `_measure`'s own overflow
-    # does, where the mean's overflow warning escaped the run (an exception under -W error).
-    n = 40
+def _ceiling_basket(tmp_path, tops, *, n=40):
+    """Members whose open alternates 1e-300 (even bars) / ``tops[name]`` (odd bars) — a ``None``
+    top is flat at 10 — firing on ``close > 5`` under ``cross_mean`` at h=1: an odd bar's pct
+    leg is ``top / 1e-300 − 1``."""
     idx = pd.date_range("2021-01-01", periods=n, freq="1D")
-    files = {}
-    for t, top in (("A", 1e8), ("B", 1.5e8)):
-        files[t] = _write_bars(
-            tmp_path / f"{t}.csv", np.where(np.arange(n) % 2 == 0, 1e-300, top), idx
+    files = {
+        t: _write_bars(
+            tmp_path / f"{t}.csv",
+            np.full(n, 10.0) if top is None else np.where(np.arange(n) % 2 == 0, 1e-300, top),
+            idx,
         )
+        for t, top in tops.items()
+    }
     thesis = Thesis.model_validate(
         {
-            "name": "cm_bar_overflow",
+            "name": "cm_ceiling",
             "target_mode": "basket",
-            "data": {"targets": ["A", "B"]},
+            "data": {"targets": list(tops)},
             "entry": _gt(5.0),
             "params": {"horizon": 1, "benchmark": "cross_mean"},
         }
     )
-    res = run_backtest(thesis, load(thesis, files))
+    return run_backtest(thesis, load(thesis, files))
+
+
+def test_cross_mean_bar_mean_is_taken_about_the_bars_offset_and_censors_only_past_the_range(
+    tmp_path,
+):
+    # Two members whose pct legs of 1e308 and 1.5e308 sum past the double range: the plain row
+    # mean overflowed and every member censored as `no_benchmark` — though the bar's mean,
+    # 1.25e308, is a double. About the bar's offset it is computed: both members close, their
+    # excesses are ∓(1.5e308 − 1e308)/2, the bench leg is the mean, and every bar being full the
+    # pooled mean is exactly 0.
+    res = _ceiling_basket(tmp_path, {"A": 1e8, "B": 1.5e8})
     cov = res.summary["cells"][0]["outcome_coverage"]
     for t in ("A", "B"):
+        assert cov[t]["n_attempted"] == cov[t]["n_closed"] == 19
+    closed = res.trades[~res.trades["is_open"]]
+    leg_a, leg_b = 1e8 / 1e-300 - 1.0, 1.5e8 / 1e-300 - 1.0
+    rows = {t: closed[closed["target"] == t] for t in ("A", "B")}
+    np.testing.assert_array_equal(rows["A"]["ret"].to_numpy(), -rows["B"]["ret"].to_numpy())
+    assert rows["B"]["ret"].iloc[0] == pytest.approx((leg_b - leg_a) / 2.0, rel=1e-15)
+    assert rows["A"]["ret_bench"].iloc[0] == pytest.approx(leg_a / 2.0 + leg_b / 2.0, rel=1e-15)
+    assert res.summary["cells"][0]["pooled"]["mean_ret"] == 0.0
+    # A bar whose CENTRED sum leaves the range — four members at 1.7e308 beside a flat one, a
+    # centred sum of 2.55e308 — has no computed mean: every member censors as `no_benchmark`
+    # (fail-closed: the gate refuses the censoring), silently, where an overflow warning would
+    # escape the run (an exception under -W error). The flat member's even bars close.
+    res = _ceiling_basket(tmp_path, {"A": 1.7e8, "B": 1.7e8, "C": 1.7e8, "D": 1.7e8, "E": None})
+    cov = res.summary["cells"][0]["outcome_coverage"]
+    for t in "ABCD":
         assert cov[t]["n_attempted"] == 19 and cov[t]["n_closed"] == 0
         assert cov[t]["exit_reasons"]["no_benchmark"] == 19
-    assert res.summary["cells"][0]["pooled"]["n"] == 0
+    assert cov["E"]["n_closed"] == 19 and cov["E"]["exit_reasons"]["no_benchmark"] == 19
 
 
 def _ceiling_episode_files(tmp_path, targets):
@@ -4733,9 +4819,10 @@ def test_cross_mean_member_hole_censors_the_whole_bar(tmp_path):
     # above (test_missing_benchmark_bars_censor_as_no_benchmark) with the hole in a MEMBER file:
     # the basket mean is over ALL declared members' legs, so one member's NaN leg kills the WHOLE
     # bar — the HEALTHY member's firing there censors as `no_benchmark`, never closes against a
-    # partial-basket mean. This test FAILS if `_forward`'s `fwd.mean` were replaced by
-    # `np.nanmean`: the surviving member would be quietly demeaned by a different (one-member)
-    # basket, its rows would close as `horizon`, and no row would ever carry `no_benchmark`.
+    # partial-basket mean. This test FAILS if `_forward`'s whole-bar test were dropped (the
+    # offset and mean taken over the finite members alone): the surviving member would be quietly
+    # demeaned by a different (one-member) basket, its rows would close as `horizon`, and no row
+    # would ever carry `no_benchmark`.
     n, h = 60, 5
     holes = [30, 31]
     idx = pd.date_range("2021-01-01", periods=n, freq="1D")
@@ -4819,8 +4906,9 @@ def test_cross_mean_log_leg_past_the_double_range_no_longer_censors_the_bar(tmp_
         assert a_row["exit_reason"] == b_row["exit_reason"] == "horizon"
         assert b_row["ret_raw"] == b_leg
         assert a_row["ret_raw"] == np.log(a[bar + 2] / a[bar + 1])
-        assert a_row["ret_bench"] == b_row["ret_bench"] == (a_row["ret_raw"] + b_leg) / 2
-        assert a_row["ret"] == a_row["ret_raw"] - a_row["ret_bench"]
+        assert a_row["ret_bench"] == b_row["ret_bench"]
+        assert a_row["ret_bench"] == pytest.approx((a_row["ret_raw"] + b_leg) / 2, rel=1e-15)
+        assert a_row["ret"] == pytest.approx(a_row["ret_raw"] - a_row["ret_bench"], abs=2e-13)
     cov = res.summary["cells"][0]["outcome_coverage"]
     assert cov["A"]["exit_reasons"]["no_benchmark"] == 0
     assert cov["B"]["exit_reasons"]["no_outcome"] == 0

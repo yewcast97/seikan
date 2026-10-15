@@ -63,7 +63,7 @@ from seikan.numeric import MIN_NORMAL, log_ratio_array
 # Welford/West recurrence), never as E[x²] − E[x]²: the one-pass form cancels catastrophically on
 # large-magnitude series (a price near 5000 with a std near 1 has already lost most of the
 # mantissa). The two-pass windows are centered about the window's OWN offset (its first value; a
-# cross-section's range midpoint — ``_window_moments``, ``_row_offset``), never about the rounded
+# cross-section's range midpoint — ``_window_moments``, ``cross_centre``), never about the rounded
 # mean of the raw values: that mean's rounding is the size of the level's ulp, and a spread at that
 # scale (``[2**52, 2**52 + 1]``) read a std of 0.707 for 0.5 and a z-score past its bound.
 #
@@ -619,7 +619,7 @@ def unary_op_apply_nb(arr: npt.NDArray[np.float64], op: str) -> npt.NDArray[np.f
     return np.where(np.isfinite(out), out, np.nan)
 
 
-def _constant_rows(a: npt.NDArray[np.float64], finite: npt.NDArray[np.bool_]) -> np.ndarray:
+def constant_rows(a: npt.NDArray[np.float64], finite: npt.NDArray[np.bool_]) -> np.ndarray:
     """(rows, 1): the bars whose FINITE members all share one value (False on an empty row)."""
     hi = np.where(finite, a, -np.inf).max(axis=1, keepdims=True)
     lo = np.where(finite, a, np.inf).min(axis=1, keepdims=True)
@@ -640,6 +640,22 @@ def _row_offset(a: npt.NDArray[np.float64], finite: npt.NDArray[np.bool_]) -> np
         mid = hi / 2.0 + lo / 2.0
     offset: np.ndarray = np.where(finite.any(axis=1, keepdims=True), mid, 0.0)
     return offset
+
+
+def cross_centre(
+    a: npt.NDArray[np.float64], finite: npt.NDArray[np.bool_]
+) -> tuple[np.ndarray, np.ndarray]:
+    """``(offset, mean)``, each (rows, 1): a cross-section's offset (:func:`_row_offset`) and the
+    mean of its finite members' differences from it — the centre ``cross_demean`` and
+    ``cross_agg``'s std reduce about, and the runner's ``cross_mean`` benchmark. A member's
+    deviation from the cross-section's mean is ``(x − offset) − mean`` (exact differences from
+    the offset wherever the row lies within a factor of two of it), and the mean itself is
+    ``offset + mean`` rounded once. NaN mean on an empty row; a sum past the double range is
+    ±inf there (callers silence the overflow and test finiteness)."""
+    k = finite.sum(axis=1, keepdims=True).astype(float)
+    offset = _row_offset(a, finite)
+    mean: np.ndarray = np.where(finite, a - offset, 0.0).sum(axis=1, keepdims=True) / k
+    return offset, mean
 
 
 def cross_rank_apply_nb(arr: npt.NDArray[np.float64], min_valid: int) -> npt.NDArray[np.float64]:
@@ -685,9 +701,8 @@ def cross_demean_apply_nb(arr: npt.NDArray[np.float64], min_valid: int) -> npt.N
     finite = np.isfinite(a)
     k = finite.sum(axis=1, keepdims=True).astype(float)
     with np.errstate(all="ignore"):
-        y = np.where(finite, a - _row_offset(a, finite), 0.0)
-        mean = y.sum(axis=1, keepdims=True) / k
-        dev = np.where(_constant_rows(a, finite), 0.0, y - mean)
+        offset, mean = cross_centre(a, finite)
+        dev = np.where(constant_rows(a, finite), 0.0, (a - offset) - mean)
     # `isfinite(dev)`: the row sum (or the subtraction at the float ceiling) can overflow.
     ok = finite & (k >= float(max(min_valid, 2))) & np.isfinite(dev)
     return np.where(ok, dev, np.nan)
@@ -697,10 +712,9 @@ def _row_var(
     a: npt.NDArray[np.float64], finite: npt.NDArray[np.bool_], k: npt.NDArray[np.float64]
 ) -> npt.NDArray[np.float64]:
     """``(rows, 1)``: each row's population variance over its ``k`` finite members, two-pass
-    (centered) about the row's offset (:func:`_row_offset`) — ``cross_agg`` std's direct form."""
-    y = np.where(finite, a - _row_offset(a, finite), 0.0)
-    mean = y.sum(axis=1, keepdims=True) / k
-    dev = np.where(finite, y - mean, 0.0)
+    (centered) about the row's offset (:func:`cross_centre`) — ``cross_agg`` std's direct form."""
+    offset, mean = cross_centre(a, finite)
+    dev = np.where(finite, (a - offset) - mean, 0.0)
     var: npt.NDArray[np.float64] = (dev * dev).sum(axis=1, keepdims=True) / k
     return var
 
@@ -723,7 +737,7 @@ def cross_agg_apply_nb(
     k = finite.sum(axis=1, keepdims=True).astype(float)
     # A cross-section whose members all share one value: its mean IS that value and its std is
     # 0.0 (the zero-dispersion note above).
-    constant = _constant_rows(a, finite)
+    constant = constant_rows(a, finite)
     with np.errstate(all="ignore"):
         if agg == "mean":
             v = np.where(finite, a, 0.0).sum(axis=1, keepdims=True) / k

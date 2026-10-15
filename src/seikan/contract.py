@@ -1081,7 +1081,8 @@ REPORT_FIELDS: dict[str, JsonValue] = {
             "EXCESS returns in the same algebra, and direction signs every measurement. "
             "ret_raw / ret_bench (and mean_ret_raw / mean_ret_bench) are the excess return's "
             "own direction-signed legs in that same algebra — ret == ret_raw − ret_bench per "
-            "observation. ONE exemption: the RAW-path fields (mae, mfe, pre_ret, the "
+            "observation (under cross_mean to the bench leg's one rounding: ret is the deviation "
+            "about the bar's offset). ONE exemption: the RAW-path fields (mae, mfe, pre_ret, the "
             "mae_quantiles / mfe_quantiles blocks incl. their means) "
             "are never benchmark-adjusted, so under a benchmark they are not commensurable with "
             "ret and no difference between them means anything — edge_ratio divides the two RAW "
@@ -1666,8 +1667,9 @@ TRADES_CSV: dict[str, JsonValue] = {
         ),
         "ret_raw": (
             "the signed RAW outcome leg over the same window — equals ret when no benchmark is "
-            "declared; ret == ret_raw - ret_bench per row when benchmarked; empty on censored "
-            "rows"
+            "declared; ret == ret_raw - ret_bench per row under market, and to the bench leg's "
+            "one rounding under cross_mean (ret is the deviation about the bar's offset); empty "
+            "on censored rows"
         ),
         "ret_bench": (
             "the signed benchmark leg the excess subtraction consumed (the market series' "

@@ -70,7 +70,7 @@ from seikan.analysis.stats import (
     subperiod_means,
     timing_summary,
 )
-from seikan.compiler import vectorize
+from seikan.compiler import nb, vectorize
 from seikan.compiler.data import MarketData
 from seikan.compiler.paths import (
     bars_to_positive_full,
@@ -1195,8 +1195,10 @@ def _measure_grid(
                 df["exit_px"] = exit_px
                 df["ret"] = ret
                 # The excess return's own legs (evidence-only attribution:
-                # ret = ret_raw − ret_bench, exactly — the subtraction in `_forward` is
-                # per-observation). Masked to CLOSED rows like `mae`/`mfe`, never like `pre_ret`:
+                # ret = ret_raw − ret_bench, exactly under `market` — the subtraction in
+                # `_forward` is per-observation — and to the bench leg's one rounding under
+                # `cross_mean`, whose excess is taken about the bar's offset). Masked to CLOSED
+                # rows like `mae`/`mfe`, never like `pre_ret`:
                 # the legs attribute `ret`, so they must cover exactly the pool `ret`'s statistics
                 # describe — an unmasked raw leg on a `no_benchmark` row would hand a consumer a
                 # raw mean over a LARGER pool than the excess mean it explains. Unbenchmarked
@@ -1326,7 +1328,7 @@ def run_backtest(thesis: Thesis, md: MarketData) -> EventStudyResult:
     # measurable, so a benchmark-caused NaN can be labelled "no_benchmark" instead of "open" in the
     # trades frame; raw is the pre-subtraction signed leg and bench the direction-signed benchmark
     # leg (None when no benchmark is declared) — retained so the trades frame and the panels can
-    # ATTRIBUTE each excess observation (`ret = ret_raw − ret_bench`) instead of discarding the
+    # ATTRIBUTE each excess observation (`ret ≈ ret_raw − ret_bench`) instead of discarding the
     # legs the subtraction consumed. Memory: one extra (rows × targets) frame per horizon only when
     # a benchmark is declared (unbenchmarked, `raw` aliases `fwd` — no copy; the branches below
     # rebind, they never mutate in place) plus a (rows × 1) bench column.
@@ -1355,30 +1357,32 @@ def run_backtest(thesis: Thesis, md: MarketData) -> EventStudyResult:
             fwd = np.where(np.isfinite(fwd), fwd, np.nan)
         elif bench_mode == "cross_mean":
             # Excess over the BASKET's own same-window mean (self included), in the outcome's own
-            # algebra (`diff` never reaches here — basket refuses it at validation). The plain row
-            # mean IS the fail-closed contract: any member's leg NaN at a bar propagates NaN into
-            # the whole bar's benchmark leg, censoring every member's firing there as
-            # `no_benchmark` — never a partial-basket mean, which would quietly demean the
-            # surviving members by a DIFFERENT basket while their rows escape the censoring
-            # ledger. `fwd` is already signed, and sign·(tgt − mean(tgt)) ≡ signed − mean(signed),
-            # so demeaning after the sign is exact for shortonly too — which is also why the bar's
-            # mean IS the signed benchmark leg, needing no further sign. A bar whose legs are all
-            # EQUAL (a shared outcome feed broadcast to the basket) has its mean equal to that
-            # value — exact zero dispersion, as in the kernels: the rounded row mean is not the
-            # value, and every member's excess would read its residue instead of 0.
-            # Legs whose sum leaves the double range overflow the bar's mean, and the bar censors
-            # through the finiteness test below like any other unmeasurable window — silently,
-            # as `_measure`'s own overflow does.
+            # algebra (`diff` never reaches here — basket refuses it at validation). Fail-closed:
+            # any member's leg NaN at a bar voids the whole bar's benchmark leg, censoring every
+            # member's firing there as `no_benchmark` — never a partial-basket mean, which would
+            # quietly demean the surviving members by a DIFFERENT basket while their rows escape
+            # the censoring ledger. `fwd` is already signed, and sign·(tgt − mean(tgt)) ≡
+            # signed − mean(signed), so demeaning after the sign is exact for shortonly too —
+            # which is also why the bar's mean IS the signed benchmark leg, needing no further
+            # sign. Each excess is the member's deviation about the bar's OFFSET, as the
+            # `cross_demean` kernel takes it (`nb.cross_centre`): `(leg − c) − mean(leg − c)`.
+            # About the rounded raw mean instead, a spread at the level's ulp lost its bits —
+            # `[2**52, 2**52 + 1, 2**52 + 1]` read excesses `[0, 1, 1]` for `[−2/3, 1/3, 1/3]`,
+            # three selected rows "all beating the basket". The bench leg is `c + mean`, the
+            # basket mean rounded once, so `ret == ret_raw − ret_bench` holds to that one
+            # rounding. A bar whose legs are all EQUAL (a shared outcome feed broadcast to the
+            # basket) reads every excess exactly 0 and its bench leg the value — exact zero
+            # dispersion, as in the kernels. A member whose own deviation leaves the double range
+            # is NaN alone (as in the kernel), and a bar whose centred sum does voids every member
+            # — silently, as `_measure`'s own overflow does.
+            finite = np.isfinite(fwd)
+            whole = finite.all(axis=1, keepdims=True)
             with np.errstate(over="ignore", invalid="ignore"):
-                mu = fwd.mean(axis=1, keepdims=True)
-                mu = np.where(
-                    fwd.max(axis=1, keepdims=True) == fwd.min(axis=1, keepdims=True),
-                    fwd[:, :1],
-                    mu,
-                )
-                bench = mu
-                fwd = fwd - mu
-            fwd = np.where(np.isfinite(fwd), fwd, np.nan)
+                offset, mean = nb.cross_centre(fwd, finite)
+                mu = offset + mean
+                bench = np.where(whole & np.isfinite(mu), mu, np.nan)
+                excess = np.where(nb.constant_rows(fwd, finite), 0.0, (fwd - offset) - mean)
+            fwd = np.where(np.isfinite(bench) & np.isfinite(excess), excess, np.nan)
         return fwd, tgt_finite, raw, bench
 
     # Pre-entry drift frame per horizon, anchored at the FIRING bar t like ``fwd`` so it aligns with
