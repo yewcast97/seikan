@@ -592,7 +592,8 @@ def event_agg(
     sig: np.ndarray, init: np.ndarray, defined: np.ndarray, x: np.ndarray, agg: str
 ) -> np.ndarray:
     """``agg(x[s .. t])`` per bar, recomputed from scratch over the window each time (no running
-    state — the slow, obviously-correct form); a NaN anywhere in the window → NaN."""
+    state — the slow, obviously-correct form; the sum is the exactly rounded ``math.fsum``); a
+    NaN anywhere in the window → NaN."""
     s_idx, _known = event_anchor(sig, init, defined)
     n = sig.shape[0]
     out = np.full(n, np.nan)
@@ -603,14 +604,18 @@ def event_agg(
         win = x[s : t + 1]
         if not np.all(np.isfinite(win)):
             continue
+        try:
+            total = math.fsum(win.tolist())
+        except OverflowError:
+            total = math.nan
         if agg == "sum":
-            v = float(np.sum(win))
+            v = total
         elif agg == "max":
             v = float(np.max(win))
         elif agg == "min":
             v = float(np.min(win))
         elif agg == "mean":
-            v = float(win[0]) if len(set(win.tolist())) == 1 else float(np.sum(win)) / len(win)
+            v = float(win[0]) if len(set(win.tolist())) == 1 else total / len(win)
         else:
             raise ValueError(agg)
         if math.isfinite(v):

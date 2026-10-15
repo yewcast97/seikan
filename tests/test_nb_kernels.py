@@ -1350,7 +1350,7 @@ def test_zscore_ema_carry_needs_a_held_input(c):
 
 def test_event_agg_mean_of_a_run_one_ulp_off_constant_is_sum_over_count():
     # Only a bit-identical run takes its value as the mean; one ulp off is variation, read as
-    # sum / count like any other run.
+    # sum / count like any other run — the exactly rounded sum.
     n = 40
     x = np.full(n, 0.1)
     x[10] = np.nextafter(0.1, 1.0)
@@ -1358,7 +1358,45 @@ def test_event_agg_mean_of_a_run_one_ulp_off_constant_is_sum_over_count():
     sig[0] = True
     ones = np.ones(n, dtype=bool)
     got = nb.event_agg_apply_nb(sig[:, None], ones[:, None], ones[:, None], x[:, None], "mean")
-    np.testing.assert_array_equal(got.ravel()[10:], (np.cumsum(x) / np.arange(1, n + 1))[10:])
+    want = [math.fsum(x[: t + 1].tolist()) / (t + 1) for t in range(n)]
+    np.testing.assert_array_equal(got.ravel()[10:], want[10:])
+
+
+def test_event_agg_running_sum_is_exact():
+    # `acc += v` lost a term a larger one swallowed and never got it back when that term
+    # cancelled: one event at bar 0 over [2**54, 1, −2**54, 0, …] has an exact sum of 1 from bar
+    # 2 on, and the kernel read 0 there — event_agg(E, X, sum) == 0 fired on every bar. The
+    # running sum is kept exact and read correctly rounded: math.fsum of the window, bit for bit,
+    # on every bar of random and adversarial windows (fsum's half-even step across partials
+    # included: [1e-16, 1, 1e16] reads 1.0000000000000002e16, where a float sum reads 1e16).
+    def run(x, sig, agg="sum"):
+        ones = np.ones(x.shape[0], dtype=bool)
+        return nb.event_agg_apply_nb(sig[:, None], ones[:, None], ones[:, None], x[:, None], agg)
+
+    x = np.r_[2.0**54, 1.0, -(2.0**54), np.zeros(77)]
+    sig = np.zeros(80, dtype=bool)
+    sig[0] = True
+    np.testing.assert_array_equal(run(x, sig).ravel(), np.r_[2.0**54, 2.0**54, np.ones(78)])
+    half_even = run(np.array([1e-16, 1.0, 1e16]), np.array([True, False, False])).ravel()
+    assert half_even[2] == math.fsum([1e-16, 1.0, 1e16]) != 1e-16 + 1.0 + 1e16
+    rng = np.random.default_rng(5)
+    for trial in range(120):
+        n = int(rng.integers(5, 120))
+        if trial % 3 == 0:
+            x = rng.normal(0.0, 1.0, n) * 10.0 ** rng.integers(-20, 20, n)
+        elif trial % 3 == 1:
+            x = np.resize([2.0**54, 1.0, -(2.0**54)], n)
+        else:
+            x = np.where(rng.random(n) < 0.5, 1e16, -1e16) + rng.choice([1e-16, -1e-16, 0.0], n)
+        sig = rng.random(n) < 0.1
+        sig[0] = True
+        anchor = np.maximum.accumulate(np.where(sig, np.arange(n), 0))
+        want = [math.fsum(x[anchor[t] : t + 1].tolist()) for t in range(n)]
+        np.testing.assert_array_equal(run(x, sig).ravel(), want)
+        ones = np.ones(n, dtype=bool)
+        np.testing.assert_array_equal(
+            run(x, sig, "mean").ravel(), ref.event_agg(sig, ones, ones, x, "mean")
+        )
 
 
 @pytest.mark.parametrize(("lo", "hi"), [(99.75, 100.0), (1.0, 1.25), (100.25, 100.0), (0.1, 0.2)])

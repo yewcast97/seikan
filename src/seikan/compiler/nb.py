@@ -1181,6 +1181,62 @@ def event_value_apply_nb(
 
 
 @njit(cache=True)
+def _expansion_add(
+    p: npt.NDArray[np.float64], m: int, x: float
+) -> tuple[npt.NDArray[np.float64], int, bool]:
+    """Add ``x`` into the non-overlapping partials ``p[:m]`` of an exact running sum — Shewchuk's
+    grow-expansion, the ``math.fsum`` algorithm: the sum of the partials is the sum of every
+    value added, with no bit lost. Returns the partials (grown when full), their count, and
+    whether an intermediate sum left the double range (the running sum then has no value)."""
+    i = 0
+    for k in range(m):
+        y = p[k]
+        if abs(x) < abs(y):
+            x, y = y, x
+        hi = x + y
+        if not np.isfinite(hi):
+            return p, m, True
+        lo = y - (hi - x)
+        if lo != 0.0:
+            p[i] = lo
+            i += 1
+        x = hi
+    if x != 0.0:
+        if i == p.shape[0]:
+            grown = np.empty(2 * p.shape[0])
+            grown[:i] = p[:i]
+            p = grown
+        p[i] = x
+        i += 1
+    return p, i, False
+
+
+@njit(cache=True)
+def _expansion_value(p: npt.NDArray[np.float64], m: int) -> float:
+    """The correctly rounded value of the partials ``p[:m]`` (:func:`_expansion_add`) —
+    ``math.fsum``'s final step, its half-even correction across partials included."""
+    if m == 0:
+        return 0.0
+    n = m - 1
+    hi = float(p[n])
+    lo = 0.0
+    while n > 0:
+        x = hi
+        n -= 1
+        y = p[n]
+        hi = x + y
+        lo = y - (hi - x)
+        if lo != 0.0:
+            break
+    if n > 0 and ((lo < 0.0 and p[n - 1] < 0.0) or (lo > 0.0 and p[n - 1] > 0.0)):
+        y = lo * 2.0
+        x = hi + y
+        if y == x - hi:
+            hi = x
+    return hi
+
+
+@njit(cache=True)
 def event_agg_1d(
     sig: npt.NDArray[np.bool_],
     init: npt.NDArray[np.bool_],
@@ -1191,14 +1247,23 @@ def event_agg_1d(
     """``agg(x[s(t) .. t])`` — the running aggregate since the latest event, reset AT each event
     (the event bar included). ``mode`` 0 = sum, 1 = max, 2 = min, 3 = mean (sum / (t − s + 1)).
 
+    The running sum is EXACT: it is kept as non-overlapping partials (:func:`_expansion_add`)
+    and read correctly rounded on every bar — ``math.fsum`` of ``x[s .. t]``. A plain ``acc +=
+    v`` lost a term a larger one swallowed and never got it back when that term cancelled: after
+    ``[2**54, 1, −2**54]`` the exact sum is 1 and it read 0 from then on, so
+    ``event_agg(E, X, sum) == 0`` fired where it was false.
+
     STRICT finite gate, the ``rolling_agg`` rule: one NaN input bar inside ``[s, t]`` POISONS the
     aggregate until the next event. A warmup bar carries no state; a hole bar drops the anchor
     (nothing is emitted until the next defined event, and the hole bar itself never contributes).
-    Only finite results are emitted (an overflowed sum reads NaN)."""
+    Only finite results are emitted: a sum whose running partials leave the double range reads
+    NaN until the next event (as does a mean that is not of an all-equal run)."""
     n = sig.shape[0]
     out = np.full(n, np.nan)
     anchored = False
-    acc = 0.0
+    acc = np.empty(8)  # the running sum's partials, exact
+    n_acc = 0
+    overflowed = False
     mx = 0.0
     mn = 0.0
     cnt = 0
@@ -1212,7 +1277,8 @@ def event_agg_1d(
             continue
         if sig[t]:
             anchored = True
-            acc = 0.0
+            n_acc = 0
+            overflowed = False
             mx = -np.inf
             mn = np.inf
             cnt = 0
@@ -1224,20 +1290,23 @@ def event_agg_1d(
             poisoned = True
             continue
         cnt += 1
-        acc += v
+        if (mode == 0 or mode == 3) and not overflowed:
+            acc, n_acc, overflowed = _expansion_add(acc, n_acc, v)
         if v > mx:
             mx = v
         if v < mn:
             mn = v
         if mode == 0:
-            r = acc
+            r = np.nan if overflowed else _expansion_value(acc, n_acc)
         elif mode == 1:
             r = mx
         elif mode == 2:
             r = mn
-        else:
+        elif mx == mn:
             # an all-equal stretch's mean IS its value (the zero-dispersion note above)
-            r = mx if mx == mn else acc / cnt
+            r = mx
+        else:
+            r = np.nan if overflowed else _expansion_value(acc, n_acc) / cnt
         if np.isfinite(r):
             out[t] = r
     return out

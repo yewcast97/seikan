@@ -2585,6 +2585,22 @@ def test_event_agg_poisons_until_next_event():
     np.testing.assert_array_equal(v, [1.0, 3.0, np.nan, np.nan, 5.0, 11.0])
 
 
+def test_event_agg_sum_keeps_a_swallowed_term_through_its_cancellation():
+    # One event at bar 0 over the feed [2**54, 1, −2**54, 0, …]: from bar 2 on the exact sum is
+    # 1, but `acc += v` lost the 1 inside 2**54 and read 0 — `event_agg(E, X, sum) == 0` fired
+    # on 78 bars where it was false on every one. The running sum is exact now.
+    n = 80
+    z = np.zeros(n)
+    z[0] = 5.0
+    md = _ev_md(z, close=np.r_[2.0**54, 1.0, -(2.0**54), np.zeros(n - 3)] + 1000.0)
+    x = BinaryOp(left=Field(column="close"), op="-", right=Constant(value=1000.0))
+    total = EventAgg(event=_z_gt(1.0), input=x, agg="sum")
+    v, _i = _series3(total, md)
+    assert (v[:2] == 2.0**54).all() and (v[2:] == 1.0).all()
+    cond = ThresholdCondition(left=total, op="==", right=Constant(value=0.0))
+    assert not vz.signal(cond, md).to_numpy().any()
+
+
 def test_event_agg_mask_recipes():
     # any / all / count of C since S — the three counting recipes over mask(C)
     md = _ev_md([5.0, 0.0, 0.0, 5.0, 0.0, 0.0], close=[1.0, 9.0, 1.0, 9.0, 9.0, 1.0])
