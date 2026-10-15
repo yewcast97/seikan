@@ -76,19 +76,35 @@ def subperiod_edges(length: int, k: int = 3) -> np.ndarray:
 
 @np.errstate(over="ignore", invalid="ignore")
 def subperiod_means(
-    rets: np.ndarray, entry_bars: np.ndarray, edges: np.ndarray
+    rets: np.ndarray,
+    entry_bars: np.ndarray,
+    edges: np.ndarray,
+    *,
+    rets_pool: np.ndarray | None = None,
 ) -> list[SubperiodCounts]:
     """Per segment ``{n, mean_ret}`` over a pool's closed observations, assigned by ENTRY bar.
 
     Era VISIBILITY, not a train/test split: there is NO purging — an observation belongs to its
     entry bar's segment even when its forward window crosses the boundary — and nothing reads the
-    result. ``mean_ret`` is None for an empty segment (no evidence, not zero)."""
+    result. ``mean_ret`` is None for an empty segment (no evidence, not zero).
+
+    ``rets_pool`` (row-aligned with ``rets``; default ``rets``) is what the era mean SUMS — a
+    ``cross_mean`` basket's pooled panel hands in each bar's exact excess sum
+    (``_pools.cross_mean_bar_values``): an era holds each entry bar's rows entirely, so its mean
+    is the exactly rounded sum of its bars' exact sums over its row count. ``n`` and the rows an
+    era holds stay on ``rets``; a non-finite pool value (a bar whose sum left the double range)
+    nulls its era's mean, never drops the row."""
     rets = np.asarray(rets, dtype=float)
     bars = np.asarray(entry_bars, dtype=np.int64)
+    pool = rets if rets_pool is None else np.asarray(rets_pool, dtype=float)
+    if pool.shape != rets.shape:
+        raise ValueError(
+            f"rets_pool must be row-aligned with rets: shape {pool.shape} != {rets.shape}"
+        )
     keep = np.isfinite(rets)
-    rets, bars = rets[keep], bars[keep]
+    bars, pool = bars[keep], pool[keep]
     out: list[SubperiodCounts] = []
     for a, b in pairwise(edges):
-        seg = rets[(bars >= a) & (bars < b)]
+        seg = pool[(bars >= a) & (bars < b)]
         out.append({"n": int(seg.size), "mean_ret": exact_mean(seg) if seg.size else None})
     return out

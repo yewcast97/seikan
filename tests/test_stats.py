@@ -30,6 +30,7 @@ from seikan.analysis.stats import (
     cell_conditional_buckets,
     concentration,
     conditional_buckets,
+    cross_mean_bar_values,
     cross_mean_pooled_hac,
     cross_mean_pooled_mean,
     cscv_pbo,
@@ -707,12 +708,12 @@ def _full_bar_frame(order, feat, n_bars=48, seed=41):
     bar 0..n_bars-1, its excess the member's leg less the bar's basket mean — three rounded
     values whose exact sum is 0 and whose rounded sum is residue. Rows run in ``order``'s
     target-then-bar order (the runner's frame order); ``feat[member]`` is the member's
-    entry-time feature column over the bars."""
+    entry-time feature column over the bars. Returns the frame and the (bars × A, B, C) legs."""
     rng = np.random.RandomState(seed)
     raw = np.round(rng.normal(0.0, 0.02, (n_bars, 3)), 4)
     excess = dict(zip("ABC", (raw - raw.mean(axis=1, keepdims=True)).T, strict=True))
     bars = np.arange(n_bars)
-    return pd.DataFrame(
+    frame = pd.DataFrame(
         {
             "target": np.repeat(list(order), n_bars),
             "entry_bar": np.tile(bars, len(order)),
@@ -720,6 +721,19 @@ def _full_bar_frame(order, feat, n_bars=48, seed=41):
             "ret": np.concatenate([excess[m] for m in order]),
         }
     )
+    return frame, raw
+
+
+def _bar_pool(frame, raw, members="ABC"):
+    """The rows' bar values (``cross_mean_bar_values``) row-aligned with ``frame``: each bar's
+    exact excess sum over the members holding a row in ``frame`` on its first such member (in
+    ``members`` order), 0.0 on the others — what the runner hands the buckets as ``rets_pool``."""
+    col = {m: g for g, m in enumerate(members)}
+    bars = frame["entry_bar"].to_numpy(dtype=np.int64)
+    member = frame["target"].map(col).to_numpy(dtype=np.int64)
+    closed = np.zeros(raw.shape, dtype=bool)
+    closed[bars, member] = True
+    return cross_mean_bar_values(raw, closed)[bars, member]
 
 
 def test_cell_buckets_read_a_whole_full_bar_at_its_exact_zero_in_any_declaration_order():
@@ -733,12 +747,11 @@ def test_cell_buckets_read_a_whole_full_bar_at_its_exact_zero_in_any_declaration
 
     dow = np.arange(48) % 4
     feat = {m: dow.astype(float) for m in "ABC"}
-    full = np.ones(48, dtype=bool)
     plain_reads = set()
     for order in itertools.permutations("ABC"):
-        frame = _full_bar_frame(order, feat)
+        frame, raw = _full_bar_frame(order, feat)
         plain = cell_conditional_buckets(frame, ["feat"])
-        out = cell_conditional_buckets(frame, ["feat"], full_bars=full)
+        out = cell_conditional_buckets(frame, ["feat"], rets_pool=_bar_pool(frame, raw, order))
         block = out["conditional_buckets"]["feat"]
         plain_block = plain["conditional_buckets"]["feat"]
         assert block["reason"] is None and len(block["buckets"]) == 4
@@ -759,34 +772,32 @@ def test_cell_buckets_read_a_whole_full_bar_at_its_exact_zero_in_any_declaration
     assert len({mono for _, mono in plain_reads}) > 1
 
 
-def test_cell_buckets_full_bars_split_across_ordinals_are_byte_identical():
-    # A PER-MEMBER feature splits every full bar: A's feature ascends with the bar and B's
-    # descends, so A's quartile j and B's 3 - j never coincide — no record holds a full bar's
-    # whole sum, and every row keeps its own return: the panel is the plain read, byte for byte.
+def test_cell_buckets_bars_split_across_ordinals_are_byte_identical():
+    # A PER-MEMBER feature splits every bar: A's feature ascends with the bar and B's descends,
+    # so A's quartile j and B's 3 - j never coincide — no record holds a bar's whole sum, and
+    # every row keeps its own return: the panel is the plain read, byte for byte.
     rng = np.random.RandomState(43)
     bars = np.arange(48, dtype=float)
     feat = {"A": bars, "B": -bars, "C": rng.normal(size=48)}
-    frame = _full_bar_frame("ABC", feat)
-    full = np.ones(48, dtype=bool)
-    out = cell_conditional_buckets(frame, ["feat"], full_bars=full)
+    frame, raw = _full_bar_frame("ABC", feat)
+    out = cell_conditional_buckets(frame, ["feat"], rets_pool=_bar_pool(frame, raw))
     assert out == cell_conditional_buckets(frame, ["feat"])
     assert out["conditional_buckets"]["feat"]["reason"] is None
-    # a pool with no full bar, whatever its feature, is the plain read too
-    basket_wide = _full_bar_frame("ABC", dict.fromkeys("ABC", bars % 4))
-    none = np.zeros(48, dtype=bool)
-    assert cell_conditional_buckets(basket_wide, ["feat"], full_bars=none) == (
-        cell_conditional_buckets(basket_wide, ["feat"])
-    )
+    # the rows' own returns as the pool values ARE the plain read; a misaligned pool is refused
+    plain = cell_conditional_buckets(frame, ["feat"])
+    assert cell_conditional_buckets(frame, ["feat"], rets_pool=frame["ret"].to_numpy()) == plain
+    with pytest.raises(ValueError, match="row-aligned"):
+        cell_conditional_buckets(frame, ["feat"], rets_pool=np.zeros(3))
 
 
-def test_cell_buckets_zero_only_the_full_bars_whose_rows_share_one_ordinal():
+def test_cell_buckets_read_every_bar_held_whole_at_its_exact_sum():
     # One pool, every case at once. Every member keeps ten rows of each feature value 0..3, so
     # the per-target quartile edges agree and a row's ordinal IS its value. Bars 0..39 are full:
     # most land whole in one ordinal, but bars 4 and 9 are SPLIT (A and B swap their values 0
     # and 1) and bars 6 and 10 are PARTLY UNBUCKETED (C's feature missing on 6, A's and B's on
-    # 10); bar 40 holds A and B only and bar 41 C only (partial bars, never full). Only the
-    # whole full bars' rows read 0.0 in their record's mean, every other row its own return —
-    # and n and hit_rate are the rows' own throughout.
+    # 10); bar 40 holds A and B only and bar 41 C only (partial bars, each whole in ordinal 2).
+    # Every bar held whole reads its exact excess sum in its record's mean (0.0 for a full bar),
+    # every other row its own return — and n and hit_rate are the rows' own throughout.
     n_bars = 42
     value = (np.arange(n_bars) % 4).astype(float)
     value[40] = value[41] = 2.0
@@ -795,28 +806,35 @@ def test_cell_buckets_zero_only_the_full_bars_whose_rows_share_one_ordinal():
         feat[m][4], feat[m][9] = value[9], value[4]
         feat[m][10] = np.nan
     feat["C"][6] = np.nan
-    frame = _full_bar_frame("ABC", feat, n_bars=n_bars)
+    frame, raw = _full_bar_frame("ABC", feat, n_bars=n_bars)
     bar, tgt = frame["entry_bar"].to_numpy(), frame["target"].to_numpy()
     frame = frame[~(((bar == 40) & (tgt == "C")) | ((bar == 41) & (tgt != "C")))]
-    full = np.arange(n_bars) < 40
-    valid = frame[frame["feat"].notna()]
+    pool = _bar_pool(frame, raw)
+    valid_rows = frame["feat"].notna().to_numpy()
+    valid = frame[valid_rows]
     for _, rows in valid.groupby("target"):  # the design: each member's ordinal is its value
         codes = pd.qcut(rows["feat"], 4, labels=False, duplicates="drop").to_numpy()
         assert (codes == rows["feat"].to_numpy()).all()
 
-    out = cell_conditional_buckets(frame, ["feat"], full_bars=full)
+    out = cell_conditional_buckets(frame, ["feat"], rets_pool=pool)
     plain = cell_conditional_buckets(frame, ["feat"])
     block = out["conditional_buckets"]["feat"]["buckets"]
-    whole = valid["entry_bar"].isin(sorted(set(range(40)) - {4, 9, 6, 10})).to_numpy()
-    sums = np.where(whole, 0.0, valid["ret"].to_numpy(dtype=float))
+    whole = valid["entry_bar"].isin(sorted(set(range(42)) - {4, 9, 6, 10})).to_numpy()
+    sums = np.where(whole, pool[valid_rows], valid["ret"].to_numpy(dtype=float))
     ordinal = valid["feat"].to_numpy()
     assert [b["mean_ret"] for b in block] == [float(np.mean(sums[ordinal == i])) for i in range(4)]
     assert [(b["n"], b["hit_rate"]) for b in block] == [
         (b["n"], b["hit_rate"]) for b in plain["conditional_buckets"]["feat"]["buckets"]
     ]
-    # value 3 holds whole bars alone: exactly 0.0; the other three hold a kept row
+    # value 3 holds whole full bars alone: exactly 0.0; the other three hold a kept row
     assert block[3]["mean_ret"] == 0.0
     assert all(b["mean_ret"] != 0.0 for b in block[:3])
+    # the partial bars enter ordinal 2 at their exact sums, never their rows' rounded sum
+    for b in (40, 41):
+        rows = frame["entry_bar"].to_numpy() == b
+        legs = [Fraction(float(x)) for x in raw[b]]
+        exact = sum(legs["ABC".index(m)] - sum(legs) / 3 for m in frame["target"][rows])
+        assert math.fsum(pool[rows].tolist()) == float(exact)
 
 
 # ---- feature_outcome_association: per-(cell × feature × target) Spearman ----------
@@ -3748,11 +3766,22 @@ def test_cscv_scored_block_carries_null_slope_reason():
     assert "oos_degradation_slope_reason" in out and out["oos_degradation_slope_reason"] is None
 
 
+def _cscv_bar_values(raw, masks, order, closed=None):
+    """``cscv_pbo``'s ``bar_values`` for ``cross_mean`` candidates over the (bars × A, B, C) legs
+    ``raw``: per candidate ``(k,)``, ``cross_mean_bar_values`` over the members in ``order``'s
+    column order, every member closed on the candidate's firing bars."""
+    cols = raw[:, ["ABC".index(m) for m in order]]
+    return {
+        (k,): cross_mean_bar_values(cols, np.repeat((m > 0)[:, None], len(order), axis=1))
+        for k, m in enumerate(masks)
+    }
+
+
 def _full_bar_cscv_cells(order, n_combos=5, length=400, seed=31):
     """A ``cross_mean`` basket grid whose every candidate is ALL-FULL: members A, B, C fire
     together on each candidate's own bars, each forward column the member's leg less the bar's
     basket mean — rounded excesses whose exact per-bar sum is 0 and whose rounded sum is
-    residue. Cells run in ``order``; returned beside the per-candidate full-bar masks."""
+    residue. Cells run in ``order``; returned beside the candidates' ``bar_values``."""
     rng = np.random.RandomState(seed)
     raw = np.round(rng.normal(0.0, 0.02, (length, 3)), 4)
     fwd = dict(zip("ABC", (raw - raw.mean(axis=1, keepdims=True)).T, strict=True))
@@ -3766,7 +3795,7 @@ def _full_bar_cscv_cells(order, n_combos=5, length=400, seed=31):
         for k in range(n_combos)
         for tg in order
     ]
-    return cells, {(k,): masks[k] > 0 for k in range(n_combos)}
+    return cells, _cscv_bar_values(raw, masks, order)
 
 
 def test_cscv_pbo_all_full_cross_mean_grid_ties_in_every_declaration_order():
@@ -3779,8 +3808,10 @@ def test_cscv_pbo_all_full_cross_mean_grid_ties_in_every_declaration_order():
     keys = ("pbo", "lambda_mean", "prob_oos_loss")
     plain_reads = set()
     for order in itertools.permutations("ABC"):
-        cells, full = _full_bar_cscv_cells(order)
-        out = cscv_pbo(cells, 400, list(order), mode="basket", n_combos_declared=5, full_bars=full)
+        cells, values = _full_bar_cscv_cells(order)
+        out = cscv_pbo(
+            cells, 400, list(order), mode="basket", n_combos_declared=5, bar_values=values
+        )
         assert out["reason"] is None and out["n_combos"] == 5 and out["n_splits"] == 70
         assert out["pbo"] == out["lambda_mean"] == out["prob_oos_loss"] == 0.0, order
         assert out["oos_degradation_slope"] is None
@@ -3816,7 +3847,6 @@ def test_cscv_pbo_all_full_grid_s_tied_train_winner_is_the_first_declared_candid
         broad.append(m)
     ledger = ("blocks", "n_splits", "n_splits_attempted", "n_candidates_min", "n_combos")
     for masks, scores in ((sparse + broad, False), (broad + sparse, True)):
-        full = {(k,): m > 0 for k, m in enumerate(masks)}
         reads, plain_reads = set(), set()
         for order in itertools.permutations("ABC"):
             cells = [
@@ -3824,8 +3854,9 @@ def test_cscv_pbo_all_full_grid_s_tied_train_winner_is_the_first_declared_candid
                 for k, m in enumerate(masks)
                 for tg in order
             ]
+            values = _cscv_bar_values(raw, masks, order)
             out = cscv_pbo(
-                cells, length, list(order), mode="basket", n_combos_declared=8, full_bars=full
+                cells, length, list(order), mode="basket", n_combos_declared=8, bar_values=values
             )
             if scores:
                 assert out["reason"] is None and out["n_splits"] == 70, order
@@ -3841,13 +3872,13 @@ def test_cscv_pbo_all_full_grid_s_tied_train_winner_is_the_first_declared_candid
         assert len(plain_reads) > 1  # the premise: the rounded rows' pbo followed it
 
 
-def test_cscv_split_mean_reads_full_bars_at_zero_only_in_the_splits_holding_them():
-    # Three candidates of three members, ten bars per block: candidate 0 holds no full bar,
-    # candidate 1 is full on every bar, candidate 2 only on block 0's first three — nine of the
-    # sixty rows any split holding block 0 reads, so the swap fires on ANY full row, not on a
-    # share of them. A split holding a full bar takes its MEAN from the pool sums (the full bars
-    # at 0) over the rows' own sd; every other split, every candidate without a full bar and the
-    # whole conjunction score are byte-identical to the rows' read.
+def test_cscv_split_mean_sums_the_bars_exact_excess_sums():
+    # Three candidates of three members, ten bars per block. A `cross_mean` candidate's EVERY
+    # split takes its MEAN from the per-block sums of its bars' exact excess sums (`bar_values`)
+    # over the rows' own sd: the all-full candidate's mean is exactly 0.0 on every split (its
+    # rounded rows read residue), the partial candidate's the exact sum of the excesses its
+    # split holds, rounded once per bar. A candidate the values do not key, and the whole
+    # conjunction score, are the rows' read, byte for byte.
     from itertools import combinations
 
     from seikan.analysis._cscv import _split_scores
@@ -3855,77 +3886,61 @@ def test_cscv_split_mean_reads_full_bars_at_zero_only_in_the_splits_holding_them
     rng = np.random.RandomState(47)
     s = 4
     b = np.repeat(np.arange(s), 10)
-    raw = np.round(rng.normal(0.0, 0.02, (3, b.size, 3)), 4)  # candidate × bar × member
-    full = [
-        np.zeros(b.size, dtype=bool),
-        np.ones(b.size, dtype=bool),
-        (b == 0) & (np.arange(b.size) < 3),
-    ]
-    # A full bar's excesses are its members' deviations from their own mean (summing to 0 up to
-    # rounding); a bar not every member closed keeps its rows' real sum.
-    rets = np.where(np.array(full)[:, :, None], raw - raw.mean(axis=2, keepdims=True), raw)
-    moments, refs, extrema, pool = [], [], [], []
+    raw = np.round(rng.normal(0.0, 0.02, (b.size, 3)), 4)  # bar × member legs
+    excess = raw - raw.mean(axis=1, keepdims=True)  # each member's rounded excess
+    full = np.ones(raw.shape, dtype=bool)
+    partial = rng.random(raw.shape) < 0.6
+    partial[:, 0] |= ~partial.any(axis=1)  # every bar holds a closed member
+    closed = [full, partial, full]
+    moments, refs, extrema, sums = [], [], [], []
     for q in range(3):
-        per_member = [_split_tensors(rets[q, :, g], b, s) for g in range(3)]
+        values = cross_mean_bar_values(raw, closed[q])
+        on = closed[q]
+        per_member = [_split_tensors(excess[on[:, g], g], b[on[:, g]], s) for g in range(3)]
         moments.append([m[0, 0] for m, _, _ in per_member])
         refs.append([ref[0, 0] for _, ref, _ in per_member])
         extrema.append([e[0, 0] for _, _, e in per_member])
-        on = full[q]
-        pool.append(
-            [
-                np.stack(
-                    [
-                        np.bincount(b, weights=np.where(on, 0.0, rets[q, :, g]), minlength=s),
-                        np.bincount(b[on], minlength=s).astype(float),
-                    ]
-                )
-                for g in range(3)
-            ]
+        sums.append(
+            [np.bincount(b[on[:, g]], weights=values[on[:, g], g], minlength=s) for g in range(3)]
         )
     tensors = (np.array(moments), np.array(refs), np.array(extrema))
-    pool_t = np.array(pool)
-    residue, moved = [], []
+    pool = (np.array(sums), np.array([True, True, False]))
+    legs = [[Fraction(float(x)) for x in row] for row in raw]
+    residue = []
     for split in combinations(range(s), 2):
         idx = np.array(split)
         conj = _split_scores(*tensors, "conjunction", idx)
-        np.testing.assert_array_equal(_split_scores(*tensors, "conjunction", idx, pool_t), conj)
+        np.testing.assert_array_equal(_split_scores(*tensors, "conjunction", idx, pool), conj)
         plain = _split_scores(*tensors, "basket", idx)
-        got = _split_scores(*tensors, "basket", idx, pool_t)
-        assert got[0] == plain[0]
-        assert got[1] == 0.0
-        residue.append(plain[1])
-        if 0 in split:
-            # The partly-full candidate: its full bars at 0, every other row its own excess,
-            # over the rows' sd —
-            kept = rets[2][np.isin(b, split) & ~full[2]]
-            rows = rets[2][np.isin(b, split)]
-            assert got[2] == pytest.approx(kept.sum() / rows.size / rows.std(ddof=1), rel=1e-9)
-            # — and bit for bit, since the full bars' residue (~3e-18 against sums of 0.005 to
-            # 0.2) hides under any tolerance: the pool sums over n, over the rows' own
-            # reconstructed sd about their own mean.
-            m, ref = tensors[0][2][:, :, idx].sum(axis=2), tensors[1][2]  # (T, 3), (T,)
-            n = m[:, 0].sum()
-            d = ref - (m[:, 1] + m[:, 0] * ref).sum() / n
-            sd = np.sqrt((m[:, 2] + 2.0 * d * m[:, 1] + m[:, 0] * d * d).sum() / (n - 1.0))
-            assert got[2] == pool_t[2][:, 0, idx].sum(axis=1).sum() / n / sd
-            moved.append(got[2] != plain[2])
-        else:
-            assert got[2] == plain[2]
-    assert any(r != 0.0 for r in residue)  # the premise: the rounded rows read residue,
-    assert any(moved)  # and dropping three full bars' moves the partly-full candidate's bits
+        got = _split_scores(*tensors, "basket", idx, pool)
+        assert got[0] == 0.0
+        residue.append(plain[0])
+        assert got[2] == plain[2]  # unkeyed: the moments' own mean
+        # the partial candidate: its pool sums over n, over the rows' own reconstructed sd —
+        m, ref = tensors[0][1][:, :, idx].sum(axis=2), tensors[1][1]  # (T, 3), (T,)
+        n = m[:, 0].sum()
+        d = ref - (m[:, 1] + m[:, 0] * ref).sum() / n
+        sd = np.sqrt((m[:, 2] + 2.0 * d * m[:, 1] + m[:, 0] * d * d).sum() / (n - 1.0))
+        split_sum = pool[0][:, :, idx].sum(axis=(1, 2))[1]
+        assert got[1] == split_sum / n / sd
+        # — whose sum is the split's exact excess sum, to the bar sums' rounding
+        held = np.isin(b, split)[:, None] & closed[1]
+        exact = sum(legs[t][g] - sum(legs[t]) / 3 for t, g in zip(*np.nonzero(held), strict=True))
+        assert split_sum == pytest.approx(float(exact), rel=1e-12, abs=1e-18)
+    assert any(r != 0.0 for r in residue)  # the premise: the rounded rows read residue
 
 
-def test_cscv_pbo_without_a_full_bar_scores_byte_identically():
-    # The full-bar masks change nothing where no bar is full, and conjunction never reads them.
+def test_cscv_pbo_bar_values_reach_no_other_read():
+    # Conjunction never reads the bar values, and a basket candidate they do not key keeps its
+    # moments' own mean: an empty mapping is the plain read, byte for byte.
     cells, length = _one_member_edge_cells()
     basket = cscv_pbo(cells, length, ["A", "B"], mode="basket", n_combos_declared=8)
-    none = {(k,): np.zeros(length, dtype=bool) for k in range(8)}
     assert basket["reason"] is None
     assert (
-        cscv_pbo(cells, length, ["A", "B"], mode="basket", n_combos_declared=8, full_bars=none)
+        cscv_pbo(cells, length, ["A", "B"], mode="basket", n_combos_declared=8, bar_values={})
         == basket
     )
-    every = {(k,): np.ones(length, dtype=bool) for k in range(8)}
+    zeros = {(k,): np.zeros((length, 2)) for k in range(8)}
     conj = cscv_pbo(cells, length, ["A", "B"], n_combos_declared=8)
     assert conj["reason"] is None
-    assert cscv_pbo(cells, length, ["A", "B"], n_combos_declared=8, full_bars=every) == conj
+    assert cscv_pbo(cells, length, ["A", "B"], n_combos_declared=8, bar_values=zeros) == conj

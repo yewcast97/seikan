@@ -29,6 +29,7 @@ from pydantic import ValidationError
 from seikan.analysis.stats import (
     benchmark_regression,
     cell_conditional_buckets,
+    cross_mean_bar_values,
     episode_profile,
     exact_mean,
     pool_moments,
@@ -4060,13 +4061,20 @@ def test_cross_mean_full_bars_are_exactly_zero_in_the_pooled_bar_closed_sums(tmp
         assert pooled["boot"]["ci_lo"] == pooled["boot"]["ci_hi"] == 0.0, n
 
 
-def test_cross_mean_mixed_bars_zero_only_the_full_ones(tmp_path):
+def _pow_legs(n):
+    """The pow basket's (bars × A, B, C) pct legs at h=1 (:func:`_pow_basket`'s prices)."""
+    t = np.arange(n, dtype=float)
+    return _pct_legs({"A": 2.0**t, "B": 4.0**t, "C": 14.0**t}, "ABC", 1)
+
+
+def test_cross_mean_bar_closed_sums_read_every_bar_at_its_exact_sum(tmp_path):
     # C fires from bar 6, B from 11, A from 21 (n=30, h=1 — one episode per bar): bars 21..27
-    # are full, 6..20 partial. A full bar reads 0.0 in the pooled bar-closed sums; a sum over
-    # partial bars alone is the plain mean of their rows, byte for byte; the per-member panels,
-    # which hold one row of a full bar, never see the zeros; a pool without a full bar is the
-    # plain pool in every read but the HAC, whose per-bar sums are every bar's exact excess sum
-    # (its t the exact mean over its SE, on every pool); the trades frame keeps its columns.
+    # are full, 6..20 partial. Every pooled bar-closed sum reads each bar's EXACT excess sum —
+    # 0 on a full bar, the exact rational sum of the measured legs on a partial one — where the
+    # rows' rounded excesses summed to residue; the per-member panels, which hold one row of a
+    # bar, never see the bar sums; the trades frame keeps its columns.
+    from fractions import Fraction
+
     from seikan.analysis.stats import episode_bootstrap_ci, episode_ledger, newey_west_mean
     from seikan.constants import DEFAULT_FEATURE_NAMES, TRADE_COLUMNS
 
@@ -4085,27 +4093,32 @@ def test_cross_mean_mixed_bars_zero_only_the_full_ones(tmp_path):
     counts = closed.groupby("entry_bar")["target"].size()
     full_bars = set(counts.index[counts == 3])
     assert full_bars == set(range(21, 28)) and set(counts.index) == set(range(6, 28))
-    full = np.isin(bars, sorted(full_bars))
-    pool = np.where(full, 0.0, rets)
+    legs = _pow_legs(30)
+    pool = _bar_pool_rows(closed, legs, "ABC")
+    by_bar = pd.Series(pool).groupby(bars).apply(lambda v: math.fsum(v.tolist()))
+    for b, total in by_bar.items():
+        leg = [Fraction(float(x)) for x in legs[b]]
+        firing = closed["target"].to_numpy()[bars == b]
+        exact = sum(leg["ABC".index(m)] - sum(leg) / 3 for m in firing)
+        assert total == float(exact), b  # 0.0 on every full bar
+    assert by_bar.loc[sorted(full_bars)].eq(0.0).all()
 
-    # ledger and profile: one episode per bar, earliest first
+    # ledger and profile: one episode per bar, earliest first, each its bar's exact mean
     for e, b in zip(cell["episodes"]["entries"], range(6, 28), strict=True):
-        rows = closed[closed["entry_bar"] == b].sort_values("target")["ret"].to_numpy(float)
-        assert e["mean_ret"] == (0.0 if b in full_bars else float(np.mean(rows))), b
+        assert e["mean_ret"] == float(np.mean(pool[bars == b])), b
     prof = cell["episode_profile"]
     assert prof["n_episodes"] == 22 and prof["hit_rate"] == 15 / 22
     assert prof["max_win_streak"] == 15 and prof["max_loss_streak"] == 0
-    # eras [0, 10), [10, 20), [20, 30): only the third holds full bars
-    eras = pooled["subperiods"]
-    for s, (a, b) in zip(eras, ((0, 10), (10, 20), (20, 30)), strict=True):
+    # eras [0, 10), [10, 20), [20, 30): each the exactly rounded sum of its bars' sums
+    for s, (a, b) in zip(pooled["subperiods"], ((0, 10), (10, 20), (20, 30)), strict=True):
         in_era = (bars >= a) & (bars < b)
-        assert s["mean_ret"] == exact_mean(pool[in_era])
-        assert (s["mean_ret"] == exact_mean(rets[in_era])) is (a < 20)
+        assert s["n"] == int(in_era.sum()) and s["mean_ret"] == exact_mean(pool[in_era])
+    # the first era holds C-only bars 6..9: four exact excesses of 22/3
+    assert pooled["subperiods"][0]["mean_ret"] == float(Fraction(22, 3))
     # the bootstrap sums the pool values on the draw stream the rows alone give
     assert pooled["boot"] == episode_bootstrap_ci(rets, bars, 1, rets_pool=pool)
     assert pooled["boot"]["n_episodes"] == 22
-    # the HAC reads every bar's exact excess sum: a full bar's is 0, as in the pool values, and
-    # a partial bar's is its rows' sum to the last bits; its t is the exact mean over its SE
+    # the HAC reads the same exact bar sums; its t is the exact mean over its SE
     assert pooled["hac_se"] == pytest.approx(newey_west_mean(pool, bars, 1)[1], rel=1e-14)
     assert pooled["hac_se"] > 0.0
     assert pooled["t_hac"] == pooled["mean_ret"] / pooled["hac_se"]
@@ -4115,38 +4128,46 @@ def test_cross_mean_mixed_bars_zero_only_the_full_ones(tmp_path):
         assert cell["by_target"][tgt]["boot"] == episode_bootstrap_ci(
             mine["ret"].to_numpy(dtype=float), mine["entry_bar"].to_numpy(dtype=np.int64), 1
         )
-    # a pool with NO full bar (A never fires): every bar-closed read is the plain one
+    # a pool with NO full bar (A never fires) reads its partial bars' exact sums the same way
     sel = _pow_basket(tmp_path, above=2.0**30, n=30)
     sel_cell = sel.summary["cells"][0]
     sel_closed = sel.trades[~sel.trades["is_open"]]
     assert set(sel_closed["target"]) == {"B", "C"}
     sel_rets = sel_closed["ret"].to_numpy(dtype=float)
     sel_bars = sel_closed["entry_bar"].to_numpy(dtype=np.int64)
-    assert sel_cell["pooled"]["boot"] == episode_bootstrap_ci(sel_rets, sel_bars, 1)
-    # the HAC over the exact per-bar sums agrees with the rows' to rounding, and its t is the
-    # exact mean beside it over that SE — never the rows' own mean over theirs
-    _, se_sel = newey_west_mean(sel_rets, sel_bars, 1)
+    sel_pool = _bar_pool_rows(sel_closed, _pow_legs(30), "ABC")
+    assert sel_cell["pooled"]["boot"] == episode_bootstrap_ci(
+        sel_rets, sel_bars, 1, rets_pool=sel_pool
+    )
+    assert sel_cell["episodes"] == episode_ledger(sel_closed, rets_pool=sel_pool)
+    assert json_safe(sel_cell["episode_profile"]) == json_safe(
+        episode_profile(sel_closed, rets_pool=sel_pool)
+    )
+    _, se_sel = newey_west_mean(sel_pool, sel_bars, 1)
     sel_pooled = sel_cell["pooled"]
     assert sel_pooled["hac_se"] == pytest.approx(se_sel, rel=1e-14)
     assert sel_pooled["t_hac"] == sel_pooled["mean_ret"] / sel_pooled["hac_se"]
-    assert sel_cell["episodes"] == episode_ledger(sel_closed)
-    assert json_safe(sel_cell["episode_profile"]) == json_safe(episode_profile(sel_closed))
 
 
-def test_cross_mean_cancelling_partial_pool_has_no_hac(tmp_path):
-    # The review's basket, widened: six members (p, q, r, p, q, r) of log outcomes, only the
-    # first three firing, three bars apart; on every other firing bar they move (0.95, 0.96,
-    # 1.02) and the last three mirror them, so each firing bar's three excesses cancel exactly —
-    # the pooled mean_ret is exactly 0 — while their three rounded rows sum to residue (a
-    # mirrored PAIR's two rows cancel about the bar's offset; three rows need not). Read off
-    # those rows, the HAC divided the residue: t_hac 5.43, hac_se 1.6e-19 beside mean_ret 0.0.
-    # Every bar's exact excess sum is 0, so the pool has no long-run variance: null.
+def test_cross_mean_cancelling_partial_pool_reads_its_exact_zero_in_every_bar_closed_sum(
+    tmp_path,
+):
+    # The review's basket: six members (p, q, r, p, q, r) of log outcomes, only the first three
+    # firing, three bars apart; on every other firing bar they move (0.95, 0.96, 1.02) and the
+    # last three mirror them, so each firing bar's three excesses cancel exactly — the pooled
+    # mean_ret is exactly 0 — while their three rounded rows sum to residue (a mirrored PAIR's
+    # two rows cancel about the bar's offset; three rows need not). Read off those rows, the HAC
+    # divided the residue (t_hac 5.43, hac_se 1.6e-19 beside mean_ret 0.0), and every other
+    # bar-closed sum minted evidence: a positive bootstrap interval, an episode hit rate of 1.0.
+    # Every bar's exact excess sum is 0, so every one of them reads 0: no long-run variance, a
+    # zero-width interval at 0, no winning episode, zero eras — and a grid of two such cells
+    # (every firing bar, or the moving ones alone) ties on every CSCV split.
     n = 92
     idx = pd.date_range("2024-01-01", periods=n, freq="1D")
     levels = {m: np.ones(n) for m in "ABC"}
     fire = np.zeros(n)
     for k in range(30):
-        fire[3 * k] = 1.0
+        fire[3 * k] = 1.0 if k % 2 == 0 else 0.6
         if k % 2 == 0:
             for m, move in zip("ABC", (0.95, 0.96, 1.02), strict=True):
                 levels[m][3 * k + 2] = move
@@ -4167,29 +4188,42 @@ def test_cross_mean_cancelling_partial_pool_has_no_hac(tmp_path):
                 "type": "threshold",
                 "left": {"type": "external", "name": "fire"},
                 "op": ">",
-                "right": {"type": "constant", "value": 0.5},
+                "right": {"type": "constant", "value": [0.5, 0.75], "name": "cut"},
             },
             "params": {"horizon": 1, "outcome": {"kind": "log"}, "benchmark": "cross_mean"},
         }
     )
     res = run_backtest(thesis, load(thesis, files))
-    pooled = res.summary["cells"][0]["pooled"]
-    closed = res.trades[~res.trades["is_open"]]
-    assert pooled["n"] == 90 and set(closed["target"]) == {"A", "B", "C"}
-    # the premise: the rounded rows' exact sum is residue on the moving bars
-    bar_sums = closed.groupby("entry_bar")["ret"].apply(lambda r: math.fsum(r.tolist()))
-    assert (bar_sums != 0.0).sum() == 15
-    assert pooled["mean_ret"] == 0.0
-    assert math.isnan(pooled["t_hac"]) and math.isnan(pooled["hac_se"])
+    for cell, n_rows in zip(res.summary["cells"], (90, 45), strict=True):
+        pooled = cell["pooled"]
+        trades = res.trades
+        closed = trades[(trades["cut"] == cell["params"]["cut"]) & ~trades["is_open"]]
+        assert pooled["n"] == n_rows and set(closed["target"]) == {"A", "B", "C"}
+        # the premise: the rounded rows' exact sum is residue on the moving bars
+        bar_sums = closed.groupby("entry_bar")["ret"].apply(lambda r: math.fsum(r.tolist()))
+        assert (bar_sums != 0.0).sum() == 15
+        assert pooled["mean_ret"] == 0.0
+        assert math.isnan(pooled["t_hac"]) and math.isnan(pooled["hac_se"])
+        boot = pooled["boot"]
+        assert boot["ci_lo"] == boot["ci_hi"] == boot["boot_se"] == 0.0 and boot["reason"] is None
+        prof = cell["episode_profile"]
+        assert prof["hit_rate"] == 0.0 and prof["mean_ret"] == 0.0
+        assert prof["max_win_streak"] == prof["max_loss_streak"] == 0
+        assert {e["mean_ret"] for e in cell["episodes"]["entries"]} == {0.0}
+        assert [s["mean_ret"] for s in pooled["subperiods"]] == [0.0, 0.0, 0.0]
+    pbo = res.summary["pbo"]
+    assert pbo["reason"] is None and pbo["n_combos"] == 2 and pbo["n_splits"] == 70
+    assert pbo["pbo"] == pbo["lambda_mean"] == pbo["prob_oos_loss"] == 0.0
 
 
 def test_cross_mean_ledger_rebuilds_from_the_trades_csv_past_its_cap(tmp_path):
     # The `trades_csv.derived_views` recipe, followed on the written file: the cell's CLOSED rows
     # in (entry_time, target) order, the greedy half-open merge across targets, each entry's
-    # mean over its rows' ret with every FULL bar's rows (every member closed) zeroed, share_abs
-    # over each row's own |ret|. It reproduces the listed entries exactly — and past the cap,
-    # where the CSV is the only source, the full bars read 0.0, never the residue their rounded
-    # rows average to.
+    # mean over its rows' ret with every FULL bar's rows (every member closed) at 0.0, share_abs
+    # over each row's own |ret|. Past the cap, where the CSV is the only source and every
+    # episode is one full bar, it reproduces the report exactly — 0.0, never the residue their
+    # rounded rows average to. A partial bar's exact sum needs every member's leg, which the CSV
+    # does not hold; there the recipe's rows agree with the report to rounding.
     from seikan.serialize import write_trades_csv
 
     res = _pow_basket(tmp_path, above=2.0**20, n=60)  # C fires from bar 6, B from 11, A from 21
@@ -4227,8 +4261,10 @@ def test_cross_mean_ledger_rebuilds_from_the_trades_csv_past_its_cap(tmp_path):
     led = res.summary["cells"][0]["episodes"]
     cap = led["cap"]
     assert led["n_total"] == len(rebuilt) == 52 and led["n_omitted"] == 52 - cap
-    assert led["entries"] == rebuilt[:cap]  # bars 6..20 partial, 21.. full
     assert led["omitted_share_abs"] == sum(e["share_abs"] for e in rebuilt[cap:])
+    for got, want in zip(led["entries"], rebuilt[:cap], strict=True):  # bars 6..20 partial
+        assert {**got, "mean_ret": None} == {**want, "mean_ret": None}
+        assert got["mean_ret"] == pytest.approx(want["mean_ret"], rel=1e-15)
     # past the cap every episode is one full bar: 0.0 by the recipe, where the plain mean of
     # its rows is residue (save on the odd bar whose rounding happens to cancel)
     assert [e["mean_ret"] for e in rebuilt[cap:]] == [0.0] * (52 - cap)
@@ -4243,11 +4279,8 @@ _ALWAYS = {
 }
 
 
-def _walk_basket(tmp_path, order, entry, features, *, horizon=(2, 3, 5), n=240):
-    """Members A, B, C on two-decimal random walks (so every pct leg, and every per-row excess,
-    is a rounded value), U rising and W falling strictly — a ``cross_mean`` basket over the
-    members ``order`` names, in that declaration order."""
-    idx = pd.date_range("2021-01-01", periods=n, freq="1D")
+def _walk_prices(n=240):
+    """The walk basket's prices: A, B, C on two-decimal random walks, U rising and W falling."""
     rng = np.random.RandomState(5)
     t = np.arange(n, dtype=float)
     prices = {
@@ -4255,6 +4288,34 @@ def _walk_basket(tmp_path, order, entry, features, *, horizon=(2, 3, 5), n=240):
     }
     prices["U"] = np.round(20.0 + 0.1 * t + rng.rand(n) * 0.05, 2)
     prices["W"] = np.round(80.0 - 0.1 * t + rng.rand(n) * 0.05, 2)
+    return prices
+
+
+def _pct_legs(prices, order, h, off=1):
+    """The (bars × members) signed pct legs the runner measures at each firing bar t —
+    ``open[t + off + h] / open[t + off] − 1``, NaN past the end — members in ``order``."""
+    px = np.stack([np.asarray(prices[m], dtype=float) for m in order], axis=1)
+    legs = np.full(px.shape, np.nan)
+    legs[: px.shape[0] - off - h] = px[off + h :] / px[off : px.shape[0] - h] - 1.0
+    return legs
+
+
+def _bar_pool_rows(rows, legs, order):
+    """A cell's closed rows' bar values (``cross_mean_bar_values`` over the legs, the members
+    each bar closed in ``rows``), row-aligned with ``rows`` — the runner's ``rets_pool``."""
+    member = rows["target"].map({m: g for g, m in enumerate(order)}).to_numpy(dtype=np.int64)
+    bars = rows["entry_bar"].to_numpy(dtype=np.int64)
+    closed = np.zeros(legs.shape, dtype=bool)
+    closed[bars, member] = True
+    return cross_mean_bar_values(legs, closed)[bars, member]
+
+
+def _walk_basket(tmp_path, order, entry, features, *, horizon=(2, 3, 5), n=240):
+    """Members A, B, C on two-decimal random walks (so every pct leg, and every per-row excess,
+    is a rounded value), U rising and W falling strictly — a ``cross_mean`` basket over the
+    members ``order`` names, in that declaration order (prices: :func:`_walk_prices`)."""
+    idx = pd.date_range("2021-01-01", periods=n, freq="1D")
+    prices = _walk_prices(n)
     files = {m: _write_bars(tmp_path / f"{m}.csv", prices[m], idx) for m in order}
     thesis = Thesis.model_validate(
         {
@@ -4309,14 +4370,13 @@ def test_cross_mean_all_full_grid_pbo_and_buckets_take_the_identity_in_any_order
             )
 
 
-def test_cross_mean_buckets_keep_every_row_a_full_bar_does_not_hold_whole(tmp_path):
-    # A PER-MEMBER feature splits every full bar — U's close ascends with the bar, W's
-    # descends, so U's quartile j and W's 3 - j never coincide: the all-full grid's buckets
-    # are the rows' plain read, byte for byte, while its pbo still ties at 0.0. On a MIXED
-    # grid (U fires only above a level) each cell's buckets are the stats read over the full
-    # bars re-derived from the trades (a bar on which every member has a closed row in the
-    # cell): the split feature still the plain read, the calendar's whole bars at 0.0 — and a
-    # cell without a full bar is the plain read throughout.
+def test_cross_mean_buckets_keep_every_row_a_bar_does_not_hold_whole(tmp_path):
+    # A PER-MEMBER feature splits every bar — U's close ascends with the bar, W's descends, so
+    # U's quartile j and W's 3 - j never coincide: the all-full grid's buckets are the rows'
+    # plain read, byte for byte, while its pbo still ties at 0.0. On a MIXED grid (U fires only
+    # above a level) each cell's buckets are the stats read over the cell's bar values (each
+    # bar's exact excess sum, re-derived from the prices): the split feature still the plain
+    # read, the calendar's whole bars at their exact sums.
     px = {"px": {"type": "field", "column": "close"}}
     res = _walk_basket(tmp_path, "UWA", _ALWAYS, px)
     assert res.summary["pbo"]["pbo"] == 0.0
@@ -4333,32 +4393,27 @@ def test_cross_mean_buckets_keep_every_row_a_full_bar_does_not_hold_whole(tmp_pa
     }
     feats = {**px, "dow": {"type": "calendar", "field": "day_of_week"}}
     mixed = _walk_basket(tmp_path, "UWA", above, feats, horizon=(2,))
-    n_full = []
+    legs = _pct_legs(_walk_prices(), "UWA", 2)
+    moved = []
     for cell in mixed.summary["cells"]:
         trades = mixed.trades
         rows = trades[(trades["lvl"] == cell["params"]["lvl"]) & ~trades["is_open"]]
-        per_bar = rows.groupby("entry_bar")["target"].nunique()
-        full = np.zeros(240, dtype=bool)
-        full[per_bar.index[per_bar == 3].to_numpy()] = True
-        n_full.append(int(full.sum()))
         got = {k: cell[k] for k in ("conditional_buckets", "bucket_monotonicity")}
         plain = cell_conditional_buckets(rows, list(feats))
-        assert got == cell_conditional_buckets(rows, list(feats), full_bars=full)
+        pool = _bar_pool_rows(rows, legs, "UWA")
+        assert got == cell_conditional_buckets(rows, list(feats), rets_pool=pool)
         assert got["conditional_buckets"]["px"] == plain["conditional_buckets"]["px"]
-        moved = got["conditional_buckets"]["dow"] != plain["conditional_buckets"]["dow"]
-        assert moved is bool(full.any()), cell["params"]
-    assert n_full[0] > n_full[1] > n_full[2] == 0  # all-full, mixed, none
+        moved.append(got["conditional_buckets"]["dow"] != plain["conditional_buckets"]["dow"])
+    # the calendar buckets hold whole bars at their exact sums; the lvl-45 cell holds W alone —
+    # the single-target arm, the frozen kernel's plain read
+    assert moved == [True, True, False]
 
 
-def test_cross_mean_mixed_grid_pbo_reads_every_partly_full_candidate_s_full_bars(
-    tmp_path, monkeypatch
-):
-    # The CSCV split means read EVERY full bar the runner marks, a partly-full candidate's
-    # included: the runner hands `cscv_pbo` each cell's mask exactly as the trades re-derive it
-    # (a bar on which every member has a closed row in the cell), and on this mixed grid the
-    # partly-full candidates' split means — their full bars at 0, every other row its own
-    # excess — move the degradation slope's last bits off the read that keeps only the
-    # all-full candidate's masks (the coarse ledger is the same: no rank changes hands).
+def test_cross_mean_grid_pbo_reads_every_candidate_s_bar_values(tmp_path, monkeypatch):
+    # The CSCV split means read EVERY candidate's bar values: the runner hands `cscv_pbo` each
+    # cell's (bars × members) exact bar sums exactly as the legs re-derive them (a bar's sum on
+    # its first closed member, 0.0 on the others), and on this mixed grid they move the block off
+    # the rows' own read while its population ledger stays the same.
     from seikan.analysis.stats import cscv_pbo
 
     calls = []
@@ -4378,22 +4433,21 @@ def test_cross_mean_mixed_grid_pbo_reads_every_partly_full_candidate_s_full_bars
     res = _walk_basket(tmp_path, "ABC", above, dow, horizon=(2, 5))
     ((args, kwargs),) = calls
     closed = res.trades[~res.trades["is_open"]]
-    derived, all_full = {}, {}
+    prices = _walk_prices()
+    assert set(kwargs["bar_values"]) == set(closed.groupby(["lvl", "horizon"]).groups)
     for (lvl, h), rows in closed.groupby(["lvl", "horizon"]):
-        per_bar = rows.groupby("entry_bar")["target"].nunique()
-        derived[(lvl, h)] = np.zeros(240, dtype=bool)
-        derived[(lvl, h)][per_bar.index[per_bar == 3].to_numpy()] = True
-        all_full[(lvl, h)] = bool((per_bar == 3).all())
-    assert set(kwargs["full_bars"]) == set(derived)
-    for key, mask in kwargs["full_bars"].items():
-        np.testing.assert_array_equal(mask, derived[key])
-    mixed = [k for k, m in derived.items() if m.any() and not all_full[k]]
-    assert sorted(mixed) == [(37.0, 2), (37.0, 5)]  # lvl 20 is all-full, lvl 43 holds none
+        legs = _pct_legs(prices, "ABC", int(h))
+        closed_mask = np.zeros(legs.shape, dtype=bool)
+        member = rows["target"].map({m: g for g, m in enumerate("ABC")}).to_numpy(dtype=np.int64)
+        closed_mask[rows["entry_bar"].to_numpy(dtype=np.int64), member] = True
+        np.testing.assert_array_equal(
+            kwargs["bar_values"][(lvl, h)], cross_mean_bar_values(legs, closed_mask)
+        )
     pbo = res.summary["pbo"]
     assert pbo["reason"] is None and pbo["oos_degradation_slope_reason"] is None
-    only_all_full = {k: m if all_full[k] else np.zeros_like(m) for k, m in derived.items()}
-    without = cscv_pbo(*args, **{**kwargs, "full_bars": only_all_full})
-    assert pbo == {**without, "oos_degradation_slope": pbo["oos_degradation_slope"]}
+    without = cscv_pbo(*args, **{**kwargs, "bar_values": None})
+    ledger = ("blocks", "n_splits", "n_splits_attempted", "n_combos", "n_combos_scoreable")
+    assert {k: pbo[k] for k in ledger} == {k: without[k] for k in ledger}
     assert pbo["oos_degradation_slope"] != without["oos_degradation_slope"]
 
 

@@ -158,26 +158,27 @@ def conditional_buckets(trades: pd.DataFrame, feature: str, q: int = 4) -> pd.Da
 BUCKET_MIN_N = 20
 
 
-def _whole_full_bars(bars: np.ndarray, ordinals: np.ndarray, full_k: np.ndarray) -> np.ndarray:
-    """The rows (aligned with ``bars`` / ``ordinals``) of every FULL bar whose rows are ALL here
-    and share ONE bucket ordinal — ``full_k[b]`` is the number of rows full bar ``b`` holds in the
-    cell's pool, 0 off a full bar. Only such a bar's rows enter one record together, where their
-    sum is the bar's exact 0; no record holds the whole sum of a full bar split across ordinals,
-    or of one with a row the feature left unbucketed, so each of its rows keeps its return."""
-    on_full = full_k[bars] > 0
-    held, inv, n_here = np.unique(bars[on_full], return_inverse=True, return_counts=True)
-    ords = ordinals[on_full]
+def _whole_bars(bars: np.ndarray, ordinals: np.ndarray, bar_k: np.ndarray) -> np.ndarray:
+    """The rows (aligned with ``bars`` / ``ordinals``) of every bar whose rows are ALL here and
+    share ONE bucket ordinal — ``bar_k[b]`` is the number of rows bar ``b`` holds in the cell's
+    pool. Only such a bar's rows enter one record together, where their sum is the bar's exact
+    excess sum; no record holds the whole sum of a bar split across ordinals, or of one with a
+    row the feature left unbucketed, so each of its rows keeps its return."""
+    held, inv, n_here = np.unique(bars, return_inverse=True, return_counts=True)
     lo = np.full(held.size, np.iinfo(np.int64).max)
     hi = np.full(held.size, np.iinfo(np.int64).min)
-    np.minimum.at(lo, inv, ords)
-    np.maximum.at(hi, inv, ords)
-    whole = np.zeros(bars.size, dtype=bool)
-    whole[on_full] = ((n_here == full_k[held]) & (lo == hi))[inv]
+    np.minimum.at(lo, inv, ordinals)
+    np.maximum.at(hi, inv, ordinals)
+    whole: np.ndarray = ((n_here == bar_k[held]) & (lo == hi))[inv]
     return whole
 
 
 def _aggregate_bucket_ordinals(
-    groups: list[pd.DataFrame], name: str, q: int, full_k: np.ndarray | None = None
+    groups: list[pd.DataFrame],
+    name: str,
+    q: int,
+    bar_k: np.ndarray | None = None,
+    pools: list[np.ndarray] | None = None,
 ) -> list[BucketRecord]:
     """Per-target qcut codes aggregated by bucket ORDINAL — the multi-target arm of
     :func:`cell_conditional_buckets`.
@@ -192,10 +193,11 @@ def _aggregate_bucket_ordinals(
     move with data quality, not with the hypothesis). Records are labelled ``q1..qk`` — per-
     target edges make interval strings target-relative and unprintable as one label.
 
-    ``full_k`` (a ``cross_mean`` pool's rows per FULL bar, 0 off one — see
-    :func:`cell_conditional_buckets`) puts the rows of every full bar wholly inside one record
-    (:func:`_whole_full_bars`) into that record's ``mean_ret`` at 0.0, the exact sum their
-    rounded excesses miss by residue; ``n`` and ``hit_rate`` stay on each row's own return."""
+    ``bar_k`` / ``pools`` (a ``cross_mean`` pool's rows per bar, and each group's row-aligned bar
+    values — see :func:`cell_conditional_buckets`) put the rows of every bar wholly inside one
+    record (:func:`_whole_bars`) into that record's ``mean_ret`` through their bar values, the
+    bar's exact excess sum their rounded excesses miss by residue; ``n`` and ``hit_rate`` stay on
+    each row's own return."""
     parts: list[tuple[np.ndarray, np.ndarray]] = []
     bar_parts: list[np.ndarray] = []
     bucket_counts: set[int] = set()
@@ -218,7 +220,7 @@ def _aggregate_bucket_ordinals(
             return []
         bucket_counts.add(k)
         parts.append((ordinal, group["ret"].to_numpy(dtype=float)))
-        if full_k is not None:
+        if bar_k is not None:
             bar_parts.append(group["entry_bar"].to_numpy(dtype=np.int64))
     if len(bucket_counts) != 1:
         return []
@@ -227,11 +229,12 @@ def _aggregate_bucket_ordinals(
     # per-target concatenation gave, so a mean over them is the same sum, bit for bit.
     ordinals = np.concatenate([part[0] for part in parts])
     rets = np.concatenate([part[1] for part in parts])
-    # What each record's MEAN sums per row: the rows' own returns, save a whole full bar's at 0.0.
+    # What each record's MEAN sums per row: the rows' own returns, save a whole bar's, which
+    # enter through their bar values (the bar's exact excess sum on one row, 0.0 on the rest).
     sums = rets
-    if full_k is not None:
-        whole = _whole_full_bars(np.concatenate(bar_parts), ordinals, full_k)
-        sums = np.where(whole, 0.0, rets)
+    if bar_k is not None and pools is not None:
+        whole = _whole_bars(np.concatenate(bar_parts), ordinals, bar_k)
+        sums = np.where(whole, np.concatenate(pools), rets)
     records: list[BucketRecord] = []
     for i in range(k):
         in_bucket = ordinals == i
@@ -255,7 +258,7 @@ def cell_conditional_buckets(
     q: int = 4,
     min_n: int = BUCKET_MIN_N,
     *,
-    full_bars: np.ndarray | None = None,
+    rets_pool: np.ndarray | None = None,
 ) -> CellBucketPanels:
     """ONE cell's conditional-bucket view over its CLOSED rows — bucket EDGES per TARGET,
     records aggregated across the cell's targets by bucket ordinal.
@@ -289,37 +292,42 @@ def cell_conditional_buckets(
     never across cells. Evidence-only; overlap-inflated like every trades-pool statistic, and
     "associated in this sample" is the entire claim a bucket pattern supports.
 
-    ``full_bars`` (a ``cross_mean`` basket's full-bar mask over the bar axis, read through the
-    rows' ``entry_bar``: the bars on which every member has a row in ``trades``) carries the
-    zero-sum identity into the bucket MEANS: a full bar's excesses sum to exactly zero, which
-    its rounded rows miss by residue, so per feature a full bar whose rows ALL land in ONE
-    ordinal — bucketed by a basket-wide feature (a calendar field, a shared external feed),
-    whose per-target edges agree where the members fire on the same bars — adds its rows to
-    that record's mean at 0.0. A full bar split across ordinals, or partly unbucketed, keeps each
-    row's own return (no record holds its whole sum), as does every row of a bar that is not
-    full; ``n``, ``hit_rate`` and the constant-pool test stay on each row's return. On a pool
-    whose every bar is full, bucketed by a basket-wide feature, every mean is exactly 0.0 —
-    no rank signal, so no ``bucket_monotonicity`` entry, in any declaration order — where the
-    rounded rows ranked their residue. Only the multi-target arm reads it: one participating
-    target holds one row of each bar, and a basket holds at least two members.
+    ``rets_pool`` (a ``cross_mean`` basket's bar values, row-aligned with ``trades`` — each bar's
+    EXACT excess sum on its first closed member, 0.0 on the others, the runner's pool values)
+    carries the exact bar sums into the bucket MEANS: a bar's rounded per-row excesses miss its
+    exact sum by residue, so per feature a bar whose rows ALL land in ONE ordinal — bucketed by a
+    basket-wide feature (a calendar field, a shared external feed), whose per-target edges agree
+    where the members fire on the same bars, or a one-row bar — adds its exact sum to that
+    record's mean. A bar split across ordinals, or partly unbucketed, keeps each row's own
+    return (no record holds its whole sum); ``n``, ``hit_rate`` and the constant-pool test stay
+    on each row's return. On a pool whose every bar is full, bucketed by a basket-wide feature,
+    every mean is exactly 0.0 — no rank signal, so no ``bucket_monotonicity`` entry, in any
+    declaration order — where the rounded rows ranked their residue. Only the multi-target arm
+    reads it: with one participating target the frozen kernel's records pass through, and they
+    hold no whole multi-row bar (a basket's other members' rows sit unbucketed there).
     """
     buckets_out: dict[str, FeatureBucketPanel] = {}
     mono_out: dict[str, BucketMonotonicity] = {}
-    # Per bar, the rows a FULL bar holds in this pool (0 off a full bar): its k members' rows.
-    full_k = (
-        np.where(
-            full_bars,
-            np.bincount(trades["entry_bar"].to_numpy(dtype=np.int64), minlength=full_bars.size),
-            0,
-        )
-        if full_bars is not None and not trades.empty
-        else None
-    )
+    # Per bar, the rows it holds in this pool — a record holds a bar whole when all of them land
+    # in it — and the pool values row-aligned with `trades`.
+    pool_all: np.ndarray | None = None
+    bar_k: np.ndarray | None = None
+    if rets_pool is not None and not trades.empty:
+        pool_all = np.asarray(rets_pool, dtype=float)
+        if pool_all.shape != (len(trades),):
+            raise ValueError(
+                f"rets_pool must be row-aligned with trades: {pool_all.shape} != ({len(trades)},)"
+            )
+        bar_k = np.bincount(trades["entry_bar"].to_numpy(dtype=np.int64))
     for name in feature_names:
         if trades.empty or name not in trades.columns or "ret" not in trades.columns:
             n_valid = 0
         else:
-            valid = trades[trades[name].notna() & trades["ret"].notna()]
+            is_valid = (trades[name].notna() & trades["ret"].notna()).to_numpy()
+            # Positional labels, so each group's labels ARE its rows' positions in `valid`, the
+            # positions its pool values ride by (never a frame column, which a feature of the
+            # same name would collide with).
+            valid = trades[is_valid].reset_index(drop=True)
             n_valid = len(valid)
         if n_valid == 0:
             buckets_out[name] = {"buckets": [], "reason": "no_closed_observations"}
@@ -341,7 +349,12 @@ def cell_conditional_buckets(
             except ValueError:
                 records = []  # qcut could not form real bins — same refusal as < 2 buckets
         else:
-            records = _aggregate_bucket_ordinals(groups, name, q, full_k)
+            pools = (
+                None
+                if pool_all is None
+                else [pool_all[is_valid][g.index.to_numpy()] for g in groups]
+            )
+            records = _aggregate_bucket_ordinals(groups, name, q, bar_k, pools)
         if len(records) < 2:
             buckets_out[name] = {"buckets": [], "reason": "insufficient_distinct_values"}
             continue

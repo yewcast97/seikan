@@ -83,13 +83,15 @@ def episode_bootstrap_ci(
     nulls the interval and ``boot_se`` together, and a draws' variance that is not a normal
     double nulls ``boot_se`` — each with ``reason="not_representable"``.
 
-    ``rets_pool`` (row-aligned with ``rets``, finite wherever ``rets`` is; default ``rets``
-    itself) is what the episode sums ADD — a ``cross_mean`` basket's pooled panel hands in its
-    rows with every full bar's excesses at 0.0, the identity their sum holds exactly. An episode
-    holds each bar's rows entirely (one bar, one window), so every draw sums whole bars and the
-    identity survives resampling. Everything else stays on ``rets``: the canonical (bar, ret)
-    order (the pool values break only the ties left in it, so row order stays irrelevant), the
-    seed digest (so the draw stream is the one ``rets`` alone would give) and the episodes.
+    ``rets_pool`` (row-aligned with ``rets``; default ``rets`` itself) is what the episode sums
+    ADD — a ``cross_mean`` basket's pooled panel hands in its bar values, each bar's EXACT excess
+    sum on its first closed row and 0.0 on the rest (``_pools.cross_mean_bar_values``; NaN where a
+    bar's sum left the double range, which nulls the interval like an overflowed episode sum). An
+    episode holds each bar's rows entirely (one bar, one window), so every draw sums whole bars
+    and each bar's sum survives resampling exactly. Everything else stays on ``rets``: the
+    canonical (bar, ret) order (the pool values break only the ties left in it, so row order
+    stays irrelevant), the seed digest (so the draw stream is the one ``rets`` alone would give)
+    and the episodes.
     """
     rets = np.asarray(rets, dtype=float)
     bars = np.asarray(entry_bars, dtype=np.int64)
@@ -119,9 +121,9 @@ def episode_bootstrap_ci(
     # by return. `pool` rides the same permutation and only breaks ties left in (bar, ret) —
     # rows equal in both, so the sorted bars/rets bytes and the digest stay the two-key ones,
     # while the episode sums add in one canonical order whatever pool values a caller hands in
-    # (the runner's never differ across such ties: within a bar they are all 0.0 or the rows'
-    # rets). Ordering on `pool` INSTEAD of `rets` would hand a full bar's tied zeros — and with
-    # them the hashed `rets` — back to the caller's row order.
+    # (exact sums, `_exact_sum`, whatever that order). Ordering on `pool` INSTEAD of `rets`
+    # would hand a bar's tied zeros — and with them the hashed `rets` — back to the caller's
+    # row order.
     order = np.lexsort((rets, bars) if rets_pool is None else (pool, rets, bars))
     bars, rets, pool = bars[order], rets[order], pool[order]
     clusters = overlap_clusters(bars, bars + int(h))

@@ -220,8 +220,9 @@ def episode_ledger(
     ``episode_stats.max_cluster_share_abs``.
 
     ``mean_ret`` sums ``rets_pool`` (row-aligned with ``trades``; default the rows' ``ret``) —
-    a ``cross_mean`` basket's rows with every full bar's excesses at 0.0, the identity their sum
-    holds exactly; an episode holds each bar's rows entirely, so its mean is exact over them.
+    a ``cross_mean`` basket's bar values, each bar's exact excess sum on its first closed row and
+    0.0 on the rest (``_pools.cross_mean_bar_values``); an episode holds each bar's rows
+    entirely, so its mean sums its bars' exact sums over its row count.
     It is NaN → null where the episode's sum left the double range (:func:`_episode_means` —
     the same unknown mean ``episode_profile`` nulls its reads over), never an ``inf`` whose sign
     the overflow picked. The |return| shares stay on ``ret``: a row's mass is its own, not its

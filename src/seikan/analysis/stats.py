@@ -50,6 +50,7 @@ from seikan.analysis._hac import cross_mean_pooled_hac, newey_west_mean, nonover
 from seikan.analysis._pools import (
     benchmark_regression,
     concentration,
+    cross_mean_bar_values,
     cross_mean_pooled_mean,
     edge_ratio,
     exact_mean,
@@ -80,6 +81,7 @@ __all__ = [
     "cell_conditional_buckets",
     "concentration",
     "conditional_buckets",
+    "cross_mean_bar_values",
     "cross_mean_pooled_hac",
     "cross_mean_pooled_mean",
     "cscv_pbo",

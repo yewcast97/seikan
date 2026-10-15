@@ -1096,10 +1096,12 @@ Machine-readable contract: `seikan schema` → `trades_csv` — whose `derived_v
 that each cell's `episodes` ledger (and `episode_stats`) is a deterministic derivable function of
 this CSV, which is why there is no `--episodes-out` flag: the in-report ledger truncates visibly
 at its cap, while this CSV never truncates, so rebuild past-the-cap entries from here. Under a
-`cross_mean` basket, zero the rows of every FULL bar — an `entry_bar` on which every member has a
-closed row in the cell — before averaging an entry's `mean_ret`: their excesses sum to exactly 0,
-which their rounded `ret` values miss by residue, so the report reads each of them at 0.0
-(`share_abs` stays on each row's own `|ret|`). The columns:
+`cross_mean` basket the report reads each bar's rows at their EXACT excess sum: zero the rows of
+every FULL bar — an `entry_bar` on which every member has a closed row in the cell — before
+averaging an entry's `mean_ret` (their excesses sum to exactly 0, which their rounded `ret` values
+miss by residue); any other bar's exact sum needs the legs of members with no row here, so its
+rows' `ret` match the report to rounding (`share_abs` stays on each row's own `|ret|`). The
+columns:
 
 | column | meaning |
 |---|---|
@@ -1168,29 +1170,30 @@ and int64 nanosecond counts silently round in IEEE-754 consumers.)
     are basket-wide or every member's leg is the same value (a shared or duplicated outcome feed:
     each per-row excess is then exactly 0.0, and every read of it takes its exact value — means,
     quantiles and std 0.0, `rot_p` 1.0, `t_hac` / `hac_se`, the shape reads, `concentration` and
-    `member_share` null), and on any subset whose excesses sum to 0 (on a full bar with distinct
-    legs each per-row excess is that row's own
-    rounded value, and the pooled reads that SUM whole bars take the identity too: a full bar —
-    every member closed in the cell — enters `boot`'s episode sums (same draws), the `subperiods`
-    means and the cell's `episodes` / `episode_profile` means at exactly 0, and a pool with no
-    full bar reads each of these over its rows plainly; the HAC's per-bar deviation sums are
-    every bar's EXACT excess sum around this exact mean, on every pool, so `t_hac` is this mean
+    `member_share` null), and on any subset whose excesses sum to 0 (with distinct legs each
+    per-row excess is that row's own rounded value, and the pooled reads that SUM whole bars
+    read every bar at its EXACT excess sum instead — 0 on a full bar, every member closed in the
+    cell, and wherever the selected excesses cancel: `boot`'s episode sums (same draws), the
+    `subperiods` means and the cell's `episodes` / `episode_profile` means, so three of six
+    members firing on bars whose excesses cancel read a zero-width interval at 0, zero eras and
+    no winning episode, never their rounded rows' positive residue; the HAC's per-bar deviation
+    sums are the same exact sums around this exact mean, on every pool, so `t_hac` is this mean
     over its `hac_se`, and a pool whose every bar's excess sum is exactly 0 (every bar full, or a
     firing subset whose excesses cancel on each bar) reads `t_hac` / `hac_se` null (no long-run
     variance, as on identical legs). `rot_p` counts the identity's ties only where the
     demeaning's residue sits inside its FFT tie band — a basket-wide ENTRY (every member firing on the same bars, so every
     rotated pool is full too) on ordinary dispersed legs reads 1, while legs equal but for
     their last bits, one instrument in two quote units, leave it residue-driven. The grid-level
-    `pbo` takes the identity too: a CSCV block holds whole bars, so a split holding a full bar
-    takes its MEAN from the same bar-closed sums over its rows' own sd, and every split a grid
-    of all-full cells scores is a full tie — `pbo`, `lambda_mean` and `prob_oos_loss` 0.0
+    `pbo` reads them too: a CSCV block holds whole bars, so every split takes its MEAN from its
+    bars' exact sums over its rows' own sd, and every split a grid of all-full cells scores is a
+    full tie — `pbo`, `lambda_mean` and `prob_oos_loss` 0.0
     whenever the block scores, in any target order; its tied train winner is the
     first-declared candidate, so a sparse such grid can score fewer splits, fall back to a
-    coarser S or decline `insufficient_data`. So do the cell's `conditional_buckets` means
-    wherever a full bar's rows all land in ONE bucket: bucketed by a basket-wide feature (a
-    `calendar` field, a shared `external` feed) an all-full pool reads every bucket mean 0.0
-    and no `bucket_monotonicity`, in any declaration order, while a full bar the per-target
-    edges split across buckets, or partly unbucketed, keeps each row's own excess there. The
+    coarser S or decline `insufficient_data`. So do the cell's `conditional_buckets` means over
+    a bar whose rows all land in ONE bucket: bucketed by a basket-wide feature (a `calendar`
+    field, a shared `external` feed) an all-full pool reads every bucket mean 0.0 and no
+    `bucket_monotonicity`, in any declaration order, while a bar the per-target edges split
+    across buckets, or partly unbucketed, keeps each row's own excess there. The
     row-level reads — the dispersion, quantile and shape reads, `hit_rate`, `profit_factor`,
     |return| mass shares, a bucket's `n` and `hit_rate` — keep each row's ordinary rounding) —
     and a selective signal's
@@ -1233,8 +1236,9 @@ and int64 nanosecond counts silently round in IEEE-754 consumers.)
     `no_closed_observations` / `insufficient_observations` (below 20 valid rows) /
     `insufficient_distinct_values`. `bucket_monotonicity` carries a Spearman `rho` + `sign` per
     feature that bucketed with ≥ 3 populated buckets — none where a bucket's `mean_ret` is null,
-    its returns' sum having left the double range. Under a `cross_mean` basket a full bar whose
-    rows all land in one bucket enters that bucket's `mean_ret` at exactly 0 (see `pooled`).
+    its returns' sum having left the double range. Under a `cross_mean` basket a bar whose rows
+    all land in one bucket enters that bucket's `mean_ret` at its exact excess sum — 0 on a full
+    bar (see `pooled`).
   - `feature_association` — per (feature × target): Spearman `rho` between the entry-time
     feature snapshot and the realized closed return, with its `n` and an explicit `reason`
     (`insufficient_observations` below 10 pairs; `no_rank_variation` on constant input).
@@ -1557,8 +1561,8 @@ open to quote a statistic honestly.
   scored by its WEAKEST target's per-observation Sharpe (the weakest-target rule the regime
   implies), under basket by the POOLED per-observation Sharpe over the concatenated member
   observations — no min, because a basket caller selects on the pooled read; under
-  `cross_mean` its mean reads a full bar at the exact 0 the pooled panel does, so every split a
-  grid of all-full cells scores is a full tie (`pbo` 0.0) — though, every train score tied,
+  `cross_mean` its mean reads each bar at the exact excess sum the pooled panel does, so every
+  split a grid of all-full cells scores is a full tie (`pbo` 0.0) — though, every train score tied,
   the first-declared candidate wins each split, and a sparse such grid can score fewer splits
   or decline `insufficient_data`.
 - A sweep-axis read — is an effect a plateau across a swept axis or a lone spike, the honest

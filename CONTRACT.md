@@ -311,8 +311,8 @@ canonical CSCV assumes — both ledgers re-checked at emission (every count non-
 chain ordered, `n_combos_declared == n_hypotheses_attempted`) beside the verdict pairing (`pbo`
 null exactly when `reason` is set), where a violation is a seikan bug (exit 4); its split
 score is mode-aware — the weakest-target per-observation Sharpe under conjunction, the pooled
-per-observation Sharpe under basket, whose mean reads a `cross_mean` full bar at its exact 0 —
-see the pooled panel), and `baseline` (the run-level unconditional base rate per
+per-observation Sharpe under basket, whose mean reads each `cross_mean` bar at its exact excess
+sum — see the pooled panel), and `baseline` (the run-level unconditional base rate per
 horizon × target over every fillable anchor bar, same algebra/benchmark/direction as the cells,
 with an `exclusions` ledger pinned by `n_eligible + Σexclusions == n_anchor_bars`, a `pooled`
 row per horizon in basket, and deliberately NO uplift field — the conditional-vs-base-rate
@@ -351,8 +351,8 @@ medians censored at h),
 mass-conserving episode ledger, capped at 32 with explicit truncation and `n_total ==
 episode_stats.n_clusters`), `episode_profile` (the episode-deduplicated TWIN of the row-level
 pool statistics: the SAME frozen cross-target merge as `episode_stats`, one aggregate per
-episode — the mean of its rows' `ret` (a `cross_mean` full bar's rows at their sum's exact 0,
-see `pooled`), the ledger's own per-episode read, plus the extreme
+episode — the mean of its rows' `ret` (a `cross_mean` bar's rows at their exact excess sum, 0 on
+a full bar, see `pooled`), the ledger's own per-episode read, plus the extreme
 `mae`/`mfe` within it — then the same statistic family over the episodes: n_episodes / hit_rate
 / mean_ret / profit_factor / ret_quantiles / worst_ret / best_ret / mae_quantiles /
 mfe_quantiles / edge_ratio / max_win_streak / max_loss_streak, the streak pair's one honest
@@ -380,31 +380,34 @@ residue whose sign the targets' declaration order would set, so it is 0 exactly 
 selected excesses cancel — always on a full bar (`S − 1.0·S`) and where every member's leg is the
 same value (a shared or duplicated outcome feed: every per-row excess is then exactly 0, and
 every read of it takes its exact value — means, quantiles and std 0.0, `rot_p` 1.0, `t_hac` /
-`hac_se`, the shape reads, `concentration` and `member_share` null); on a full bar with
-distinct legs each per-row excess is that row's own rounded value, and the pooled reads that SUM
-whole bars take the identity too — a full bar's rows enter them at exactly 0.0 (re-derivable
-from the trades: a bar on which every member has a closed row in the cell), so the bootstrap's
-episode sums (same draws, same seed), the `subperiods` means and the `episodes` ledger and
-`episode_profile` means (with the profile's hit rate, streaks and quantiles over them) are exact
-where the identity holds and the rows' own values everywhere else — on a pool with no full bar
-each is the plain read over its rows; the HAC reads more than the identity: its long-run variance
-reads the rows only through per-bar deviation sums (same-bar pairs at weight 1), and under
-`cross_mean` each bar's is its closed members' EXACT excess sum around the exact `mean_ret`,
-from the raw legs in the same weighted terms, on every pool — so `t_hac` is `mean_ret` over
-`hac_se` on every pool, and a pool whose every bar's excess sum is exactly 0 (every bar full at a
-zero mean, or a firing subset whose excesses cancel on each bar, where the rounded rows' bar sums
-are residue — a `t_hac` of 5.43 beside a `mean_ret` of exactly 0) has no long-run variance:
-`t_hac` / `hac_se` null, as on identical legs; the grid-level CSCV takes the identity too — a block holds whole bars (its purge reads the bar
-and the cell's horizon alone), so a split holding a full bar takes its MEAN from the same
-bar-closed sums over the rows' own sd, and every split a grid of all-full cells scores is a
-full tie (`pbo`, `lambda_mean` and `prob_oos_loss` 0.0 whenever the block scores, in any target
-order, where the rounded rows ranked their residue — every train score tied, the first-declared
-candidate wins each split, so a sparse such grid can score fewer splits, fall back to a coarser
-S or decline `insufficient_data`); so do the cell's `conditional_buckets` means wherever a full
-bar's rows all land in ONE bucket (bucketed by a basket-wide feature — a `calendar` field, a shared
-`external` feed — an all-full pool reads every bucket mean 0.0 and no `bucket_monotonicity`, in any
-declaration order), while a full bar the per-target edges split across buckets, or partly
-unbucketed, keeps each row's own excess there (no bucket holds its whole sum); `rot_p` counts
+`hac_se`, the shape reads, `concentration` and `member_share` null); with distinct legs each
+per-row excess is that row's own rounded value, and the pooled reads that SUM whole bars read every
+bar at its EXACT excess sum instead — the bar's sum on its first closed row, 0.0 on the rest
+(`cross_mean_bar_values`, the same weighted terms, one exactly rounded sum per bar: 0 on a full
+bar, the exact rational sum elsewhere; from the trades exactly on a full bar — a bar on which
+every member has a closed row in the cell, at 0 — and to rounding elsewhere, a partial bar's sum
+needing the legs of members with no row), so the bootstrap's episode sums (same draws, same
+seed), the `subperiods` means and the `episodes` ledger and `episode_profile` means (with the
+profile's hit rate, streaks and quantiles over them) never read the rows' residue — three of six
+members firing on bars whose selected excesses cancel read a positive bootstrap interval and
+positive eras beside a `mean_ret` of exactly 0, where each now reads 0; the HAC reads the same
+sums: its long-run variance reads the rows only through per-bar deviation sums (same-bar pairs
+at weight 1), and under `cross_mean` each bar's is its closed members' EXACT excess sum around the
+exact `mean_ret`, on every pool — so `t_hac` is `mean_ret` over `hac_se` on every pool, and a
+pool whose every bar's excess sum is exactly 0 (every bar full at a zero mean, or a firing subset
+whose excesses cancel on each bar, where the rounded rows' bar sums are residue — a `t_hac` of
+5.43 beside a `mean_ret` of exactly 0) has no long-run variance: `t_hac` / `hac_se` null, as on
+identical legs; the grid-level CSCV reads them too — a block holds whole bars (its purge reads
+the bar and the cell's horizon alone), so every split takes its MEAN from its bars' exact sums
+over the rows' own sd, and every split a grid of all-full cells scores is a full tie (`pbo`,
+`lambda_mean` and `prob_oos_loss` 0.0 whenever the block scores, in any target order, where the
+rounded rows ranked their residue — every train score tied, the first-declared candidate wins
+each split, so a sparse such grid can score fewer splits, fall back to a coarser S or decline
+`insufficient_data`); so do the cell's `conditional_buckets` means over a bar whose rows all land
+in ONE bucket (bucketed by a basket-wide feature — a `calendar` field, a shared `external` feed —
+an all-full pool reads every bucket mean 0.0 and no `bucket_monotonicity`, in any declaration
+order), while a bar the per-target edges split across buckets, or partly unbucketed, keeps each
+row's own excess there (no bucket holds its whole sum); `rot_p` counts
 the identity's ties only where the demeaning's residue (~ε·|raw|) sits inside its FFT tie band
 (a basket-wide ENTRY on ordinary dispersed legs reads 1 — every member fires on the same bars,
 so every rotated pool is full too — while legs equal but for their last bits, one instrument in
@@ -805,7 +808,7 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   swallowed before its cancelling partner arrived — an exact zero read as a positive mean), and a
   constant pool's own value; a `cross_mean` basket's pooled `mean_ret` is its exact excess sum
   from the raw legs, and the bar-closed sums beside it — the CSCV split means and the bucket
-  means over whole bars among them — read a full bar's rows at exactly 0 (see the pooled
+  means over whole bars among them — read each bar at its exact excess sum (see the pooled
   panel). The evidence-only means elsewhere (bootstrap draws, episodes, buckets, CSCV) stay the
   arithmetic mean, save that each bootstrap episode's sum is exactly rounded too — summed in
   floating point, eight episodes of `[1, −2**54, −1, 2**54]` read a zero-width interval at 0.25
