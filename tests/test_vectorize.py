@@ -2197,6 +2197,41 @@ def test_a_broadcast_of_a_broadcast_waits_for_the_members_own_init():
     np.testing.assert_array_equal(vz.signal(node, md).to_numpy()[:, 3], np.arange(20) >= 6)
 
 
+def test_an_event_snapshot_of_a_broadcast_initializes_where_its_event_bar_was():
+    # Four members, two (T2, T3) whose own input starts at bar 40; the only event is bar 0, where
+    # the breadth broadcast into T2/T3 already reads 2.0 — a value carried while their own input
+    # warms. The snapshot's init was read on the CURRENT bar: from bar 40 the warmup-era 2.0
+    # became usable without a new event, and `event_value(E, cross_agg(X, mean)) > 0` fired T2/T3
+    # on 40 bars each. Read at the event bar it never initializes for them — as the same predicate
+    # captured AT the event, `event_value(E, mask(cross_agg(X, mean) > 0)) > 0.5`, never fires.
+    n = 80
+    late = np.r_[np.full(40, np.nan), np.full(40, 3.0)]
+    ev = np.r_[1.0, np.zeros(n - 1)]
+    md = _mdk(n, x=[1.0, 3.0, late, late], ev=[ev, ev, ev, ev])
+    breadth = CrossAgg(input=_X, agg="mean")
+    snap = EventValue(event=_e("ev", ">", 0.5), input=breadth)
+    v, i = (f.to_numpy() for f in vz.build_series(snap, md))
+    assert (v[:, 2:] == 2.0).all() and not i[:, 2:].any()
+    np.testing.assert_array_equal(i[:, :2], np.ones((n, 2), dtype=bool))
+    sig = vz.signal(ThresholdCondition(left=snap, op=">", right=Constant(value=0.0)), md)
+    captured = EventValue(
+        event=_e("ev", ">", 0.5),
+        input=Mask(condition=ThresholdCondition(left=breadth, op=">", right=Constant(value=0.0))),
+    )
+    sig_mask = vz.signal(ThresholdCondition(left=captured, op=">", right=Constant(value=0.5)), md)
+    np.testing.assert_array_equal(sig.to_numpy(), sig_mask.to_numpy())
+    assert sig.to_numpy()[:, :2].all() and not sig.to_numpy()[:, 2:].any()
+    # the run since the event reads the same bars from the same start
+    run = EventAgg(event=_e("ev", ">", 0.5), input=breadth, agg="max")
+    assert not vz.build_series(run, md)[1].to_numpy()[:, 2:].any()
+    # a later event, after their input started, initializes them there
+    ev2 = ev.copy()
+    ev2[50] = 1.0
+    md2 = _mdk(n, x=[1.0, 3.0, late, late], ev=[ev2, ev2, ev2, ev2])
+    i2 = vz.build_series(snap, md2)[1].to_numpy()
+    np.testing.assert_array_equal(i2[:, 2], np.arange(n) >= 50)
+
+
 def test_a_lagged_read_of_a_broadcast_waits_for_the_bar_it_reads():
     # `_init_at_lag`: T3's own `x` starts at bar 6 and T3 is decided ineligible at bar 5, so the
     # breadth broadcast into T3 is 2.0 on bars 0..4 and NaN on bar 5 — all before T3's init. A

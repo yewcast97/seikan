@@ -508,6 +508,31 @@ def _derived_latch(
     return _latch_mask(np.isfinite(arr) & all_init) | _latch_mask(all_init & pending)
 
 
+def _derived_latch_at(
+    arr: np.ndarray, s_idx: npt.NDArray[np.int64], value: pd.DataFrame, init: pd.DataFrame
+) -> npt.NDArray[np.bool_]:
+    """:func:`_derived_latch` for a node whose value at ``t`` reads its input FROM the event bar
+    ``s(t)`` on — ``event_value``'s snapshot ``x[s]``, ``event_agg``'s run ``x[s .. t]``: the
+    input's init and value latch are read AT ``s(t)``, so the node initializes at its first
+    finite value whose event bar found the input initialized, or where the input was initialized
+    there with no value yet (the pending arm). Init latches never turn back off, so an input
+    initialized at ``s`` is initialized over the whole run.
+
+    Read at ``t`` instead, a snapshot taken during the input's warmup became usable the moment
+    the input initialized, with no new event: a ``cross_agg`` broadcasts the basket's value into a
+    member whose own input has not started, and ``event_value(E, cross_agg(X, mean)) > 0`` fired a
+    late member from its first own bar off a value read before it — where the same predicate
+    captured at the event, ``event_value(E, mask(cross_agg(X, mean) > 0))``, never fires. For an
+    input whose init is its own finiteness latch this IS :func:`_derived_latch` (a finite value
+    read at ``s`` means the input was initialized there)."""
+    at = s_idx >= 0
+    s = np.maximum(s_idx, 0)
+    i = init.to_numpy(dtype=bool)
+    init_s = np.take_along_axis(i, s, axis=0) & at
+    pending_s = np.take_along_axis(i & ~_latch(value.to_numpy(dtype=float)), s, axis=0) & at
+    return _latch_mask(np.isfinite(arr) & init_s) | _latch_mask(pending_s)
+
+
 def _init_at_lag(init: pd.DataFrame, periods: int) -> pd.DataFrame:
     """An input's init read ``periods`` bars back — for a transform whose value at ``t`` reads the
     input at ``t − periods`` (``shift``, ``change``): it is initialized only once THAT bar was.
@@ -812,7 +837,7 @@ def _build_series(node: Series, md: MarketData) -> tuple[pd.DataFrame, pd.DataFr
                     arr = nb.event_value_apply_nb(x, s_idx)
                 else:
                     arr = nb.event_agg_apply_nb(sig, ci, cd_, x, node.agg)
-                latch = _derived_latch(arr, (xv, xi))
+                latch = _derived_latch_at(arr, s_idx, xv, xi)
             # The standard latch OR'd with "the anchor became unknowable after warmup": a hole in
             # E BEFORE the first event (a domain NaN no raw-leaf panel sees) reads as a hole, never
             # as silent warmup — here and in every series computed from the node, whose
