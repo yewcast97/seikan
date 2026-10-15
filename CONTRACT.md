@@ -649,7 +649,8 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   dates are rejected, not interpreted; `data.start`/`data.end` obey the same strict parse, so a
   malformed bound is exit 3 rather than a silently reinterpreted window), at most nanosecond
   resolution (a nonzero fractional digit past the ninth refuses as `bad_timestamp` — the parser
-  would truncate it into another instant, an availability moved onto an earlier bar), values
+  would truncate it into another instant, an availability moved onto an earlier bar — and as an
+  exit-3 DSL refusal in a `data.start`/`data.end` bound), values
   under an explicit ASCII numeric grammar (sign, digits, fraction, exponent; `inf`/`infinity`,
   refused later as non-finite) read CORRECTLY ROUNDED — the double nearest the decimal written,
   so every repr a writer emits reads back bit for bit, where pandas' own parser missed by an ulp
@@ -885,9 +886,13 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
 - **Strict, frozen DSL.** Types are strict (no str/bool/float coerces to an int, no str to a
   bool; int stays legal for a float field — JSON has one number type), instances are frozen
   (`model_copy(update=...)` is the derive path), a duplicate JSON object key at any depth
-  refuses at parse (last-key-wins made the effective document parser-dependent), a lag that
-  parses to NaT refuses (it silently degraded a declared publication delay to zero — the
-  look-ahead direction), and the public API (`compile_thesis`/`list_entries`) revalidates a
+  refuses at parse (last-key-wins made the effective document parser-dependent), a string
+  feed `lag` is read by seikan's own exact grammar — one or more `<number><unit>` terms (`"36h"`,
+  `"1h30m"`, `"1.5 days"`), refused unless a whole number of nanoseconds, with clock, ISO-8601
+  and bare-number forms refused — never pandas' parser, which read `"nan"` as NaT (a declared
+  publication delay silently degraded to zero, the look-ahead direction), truncated past the
+  nanosecond, read `"5"` as five nanoseconds and `"1,5h"` as fifteen hours, and was a nanosecond
+  short on `"0.57 days"`, and the public API (`compile_thesis`/`list_entries`) revalidates a
   private copy at the boundary because freezing is shallow. The schema's domain is the
   EXECUTABLE domain: every bar-count parameter (windows, periods, `cooldown`, `min_count`,
   `horizon`, shared-axis values read by them — and `min_valid`, a member count sharing their

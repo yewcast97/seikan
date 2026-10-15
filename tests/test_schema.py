@@ -710,10 +710,80 @@ def test_external_feed_lag_validation():
     # pd.Timedelta("nan"/"NaT") returns NaT instead of raising, and NaT compares False against
     # every bound — unrejected it would silently skip the timestamp shift downstream, degrading a
     # declared publication delay to zero (the look-ahead direction).
-    with pytest.raises(ValidationError, match="NaT"):
+    with pytest.raises(ValidationError, match="is not a duration"):
         ExternalFeed(lag="nan")
-    with pytest.raises(ValidationError, match="NaT"):
+    with pytest.raises(ValidationError, match="is not a duration"):
         ExternalFeed(lag="NaT")
+
+
+@pytest.mark.parametrize(
+    ("lag", "ns"),
+    [
+        ("36h", 36 * 3600 * 10**9),
+        ("1h30m", 90 * 60 * 10**9),
+        ("1 h 30 min", 90 * 60 * 10**9),
+        ("1.5 days", 36 * 3600 * 10**9),
+        ("0.57 days", 49248 * 10**9),  # pandas read 49247999999999: a nanosecond short
+        ("1d", 86400 * 10**9),  # pandas warned on d / w / H / S (an error under -W error)
+        ("36H", 36 * 3600 * 10**9),
+        ("2w", 14 * 86400 * 10**9),
+        ("2 Days", 2 * 86400 * 10**9),
+        ("1ms 500us", 1_500_000),
+        ("0.1us", 100),
+    ],
+)
+def test_external_feed_string_lag_reads_exactly(lag, ns):
+    import warnings
+
+    from seikan.dsl.schema import ExternalFeed
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert ExternalFeed(lag=lag).lag_timedelta.value == ns
+
+
+@pytest.mark.parametrize(
+    ("lag", "match"),
+    [
+        # past the nanosecond: pandas TRUNCATED — 1s, and no lag at all for 0.5ns
+        ("1.0000000001s", "not a whole number of nanoseconds"),
+        ("0.5ns", "not a whole number of nanoseconds"),
+        ("1.0000001ms", "not a whole number of nanoseconds"),
+        # forms pandas read some other way: ISO-8601 (P1DT1.5H as 1 day 1 h 0.001 s), a dropped
+        # comma (1,5h as 15 h), a bare number (5 NANOSECONDS), a clock
+        ("P1DT1.5H", "is not a duration"),
+        ("1,5h", "is not a duration"),
+        ("5", "is not a duration"),
+        ("1 day 00:00:00.5", "is not a duration"),
+        ("1M", "is not a duration"),
+        ("-1h", ">= 0"),
+        ("106752 days", "past the clock's range"),
+    ],
+)
+def test_external_feed_string_lag_refuses_what_it_cannot_read_exactly(lag, match):
+    import warnings
+
+    from seikan.dsl.schema import ExternalFeed
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with pytest.raises(ValidationError, match=match):
+            ExternalFeed(lag=lag)
+
+
+def test_data_bounds_past_the_nanosecond_refuse():
+    # pandas truncates a seconds fraction past the ninth digit, so the bound would name another
+    # instant — midnight here — and the start/end order would compare the truncated ones. The
+    # CSV reader already refused such a stamp; the document's bounds now do too.
+    from seikan.dsl.schema import DataSpec
+
+    with pytest.raises(ValidationError, match=r"past the nanosecond.*2024-01-01T00:00:00\)"):
+        DataSpec(targets=["A"], start="2024-01-01T00:00:00.0000000001")
+    with pytest.raises(ValidationError, match="past the nanosecond"):
+        DataSpec(targets=["A"], end="2024-01-02T00:00:00.1234567891")
+    # zeros past the ninth digit name the same instant
+    assert DataSpec(targets=["A"], start="2024-01-01T00:00:00.000000000").start is not None
+    assert DataSpec(targets=["A"], start="2024-01-01T00:00:00.1234567890").start is not None
 
 
 def test_external_feed_rejects_unknown_keys():

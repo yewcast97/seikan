@@ -94,3 +94,9 @@ MIN_EW_ALPHA = 2.0 / (MAX_BAR_COUNT_PARAM + 1)
 #: ``MAX_DECLARED_GRID`` — it bounds what the language can say (and what a reader must audit),
 #: never what any reported number means.
 MAX_SERIES_NESTING = 5
+
+#: A seconds fraction with a nonzero digit past the ninth. The clock is nanosecond resolution and
+#: pandas TRUNCATES the rest, so such a stamp reads as another instant (``…T00:00:00.0000000001``
+#: as midnight). Zeros past the ninth digit name the same instant and are admitted. One rule for
+#: every stamp seikan reads: a CSV index (``dataio``) and the ``data.start``/``data.end`` bounds.
+PAST_NANOSECOND_FRACTION = r"\.\d{9}\d*[1-9]"

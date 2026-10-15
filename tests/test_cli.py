@@ -2102,12 +2102,20 @@ def test_run_non_finite_json_literal_exits_3(tmp_path, capsys, literal):
 
 
 @pytest.mark.parametrize(
-    "bound", ["01/02/2024", "2024-13-01", "2024-01-01T00:00:00+09:00", "not-a-date"]
+    "bound",
+    [
+        "01/02/2024",
+        "2024-13-01",
+        "2024-01-01T00:00:00+09:00",
+        "not-a-date",
+        "2024-01-01T00:00:00.0000000001",
+    ],
 )
 def test_run_malformed_data_bounds_exit_3_not_4(tmp_path, capsys, bound):
     """Left to reach pandas label slicing, an ambiguous spelling would be silently INTERPRETED and
     an unparseable one would escape as an uncaught exception (exit 4 — an internal bug) rather
-    than a DSL refusal. Both are refused at the document."""
+    than a DSL refusal; a fraction past the nanosecond would be truncated into another instant.
+    All are refused at the document."""
     dsl = json.loads(_write_thesis(tmp_path / "t.json").read_text(encoding="utf-8"))
     dsl["data"]["start"] = bound
     bad = tmp_path / "bad.json"

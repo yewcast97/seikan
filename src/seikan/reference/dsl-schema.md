@@ -64,7 +64,9 @@ moved. So the thesis says WHICH series it measures, and the run says where they 
 column of each to read.
 
 - `targets`: [str] — the target keys, backtested together (one column each). At least one.
-- `start` / `end`: optional ISO date strings to clip the window.
+- `start` / `end`: optional ISO date strings to clip the window — strict ISO-8601, timezone-naive,
+  at most nanosecond resolution (a nonzero fractional digit past the ninth refuses: it would be
+  truncated into another instant).
 - **Target shape, and the one binding a target may need** (no DSL field of its own — the shape is
   read off the file, and the column is bound at invocation). A file WITHOUT open/high/low/close
   columns loads as a **series** target: its value column is measured directly
@@ -98,10 +100,15 @@ column of each to read.
   case-insensitive.
 
   `lag` (default 0) shifts the feed's timestamps forward before it is anchored on the bar index, so a
-  value is not usable before its real release date. An **int is calendar days**; a string is a pandas
-  Timedelta like `"36h"` (careful: `"1m"` is one *minute*; and `"nan"`/`"NaT"` refuse — a lag that
-  parses to NaT would silently behave as zero, the look-ahead direction). Macro prints publish with a
-  delay — model it, e.g. CPI `"lag": 14`.
+  value is not usable before its real release date. An **int is calendar days**; a string is one or
+  more `<number><unit>` terms — `"36h"`, `"1h30m"`, `"1 h 30 min"`, `"1.5 days"` — over the units
+  `ns`, `us`, `ms`, `s`/`sec`/`second(s)`, `m`/`min`/`minute(s)`, `h`/`hr`/`hour(s)`,
+  `D`/`d`/`day(s)` and `W`/`w` (careful: `"1m"` is one *minute*; `M`, a month, is no duration),
+  summed exactly. A lag that is not a whole number of nanoseconds refuses (`"0.5ns"`,
+  `"1.0000000001s"` — the clock is nanosecond resolution, and truncating would shift by another
+  lag), and so do clock (`"01:30:00"`), ISO-8601 (`"PT1H"`), bare-number (`"5"`) and negative
+  forms, and `"nan"`/`"NaT"` (a lag that parsed to NaT silently behaved as zero, the look-ahead
+  direction). Macro prints publish with a delay — model it, e.g. CPI `"lag": 14`.
 
 **Every feed name referenced by the entry condition must be a key of `data.external`** — validation
 fails upfront (naming the missing feeds) otherwise. The CONVERSE holds too: a declared feed that

@@ -36,6 +36,7 @@ from typing import Literal, Unpack
 import numpy as np
 import pandas as pd
 
+from seikan.constants import PAST_NANOSECOND_FRACTION
 from seikan.types import (
     BarSpacing,
     DataIssue,
@@ -71,11 +72,6 @@ _CSV_FIELD_LIMIT = 131072
 #: only behind ~262k leading spaces, one field past ``_CSV_FIELD_LIMIT`` the header stage refuses.
 _LONE_CR = re.compile(rb"\r(?!\n)")
 _SPACED_QUOTE = re.compile(rb'\n[ \t]+"')
-#: A seconds fraction with a nonzero digit past the ninth. The parsed clock is nanosecond
-#: resolution and ``pd.to_datetime`` TRUNCATES the rest, so the stamp would read as another
-#: instant (``…T00:00:00.0000000001`` as midnight, a duplicate of the bar stamped there). Zeros
-#: past the ninth digit name the same instant and are admitted.
-_PAST_NANOSECOND = r"\.\d{9}\d*[1-9]"
 #: The value-cell grammar, ASCII only: a signed decimal (``1``, ``1.``, ``.5``, ``-0``) with an
 #: optional exponent, or a signed ``inf``/``infinity`` in any case (non-finite, refused later by
 #: :func:`check_frame`). It is the set pandas' parser used to admit, and it gates ``float()``,
@@ -579,7 +575,9 @@ def _parse_timestamps(
         )
     if ts is not None:
         bad = ts.isna()
-        past_ns = ~bad & ts_raw.str.contains(_PAST_NANOSECOND, regex=True, na=False)
+        # a stamp past the nanosecond would read as another instant — `…T00:00:00.0000000001` as
+        # midnight, a duplicate of the bar stamped there (`constants.PAST_NANOSECOND_FRACTION`)
+        past_ns = ~bad & ts_raw.str.contains(PAST_NANOSECOND_FRACTION, regex=True, na=False)
         if bad.any():
             rep.error(
                 "bad_timestamp",

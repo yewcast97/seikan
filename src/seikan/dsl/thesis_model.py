@@ -4,7 +4,9 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Sequence
+from fractions import Fraction
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import Field as PField
@@ -14,6 +16,7 @@ from seikan.constants import (
     DEFAULT_FEATURE_NAMES,
     MAX_DECLARED_GRID,
     MAX_SERIES_NESTING,
+    PAST_NANOSECOND_FRACTION,
     RESERVED_FEATURE_NAMES,
     RESERVED_SWEEP_LEVELS,
     TRADE_COLUMNS,
@@ -50,6 +53,92 @@ BENCHMARK_KEY = "benchmark"
 #: for. Exactly one key is reserved; the tuple exists so adding a second stays one edit.
 RESERVED_DATA_KEYS = (BENCHMARK_KEY,)
 
+_NS_PER_MINUTE = 60 * 10**9
+_NS_PER_HOUR = 60 * _NS_PER_MINUTE
+_NS_PER_DAY = 24 * _NS_PER_HOUR
+#: The nanoseconds in one unit of a string ``lag`` — the unit spellings pandas' own Timedelta
+#: parser accepts, read here exactly. A multi-letter unit is matched in any case (as pandas
+#: does); a single letter only as listed, so ``M`` — which pandas refuses, a month being no fixed
+#: duration — is no minute here either.
+_LAG_WORD_UNITS: dict[str, int] = {
+    **dict.fromkeys(("ns", "nano", "nanos", "nanosecond", "nanoseconds"), 1),
+    **dict.fromkeys(("us", "µs", "micro", "micros", "microsecond", "microseconds"), 10**3),
+    **dict.fromkeys(("ms", "milli", "millis", "millisecond", "milliseconds"), 10**6),
+    **dict.fromkeys(("sec", "second", "seconds"), 10**9),
+    **dict.fromkeys(("min", "minute", "minutes"), _NS_PER_MINUTE),
+    **dict.fromkeys(("hr", "hour", "hours"), _NS_PER_HOUR),
+    **dict.fromkeys(("day", "days"), _NS_PER_DAY),
+}
+_LAG_LETTER_UNITS: dict[str, int] = {
+    **dict.fromkeys("sS", 10**9),
+    "m": _NS_PER_MINUTE,
+    **dict.fromkeys("hH", _NS_PER_HOUR),
+    **dict.fromkeys("dD", _NS_PER_DAY),
+    **dict.fromkeys("wW", 7 * _NS_PER_DAY),
+}
+#: One ``<number><unit>`` term of a string ``lag``: ASCII digits with an optional decimal point
+#: (``1.5``, ``1.``; no sign, exponent, separator or leading point), ASCII spaces around it.
+_LAG_TERM = re.compile(r" *([0-9]+(?:\.[0-9]*)?) *([A-Za-zµ]+)")
+
+
+def _lag_unit_ns(unit: str) -> int | None:
+    """The nanoseconds in one ``unit`` of a string ``lag``, ``None`` for a spelling outside the
+    table."""
+    if len(unit) == 1:
+        return _LAG_LETTER_UNITS.get(unit)
+    return _LAG_WORD_UNITS.get(unit.lower())
+
+
+#: The longest lag the clock holds: pandas' ``Timedelta.max``, the int64 nanosecond count.
+_MAX_LAG_NS = 2**63 - 1
+
+
+def _string_lag_ns(lag: str) -> int:
+    """A string ``lag`` in whole nanoseconds, summed EXACTLY over its ``<number><unit>`` terms
+    (:data:`_LAG_TERM`, :func:`_lag_unit_ns`).
+
+    pandas' own string parser is not exact and not strict, so it is not used: it TRUNCATES past
+    the nanosecond (``"0.5ns"`` read as no lag, ``"1.0000000001s"`` as 1s), reads ``"0.57 days"``
+    a nanosecond short, reads ``"5"`` as five NANOSECONDS, drops a comma (``"1,5h"`` as 15
+    hours), mis-reads ISO-8601 durations (``"P1DT1.5H"``), returns NaT for ``"nan"`` — which
+    compares False against every bound, so the shift was silently skipped, a declared delay
+    read as none (the look-ahead direction) — and warns on the ``d``/``w``/``H``/``S``
+    spellings, an exception under ``-W error``. A lag that is not a whole number of nanoseconds
+    names a shift the nanosecond clock cannot hold, and is refused like a CSV stamp past the
+    nanosecond (``dataio``); clock (``01:30:00``), ISO-8601 and bare-number forms are refused,
+    so a lag reads one way."""
+    text = lag.strip(" ")
+    if text.startswith("-"):
+        raise ValueError(f"external feed lag must be >= 0, got {lag!r}")
+    text = text.removeprefix("+")
+    total, pos = Fraction(0), 0
+    while True:
+        term = _LAG_TERM.match(text, pos)
+        unit_ns = _lag_unit_ns(term.group(2)) if term else None
+        if term is None or unit_ns is None:
+            raise ValueError(
+                f"external feed lag {lag!r} is not a duration: a string lag is one or more "
+                "<number><unit> terms — '36h', '1h30m', '1.5 days' (units ns, us, ms, s/sec, "
+                "m/min, h/hr, D/day, W; '1m' is one minute) — and an integer lag is days; "
+                "clock ('01:30:00'), ISO-8601 ('PT1H') and bare-number forms are refused"
+            )
+        total += Fraction(term.group(1)) * unit_ns
+        pos = term.end()
+        if pos == len(text):
+            break
+    if total.denominator != 1:
+        raise ValueError(
+            f"external feed lag {lag!r} is not a whole number of nanoseconds "
+            f"({float(total)!r} ns): the clock is nanosecond resolution, and the rest would be "
+            f"truncated into another lag ({int(total)} ns) — round it"
+        )
+    if total > _MAX_LAG_NS:
+        raise ValueError(
+            f"external feed lag {lag!r} is past the clock's range (at most {_MAX_LAG_NS} ns, "
+            "~292 years)"
+        )
+    return int(total)
+
 
 class ExternalFeed(_Strict):
     # Structured external-feed entry. A feed is a logical KEY, never a file: the CSV behind it is
@@ -60,15 +149,16 @@ class ExternalFeed(_Strict):
     # gives each target its own series (the invocation then answers one path per target under the
     # derived keys ``<feed>@<target>``) where the default broadcasts ONE series across every
     # target; ``lag`` shifts the feed's timestamps forward by a calendar duration before the asof
-    # anchor, modelling publication delay (an int is days; a string is a pandas Timedelta like
-    # "36h" — note "1m" is one minute). A column NAME is not semantic: it is a property of the file
-    # that happens to answer this key — one vendor ships three series in one CSV under its own
-    # spellings, another ships each in its own file — so a name here would let re-shaping the CSV
-    # turn the same exam into a DIFFERENT document, which is exactly why paths do not live here
-    # either. Feed timestamps are treated as AVAILABILITY times; if the source stamps values at
-    # the period they describe (a daily aggregate stamped that day's midnight, a month-end figure),
-    # set ``lag`` to the real publication delay or the value leaks into bars that predate its
-    # release.
+    # anchor, modelling publication delay (an int is days; a string is one or more
+    # ``<number><unit>`` terms like "36h", "1h30m" or "1.5 days" — note "1m" is one minute — read
+    # exactly and refused unless it is a whole number of nanoseconds). A column NAME is not
+    # semantic: it is a property of the file that happens to answer this key — one vendor ships
+    # three series in one CSV under its own spellings, another ships each in its own file — so a
+    # name here would let re-shaping the CSV turn the same exam into a DIFFERENT document, which
+    # is exactly why paths do not live here either. Feed timestamps are treated as AVAILABILITY
+    # times; if the source stamps values at the period they describe (a daily aggregate stamped
+    # that day's midnight, a month-end figure), set ``lag`` to the real publication delay or the
+    # value leaks into bars that predate its release.
 
     per_target: bool = False
     lag: str | int = 0
@@ -82,17 +172,11 @@ class ExternalFeed(_Strict):
     def lag_timedelta(self) -> pd.Timedelta:
         import pandas as pd  # local: keep the DSL module import-light
 
-        td = pd.Timedelta(days=self.lag) if isinstance(self.lag, int) else pd.Timedelta(self.lag)
-        if pd.isna(td):
-            # pd.Timedelta("nan"/"NaT") returns NaT rather than raising, and NaT compares False
-            # against every bound — downstream it would silently skip the timestamp shift, turning
-            # a declared publication delay into zero lag (the look-ahead direction).
-            raise ValueError(
-                f"external feed lag must be a finite duration, got {self.lag!r} (parses to NaT)"
-            )
-        if td < pd.Timedelta(0):
-            raise ValueError(f"external feed lag must be >= 0, got {self.lag!r}")
-        return td
+        if isinstance(self.lag, int):
+            if self.lag < 0:
+                raise ValueError(f"external feed lag must be >= 0, got {self.lag!r}")
+            return pd.Timedelta(days=self.lag)
+        return pd.Timedelta(_string_lag_ns(self.lag), unit="ns")
 
 
 class DataSpec(_Strict):
@@ -200,6 +284,15 @@ class DataSpec(_Strict):
                 raise ValueError(
                     f"data.{field}={raw!r} carries a timezone; the data contract is "
                     "timezone-naive timestamps only"
+                )
+            if re.search(PAST_NANOSECOND_FRACTION, raw):
+                # pandas truncates past the nanosecond: the bound would name another instant,
+                # and the start/end order below would compare the truncated ones
+                raise ValueError(
+                    f"data.{field}={raw!r} carries fractional seconds past the nanosecond — the "
+                    "clock is nanosecond resolution, and the rest would be truncated into "
+                    f"another instant ({ts.isoformat()}); round it (zeros past the ninth digit "
+                    "are admitted)"
                 )
         if (
             self.start is not None
