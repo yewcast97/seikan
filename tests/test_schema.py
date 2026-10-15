@@ -1439,7 +1439,7 @@ def test_zscore_recipe_depth():
 
 
 def test_cross_sectional_external_discovery_walks_input():
-    # An External inside a cross node's input must be declared — _iter_child_series covers cross
+    # An External inside a cross node's input must be declared — iter_child_series covers cross
     # nodes.
     entry = {
         "type": "threshold",

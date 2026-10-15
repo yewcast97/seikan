@@ -93,7 +93,8 @@ from seikan.dsl.schema import (
     ThresholdCondition,
     UnaryOp,
     ZScore,
-    iter_embedded_conditions,
+    iter_child_conditions,
+    iter_child_series,
 )
 from seikan.types import ParamValue
 
@@ -508,6 +509,25 @@ def _derived_latch(
     return _latch_mask(np.isfinite(arr) & all_init) | _latch_mask(all_init & pending)
 
 
+def _event_anchor_known(
+    event: Condition, md: MarketData
+) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.bool_]]:
+    """``(s_idx, known)`` of an event condition: the latest bar ``≤ t`` it fired (its tradable
+    signal, ``value & init & defined``), −1 before its first event or while a hole left it
+    unknowable, and whether that anchor is known — one linear kernel pass over the condition's
+    memoized channels."""
+    cv, ci, cd_ = condition_arrays(event, md)
+    out: tuple[npt.NDArray[np.int64], npt.NDArray[np.bool_]] = nb.event_anchor_apply_nb(
+        cv & ci & cd_, ci, cd_
+    )
+    return out
+
+
+def _event_anchor(event: Condition, md: MarketData) -> npt.NDArray[np.int64]:
+    """The anchor bar ``s(t)`` of an event condition (:func:`_event_anchor_known`)."""
+    return _event_anchor_known(event, md)[0]
+
+
 def _derived_latch_at(
     arr: np.ndarray, s_idx: npt.NDArray[np.int64], value: pd.DataFrame, init: pd.DataFrame
 ) -> npt.NDArray[np.bool_]:
@@ -826,7 +846,7 @@ def _build_series(node: Series, md: MarketData) -> tuple[pd.DataFrame, pd.DataFr
             ev = node.event
             cv, ci, cd_ = condition_arrays(ev, md)
             sig = cv & ci & cd_
-            s_idx, known = nb.event_anchor_apply_nb(sig, ci, cd_)
+            s_idx, known = _event_anchor_known(ev, md)
             if isinstance(node, BarsSinceEvent):
                 arr = nb.bars_since_event_apply_nb(s_idx)
                 latch = _latch(arr)
@@ -1019,8 +1039,7 @@ def _fully_initialized(node: Condition, md: MarketData) -> npt.NDArray[np.bool_]
         case ThresholdCondition(left=lhs, right=rhs):
             full: npt.NDArray[np.bool_] = condition_arrays(node, md)[1].copy()
             for operand in (lhs, rhs):
-                for inner in iter_embedded_conditions(operand):
-                    full &= fully_initialized(inner, md)
+                full &= _operand_full(operand, md)
             return full
         case AndCondition(conditions=cs) | OrCondition(conditions=cs):
             reduced: npt.NDArray[np.bool_] = np.logical_and.reduce(
@@ -1040,6 +1059,47 @@ def _fully_initialized(node: Condition, md: MarketData) -> npt.NDArray[np.bool_]
             return shifted
         case _:
             raise TypeError(f"unknown condition node: {node!r}")
+
+
+def _operand_full(node: Series, md: MarketData) -> npt.NDArray[np.bool_]:
+    """Where every Condition embedded in a threshold operand is fully initialized ON THE BARS THE
+    OPERAND READS IT AT (rows × targets) — the operand half of :func:`fully_initialized`.
+
+    It follows the bars each node reads exactly as its own ``init`` does: ``shift`` and
+    ``change`` read their input ``periods`` bars back (:func:`_init_at_lag`), so what is embedded
+    in that input must be full THERE; ``event_value`` / ``event_agg`` read their input from the
+    event bar ``s(t)`` on (:func:`_derived_latch_at`), so its embedded conditions are read at
+    ``s(t)`` — and the event condition itself, whose history up to ``t`` places the anchor, at
+    ``t``. Every other node reads its children through the current bar and ANDs them. Read flat
+    at the current bar instead, ``not(shift(S, 20) > 1000)`` over ``S = bars_since_event(or(A >
+    0, B > 0))`` with ``A`` starting at bar 40 fired from bar 40 — reading, through the shift, a
+    bar where ``A`` still warmed and "no event" was no decided claim — where ``lag(not(S >
+    1000), 20)`` waits for bar 60. A bar whose anchor became unknowable (a hole in the event
+    condition) reads its input's mask at ``t``: the node is NaN there, a decision over it is
+    undefined, and it must stay ledgered, never become warmup."""
+    match node:
+        case Shift(input=inp, periods=p) | Change(input=inp, periods=p):
+            k = _scalarized(p)
+            read = _operand_full(inp, md)
+            lagged = np.zeros_like(read)
+            if k < read.shape[0]:
+                lagged[k:] = read[: read.shape[0] - k]
+            return lagged
+        case EventValue(event=e, input=inp) | EventAgg(event=e, input=inp):
+            s_idx = _event_anchor(e, md)
+            inner = _operand_full(inp, md)
+            at_s = np.take_along_axis(inner, np.maximum(s_idx, 0), axis=0)
+            event_full: npt.NDArray[np.bool_] = fully_initialized(e, md) & np.where(
+                s_idx >= 0, at_s, inner
+            )
+            return event_full
+        case _:
+            full = np.ones((len(md.index), len(md.targets)), dtype=bool)
+            for cond in iter_child_conditions(node):
+                full &= fully_initialized(cond, md)
+            for child in iter_child_series(node):
+                full &= _operand_full(child, md)
+            return full
 
 
 def signal(node: Condition, md: MarketData) -> pd.DataFrame:

@@ -76,6 +76,8 @@ from seikan.dsl.thesis_model import (
 )
 from seikan.dsl.traverse import (
     declared_grid_size,
+    iter_child_conditions,
+    iter_child_series,
     iter_condition_series,
     iter_cross_series,
     iter_embedded_conditions,
@@ -144,6 +146,8 @@ __all__ = [
     "ZScore",
     "declared_grid_size",
     "fmt_num",
+    "iter_child_conditions",
+    "iter_child_series",
     "iter_condition_series",
     "iter_cross_series",
     "iter_embedded_conditions",

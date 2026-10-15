@@ -5,8 +5,8 @@ Two vocabularies, one tree. A Condition reads Series operands at its thresholds,
 embed a Condition (the event-anchor family: ``mask``, ``bars_since_event``, ``event_value``,
 ``event_agg``), so the walks come in two layers:
 
-* the DIRECT layer — :func:`_iter_child_series` (a Series node's own Series children) and
-  :func:`_iter_child_conditions` (its own embedded Conditions), :func:`_iter_threshold_operands`
+* the DIRECT layer — :func:`iter_child_series` (a Series node's own Series children) and
+  :func:`iter_child_conditions` (its own embedded Conditions), :func:`_iter_threshold_operands`
   (a Condition tree's own threshold operands, never crossing into an embedded Condition);
 * the CROSSING layer — :func:`_iter_series_tree` (every Series node under a Series, crossing into
   embedded Conditions through their operands) and the public :func:`iter_condition_series` (every
@@ -89,7 +89,7 @@ _CROSS_NODES = (CrossRank, CrossDemean, CrossAgg)
 # ---- the direct layer ---------------------------------------------------------------------
 
 
-def _iter_child_series(node: Series) -> Iterator[Series]:
+def iter_child_series(node: Series) -> Iterator[Series]:
     """A Series node's DIRECT Series children (never its embedded Conditions' operands)."""
     if isinstance(node, _SERIES_INPUT_NODES):
         yield node.input
@@ -104,7 +104,7 @@ def _iter_child_series(node: Series) -> Iterator[Series]:
         yield node.expr
 
 
-def _iter_child_conditions(node: Series) -> Iterator[Condition]:
+def iter_child_conditions(node: Series) -> Iterator[Condition]:
     """A Series node's DIRECT embedded Conditions (``mask`` and the event nodes' ``event``)."""
     if isinstance(node, Mask):
         yield node.condition
@@ -140,8 +140,8 @@ def iter_embedded_conditions(node: Series) -> Iterator[Condition]:
     """Every Condition embedded anywhere in a Series subtree, pre-order — reached through the
     Series' own children only (never crossing into a Condition already yielded: what those
     embed is reached through :func:`iter_condition_series` on the yielded Condition)."""
-    yield from _iter_child_conditions(node)
-    for child in _iter_child_series(node):
+    yield from iter_child_conditions(node)
+    for child in iter_child_series(node):
         yield from iter_embedded_conditions(child)
 
 
@@ -150,10 +150,10 @@ def _iter_series_tree(node: Series) -> Iterator[Series]:
     Conditions through their threshold operands — the walk the external/source/cross discovery
     runs over."""
     yield node
-    for cond in _iter_child_conditions(node):
+    for cond in iter_child_conditions(node):
         for operand in _iter_threshold_operands(cond):
             yield from _iter_series_tree(operand)
-    for child in _iter_child_series(node):
+    for child in iter_child_series(node):
         yield from _iter_series_tree(child)
 
 
@@ -481,7 +481,7 @@ def _series_depth(node: Series) -> int:
     Condition is invisible here by construction — it is a decision, not a transform level — and
     its operands are depth-checked as roots of their own (:func:`iter_condition_series`,
     :func:`iter_series_depth_roots`)."""
-    child_max = max((_series_depth(c) for c in _iter_child_series(node)), default=0)
+    child_max = max((_series_depth(c) for c in iter_child_series(node)), default=0)
     if isinstance(node, (Field, Constant, External, Calendar, DaysSince)):
         return 0
     if isinstance(node, (BinaryOp, UnaryOp, Shift, Mask)):

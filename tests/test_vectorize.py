@@ -323,34 +323,51 @@ def _ref_cond_init(node, df) -> np.ndarray:
     raise NotImplementedError(t)
 
 
-def _ref_embedded(series) -> list:
-    """The conditions embedded in a Series tree the oracle evaluates (``mask``'s condition, an
-    event node's event), each once — what they embed in turn is reached through ``_ref_full``."""
+def _ref_operand_full(series, df) -> np.ndarray:
+    """Where every condition embedded in a Series tree (``mask``'s condition, an event node's
+    event) is fully initialized AT THE BARS THE TREE READS IT ON: a ``shift``/``change`` reads its
+    input ``periods`` bars back, an ``event_value``/``event_agg`` its input from the event bar
+    ``s(t)`` on (at ``t`` while the anchor is unknown) and its event through ``t``, every other
+    node its children through the current bar."""
     t = series.type
-    found = []
+    n = len(df)
+    if t in ("shift", "change"):
+        inner = _ref_operand_full(series.input, df)
+        out = np.zeros(n, dtype=bool)
+        k = int(series.periods)
+        if k < n:
+            out[k:] = inner[: n - k]
+        return out
+    out = np.ones(n, dtype=bool)
     if t == "mask":
-        found.append(series.condition)
+        out = out & _ref_full(series.condition, df)
     if t in _EVENT_NODES:
-        found.append(series.event)
+        out = out & _ref_full(series.event, df)
+    if t in ("event_value", "event_agg"):
+        v, i, d = _ref_cond_channels(series.event, df)
+        s_idx, _known = ref.event_anchor(v & i & d, i, d)
+        inner = _ref_operand_full(series.input, df)
+        return out & np.array([inner[s] if s >= 0 else inner[j] for j, s in enumerate(s_idx)])
     for attr in ("input", "left", "right"):
         child = getattr(series, attr, None)
         if child is not None:
-            found.extend(_ref_embedded(child))
-    return found
+            out = out & _ref_operand_full(child, df)
+    return out
 
 
 def _ref_full(node, df) -> np.ndarray:
     """Where EVERY condition under ``node`` is initialized: each threshold's own init and the full
-    mask of every condition embedded in its operands, AND-ed across ``and``/``or`` (whatever the
-    connective's own init), passed through ``not``/``first_true``, and carried through
-    ``rolling`` windows / ``lag`` shifts like each node's own init."""
+    mask of every condition embedded in its operands, read on the bars the operands read it
+    (:func:`_ref_operand_full`), AND-ed across ``and``/``or`` (whatever the connective's own
+    init), passed through ``not``/``first_true``, and carried through ``rolling`` windows /
+    ``lag`` shifts like each node's own init."""
     t = node.type
     if t == "threshold":
-        out = _ref_cond_init(node, df)
-        for operand in (node.left, node.right):
-            for inner in _ref_embedded(operand):
-                out = out & _ref_full(inner, df)
-        return out
+        return (
+            _ref_cond_init(node, df)
+            & _ref_operand_full(node.left, df)
+            & _ref_operand_full(node.right, df)
+        )
     if t in ("and", "or"):
         return np.logical_and.reduce([_ref_full(c, df) for c in node.conditions])
     if t in ("not", "first_true"):
@@ -1822,6 +1839,104 @@ def test_not_waits_for_a_condition_embedded_in_its_operand():
     node = NotCondition(condition=ThresholdCondition(left=since, op=">", right=Constant(value=5.0)))
     assert vz.build_series(since, md)[1].to_numpy().all()
     np.testing.assert_array_equal(_chan(node, md)[1], np.arange(70) >= 39)
+
+
+def _late_or(e2=(), hole=None, n=80):
+    """``(df, md)`` over 80 rising bars: feed ``a`` starts at bar 40 (0 after), ``b`` is 1 on bar
+    0 only, ``e2`` is 1 on the given bars only (NaN at ``hole``) — so ``or(a > 0, b > 0)`` fires
+    once, at bar 0, while ``a`` still warms."""
+    idx = pd.date_range("2021-01-01", periods=n, freq="1D")
+    close = pd.Series(np.linspace(100.0, 180.0, n), index=idx)
+    e2v = np.isin(np.arange(n), list(e2)).astype(float)
+    if hole is not None:
+        e2v[hole] = np.nan
+    df = pd.DataFrame(
+        {
+            "open": close,
+            "high": close,
+            "low": close,
+            "close": close,
+            "volume": 1.0,
+            "_ext_a": np.r_[np.full(40, np.nan), np.zeros(n - 40)],
+            "_ext_b": np.r_[1.0, np.zeros(n - 1)],
+            "_ext_e2": e2v,
+        },
+        index=idx,
+    )
+    return df, _md(df, externals=("a", "b", "e2"))
+
+
+def _gt_feed(name, v=0.5):
+    return ThresholdCondition(left=External(name=name), op=">", right=Constant(value=v))
+
+
+_SINCE_AB = BarsSinceEvent(event=OrCondition(conditions=[_gt_feed("a", 0.0), _gt_feed("b", 0.0)]))
+_BIG = Constant(value=1000.0)
+
+
+def _first_true_bar(node, md):
+    fired = np.flatnonzero(vz.signal(node, md).to_numpy().ravel())
+    return int(fired[0]) if fired.size else None
+
+
+def test_negation_waits_for_the_bars_a_lagged_operand_reads():
+    # E = or(a > 0, b > 0) with `a` starting at bar 40 and `b` firing once at bar 0; S =
+    # bars_since_event(E). `not(S > 1000)` waits for `a` (bar 40) and its lag by 20 for bar 60 —
+    # but `not(shift(S, 20) > 1000)` read E's full-init on the CURRENT bar and fired from bar 40,
+    # reading through the shift a bar where `a` still warmed. The gate follows the bars the
+    # operand reads: shift and change wait for bar 60 too.
+    df, md = _late_or()
+    lagged = LagCondition(
+        condition=NotCondition(condition=ThresholdCondition(left=_SINCE_AB, op=">", right=_BIG)),
+        periods=20,
+    )
+    shifted = NotCondition(
+        condition=ThresholdCondition(left=Shift(input=_SINCE_AB, periods=20), op=">", right=_BIG)
+    )
+    changed = NotCondition(
+        condition=ThresholdCondition(
+            left=Change(input=_SINCE_AB, periods=20, kind="diff"), op=">", right=_BIG
+        )
+    )
+    for node in (lagged, shifted, changed):
+        assert _first_true_bar(node, md) == 60, node.type
+        assert not vz.undefined_mask(node, md).any(), node.type
+        inner = node.condition
+        np.testing.assert_array_equal(vz.fully_initialized(inner, md)[:, 0], _ref_full(inner, df))
+
+
+@pytest.mark.parametrize("snapshot", [EventValue, EventAgg])
+def test_negation_waits_for_the_event_bar_a_snapshot_reads(snapshot):
+    # A snapshot of S taken at an event bar where `a` still warmed carries a "no event" claim
+    # that was never decided: `not(event_value(E2, S) > 1000)` read E's full-init on the current
+    # bar and fired from bar 40 off the bar-10 snapshot. Read at the event bar it waits for an
+    # event after bar 40 — here bar 50. (`event_agg` reads the run from the same bar.)
+    kw = {"agg": "max"} if snapshot is EventAgg else {}
+    left = snapshot(event=_gt_feed("e2"), input=_SINCE_AB, **kw)
+    node = NotCondition(condition=ThresholdCondition(left=left, op=">", right=_BIG))
+    assert _first_true_bar(node, _late_or(e2=(10,))[1]) is None
+    df, md = _late_or(e2=(10, 50))
+    assert _first_true_bar(node, md) == 50
+    np.testing.assert_array_equal(
+        vz.fully_initialized(node.condition, md)[:, 0], _ref_full(node.condition, df)
+    )
+
+
+def test_negation_keeps_an_unknown_anchor_ledgered():
+    # After a hole in the event condition the anchor is unknowable: the snapshot is NaN and the
+    # decision over it undefined — and its negation must stay ledgered there, never turn into
+    # warmup because no event bar can be read.
+    df, md = _late_or(e2=(50,), hole=60)
+    node = NotCondition(
+        condition=ThresholdCondition(
+            left=EventValue(event=_gt_feed("e2"), input=_SINCE_AB), op=">", right=_BIG
+        )
+    )
+    undefined = vz.undefined_mask(node, md)[:, 0]
+    assert undefined[60:].all() and not undefined[:60].any()
+    np.testing.assert_array_equal(
+        vz.fully_initialized(node.condition, md)[:, 0], _ref_full(node.condition, df)
+    )
 
 
 def test_de_morgan_agreement_under_staggered_warmup(ohlcv_ext):
