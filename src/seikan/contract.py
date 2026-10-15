@@ -1737,7 +1737,9 @@ ROOT_SERIES_CSV: dict[str, JsonValue] = {
         "one per deduplicated root series node — every Series operand of a threshold condition "
         "except bare constants, scalarized per param combo and rendered as an expression, e.g. "
         "percentile(iv30,80); '@<target>' suffix when several targets; '#N' suffix on a name "
-        "collision (only the 'datetime' index name is reserved in this namespace)"
+        "collision, names compared as the strict reader compares headers (stripped, "
+        "case-insensitive — targets 'A' and 'a' are one header to it), so the file re-reads "
+        "(only the 'datetime' index name is reserved in this namespace)"
     ),
     "no_entry_flags": (
         "this CSV carries NO 0/1 entry-flag columns — it is the per-bar DECISION INPUT view, the "
@@ -1769,9 +1771,10 @@ ENTRY_FLAGS_CSV: dict[str, JsonValue] = {
         "one 0/1 INTEGER column per (param combo × target), in combo-iteration × target order: "
         "'entry' for a thesis with no swept entry axis, else 'entry[axis=value,...]' naming the "
         "combo, with an '@<target>' suffix only when several targets run. These names are "
-        "canonical and unique BY CONSTRUCTION — one column per declared combo × target and no two "
-        "combos are equal — so unlike the root-series namespace, where two rendered expressions "
-        "can collide, there is no '#N' disambiguation here"
+        "canonical — one column per declared combo × target and no two combos are equal — and "
+        "unique save in CASE: the strict reader compares headers case-insensitively, so of "
+        "targets 'A' and 'a' the second takes a '#N' suffix ('entry@a#2'), as a colliding "
+        "root-series label does"
     ),
     "relation_to_trades": (
         "bit-identical to the firing mask the backtest measures at (both read vectorize.signal), "

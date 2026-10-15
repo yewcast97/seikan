@@ -1005,7 +1005,8 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   the CLI nominates them one flag each: `root_series` — the deduplicated root-series value columns,
   each threshold operand except bare constants, labelled by `render_series` — is what
   `--root-series-out` writes, since it answers WHY a bar did or did not fire; `entry_flags` — the
-  0/1 column per combo × target, canonically named and unique by construction — is what
+  0/1 column per combo × target, canonically named, unique as the strict reader compares headers
+  (case-insensitively: of targets `A` and `a` the second takes a `#N` suffix) — is what
   `--entry-flags-out` writes, and it answers WHETHER it fired. Keeping the two apart is what lets
   the value frame reserve nothing but `datetime`, so an external feed named `entry` keeps its name.
   `entry_flags` is also the ONE output that can express a final-bar firing: it anchors no

@@ -148,9 +148,10 @@ def write_entry_flags_csv(frame: pd.DataFrame, path: str) -> int:
     """Write the per-bar 0/1 entry-flag matrix (``EntryListReport.entry_flags``) as CSV for
     ``--entry-flags-out``. One integer column per (param combo × target) — named ``entry`` /
     ``entry[axis=value,...]``, carrying the ``@<target>`` suffix only when several targets run —
-    beside the ISO-8601 index labelled ``datetime``. Those names are canonical and unique BY
-    CONSTRUCTION (one per declared combo × target), so unlike the root-series labels they need no
-    ``#N`` disambiguation. The mask is bit-identical to the backtest's: both come from
+    beside the ISO-8601 index labelled ``datetime``. Those names are canonical, one per declared
+    combo × target, and unique save in case — the strict reader compares headers
+    case-insensitively, so of targets ``A`` and ``a`` the second takes a ``#N`` suffix, as a
+    colliding root-series label does. The mask is bit-identical to the backtest's: both come from
     ``vectorize.signal`` over the same compiled entry tree. It lines up BAR FOR BAR against the
     root-series CSV, which carries the identical index — but NOT against the trades rows: those are
     one per (firing bar × target × DECLARED HORIZON), and their ``entry_time`` is the next-open

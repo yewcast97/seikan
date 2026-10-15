@@ -488,6 +488,68 @@ def test_signals_collision_fallback(tmp_path):
     assert set(report.entry_flags["entry"].unique()) <= {0, 1}
 
 
+def test_listing_csvs_reread_when_names_differ_only_in_case(tmp_path):
+    # Targets 'A' and 'a', and feeds 'IV' and 'iv', are distinct data keys — but the strict
+    # reader compares headers stripped and lower-cased, so the listing frames' 'close@A' and
+    # 'close@a' (and 'entry@A' and 'entry@a') were ONE header to it, and both CSVs refused to
+    # re-read (duplicate_column). A name taken under that rule takes a '#N' suffix, in
+    # declaration order, and both files re-read.
+    idx = pd.date_range("2021-01-01", periods=6, freq="1D")  # the `_bars` clock
+    files = {
+        "A": str(_bars(tmp_path / "upper.csv", [100.0, 101.0, 99.0, 102.0, 103.0, 101.0])),
+        "a": str(_bars(tmp_path / "lower.csv", [50.0, 49.0, 51.0, 52.0, 50.0, 53.0])),
+    }
+    for name, level in (("IV", 1.0), ("iv", 2.0)):
+        path = tmp_path / f"feed_{name}_{level}.csv"
+        pd.DataFrame({"v": [level] * len(idx)}, index=idx).rename_axis("datetime").to_csv(path)
+        files[name] = str(path)
+
+    def above(left):
+        return {
+            "type": "threshold",
+            "left": left,
+            "op": ">",
+            "right": {"type": "constant", "value": 0.0},
+        }
+
+    thesis = Thesis.model_validate(
+        {
+            "name": "case_collide",
+            "data": {"targets": ["A", "a"], "external": {"IV": {}, "iv": {}}},
+            "entry": {
+                "type": "and",
+                "conditions": [
+                    above({"type": "field", "column": "close"}),
+                    above({"type": "external", "name": "IV"}),
+                    above({"type": "external", "name": "iv"}),
+                ],
+            },
+            "params": {"horizon": 1},
+        }
+    )
+    report = list_entries(thesis, load(thesis, files))
+    assert list(report.root_series.columns) == [
+        "close@A",
+        "close@a#2",
+        "IV@A",
+        "IV@a#2",
+        "iv@A#3",
+        "iv@a#4",
+    ]
+    assert (report.root_series["iv@A#3"] == 2.0).all()  # the suffix keeps each series its own
+    assert list(report.entry_flags.columns) == ["entry@A", "entry@a#2"]
+    for frame, write in (
+        (report.root_series, write_root_series_csv),
+        (report.entry_flags, write_entry_flags_csv),
+    ):
+        out = tmp_path / "listing.csv"
+        write(frame, str(out))
+        back, rep = dataio.read_strict_csv(str(out))
+        assert rep.ok, rep
+        # the reader hands headers back lower-cased: still one per column, in order
+        assert list(back.columns) == [c.lower() for c in frame.columns]
+
+
 def test_write_root_series_csv_roundtrip_strict(tmp_path):
     closes = (100 + np.random.RandomState(3).randn(60).cumsum()).tolist()
     path = _bars(tmp_path / "rt.csv", closes)

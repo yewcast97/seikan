@@ -2719,8 +2719,10 @@ def test_entry_flags_csv_header_is_the_library_frames_columns(tmp_path, capsys, 
     # line a flag column up against the combo it grades. Both naming families are exercised:
     # `entry[axis=value]` for a swept entry axis, the `@<target>` suffix for a multi-target regime.
     # No `#N` disambiguation appears in either: one column per declared combo × target, and no two
-    # combos are equal, so the names are unique by construction (unlike the root-series labels,
-    # where two rendered expressions can legitimately collide).
+    # combos are equal, so the names are unique — save targets differing only in case, which the
+    # strict reader's case-insensitive headers would merge (test_list_entries covers that). The
+    # written file re-reads through that reader.
+    from seikan import dataio
     from seikan.api import list_entries
     from seikan.dsl.schema import Thesis
 
@@ -2744,6 +2746,8 @@ def test_entry_flags_csv_header_is_the_library_frames_columns(tmp_path, capsys, 
     assert set(np.unique(values.to_numpy())) <= {0, 1}
     for name, column in frame.items():
         assert written[name].tolist() == column.astype(int).tolist()
+    _back, rep = dataio.read_strict_csv(str(out))
+    assert rep.ok, rep
 
 
 @pytest.mark.parametrize(
@@ -2962,7 +2966,7 @@ def test_schema_documents_the_entry_flags_csv_between_root_series_and_exit_codes
     assert set(csv_doc) == {"command", "rows", "flag_columns", "relation_to_trades", "roundtrip"}
     assert "--entry-flags-out" in csv_doc["command"]
     assert "datetime" in csv_doc["rows"]
-    # the two naming families, and the absence of the root-series `#N` disambiguation
+    # the two naming families, and the `#N` suffix that only a case collision can call for
     assert "entry[axis=value,...]" in csv_doc["flag_columns"]
     assert "@<target>" in csv_doc["flag_columns"]
     # the seam this output exists for, stated where a caller reading the contract will meet it

@@ -220,6 +220,24 @@ def list_entries(thesis: Thesis, md: MarketData) -> EntryListReport:
     )
 
 
+def _header_key(name: str) -> str:
+    """A column name as ``dataio.read_strict_csv`` compares headers — stripped and lower-cased —
+    so two names equal under it are ONE header to the reader, which refuses the file
+    (``duplicate_column``)."""
+    return name.strip().lower()
+
+
+def _claim_column(name: str, taken: set[str]) -> str:
+    """``name``, or ``name#N`` for the smallest ``N ≥ 2`` whose header key (:func:`_header_key`) no
+    earlier column holds — claimed in ``taken``. Deterministic in claim order."""
+    claimed, n = name, 1
+    while _header_key(claimed) in taken:
+        n += 1
+        claimed = f"{name}#{n}"
+    taken.add(_header_key(claimed))
+    return claimed
+
+
 def _root_series_frame(
     md: MarketData,
     value_cols: list[tuple[str, pd.DataFrame]],
@@ -229,9 +247,12 @@ def _root_series_frame(
     write byte-identical CSVs. The ``@<target>`` suffix appears only when several targets run.
 
     ``datetime`` is the ONE reserved name here (it labels the index), so a value label colliding
-    with it — or with an earlier label — takes a ``#N`` suffix. The reservation set is deliberately
-    narrow: this frame carries no entry flags, so no flag name can shadow a value label and an
-    external feed named ``entry`` keeps the name the caller gave it.
+    with it — or with an earlier label — takes a ``#N`` suffix (:func:`_claim_column`), names
+    compared as the strict reader compares headers: targets ``A`` and ``a`` write ``close@A`` and
+    ``close@a``, one header to that reader, so the second is ``close@a#2`` and the CSV re-reads.
+    The reservation set is deliberately narrow: this frame carries no entry flags, so no flag
+    name can shadow a value label and an external feed named ``entry`` keeps the name the caller
+    gave it.
     """
     multi = len(md.targets) > 1
 
@@ -242,12 +263,7 @@ def _root_series_frame(
     columns: dict[str, pd.Series] = {}
     for label, values in value_cols:
         for target in md.targets:
-            name, n = col(label, target), 1
-            while name in taken:
-                n += 1
-                name = f"{col(label, target)}#{n}"
-            taken.add(name)
-            columns[name] = values[target]
+            columns[_claim_column(col(label, target), taken)] = values[target]
     out = pd.DataFrame(columns, index=md.index)
     out.index.name = "datetime"
     return out
@@ -261,8 +277,12 @@ def _entry_flags_frame(
     combo-iteration × target order — the frame ``seikan run --entry-flags-out`` writes, so the
     layout is deterministic and identical runs emit byte-identical CSVs. Columns are named
     ``entry`` / ``entry[axis=value,...]`` with the ``@<target>`` suffix when several targets run —
-    canonical names, unique by construction, so there is no collision to disambiguate."""
+    canonical names, one per combo × target, unique save in CASE: the strict reader compares
+    headers case-insensitively, so targets ``A`` and ``a`` would write ``entry@A`` and ``entry@a``
+    as one header it refuses. A name taken under that rule takes a ``#N`` suffix
+    (:func:`_claim_column`), as in the root-series frame."""
     multi = len(md.targets) > 1
+    taken = {"datetime"}
     columns: dict[str, pd.Series] = {}
     for combo, sig in entry_cols:
         base = (
@@ -271,7 +291,8 @@ def _entry_flags_frame(
             else ("entry[" + ",".join(f"{k}={fmt_num(v)}" for k, v in combo.items()) + "]")
         )
         for target in md.targets:
-            columns[f"{base}@{target}" if multi else base] = sig[target].astype(int)
+            name = f"{base}@{target}" if multi else base
+            columns[_claim_column(name, taken)] = sig[target].astype(int)
     out = pd.DataFrame(columns, index=md.index)
     out.index.name = "datetime"
     return out
