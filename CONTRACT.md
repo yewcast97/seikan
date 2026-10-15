@@ -940,7 +940,8 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   past a structural refusal — undecodable bytes, a duplicate header name, a ragged record, a
   record the strict scan cannot read (a field past 131072 characters, usually a quote that never
   closes), a record pandas' tokenizer cannot read or reads differently from the strict scan —
-  where no cell can be placed under a column, so the cell-level checks do not run;
+  where no cell can be placed under a column, so the cell-level checks do not run — and past a
+  timestamp or value-cell error, which stops the frame-level shape and integrity checks;
   machine-readable `FileReport`s — each carrying the file's raw-byte `sha256`, the report's data
   identity), `check_frame` integrity invariants, `sufficiency_check` (an index too short to close
   one observation refuses up front), `DataError` → exit 2.

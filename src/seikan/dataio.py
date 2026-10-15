@@ -6,11 +6,13 @@ timestamps, no format guessing, forced-float value columns, duplicate/order chec
 :func:`check_frame` integrity gate (OHLC invariants, positive prices, no inf) before the engine
 sees a single number. All violations for a file are accumulated — never fail-fast — and every
 check lands in a structured ``data_report`` the CLI emits even on refusal (exit 2), so a calling
-agent can fix its data without guesswork. The one exception is a structural refusal (undecodable
+agent can fix its data without guesswork. One exception is a structural refusal (undecodable
 bytes, a duplicate header name, a ragged record, a record the strict scan cannot read — a field
 past ``_CSV_FIELD_LIMIT`` characters, usually a quote that never closes — or a record pandas cannot
 read or reads differently from the file): past it no cell can be placed under a column, so the
-cell-level checks do not run.
+cell-level checks do not run. Likewise a timestamp or value-cell error stops the read before the
+frame-level checks (shape, the :func:`check_frame` invariants): the cells' own errors are all
+reported, but a frame built from refused cells is not graded further.
 
 Refusals vs warnings: structural defects (bad timestamps, non-numeric garbage, inverted OHLC)
 refuse; market-shaped anomalies (interior NaN holes, crash-sized moves, calendar gaps) only warn —
@@ -261,10 +263,11 @@ def read_strict_csv(
     The record scan reads under ``csv.field_size_limit()``, which is interpreter-global, so stages
     2 to 5 (the scans and the parse between them) run with it pinned to ``_CSV_FIELD_LIMIT`` — the
     stdlib default — and the caller's limit is handed back on every exit, admitted, refused or
-    raised through: a field longer than 131072 characters refuses as ``unreadable`` whatever else
-    in the process set the limit. The pin is a set-and-restore of process state, so it is NOT
-    thread-safe: a thread using ``csv`` while a read is inside those stages reads under the pin,
-    and a limit it sets meanwhile is overwritten by the restore.
+    raised through: a field longer than 131072 characters refuses as ``unreadable`` (unless an
+    earlier stage refused first — a duplicate header name is decided off the first record alone)
+    whatever else in the process set the limit. The pin is a set-and-restore of process state, so
+    it is NOT thread-safe: a thread using ``csv`` while a read is inside those stages reads under
+    the pin, and a limit it sets meanwhile is overwritten by the restore.
     """
     rep = FileReport(path=str(path), role=role)
     blob = _read_blob(path, rep)

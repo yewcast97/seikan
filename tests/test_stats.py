@@ -3184,14 +3184,16 @@ def test_cscv_split_score_of_an_overflowed_sd_is_nan_never_zero():
     assert np.isnan(score).all()
 
 
-def test_cscv_pbo_over_returns_whose_squares_overflow_declines_silently():
+@pytest.mark.parametrize("scale", [1e156, 1e160])
+def test_cscv_pbo_over_returns_whose_squares_overflow_declines_silently(scale):
     # Returns of ~1e158 square past the double range in the per-block moment accumulators: every
     # split's variance overflows and scores NaN, so no split ranks and the block declines — the
-    # overflow an expected input there (`_representable` decides it), never a warning.
+    # overflow an expected input there (`_representable` decides it), never a warning. At ~1e154
+    # the per-block sums stay finite and it is their sum over a split's blocks that overflows.
     rng = np.random.RandomState(5)
     cells = _pbo_cells(rng, 800, 12)
     for c in cells:
-        c["fwd_col"] = np.asarray(c["fwd_col"]) * 1e160
+        c["fwd_col"] = np.asarray(c["fwd_col"]) * scale
     out = cscv_pbo(cells, 800, ["t"], n_combos_declared=12)
     assert out["pbo"] is None and out["reason"] == "insufficient_data"
     assert out["n_splits"] == 0 and out["n_combos"] == 12

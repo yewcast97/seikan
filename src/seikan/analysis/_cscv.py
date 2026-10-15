@@ -115,7 +115,10 @@ def _split_scores(
     is its own, only its bar's SUM is 0 — so the Sharpe is the exact mean over the rows' sd.
     Every split without a full bar, and every candidate without one, scores byte-identically.
     """
-    mg = moments[:, :, :, block_idx].sum(axis=3)  # (Q, T, 3) per-member block sums
+    # Finite per-block sums can still overflow (or meet inf − inf) summed over a split's blocks:
+    # `_representable` below decides every such split, so it is an expected input, never a warning.
+    with np.errstate(over="ignore", invalid="ignore"):
+        mg = moments[:, :, :, block_idx].sum(axis=3)  # (Q, T, 3) per-member block sums
     n_g, s1_g, s2_g = mg[:, :, 0], mg[:, :, 1], mg[:, :, 2]
     lo_g = extrema[:, :, 0, :][:, :, block_idx].min(axis=2)  # (Q, T)
     hi_g = extrema[:, :, 1, :][:, :, block_idx].max(axis=2)
