@@ -62,8 +62,8 @@ def episode_bootstrap_ci(
     and the null fields say so rather than minting a degenerate interval). A degenerate bootstrap
     distribution is reported exactly — ``ci_lo == ci_hi``, ``boot_se`` 0.0 — instead of the
     ulp-scale spread rounding would mint (a ``mean / boot_se`` of ~1e15, the ``t_hac``
-    pathology): a pool whose summed values are all equal (its interval is their arithmetic
-    mean — the value itself where the computed mean's sum overflowed), and any pool whose
+    pathology): a pool whose summed values are all equal (its interval is that value — their
+    exact mean, the pool's ``mean_ret``), and any pool whose
     resampled means come out bit-identical on every draw (every episode carrying the same sum
     and count). Out of range, the block says so: an episode sum or a draw past the double range
     nulls the interval and ``boot_se`` together, and a draws' variance that is not a normal
@@ -118,12 +118,10 @@ def episode_bootstrap_ci(
         return out
     if float(pool.max()) == float(pool.min()):
         out["n_boot"] = int(n_boot)
-        # The pool's arithmetic mean, as computed — and where that sum left the double range,
-        # the value itself: every value is equal, so `pool[0]` IS their exact mean (an
-        # overflowed `inf` read a null interval beside `boot_se` 0.0).
-        with np.errstate(over="ignore"):
-            mean = float(np.mean(pool))
-        out["ci_lo"] = out["ci_hi"] = mean if math.isfinite(mean) else float(pool[0])
+        # Every value is equal, so `pool[0]` IS their exact mean — the `mean_ret` the pool
+        # reports (`_pools.exact_mean`), where a computed mean read an ulp off it (0.3 as
+        # 0.29999999999999993) and an overflowed sum a null interval beside `boot_se` 0.0.
+        out["ci_lo"] = out["ci_hi"] = float(pool[0])
         out["boot_se"] = 0.0
         return out
     # Clusters partition the sorted rows into CONTIGUOUS runs (the greedy merge walks the rows in

@@ -98,6 +98,34 @@ def _ddof1_std(v: np.ndarray) -> float:
     return math.sqrt(var) if _normal(var) else _NAN
 
 
+def exact_mean(v: np.ndarray) -> float:
+    """The mean of a pool of finite values as its EXACTLY ROUNDED sum over ``n`` — the read
+    every mean the checklist grades, and its direct twins, share: ``pool_moments``' ``mean_ret``,
+    the baseline's and the eras' means, the attribution legs and the HAC's centre (so ``t_hac``
+    is that ``mean_ret`` over its SE).
+
+    ``np.mean`` sums pairwise in floating point, and a large term swallows a small one before
+    its cancelling partner arrives: the 49 diff returns of ``[0, 2**54, 0, −1, 0] × 10`` sum to
+    exactly 0 and read a mean of 1/49 — a positive edge minted by rounding, which the support
+    floor's ``mean_ret > 0`` graded. ``math.fsum`` is the correctly rounded sum, so the mean has
+    the exact sum's sign and is ``0.0`` exactly where it is 0; an all-equal pool's mean is its
+    value. NaN on an empty pool, on a non-finite value, and where the exact sum leaves the
+    double range (``fsum`` raises rather than returning inf) — an overflowed mean is no
+    evidence, as everywhere in this module."""
+    n = int(v.size)
+    if n == 0:
+        return _NAN
+    lo, hi = float(np.min(v)), float(np.max(v))
+    if not (math.isfinite(lo) and math.isfinite(hi)):
+        return _NAN
+    if lo == hi:
+        return lo
+    try:
+        return math.fsum(v.tolist()) / n
+    except OverflowError:
+        return _NAN
+
+
 def _finite_ratio(num: float, den: float) -> float:
     """``num / den`` where both operands and the quotient are finite (and ``den != 0``), else NaN.
 
@@ -156,7 +184,7 @@ def pool_moments(rets: np.ndarray) -> PoolMoments:
     }
     if n == 0:
         return out
-    mean_ret = float(np.mean(v))
+    mean_ret = exact_mean(v)
     degenerate = _near_constant(v, mean_ret)
     wins, losses = v[v > 0], v[v < 0]
     out["mean_ret"] = mean_ret

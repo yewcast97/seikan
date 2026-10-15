@@ -7,6 +7,9 @@ winner, a family-wise correction, or an inferential verdict.
 
 from __future__ import annotations
 
+import math
+from fractions import Fraction
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -32,6 +35,7 @@ from seikan.analysis.stats import (
     episode_ledger,
     episode_profile,
     episode_stats,
+    exact_mean,
     feature_outcome_association,
     newey_west_mean,
     nonoverlap_count,
@@ -966,6 +970,74 @@ def test_newey_west_unsorted_bars_are_sorted_internally():
     t_a, se_a = newey_west_mean(rets, bars, h=10)
     t_b, se_b = newey_west_mean(rets[perm], bars[perm], h=10)
     assert (t_a, se_a) == pytest.approx((t_b, se_b), rel=1e-12)
+
+
+def _hac_exact(rets: np.ndarray, bars: np.ndarray, h: int) -> tuple[float, float]:
+    """``(t, se)`` of the event-time HAC in exact rational arithmetic — the estimator's own
+    definition, ``Σ_i Σ_j w(|b_i − b_j|)·dev_i·dev_j / (n − 1) / n`` about the exact mean, with
+    only the final square root and quotient rounded."""
+    n = rets.size
+    q = [Fraction(r) for r in rets.tolist()]
+    mean = sum(q) / n
+    dev = [x - mean for x in q]
+    s = Fraction(0)
+    for i in range(n):
+        for j in range(n):
+            w = 1 - Fraction(abs(int(bars[i]) - int(bars[j])), h)
+            if w > 0:
+                s += w * dev[i] * dev[j]
+    se = math.sqrt(s / (n - 1) / n)
+    return float(mean) / se, se
+
+
+def test_newey_west_sums_each_bar_before_the_quadratic_form():
+    # Ten members fire together on 40 bars, two apart, at h = 1: five rows of +0.5, four of −0.5
+    # and one of −0.5 + k·2**−24 (k cycling 1..4), so each bar's deviations cancel to
+    # (k − 2.5)·2**−24. Accumulated row by row, the squared deviations (~0.25 each) and the
+    # same-bar cross terms that cancel them were summed apart, and the cancellation destroyed the
+    # combined variance: SE 3.7252902984619143e-10 and t 40.0, where the estimator's exact value
+    # is SE 1.05499077648638e-9, t 14.124446891825533 — a 65% understatement. The rows enter
+    # through their per-bar sums now, exactly rounded.
+    rets, bars = [], []
+    for b in range(40):
+        rets += [0.5] * 5 + [-0.5] * 4 + [-0.5 + (b % 4 + 1) * 2.0**-24]
+        bars += [2 * b] * 10
+    rets_a, bars_a = np.array(rets), np.array(bars)
+    t, se = newey_west_mean(rets_a, bars_a, 1)
+    t_exact, se_exact = _hac_exact(rets_a, bars_a, 1)
+    assert (t, se) == (t_exact, se_exact) == (14.124446891825533, 1.05499077648638e-9)
+    # an ordinary overlapping basket pool agrees with the exact estimator to rounding
+    rng = np.random.RandomState(9)
+    bars_b = np.sort(rng.randint(0, 60, 90))
+    rets_b = rng.normal(0.001, 0.02, 90)
+    t, se = newey_west_mean(rets_b, bars_b, 7)
+    t_exact, se_exact = _hac_exact(rets_b, bars_b, 7)
+    assert t == pytest.approx(t_exact, rel=1e-13) and se == pytest.approx(se_exact, rel=1e-13)
+
+
+def test_exact_mean_keeps_the_exact_sum_sign_and_zero():
+    # np.mean sums pairwise in floating point, and a large term swallows a small one before its
+    # cancelling partner arrives: the 49 diff returns of [0, 2**54, 0, −1, 0] × 10 sum to exactly
+    # 0 and np.mean read 1/49. The exactly rounded sum keeps the exact sum's sign and its zero.
+    levels = np.array([0.0] + [0.0, 2.0**54, 0.0, -1.0, 0.0] * 10)
+    rets = np.diff(levels[1:])  # the h = 1 diff returns open[t+2] − open[t+1], t = 0..48
+    assert sum(Fraction(r) for r in rets.tolist()) == 0
+    assert float(np.mean(rets)) == 1 / 49  # the defect
+    assert exact_mean(rets) == 0.0
+    assert pool_moments(rets)["mean_ret"] == 0.0
+    assert baseline_summary(rets)["mean_ret"] == 0.0
+    assert subperiod_means(rets, np.arange(49), np.array([0, 49]))[0]["mean_ret"] == 0.0
+    # a residue of the exact sum keeps its sign
+    assert exact_mean(np.array([2.0**54, 1.0, -(2.0**54)])) == 1 / 3
+    assert exact_mean(np.array([2.0**54, -1.0, -(2.0**54)])) == -1 / 3
+    # an all-equal pool's mean is its value; empty, non-finite and an overflowed sum are NaN
+    assert exact_mean(np.full(13, 0.3)) == 0.3 != float(np.mean(np.full(13, 0.3)))
+    assert math.isnan(exact_mean(np.empty(0)))
+    assert math.isnan(exact_mean(np.array([1.0, np.inf])))
+    assert math.isnan(exact_mean(np.array([1.7e308, 1.7e308, 1.0])))
+    # an ordinary pool reads the correctly rounded sum over n
+    v = np.random.RandomState(2).normal(0.0, 0.01, 1000)
+    assert exact_mean(v) == math.fsum(v.tolist()) / 1000
 
 
 def test_newey_west_emits_no_p_value():
@@ -2795,12 +2867,15 @@ def test_benchmark_regression_near_constant_legs_are_degenerate():
 def test_constant_pool_bootstrap_is_degenerate_exactly(c):
     # Every resample of a constant pool has the same mean: the interval has zero width and the
     # SE is 0 — not the ulp-scale spread of the resampled means' rounding — and it sits on the
-    # pool's own arithmetic mean, the `mean_ret` the cell reports beside it (an ulp off `c`).
+    # pool's own mean, the `mean_ret` the cell reports beside it: `c` itself, where the computed
+    # np.mean of these pools reads an ulp off it.
     bars = np.array([0, 1, 2, 10, 20, 21, 30, 40, 41, 42, 43, 50, 60])
     rets = np.full(bars.size, c)
     ci = episode_bootstrap_ci(rets, bars, 3)
     assert ci["reason"] is None and ci["n_boot"] > 0
-    assert ci["ci_lo"] == ci["ci_hi"] == pool_moments(rets)["mean_ret"] and ci["boot_se"] == 0.0
+    assert float(np.mean(rets)) != c  # the premise
+    assert ci["ci_lo"] == ci["ci_hi"] == pool_moments(rets)["mean_ret"] == c
+    assert ci["boot_se"] == 0.0
 
 
 @pytest.mark.parametrize("c", [1e308, -1e308, 3e307])

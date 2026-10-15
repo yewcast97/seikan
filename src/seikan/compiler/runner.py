@@ -56,6 +56,7 @@ from seikan.analysis.stats import (
     episode_ledger,
     episode_profile,
     episode_stats,
+    exact_mean,
     feature_outcome_association,
     mae_block,
     mfe_block,
@@ -656,11 +657,10 @@ def _pool_panel(
     # per-leg finite subsets would silently mis-pair.
     raw = _finite_column(closed, "ret_raw")
     bench = _finite_column(closed, "ret_bench")
-    # A leg whose sum leaves the double range reads `inf` → null, like every pool mean: an
-    # expected input, never a warning.
-    with np.errstate(over="ignore", invalid="ignore"):
-        mean_raw = float(np.mean(raw)) if raw.size else _NAN
-        mean_bench = float(np.mean(bench)) if bench.size else _NAN
+    # Each leg's mean is the exactly rounded sum over n (`exact_mean`), as `mean_ret` is — NaN →
+    # null where the sum leaves the double range, like every pool mean.
+    mean_raw = exact_mean(raw)
+    mean_bench = exact_mean(bench)
     return {
         "n": moments["n"],
         "n_nonoverlap": int(rc["n_nonoverlap"]),

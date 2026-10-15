@@ -6,7 +6,7 @@ import math
 
 import numpy as np
 
-from seikan.analysis._pools import _near_constant, _normal
+from seikan.analysis._pools import _near_constant, _normal, exact_mean
 
 _NAN = float("nan")
 
@@ -26,12 +26,19 @@ def newey_west_mean(rets: np.ndarray, entry_bars: np.ndarray, h: int) -> tuple[f
     (``d = k`` at event lag ``k``) it reproduces the classic overlap HAC with truncation lag
     ``h − 1`` under the same divisor — event ORDER is never mistaken for bar TIME (an ordinal-lag
     Bartlett with lag ≈ n drives the long-run variance toward 0 and fabricates significance).
-    Rows are canonically ordered by (entry bar, return) before accumulation, so the estimate is
-    bit-identical under any permutation of tied-bar rows (the basket pooled path). Same-bar
-    pairs sit at weight 1, so the long-run variance reads the rows only through their per-BAR
-    deviation sums ``D_a`` (``Σ_a Σ_b w(|a−b|)·D_a·D_b``): rows with the same per-bar sums give
-    the same estimate in exact arithmetic — why a ``cross_mean`` pool may hand in its full bars'
-    rows at their sum's exact 0 (``runner._cells_panel``).
+    Same-bar pairs sit at weight 1 (``w(0) = 1``), so the long-run variance reads the rows only
+    through their per-BAR deviation sums ``D_a``: ``Σ_a Σ_b w(|a−b|)·D_a·D_b``. It is computed
+    in that form — each bar's deviations summed first, exactly rounded (``math.fsum``), then
+    the quadratic form over bars, each lag's terms exactly summed. Accumulated row by row, the
+    squared deviations and the cross terms that cancel them were summed apart, and their
+    cancellation destroyed the precision of a much smaller combined variance: ten members
+    firing together whose deviations cancel to ``(k − 2.5)·2**−24`` per bar read an SE of
+    3.73e-10 where the estimator's exact value is 1.05e-9 (``t`` 40.0 for 14.12). Rows with the
+    same per-bar sums give the same estimate — why a ``cross_mean`` pool may hand in its full
+    bars' rows at their sum's exact 0 (``runner._cells_panel``) — and no permutation of a
+    bar's rows can move it (the basket pooled path). The centre is the pool's exactly rounded
+    mean (``_pools.exact_mean``), the ``mean_ret`` the cell reports, so ``t`` is that mean over
+    this SE.
 
     A (near-)constant pool (:func:`_near_constant`) is ``(NaN, NaN)``, like any other pool
     without a positive long-run variance: its dispersion is rounding residue — the computed mean
@@ -56,35 +63,41 @@ def newey_west_mean(rets: np.ndarray, entry_bars: np.ndarray, h: int) -> tuple[f
     bars = np.asarray(entry_bars, dtype=np.int64)
     keep = np.isfinite(rets)
     rets, bars = rets[keep], bars[keep]
-    # lexsort, not a stable bars-only sort: tied entry bars (basket pooled rows) then order by
-    # return too, so the fp accumulation sequence — and with it the estimate's last bit — cannot
-    # depend on the caller's row order.
-    order = np.lexsort((rets, bars))
+    order = np.argsort(bars, kind="stable")
     rets, bars = rets[order], bars[order]
     n = rets.shape[0]
     if n < 2 or h < 1:
         return (_NAN, _NAN)
-    # The mean, the deviations' products and their lag sums may leave the double range:
-    # `_normal(s / n)` below decides every such read, so the overflow is an expected input,
-    # never a warning.
+    mean = exact_mean(rets)
+    if not math.isfinite(mean) or _near_constant(rets, mean):
+        return (_NAN, _NAN)
+    # The deviations' products and their lag sums may leave the double range: `_normal(v)` below
+    # decides every such read, so the overflow is an expected input, never a warning — and a sum
+    # of finite terms past the range (OverflowError) or of opposite infinities (ValueError) is
+    # the same no-estimate.
     with np.errstate(over="ignore", invalid="ignore"):
-        mean = float(rets.mean())
-        if _near_constant(rets, mean):
-            return (_NAN, _NAN)
         dev = rets - mean
-        s = float(dev @ dev) / (n - 1.0)  # gamma_0 (long-run variance accumulator, ddof=1)
-        for k in range(1, n):
-            d = (bars[k:] - bars[:-k]).astype(float)
-            w = 1.0 - d / h
-            m = w > 0.0
-            if not m.any():
-                # gaps at event lag k are nondecreasing in k (sorted bars) — no later pair overlaps
-                break
-            s += 2.0 * float((w[m] * dev[k:][m] * dev[:-k][m]).sum()) / (n - 1.0)
-    # `_normal(s / n)`: deviations past ~1e154 overflow the long-run variance, and `mean / inf`
-    # is a FINITE t of 0.0 — an overflow must read as no estimate, never as "no edge"; below
-    # ~1e-154 they underflow, into lost bits or an SE of exactly 0.0.
-    v = s / n
+        u, start, count = np.unique(bars, return_index=True, return_counts=True)
+        d_bar = dev[start]  # a bar of one row: its deviation
+        for i in np.flatnonzero(count > 1):
+            d_bar[i] = math.fsum(dev[start[i] : start[i] + count[i]].tolist())
+        try:
+            lags = [math.fsum((d_bar * d_bar).tolist())]  # gamma_0
+            for k in range(1, u.shape[0]):
+                w = 1.0 - (u[k:] - u[:-k]).astype(float) / h
+                m = w > 0.0
+                if not m.any():
+                    # gaps at bar lag k are nondecreasing in k (sorted bars): no later pair
+                    # overlaps
+                    break
+                lags.append(2.0 * math.fsum((w[m] * d_bar[k:][m] * d_bar[:-k][m]).tolist()))
+            s = math.fsum(lags)
+        except (OverflowError, ValueError):
+            return (_NAN, _NAN)
+    # `_normal(v)`: deviations past ~1e154 overflow the long-run variance, and `mean / inf` is a
+    # FINITE t of 0.0 — an overflow must read as no estimate, never as "no edge"; below ~1e-154
+    # they underflow, into lost bits or an SE of exactly 0.0. The divisor is ``n − 1`` (ddof=1).
+    v = s / (n - 1.0) / n
     if not _normal(v):
         return (_NAN, _NAN)
     se = math.sqrt(v)

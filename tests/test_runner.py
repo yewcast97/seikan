@@ -625,6 +625,35 @@ def test_cells_partition_rows_by_declared_identity_never_by_axis_value(tmp_path)
     assert len(two.trades) == 2 * len(one.trades)
 
 
+def test_a_pool_whose_exact_sum_is_zero_reads_a_zero_mean_and_no_support(tmp_path):
+    # The 49 diff returns of [0, 2**54, 0, −1, 0] × 10 sum to exactly 0, but np.mean summed
+    # them pairwise and 2**54 swallowed a 1 before its cancelling partner arrived: mean_ret read
+    # 1/49 and the support floor (mean_ret > 0) passed a pool that made exactly nothing. The
+    # graded mean is the exactly rounded sum over n now, and its legs and t_hac read the same.
+    from seikan.gate import GateThresholds, evaluate_gate
+
+    levels = [0.0] + [0.0, 2.0**54, 0.0, -1.0, 0.0] * 10
+    idx = pd.date_range("2021-01-01", periods=len(levels), freq="1D")
+    path = tmp_path / "y.csv"
+    pd.DataFrame({"y": levels}, index=pd.Index(idx, name="datetime")).to_csv(path)
+    thesis = Thesis.model_validate(
+        {
+            "name": "zero_sum",
+            "data": {"targets": ["y"]},
+            "entry": _gt(-2.0),
+            "params": {"horizon": 1, "outcome": {"kind": "diff"}},
+        }
+    )
+    s = run_backtest(thesis, load(thesis, {"y": path})).summary
+    st = s["cells"][0]["by_target"]["y"]
+    assert st["n"] == 49 and st["n_nonoverlap"] == 49
+    assert st["mean_ret"] == 0.0 and st["mean_ret_raw"] == 0.0 and st["t_hac"] == 0.0
+    support = next(
+        c for c in evaluate_gate(s, GateThresholds()).cells[0].checks if c.name == "support"
+    )
+    assert not support.met and "mean_ret=0.0" in support.detail
+
+
 def test_cell_count_equals_the_declared_grid_across_shapes(tmp_path):
     # len(cells) == n_hypotheses_attempted by construction, whatever the grid's shape — including
     # the degenerate one-cell run whose horizon was never swept.
