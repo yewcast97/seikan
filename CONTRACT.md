@@ -783,7 +783,8 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   every draw), and the reads that divide by dispersion stand down where the spread is within
   rounding — the HAC nulls (largest deviation within ~10 ulps of the mean, the skewness/kurtosis
   gate, or every BAR's mean deviation within them: a pooled pool whose bars all sit at its mean,
-  every row on one bar among them), the benchmark regression declines a (near-)constant bench leg and fits `beta` exactly 0 on
+  every row on one bar among them), the skewness/kurtosis null too wherever scipy's own
+  cancellation test (about its pairwise mean, in its arithmetic) reads one, the benchmark regression declines a (near-)constant bench leg and fits `beta` exactly 0 on
   a (near-)constant raw leg, and a CSCV split scores NaN when its pool is exactly constant (the
   per-block extrema), within the HAC's ~10 ulps, or has a centered sum of squares within its own
   accumulation error. The pool MEANS the checklist grades, and their direct twins — the legs,

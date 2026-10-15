@@ -46,10 +46,13 @@ _NEAR_CONSTANT_ULPS = 10.0
 def _near_constant(rets: np.ndarray, mean: float) -> bool:
     """Scale-relative zero-dispersion detector for the moment statistics.
 
-    Mirrors scipy's own catastrophic-cancellation trigger (``_stats_py._demean``, gh-15905):
-    a pool whose spread around its mean is below ~10 ulps of the mean's magnitude has no usable
-    dispersion for skewness/kurtosis — scipy would emit a "Precision loss" RuntimeWarning and
-    an unreliable number; we emit null instead. The ``spread == 0`` arm covers the exact-constant
+    Modelled on scipy's own catastrophic-cancellation trigger (``_stats_py._demean``,
+    gh-15905): a pool whose spread around its mean is below ~10 ulps of the mean's magnitude
+    has no usable dispersion for skewness/kurtosis — scipy would emit a "Precision loss"
+    RuntimeWarning and an unreliable number; we emit null instead. It reads the spread around
+    the EXACTLY ROUNDED mean the cell reports, in product form, so at the boundary it can
+    disagree with scipy's own test — :func:`_moments_cancel` asks scipy's question in scipy's
+    arithmetic before the moments are called. The ``spread == 0`` arm covers the exact-constant
     pool (mean ≈ 0 included, where the relative test is vacuous); genuine variation around a
     near-zero mean is correctly NOT degenerate. The gate is about the NUMERICAL reliability of
     the two moment estimators, not a policy on thin pools: ``std_ret`` and the order-statistic
@@ -58,6 +61,20 @@ def _near_constant(rets: np.ndarray, mean: float) -> bool:
     and the benchmark regression's degeneracy tests read it too."""
     spread = float(np.max(np.abs(rets - mean))) if rets.size else 0.0
     return spread == 0.0 or bool(spread < _NEAR_CONSTANT_ULPS * _EPS * abs(mean))
+
+
+def _moments_cancel(v: np.ndarray) -> bool:
+    """scipy's own catastrophic-cancellation test (``_stats_py._demean``, scipy 1.18), in its
+    own arithmetic: the largest deviation from the PAIRWISE mean ``np.mean(v)`` over that mean's
+    magnitude, below ``10·eps`` (a NaN quotient is False, as there). ``scipy.stats.skew`` and
+    ``kurtosis`` centre on that mean and run this exact test, warning "Precision loss" where it
+    holds — an exception under ``-W error``. :func:`_near_constant` centres on the exactly
+    rounded mean in product form, so a pool at the boundary passed it and still tripped scipy:
+    ``1.0 + [0, 17, 14]·eps``. Asked first, scipy's question nulls the moments instead."""
+    centre = float(np.mean(v))
+    with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
+        rel = np.max(np.abs(v - centre)) / np.abs(centre)
+    return v.size > 1 and bool(rel < _NEAR_CONSTANT_ULPS * _EPS)
 
 
 def _normal(x: float) -> bool:
@@ -152,8 +169,9 @@ def pool_moments(rets: np.ndarray) -> PoolMoments:
     side, NaN when either side is empty — the payoff-asymmetry partner of ``hit_rate``'s
     frequency; ``skewness``/``kurtosis`` are scipy's population (``bias=True``) moments,
     kurtosis PEARSON (normal = 3, not excess) — not pandas' unbiased G1/G2 — nulled on a
-    near-constant pool (:func:`_near_constant`) and where the variance power they divide by
-    leaves the normal range (:func:`_normal`); ``tail_ratio`` is ``|p95/p05|`` of the same
+    near-constant pool (:func:`_near_constant`, and scipy's own cancellation test
+    :func:`_moments_cancel`) and where the variance power they divide by leaves the normal
+    range (:func:`_normal`); ``tail_ratio`` is ``|p95/p05|`` of the same
     linear-interpolated percentiles :func:`pool_quantiles` reports (NaN when ``p05`` is zero,
     and a spread ratio rather than a tail read when both tails share a sign); ``cvar_5`` is the
     mean of the observations at or below ``p05``, its historical-VaR partner (NaN where ``p05``
@@ -200,7 +218,7 @@ def pool_moments(rets: np.ndarray) -> PoolMoments:
     # the moment it normalizes underflowed or overflowed with it — a kurtosis read 11.737849
     # for 11.737878 at a 1e-80 scale. Null, never a finite number read off the lost bits.
     shaped3 = shaped4 = False
-    if n > 2 and not degenerate:
+    if n > 2 and not degenerate and not _moments_cancel(v):
         m2 = np.var(v)
         shaped3, shaped4 = _normal(float(m2**1.5)), _normal(float(m2 * m2))
     # ...and the moment itself can overflow under a normal power (one deviation past ~5.6e102

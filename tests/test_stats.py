@@ -18,7 +18,7 @@ from scipy import stats as sps
 from seikan.analysis._conditioning import _bucket_monotonicity
 from seikan.analysis._cscv import _degradation_slope
 from seikan.analysis._hac import _bar_deviation_sums
-from seikan.analysis._pools import cross_mean_bar_deviations
+from seikan.analysis._pools import _near_constant, cross_mean_bar_deviations
 from seikan.analysis._rotation import _fwd_ffts, _rotation_num_den, _tail_p
 from seikan.analysis.stats import (
     ASSOC_MIN_N,
@@ -3047,6 +3047,28 @@ def test_pool_moments_near_constant_pool_moments_are_null_and_silent():
     # An honest pool still gets its moments — variation around a near-zero mean is NOT degenerate.
     honest = pool_moments(np.random.RandomState(2).normal(0.0, 0.01, 60))
     assert np.isfinite(honest["skewness"]) and np.isfinite(honest["kurtosis"])
+
+
+@pytest.mark.parametrize("ulps", [[0, 17, 14], [0, 0, 3, 15]])
+def test_pool_moments_null_where_scipy_reads_cancellation_in_its_own_arithmetic(ulps):
+    # The zero-dispersion gate centres on the exactly rounded mean in product form; scipy's
+    # cancellation test centres on np.mean in quotient form. These pools pass the first and
+    # trip the second: scipy warned "Precision loss" (an exception under -W error, which this
+    # suite runs). Asking scipy's own question first nulls the moments, silently.
+    import warnings
+
+    rets = 1.0 + np.array(ulps) * np.finfo(float).eps
+    assert not _near_constant(rets, exact_mean(rets))  # the premise
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        s = pool_moments(rets)
+    assert np.isnan(s["skewness"]) and np.isnan(s["kurtosis"])
+    assert s["std_ret"] > 0.0
+    # an ordinary pool still reads scipy's own moments
+    v = np.random.RandomState(4).normal(0.001, 0.02, 50)
+    ordinary = pool_moments(v)
+    assert ordinary["skewness"] == float(sps.skew(v))
+    assert ordinary["kurtosis"] == float(sps.kurtosis(v, fisher=False))
 
 
 def test_benchmark_regression_near_constant_legs_are_degenerate():
