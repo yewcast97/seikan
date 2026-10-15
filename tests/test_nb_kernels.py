@@ -4,6 +4,7 @@ reference series (``tests/_reference_nb.py``) exactly.
 
 from __future__ import annotations
 
+import itertools
 import math
 import time
 from fractions import Fraction
@@ -482,7 +483,8 @@ def test_ordinary_windows_are_bit_identical_to_the_shifted_direct_forms():
     # The out-of-range rules bind only where a variance left the normal range (or the
     # correlation's variance product did): on ordinary windows — scales from 1e-60 to 1e60 — the
     # correlation, the SMA z-score and both stds keep the direct forms' exact bits, every moment
-    # taken about the window's own first value (a cross-section's about its range's midpoint).
+    # taken about the window's own first value (a cross-section's about its range's midpoint, its
+    # centre the exactly rounded sum of the differences from it over their count).
     # About the rounded raw mean instead they agree to rounding here; the offset matters where a
     # spread sits near its level's ulp (the 2**52 tests below).
     rng = np.random.RandomState(15)
@@ -512,7 +514,7 @@ def test_ordinary_windows_are_bit_identical_to_the_shifted_direct_forms():
         np.testing.assert_allclose(np.sqrt(raw_var), direct["std"], rtol=1e-9)
         rows = (level + scale * rng.randn(50, 6)).astype(float)
         y = rows - (rows.max(axis=1, keepdims=True) / 2.0 + rows.min(axis=1, keepdims=True) / 2.0)
-        dev = y - y.sum(axis=1, keepdims=True) / 6.0
+        dev = y - np.array([[math.fsum(r)] for r in y.tolist()]) / 6.0
         cross = np.sqrt((dev * dev).sum(axis=1, keepdims=True) / 6.0)
         np.testing.assert_array_equal(nb.cross_agg_apply_nb(rows, "std", 2), np.repeat(cross, 6, 1))
         np.testing.assert_array_equal(nb.cross_demean_apply_nb(rows, 2), dev)
@@ -545,6 +547,60 @@ def test_moments_about_the_window_offset_keep_an_ulp_scale_spread():
     # members farther apart than the double range keep their representable deviations
     np.testing.assert_array_equal(
         nb.cross_demean_apply_nb(np.array([[1e308, -1e308]]), 2), [[1e308, -1e308]]
+    )
+
+
+def test_decision_side_means_are_exactly_rounded_sums():
+    # numpy sums pairwise, and a large term swallowed a small one before its cancelling partner
+    # arrived: [1, −2**-54, −1, 2**-54, 0] sums to exactly 0, and every mean a decision reads off
+    # it read 1.1e-17 — `cross_agg(x, mean) > 0` fired — and 0 after a permutation of the
+    # members, the decision hanging on the order the targets were declared in. Each mean is the
+    # exactly rounded sum over the count: 0.0 in every order (the offset is 0 here, so each
+    # member's deviation is its value).
+    e = 2.0**-54
+    row = np.array([[1.0, -e, -1.0, e, 0.0]])
+    for perm in itertools.permutations(range(5)):
+        r = row[:, list(perm)]
+        np.testing.assert_array_equal(nb.cross_agg_apply_nb(r, "mean", 2), np.zeros((1, 5)))
+        assert nb.cross_centre(r, np.isfinite(r))[1][0, 0] == 0.0
+        np.testing.assert_array_equal(nb.cross_demean_apply_nb(r, 2), r)
+        assert rolling_agg_1d(r.ravel(), 5, "mean")[-1] == 0.0
+    # the event_agg example: [2**54, 1, −2**54] sums to 1 exactly — the pairwise sum read 0
+    assert rolling_agg_1d(np.array([2.0**54, 1.0, -(2.0**54)]), 3, "mean")[-1] == 1.0 / 3.0
+    # against a per-window `math.fsum` over magnitudes forty decades apart, cancelling giants
+    # beside sub-ulp terms and holed windows (NaN), and the same rows across a cross-section
+    rng = np.random.RandomState(16)
+    for kind in range(4):
+        for _ in range(25):
+            n = int(rng.randint(5, 120))
+            w = int(rng.randint(1, min(n, 30) + 1))
+            if kind == 0:
+                x = rng.randn(n) * 10.0 ** rng.randint(-20, 20, n)
+            elif kind == 1:
+                x = np.resize([2.0**54, 1.0, -(2.0**54), e, -e], n)
+            elif kind == 2:
+                x = np.where(rng.rand(n) < 0.5, 1e16, -1e16) + rng.choice([1e-16, -1e-16, 0.0], n)
+            else:
+                x = rng.randn(n)
+                x[rng.rand(n) < 0.1] = np.nan
+            want = np.full(n, np.nan)
+            for i in range(w - 1, n):
+                win = x[i - w + 1 : i + 1]
+                if np.isfinite(win).all():
+                    want[i] = win[0] if (win == win[0]).all() else math.fsum(win.tolist()) / w
+            np.testing.assert_array_equal(rolling_agg_1d(x, w, "mean"), want)
+            np.testing.assert_array_equal(ref.rolling_agg(x, w, "mean"), want)
+            rows = x[: n - n % 5].reshape(-1, 5)
+            np.testing.assert_array_equal(
+                nb.cross_agg_apply_nb(rows, "mean", 2), ref.cross_agg_ref(rows, "mean", 2)
+            )
+    # an intermediate sum past the double range has no value (`math.fsum` raises there): those
+    # windows are NaN, and the sliding sum is exact again once the window clears it
+    x = np.r_[np.full(4, 1e308), np.full(4, -1e308), np.ones(4)]
+    third = -1e308 / 3.0
+    np.testing.assert_array_equal(
+        rolling_agg_1d(x, 3, "mean"),
+        [np.nan, np.nan, 1e308, 1e308, np.nan, third, -1e308, -1e308, np.nan, third, 1.0, 1.0],
     )
 
 

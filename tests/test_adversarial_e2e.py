@@ -567,6 +567,46 @@ def test_basket_member_hole_leaves_source_coverage_unmet_naming_the_member(tmp_p
     assert doc["summary"]["baseline"][0]["pooled"]["n_eligible"] > 0
 
 
+def test_reordering_the_basket_cannot_mint_a_cross_sectional_mean(tmp_path, capsys):
+    """The order the targets are declared in is the caller's to choose, and no decision may hang
+    on it. Every bar's cross-section is ``[1, −2**-54, −1, 2**-54, 0]``, whose exact mean is 0,
+    so ``cross_agg(x, mean) > 0`` is false on every bar. Summed pairwise in floating point, the
+    declared order read 1.1e-17 — every member firing on every bar out of rounding — and a
+    permutation of it read 0. The mean is the exactly rounded sum over the count: neither order
+    fires."""
+    e = 2.0**-54
+    data: dict[str, Path] = {}
+    for k, (target, value) in enumerate({"A": 1.0, "B": -e, "C": -1.0, "D": e, "E": 0.0}.items()):
+        data[target] = _write_px(tmp_path / f"{target}.csv", _planted_dip_px(N_BARS, 5, 9, seed=k))
+        feed = pd.DataFrame({"x": pd.Series(value, index=_IDX)})
+        feed.index.name = "datetime"
+        feed.to_csv(tmp_path / f"x_{target}.csv")
+        data[f"x@{target}"] = tmp_path / f"x_{target}.csv"
+    for order in (["A", "B", "C", "D", "E"], ["A", "C", "B", "D", "E"]):
+        dsl = {
+            "name": "cross_mean_order",
+            "target_mode": "basket",
+            "data": {"targets": order, "external": {"x": {"per_target": True}}},
+            "entry": {
+                "type": "threshold",
+                "left": {
+                    "type": "cross_agg",
+                    "input": {"type": "external", "name": "x"},
+                    "agg": "mean",
+                },
+                "op": ">",
+                "right": {"type": "constant", "value": 0.0},
+            },
+            "params": {"horizon": 3},
+        }
+        thesis = _write_thesis(tmp_path / "order.json", dsl)
+        code, doc = _run(capsys, tmp_path, ["run", str(thesis)], data)
+        assert code == 0
+        cell = doc["summary"]["cells"][0]
+        assert cell["pooled"]["n"] == 0
+        assert all(cell["by_target"][t]["n"] == 0 for t in order)
+
+
 # ---- stamp tampering (library seam: run_backtest → tamper → evaluate_gate) --------------
 
 

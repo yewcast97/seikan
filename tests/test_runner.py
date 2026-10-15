@@ -4153,10 +4153,11 @@ def test_cross_mean_cancelling_partial_pool_reads_its_exact_zero_in_every_bar_cl
     tmp_path,
 ):
     # The review's basket: six members (p, q, r, p, q, r) of log outcomes, only the first three
-    # firing, three bars apart; on every other firing bar they move (0.95, 0.96, 1.02) and the
+    # firing, three bars apart; on every other firing bar they move (0.95, 0.96, 1.03) and the
     # last three mirror them, so each firing bar's three excesses cancel exactly — the pooled
     # mean_ret is exactly 0 — while their three rounded rows sum to residue (a mirrored PAIR's
-    # two rows cancel about the bar's offset; three rows need not). Read off those rows, the HAC
+    # two rows cancel about the bar's offset; three rows need not, about its exact centre either:
+    # the review's (0.95, 0.96, 1.02) happen to). Read off those rows, the HAC
     # divided the residue (t_hac 5.43, hac_se 1.6e-19 beside mean_ret 0.0), and every other
     # bar-closed sum minted evidence: a positive bootstrap interval, an episode hit rate of 1.0.
     # Every bar's exact excess sum is 0, so every one of them reads 0: no long-run variance, a
@@ -4169,7 +4170,7 @@ def test_cross_mean_cancelling_partial_pool_reads_its_exact_zero_in_every_bar_cl
     for k in range(30):
         fire[3 * k] = 1.0 if k % 2 == 0 else 0.6
         if k % 2 == 0:
-            for m, move in zip("ABC", (0.95, 0.96, 1.02), strict=True):
+            for m, move in zip("ABC", (0.95, 0.96, 1.03), strict=True):
                 levels[m][3 * k + 2] = move
     targets = ["A", "B", "C", "D", "E", "F"]
     files = {}

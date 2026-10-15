@@ -816,6 +816,14 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   arithmetic mean, save that each bootstrap episode's sum is exactly rounded too — summed in
   floating point, eight episodes of `[1, −2**54, −1, 2**54]` read a zero-width interval at 0.25
   beside a `mean_ret` of 0; a draw's sum over its episodes' sums stays ordinary arithmetic.
+  The means a DECISION reads are exactly rounded the same way: `rolling_agg` and `cross_agg`
+  `mean`, and the cross-section centre that `cross_demean`, `cross_agg`'s `std` and the
+  `cross_mean` legs take (`nb.cross_centre`), are the window's or the bar's exactly rounded sum
+  over its count, in any bar or member order (summed pairwise, `[1, −2**-54, −1, 2**-54, 0]` read
+  a mean of 1.1e-17 in one member order and 0 in another, so `cross_agg(x, mean) > 0` fired on the
+  order the targets were declared in); a window's variance is still taken about its direct
+  two-pass centre (below), so a z-score within the rounding of its window's spread of 0 can read
+  0 or the other sign.
   A post-warmup zero-dispersion bar
   is UNDECIDABLE like `x / 0`: its NaN lands in `signal_coverage`, never fires — guard a z-score
   of a series that can sit flat with `rolling_agg(x, N, std) > 0`. "Equal" means bit-identical: a

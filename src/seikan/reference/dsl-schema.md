@@ -329,6 +329,16 @@ exactly rounded sums. The EW pair differs from its plain recurrence only on the 
 where a rounded update left its exact interval or a held input's deviation is carried, and the EW
 z-score where its plain recurrence left the normal range (below).
 
+Every MEAN a decision reads is exactly rounded too: `rolling_agg`'s and `cross_agg`'s `mean`, and
+the cross-sectional centre that `cross_demean`, `cross_agg`'s `std` and the `cross_mean` benchmark
+take, are the window's or the bar's exactly rounded sum over its count — the exact sum's sign, and
+exactly 0.0 where that sum is 0, whatever order the bars or the targets come in. Summed pairwise in
+floating point, the cross-section `[1, −2**-54, −1, 2**-54, 0]` read a mean of 1.1e-17 that
+`cross_agg(x, mean) > 0` fired on in one declaration order of the targets and not in another. A
+mean whose running sum leaves the double range is NaN (undecidable, like an overflowed variance
+below). The centre a window's VARIANCE is taken about stays the direct two-pass form above, so a
+`zscore` within the rounding of its window's spread of 0 can read 0 or the other sign.
+
 A window variance that OVERFLOWS (deviations past ~1.3e154, where `(x − mean) / inf` would read a
 finite 0) reads NaN in a `std`, a `zscore` (`mean_type: "sma"`) and a `rolling_corr`, and that NaN
 lands where an `x / 0` would: UNDECIDABLE on a bar after the series has initialized, the series'
@@ -411,7 +421,8 @@ two-pass form about its offset).
   finite). **Omit `window`** for an EXPANDING (all-time) `max`/`min` only — expanding
   `mean`/`std`/`median`/`mad` are rejected. Prefer the dedicated `drawdown` node for
   depth-below-peak; the composed form `binary_op(close ÷ rolling_agg(close, N, "max"))` remains
-  valid. A **simple moving average** is `agg:"mean"`; **realized vol** is
+  valid. A **simple moving average** is `agg:"mean"` (the window's exactly rounded sum over
+  `N`); **realized vol** is
   `rolling_agg(change(close, kind="log"), N, "std")`. `median` and `mad` are the robust pair:
   `mad` is the median absolute deviation about the SAME window's median, UNSCALED (multiply by
   1.4826 for the normal-consistent sigma), so the **robust z-score** is
@@ -479,9 +490,9 @@ floor sweeps the SAMPLE, not the hypothesis. Each node counts as one operator le
   even when the target's own value is still warming up — intentional, do not "fix". The FIRING
   latch is stricter: a member cannot fire off the broadcast before its own series has ever
   produced a value (its warmup gates on its own input as well), so a staggered-start basket
-  measures each member only over the history it actually has. `std` is the population std
-  (ddof=0, matching `rolling_agg`); `frac_positive` is the fraction of finite values > 0, in
-  `[0, 1]`.
+  measures each member only over the history it actually has. `mean` is the finite members'
+  exactly rounded sum over their count; `std` is the population std (ddof=0, matching
+  `rolling_agg`); `frac_positive` is the fraction of finite values > 0, in `[0, 1]`.
 
 **The population model** — two optional selectors on every cross node say WHO is in the
 cross-section, so a rank is the rank within the population the thesis means, not the global rank

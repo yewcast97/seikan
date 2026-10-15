@@ -12,7 +12,9 @@ its std floored at the smallest subnormal; the correlation's variance PRODUCT of
 variances is taken in an unbounded exponent range (:func:`_sqrt_product`); and the EW z-score's
 recurrence runs in a frame lifted by a power of two once its variance nears that range. Every
 window moment is taken about the window's own offset (its first value; a cross-section's is the
-midpoint of its range), never about the rounded mean of the raw values.
+midpoint of its range), never about the rounded mean of the raw values, and every MEAN a decision
+reads (``rolling_agg`` / ``cross_agg`` ``mean``, a cross-section's centre) is the exactly rounded
+``math.fsum`` over the count — NaN where that sum overflows.
 """
 
 from __future__ import annotations
@@ -93,6 +95,15 @@ def zscore_sma(arr: np.ndarray, window: int) -> np.ndarray:
         if np.isfinite(z):
             out[i] = z
     return out
+
+
+def _exact_sum(vals: list[float]) -> float:
+    """The correctly rounded sum of finite ``vals`` — NaN where an intermediate sum overflows
+    (``math.fsum`` raises there)."""
+    try:
+        return math.fsum(vals)
+    except OverflowError:
+        return math.nan
 
 
 def _shifted_moments(vals: list[float]) -> tuple[float, float]:
@@ -244,7 +255,7 @@ def rolling_agg(arr: np.ndarray, window: int, agg: str) -> np.ndarray:
         elif agg == "min":
             out[i] = vals.min()
         elif agg == "mean":
-            out[i] = vals[0] if constant else vals.mean()
+            out[i] = vals[0] if constant else _exact_sum(vals.tolist()) / window
         else:  # std, population, about the window's first value
             var, _ = _shifted_moments(vals.tolist())
             if constant:
@@ -438,7 +449,7 @@ def _cross_value(vals: list[float], agg: str) -> float:
     """One cross-section's aggregate (shared by the plain and grouped references)."""
     constant = len(set(vals)) == 1
     if agg == "mean":
-        return vals[0] if constant else sum(vals) / len(vals)
+        return vals[0] if constant else _exact_sum(vals) / len(vals)
     if agg == "median":
         return _sorted_median(vals)
     if agg == "std":
@@ -463,7 +474,7 @@ def _row_deviations(vals: list[float]) -> list[float]:
     """Each member's deviation from the cross-section's mean, about the row's offset."""
     c = _row_offset(vals)
     y = [x - c for x in vals]
-    mu = sum(y) / len(y)
+    mu = _exact_sum(y) / len(y)
     return [v - mu for v in y]
 
 
