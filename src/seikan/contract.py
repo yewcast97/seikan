@@ -161,9 +161,10 @@ METRIC_ROLES: dict[str, JsonValue] = {
         "worst_ret, best_ret, mae_quantiles, mfe_quantiles, edge_ratio, timing — basket "
         "evidence riders; none gate. Under cross_mean the pooled mean_ret is the FIRING "
         "subset's cross-sectional selection tilt — each closed bar's FULL cross-section demeans "
-        "to zero, but the pool holds only the members that fired, so 0 (exactly — summed "
-        "from the raw legs) appears only when firings are basket-wide or every member's leg is "
-        "the same value (a shared outcome feed); boot's episode sums, the subperiods and "
+        "to zero, but the pool holds only the members that fired, so its mean is their exact "
+        "excess sum over n (summed from the raw legs): 0 exactly where the selected excesses "
+        "cancel, as they always do when firings are basket-wide or every member's leg is the "
+        "same value (a shared outcome feed); boot's episode sums, the subperiods and "
         "episode means and the HAC read a full bar's rows (every member closed) at exactly 0 "
         "too — an all-full pool's t_hac/hac_se null, as on identical legs — and so do the "
         "grid-level pbo's CSCV split means (a block holds whole bars: every split an all-full grid "
@@ -875,9 +876,10 @@ METRIC_ROLES_DOC: dict[str, JsonValue] = {
             "each member's excess is taken against the members' own cross-sectional mean, and "
             "complete cross-sections sum to zero — an identity, not a market fact. The pooled "
             "CELL mean is NOT that identity: its pool holds only the members that FIRED, so it "
-            "is the firing subset's cross-sectional selection tilt, 0 only when firings are "
-            "basket-wide or every member's leg is the same value (a shared outcome feed, every "
-            "per-row excess then exactly 0.0)."
+            "is the firing subset's cross-sectional selection tilt — exactly 0 where the selected "
+            "excesses cancel (the mean is their exact sum over n), as they always do when "
+            "firings are basket-wide or every member's leg is the same value (a shared outcome "
+            "feed, every per-row excess then exactly 0.0)."
         ),
         "episodes": (
             "The ledger lists overlap-merged episodes EARLIEST FIRST — it is never ranked by "
@@ -1119,7 +1121,9 @@ REPORT_FIELDS: dict[str, JsonValue] = {
         "n_bars / index_start / index_end": "geometry and extent of the evaluated joined index",
         "bar_spacing": (
             "{min,median,max}_seconds between consecutive bars — the clock geometry a "
-            "horizon-in-bars is denominated in"
+            "horizon-in-bars is denominated in; exact in the index's own resolution (an "
+            "integer for a whole second, the exact spacing correctly rounded otherwise; an even "
+            "count's median the exact midpoint of its two middle spacings)"
         ),
         "n_hypotheses_attempted": (
             "the DECLARED combo × horizon grid, non-firing combos included — the ONLY "
@@ -1134,8 +1138,10 @@ REPORT_FIELDS: dict[str, JsonValue] = {
             "and the target's data shape (ohlcv | series)"
         ),
         "rotation": (
-            "{n_shifts, p_resolution}: a rot_p AT p_resolution means 'no shift beat the "
-            "observation', not p ≈ 0"
+            "{n_shifts, p_resolution}: n_shifts is the shift count any rotation null in the "
+            "summary was formed over (a basket's pooled nulls included, which rotate a fired "
+            "member's mask even where none of its firings closed), so every rot_n_null is at "
+            "most it; a rot_p AT p_resolution means 'no shift beat the observation', not p ≈ 0"
         ),
         "pbo": (
             "the grid-level CSCV block {pbo, reason, n_splits, n_splits_attempted, "
@@ -1325,12 +1331,14 @@ REPORT_FIELDS: dict[str, JsonValue] = {
         "pooled.t_hac / hac_se": (
             "event-time overlap HAC over the pooled rows, df = pooled.n_nonoverlap - 1 — same-bar "
             "cross-member pairs enter at full Bartlett weight (cluster-robust for free), same "
-            "anti-conservative caveat; under cross_mean a pool holding a full bar (every member "
-            "closed) is read over the per-bar sums with that bar at its exact 0 — the long-run "
-            "variance reads the rows only through per-bar deviation sums — so an all-full pool "
-            "reads both null (no long-run variance, as on identical legs), any other pool "
-            "holding a full bar reads t_hac as the exact pooled mean_ret over hac_se, and a pool "
-            "with no full bar keeps its rows' plain read (evidence-only)"
+            "anti-conservative caveat. The long-run variance reads the rows only through their "
+            "per-bar deviation sums, and is computed that way: each bar's deviations summed "
+            "exactly rounded first, then the weighted quadratic form over bars, so members whose "
+            "deviations cancel on a bar keep their combined variance. Under cross_mean a pool "
+            "holding a full bar (every member closed) is read with that bar at its exact 0, so an "
+            "all-full pool reads both null (no long-run variance, as on identical legs), any "
+            "other pool holding a full bar reads t_hac as the exact pooled mean_ret over hac_se, "
+            "and a pool with no full bar keeps its rows' own read (evidence-only)"
         ),
         "pooled.rot_p": (
             "COMMON-SHIFT rotation null — one shift rotates every FIRED member's COMPLETE mask "
@@ -1392,11 +1400,17 @@ CSV_FORMAT: dict[str, JsonValue] = {
     "timestamp_column": "a column named 'datetime' (case-insensitive), else the first column",
     "timestamp_format": (
         "strict ISO-8601 (YYYY-MM-DD or full timestamp), timezone-NAIVE, unique, sorted "
-        "ascending; no other date format is ever guessed"
+        "ascending, at most nanosecond resolution (a nonzero fractional digit past the ninth "
+        "refuses as bad_timestamp — the parser would truncate it into another instant; zeros "
+        "past it admit); no other date format is ever guessed"
     ),
     "value_columns": (
-        "plain numbers; the only missing-value markers are an empty cell or 'nan'; "
-        "no thousands separators, no currency symbols"
+        "plain ASCII decimal numbers — an optional sign, digits with an optional fraction and "
+        "exponent (1, 1., .5, -2.5e-3) — or a signed inf/infinity in any case (refused later "
+        "as non-finite), each read CORRECTLY ROUNDED: the double nearest the decimal written, "
+        "so every repr a writer emits reads back bit for bit; the only missing-value markers "
+        "are an empty cell or 'nan'; no thousands separators, underscores, non-ASCII digits or "
+        "currency symbols"
     ),
     "ohlcv_shape": (
         "columns open,high,low,close (+optional volume, others): high>=max(open,close), "

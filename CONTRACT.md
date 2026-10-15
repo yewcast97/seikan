@@ -275,12 +275,16 @@ initializes only where its inputs are — zero dispersion is exact in every kern
 recurrence and pool read that divides by it, a `native` feed's prints are their own `sources`
 leaf, the rotation null judges ties within the FFT's rounding, the `cross_mean` pooled mean and
 the bootstrap, era, episode and HAC reads beside it keep its zero-excess identities exactly, and
-`cross_breadth`'s `k` counts the members a kernel actually reduced over — see CHANGELOG.md)
+`cross_breadth`'s `k` counts the members a kernel actually reduced over; later review rounds
+corrected more — among them correctly rounded CSV values, exactly rounded graded means, a HAC
+summed per bar, exact `cross_mean` and `event_agg` sums, window moments about their own offset,
+and warmup that follows the bars a lagged or snapshot operand reads — see CHANGELOG.md)
 names the engine's estimator revision the same way.
 
 The summary is a GRID, not a headline. Run-level keys are geometry and provenance only —
 `n_bars`, `index_start`/`index_end`, `bar_spacing` ({min,median,max}_seconds between consecutive
-bars — the clock geometry a horizon-in-bars is denominated in), `n_hypotheses_attempted`,
+bars — the clock geometry a horizon-in-bars is denominated in, exact in the index's own
+resolution), `n_hypotheses_attempted`,
 `direction`, `benchmark`/`benchmark_source`, `outcome` (ALWAYS the explicit
 `{series, kind, units}` dict — never null; `units` derives from the algebra:
 pct→`fraction`, log→`log`, diff→`level_diff`), `target_shape`, `target_mode` (ALWAYS
@@ -368,20 +372,23 @@ every firing was censored, or whose only firing is the final bar, still moves it
 ret_quantiles / worst_ret / best_ret / mae_quantiles / mfe_quantiles / edge_ratio / timing —
 under
 `cross_mean` the pooled `mean_ret` is the FIRING subset's cross-sectional selection tilt — the
-full cross-section demeans to zero each bar, the firing subset need not, so 0 appears only
-when firings are basket-wide or every member's leg is the same value (a shared or duplicated
-outcome feed: every per-row excess is then exactly 0, and every read of it takes its exact value
-— means, quantiles and std 0.0, `rot_p` 1.0, `t_hac` / `hac_se`, the shape reads,
-`concentration` and `member_share` null) — and then EXACTLY:
-the pooled mean is summed from the raw legs, so a full bar contributes `S − 1.0·S`, never
-rounding residue whose sign the targets' declaration order would set; on a full bar with
+full cross-section demeans to zero each bar, the firing subset need not — and EXACTLY: the
+pooled mean is the subset's exact excess sum over `n`, summed from the raw legs (an
+integer-weighted sum of the legs, `N·[closed] − k_t` per leg, computed exactly), never rounding
+residue whose sign the targets' declaration order would set, so it is 0 exactly where the
+selected excesses cancel — always on a full bar (`S − 1.0·S`) and where every member's leg is the
+same value (a shared or duplicated outcome feed: every per-row excess is then exactly 0, and
+every read of it takes its exact value — means, quantiles and std 0.0, `rot_p` 1.0, `t_hac` /
+`hac_se`, the shape reads, `concentration` and `member_share` null); on a full bar with
 distinct legs each per-row excess is that row's own rounded value, and the pooled reads that SUM
 whole bars take the identity too — a full bar's rows enter them at exactly 0.0 (re-derivable
 from the trades: a bar on which every member has a closed row in the cell), so the bootstrap's
 episode sums (same draws, same seed), the `subperiods` means, the `episodes` ledger and
 `episode_profile` means (with the profile's hit rate, streaks and quantiles over them) and the
 HAC (its long-run variance reads the rows only through per-bar deviation sums, same-bar pairs
-at weight 1) are exact where the identity holds and the rows' own values everywhere else: a
+at weight 1, and is computed from them — each bar's deviations exactly summed before the
+quadratic form, so members whose deviations cancel on a bar keep their combined variance) are
+exact where the identity holds and the rows' own values everywhere else: a
 pool whose every bar is full has no long-run variance — `t_hac` / `hac_se` null, as on
 identical legs — and any other pool holding a full bar reads `t_hac` as the exact `mean_ret`
 over its `hac_se`; on a pool with no full bar each of these is the plain read over its rows;
@@ -639,8 +646,14 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   `gate/` and the honesty invariant comment in `cli.py`.
 - **Strict CSV is never relaxed.** ISO-8601 naive timestamps only (no format guessing — ambiguous
   dates are rejected, not interpreted; `data.start`/`data.end` obey the same strict parse, so a
-  malformed bound is exit 3 rather than a silently reinterpreted window), forced-float values,
-  OHLC invariants refuse rather than clamp (the loader never mutates evidence). Every record
+  malformed bound is exit 3 rather than a silently reinterpreted window), at most nanosecond
+  resolution (a nonzero fractional digit past the ninth refuses as `bad_timestamp` — the parser
+  would truncate it into another instant, an availability moved onto an earlier bar), values
+  under an explicit ASCII numeric grammar (sign, digits, fraction, exponent; `inf`/`infinity`,
+  refused later as non-finite) read CORRECTLY ROUNDED — the double nearest the decimal written,
+  so every repr a writer emits reads back bit for bit, where pandas' own parser missed by an ulp
+  on nearly half of all 17-digit strings and read `0.00000000000000001` as 0 — and OHLC
+  invariants refuse rather than clamp (the loader never mutates evidence). Every record
   carries exactly one field per header column, checked by a `csv.reader` pass in pandas' own
   dialect before pandas reads the file: any record with more fields (a trailing delimiter is one
   more) or fewer refuses as `field_count_mismatch`, counting every offender and naming the first
@@ -701,13 +714,19 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   it thins a late-listed member (`cross_breadth` records the `k`); the condition-level reads
   (`rolling`, `first_true`, the event nodes) still see the live branch's firings. A Series
   computed from other Series initializes only at a finite value on a bar where every input is
-  initialized (for a lagged read — `shift`, `change` — where the bar it reads back to was), or
+  initialized (for a lagged read — `shift`, `change` — where the bar it reads back to was; for an
+  event snapshot — `event_value`, `event_agg` — where its event bar was, so a value an input
+  carried during its own warmup never becomes usable without a new event), or
   where every input is initialized and one has no value yet (an event node whose anchor became
   unknowable before its first event, a mask undecided on its first live bar — a hole it then
   ledgers, as the input's direct readers do, never its own warmup): identical to its own
   finiteness latch for plain data, and what keeps a reader of a `cross_agg` broadcast into a
   member whose own input has not started from latching early (the broadcast itself waits for the
-  member's own first value). Over thresholds on window-local operands,
+  member's own first value). Negation's full warmup follows the same bars: a condition embedded
+  in a `shift`ed or `change`d operand must be past warmup on the bar the lag reads, one embedded
+  in an event snapshot's input on its event bar (`not(shift(bars_since_event(or(A, B)), 20) >
+  1000)` waits for A twenty bars longer, as `lag(not(…), 20)` does). Over thresholds on
+  window-local operands,
   `and`/`or`/`not`/`mask`, `rolling` and `lag`, lengthening a hole-free warmup can therefore only
   remove firings (a path-dependent transform — `ema`, an expanding aggregate, a cross-section —
   reads a different history when its input starts later, which is no claim about warmup).
@@ -765,18 +784,26 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   gate), the benchmark regression declines a (near-)constant bench leg and fits `beta` exactly 0 on
   a (near-)constant raw leg, and a CSCV split scores NaN when its pool is exactly constant (the
   per-block extrema), within the HAC's ~10 ulps, or has a centered sum of squares within its own
-  accumulation error. Pool MEANS stay the arithmetic
-  mean (a few ulps off a constant pool's value — the summation's rounding — never off its sign;
-  the one exception is a `cross_mean` basket's pooled `mean_ret`, summed from the raw legs, and
-  the bar-closed sums beside it — the CSCV split means and the bucket means over whole bars
-  among them — which read a full bar's rows at exactly 0: see the pooled panel).
+  accumulation error. The pool MEANS the checklist grades, and their direct twins — the legs,
+  the eras, the baseline, the HAC's centre — are the exactly rounded sum over `n` (`math.fsum`):
+  the exact sum's sign, exactly 0.0 where it is 0 (a pairwise float sum lost a term a larger one
+  swallowed before its cancelling partner arrived — an exact zero read as a positive mean), and a
+  constant pool's own value; a `cross_mean` basket's pooled `mean_ret` is its exact excess sum
+  from the raw legs, and the bar-closed sums beside it — the CSCV split means and the bucket
+  means over whole bars among them — read a full bar's rows at exactly 0 (see the pooled
+  panel). The evidence-only means elsewhere (bootstrap draws, episodes, buckets, CSCV) stay the
+  arithmetic mean.
   A post-warmup zero-dispersion bar
   is UNDECIDABLE like `x / 0`: its NaN lands in `signal_coverage`, never fires — guard a z-score
   of a series that can sit flat with `rolling_agg(x, N, std) > 0`. "Equal" means bit-identical: a
   spread built from decimal levels moving in lockstep carries residue at the operands' scale,
-  which no kernel can tell from variation. Every window, cross-section and pool that varies is
-  computed as before, bit for bit, while its variances and, for `rolling_corr`, their product are
-  normal doubles (the next bullet); the EW recurrences differ from the plain recurrence only on
+  which no kernel can tell from variation. Every window and cross-section that varies is the
+  direct two-pass form about its OWN offset — the window's first value, a cross-section's range
+  midpoint — bit for bit, while its variances and, for `rolling_corr`, their product are normal
+  doubles (the next bullet): centered on the rounded mean of the raw values, a spread at its
+  level's ulp was lost to that mean's rounding (`[2**52, 2**52 + 1]` read a std of 0.707 for 0.5
+  and a two-point z-score of 1.414, past its bound of 1); the EW recurrences differ from the plain
+  recurrence only on
   the steps where a rounded update left its exact interval or a held input's deviation is
   carried — rounding-scale steps a varying series with repeated values (tick data) can take too
   — and the EW z-score where its plain recurrence left the normal range (the next bullet).
@@ -847,7 +874,8 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   `x / inf`, and finite levels never a null std while their 1-bar changes and the std itself are
   representable doubles). Every window and pool whose variances and, for `rolling_corr`, their
   product are normal doubles, and whose sums and means stay finite, and every EW z-score whose plain
-  recurrence stays in the normal range, is computed as before, bit for bit.
+  recurrence stays in the normal range, keeps its direct form's bits (a window's: the two-pass form
+  about its offset).
 - **Strict, frozen DSL.** Types are strict (no str/bool/float coerces to an int, no str to a
   bool; int stays legal for a float field — JSON has one number type), instances are frozen
   (`model_copy(update=...)` is the derive path), a duplicate JSON object key at any depth
@@ -861,7 +889,10 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   `MIN_EW_ALPHA` = 2^-30 (its warmup span is then within the same ceiling), so an ema
   `window: 10**20` or `alpha: 1e-19` refuses at parse (exit 3) instead of crashing a numba
   kernel (exit 4); `nb.ema_params` re-refuses an over-ceiling span, and a window that is no
-  bar count (below 1, fractional), with a `ValueError` for library callers.
+  bar count (below 1, fractional), with a `ValueError` for library callers. A shared int axis
+  value read by a float param (`constant.value`) must be one a double holds exactly: the param
+  executes the double, so `2**63 − 1` would run `2**63`'s threshold under its own label, and
+  refuses at parse instead.
 - **One spelling per meaning (canonical identity).** `params.outcome` is non-optional with a
   default factory (omitted ≡ `{}` ≡ the spelled-out default — one identity; explicit `null`
   refuses); `params.features` refuses the empty dict; a scalar constant refuses a `name` (the
@@ -933,7 +964,8 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   pooled — including the member-mass ceiling — under basket, with the pooled panel reconciled in
   `cell_evidence`), and the declared-grid `search_cap`. No inferential check exists
   at any level. `GateReport.to_dict()` emits `{policy_version, n_cells, n_met, run_checks,
-  cells}` — no verdict key. Drifted summary input refuses with a detail, never crashes.
+  cells}` — no verdict key. Drifted summary input refuses with a detail, never crashes (an
+  integer past the double range, which JSON admits and `float()` raises on, included).
 - `settings.py` — `GateThresholds` (pydantic-settings, FROZEN, `SEIKAN_` env prefix; FOUR knobs:
   `thesis_min_trades`, `thesis_min_n_nonoverlap`, `thesis_max_concentration`, `thesis_max_hypotheses` —
   no optional knobs, no profile field, no alpha). Sealed canonical-as-floor: every knob's domain

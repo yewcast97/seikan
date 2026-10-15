@@ -9,10 +9,11 @@ merely repackages code changes no number.
 
 ## Unreleased — report schema 5, statistics 5, policy 3
 
-Correction release for six defects an external review found in 4.0.0 and for eight more 4.0.0
-defects that a second review round of the unreleased v5 build found, each a way the engine could
-manufacture evidence. The first six: warmup read as a truth value, rounding residue read as
-dispersion or as a sign, a missing input no ledger saw, a count of evaluations that never happened.
+Correction release for six defects an external review found in 4.0.0, for eight more 4.0.0
+defects that a second review round of the unreleased v5 build found, and for fifteen more that a
+third round found, each a way the engine could manufacture evidence or a report misstate it. The
+first six: warmup read as a truth value, rounding residue read as dispersion or as a sign, a
+missing input no ledger saw, a count of evaluations that never happened.
 The second eight, each older than the first round (the before-values quoted for them are 4.0.0's and
 the first-round build's alike): a data hole read as a known `first_true` decision, a basket's
 rotation null formed without a member whose only firing was the final bar, rounding residue read as
@@ -47,6 +48,23 @@ of the six `run` controls differ only in the reworded `metric_roles` line below,
 `pct`-outcome run over 1e±198 levels — also moving its default `vol_14` feature and dropping its
 pct-outcome RuntimeWarning, as the log-ratio entry states).
 
+The third round's fifteen are all older than v5 (the before-values quoted for them are the second
+round's build): a CSV value read an ulp off the decimal it writes, a stamp's sub-nanosecond digits
+truncated into another instant, a varying window's spread lost to its rounded raw mean, four sums
+accumulated in an order that cancelled bits away (the graded pool mean, a `cross_mean` partial
+basket's excess sum, an `event_agg` running sum, a basket HAC's same-bar terms), a snapshot and a
+lagged operand initialized against the wrong bar, two declared cells read through one column value,
+an output written over an input through a filesystem alias, a bar spacing past ~292 years
+overflowing, describe's constancy test run after its variance, the run-level shift count blind to
+the pooled null, and the gate crashing on an oversized JSON integer. Every fix again lands in the
+fail-closed or exact direction, and statistics 5, still unreleased, folds them in: no stamp moves,
+no report key, issue code or check rule changes (the two new CSV refusals reuse `bad_timestamp` and
+`non_numeric_value`; the new parse refusal is a `dsl_invalid` message), and every `dsl_hash` of a
+thesis that still parses is unchanged. Byte-identical elsewhere: eight CLI theses (conjunction,
+`market` and `cross_mean` baskets, swept axes, event nodes, negation) plus `describe` and
+`check-data` over 6-decimal fixtures were diffed after every fix, and moved only where each entry
+below says (one reworded `metric_roles` line rides every report).
+
 Reworded texts ride every report and `seikan schema`: the embedded `metric_roles` (caveats
 `baseline` / `cross_breadth` / `rot_p`, the `cross_breadth` and pooled-riders `evidence_only` lines
 — the pooled-riders line reworded again in the second round, which changes no other text a run
@@ -73,6 +91,15 @@ outcome's `log` (scale-safe), `rolling_corr`, `first_true` (hole completions), t
 the bar-count ceiling, the trades-CSV ledger rebuild, the `pooled` panel (the `cross_mean` identity
 and its reach, the masks its `rot_p` rotates), `episodes` and `conditional_buckets` (null means, bin
 labels, spanning features), `rot_n_null`, `boot`, `source_coverage`, `summary.pbo` and `describe`.
+The third round rewords the embedded `metric_roles` pooled-riders `evidence_only` line once more
+(the `cross_mean` pooled mean is its exact excess sum, 0 wherever the selected excesses cancel);
+`seikan schema` rewords `csv_format.timestamp_format` / `value_columns`,
+`report_fields.run.bar_spacing` / `rotation`, `report_fields.cells.pooled.t_hac / hac_se` and
+`gate_contract.metric_roles_rationale.caveats.baseline`; and the DSL guide restates the data
+contract (nanosecond stamps, correctly rounded values), the zero-dispersion passage and `zscore`
+(moments about the window's offset), `event_value` (snapshot warmup), `not` (lagged and snapshot
+operands), the shared-axes refusals, `by_target.mean_ret`, the `pooled` mean, `t_hac`, `boot`,
+`rot_p` (`n_shifts`) and `summary.bar_spacing`.
 
 - CHANGED the decision layer's warmup rules (`compiler.vectorize`). A still-warming condition node
   has no truth value (`~init ⇒ ~value`, beside `~init ⇒ defined`), and negation waits for its whole
@@ -134,8 +161,9 @@ labels, spanning features), `rot_n_null`, `boot`, `source_coverage`, `summary.pb
   held decimal level reads NaN, not ±1, and leaves the buckets); a `mask` feature is likewise NaN
   until its condition is fully initialized. Every window, cross-section and pool that varies is
   computed as before, bit for bit, while its variances (and, for `rolling_corr`, their product) are
-  normal doubles (see the out-of-range entry below); the EW recurrences differ only on the steps
-  where a rounded update left its exact interval or a held input's deviation is carried
+  normal doubles (see the out-of-range entry below; the third round then centres every varying
+  window's moments on its own offset, the moments entry below); the EW recurrences differ only on
+  the steps where a rounded update left its exact interval or a held input's deviation is carried
   (rounding-scale steps tick data with repeated values can take too), and the EW z-score where its
   plain recurrence left the normal range.
 - ADDED `native:<feed>` to the `sources` panel: a feed a `native` node reads on its own clock
@@ -166,7 +194,9 @@ labels, spanning features), `rot_n_null`, `boot`, `source_coverage`, `summary.pb
   returns are byte-identical.
 - CHANGED the basket `cross_mean` pooled `mean_ret` (and the baseline's pooled `mean_ret`) to be
   summed from the raw legs (`analysis.stats.cross_mean_pooled_mean`): a bar on which every member
-  closed, or whose legs are all equal, contributes exactly 0, in any declaration order. In 4.0.0 a
+  closed, or whose legs are all equal, contributes exactly 0, in any declaration order (the third
+  round makes the whole sum exact, so any partial subset whose excesses cancel reads 0 too — its
+  entry below). In 4.0.0 a
   basket-wide firing read ±1e-19 with its sign set by the targets' order, and `support` flipped
   with it; the baseline's "≈ 0 by construction" is now exactly 0.0. Every `cross_mean` pooled
   `mean_ret` is this exact sum, so it can move in its last bits on any basket; legs so large the
@@ -401,7 +431,8 @@ labels, spanning features), `rot_n_null`, `boot`, `source_coverage`, `summary.pb
   now read a `pct` std of 7.07e154) and a `diff` std of 0.0 on a varying series at 1e-170 scale; a
   std with no double to be refuses by name (the log-ratio entry below). Every window whose variances
   (and, for `rolling_corr`, their product) are normal doubles, and every EW z-score whose plain
-  recurrence stays in that range, keeps every bit.
+  recurrence stays in that range, keeps every bit of its direct form (after the third round, the
+  two-pass form about the window's offset).
 - CHANGED the log ratio to be scale-safe, one rule everywhere (`seikan.numeric`). `ln(b/a)` of two
   positive finite levels is always a representable double (|ln| < 1455), but the quotient it was
   read through need not be: 1e200 → 1e-200 is a quotient of 1e-400, which underflows to 0.0, so
@@ -484,6 +515,167 @@ labels, spanning features), `rot_n_null`, `boot`, `source_coverage`, `summary.pb
   `0 <= n_combos <= n_combos_scoreable <= n_combos_declared == n_hypotheses_attempted`,
   `0 <= n_splits <= n_splits_attempted`, `0 <= n_candidates_min <= n_combos` — and refuses a
   violation as a seikan bug (`ReportContractError`, exit 4; no report written).
+- CHANGED the strict CSV value read to correctly rounded (`dataio._parse_value_columns`, behind
+  `run`, `check-data`, `describe` and `load_market_data`). Value cells went through
+  `pd.to_numeric`, whose parser is not correctly rounded: `0.00000000000000001` read 0.0, and it
+  missed by an ulp on nearly half of all 17-significant-digit strings (27 680 of 60 000 random
+  reprs, 4 154 of 20 000 15-decimal fixed strings) — the form `repr` and every pandas-written CSV
+  use — so a file read back did not hold the values written to it, and a report's prices disagreed
+  with the file's. Each stripped cell is now gated by an explicit ASCII grammar (a signed decimal
+  with optional fraction and exponent, or a signed `inf` / `infinity` in any case — the set
+  pandas admitted) and converted with `float()`, the correctly rounded read; `float()` alone would
+  also have admitted `1_000` and Arabic-Indic or full-width digits, which still refuse as
+  `non_numeric_value`. Empty and `nan` stay the only missing markers and `inf` / `1e400` still
+  refuse as non-finite. Moves: the last bits of every cell holding more than ~15 significant
+  digits — on a pandas-written fixture every price and return in its last place, with every
+  statistic over them, and the trades CSV now states the price the file holds (98.48593686587999,
+  not 98.48593686588); files with 15 or fewer significant digits read as before (the baseline
+  fixtures, written with 6 decimals, are byte-identical), and no `sha256` moves. ~0.2 µs per cell.
+- CHANGED strict CSV timestamps to at most nanosecond resolution (`dataio._parse_timestamps`).
+  `pd.to_datetime(format="ISO8601")` truncates fractional digits past the ninth, so a stamp of
+  `2021-01-01T00:00:00.0000000001` loaded as midnight — another instant than the file states (a
+  release stamped just after midnight became usable at the midnight bar), or a
+  `duplicate_timestamp` naming a duplicate the file does not contain. A nonzero digit past the
+  ninth now refuses as `bad_timestamp`, naming the rows and the cause; zeros past it name the same
+  instant and admit. Moves: only such files, from admitted (or a misleading refusal) to refused.
+- CHANGED `bar_spacing` (`dataio.bar_spacing`, the run summary's stamp and every `describe`
+  profile's) to be exact in the index's own resolution. It cast the index to int64 nanoseconds,
+  and pandas ≥ 2 keeps the parsed resolution (a second-stamped file builds a `[us]` index holding
+  any year the reader admits), so two consecutive bars more than ~292 years apart overflowed the
+  difference: a 1700/2024 pair stamped −8 222 340 873.709552 s. The ticks are now differenced as
+  Python integers in the index's own unit, the median of an even count is the exact midpoint of
+  its two middle spacings, a whole second stays an integer and any other spacing is the exact
+  value correctly rounded (1 700/2024: 10 224 403 200 s). Ordinary indexes stamp the same values.
+- CHANGED the graded pool mean to the exactly rounded sum (`analysis.stats.exact_mean`,
+  `math.fsum` over `n`). `pool_moments`' `mean_ret` was `np.mean`, a pairwise float sum in which a
+  large term swallows a small one before its cancelling partner arrives: the 49 `diff` returns of
+  `[0, 2**54, 0, −1, 0] × 10` sum to exactly 0 and read `mean_ret` 1/49, and `support`
+  (`mean_ret > 0`) passed a pool that made exactly nothing. The exact mean keeps the exact sum's
+  sign and reads 0.0 exactly where it is 0; an all-equal pool's mean is its value; NaN on an
+  empty pool and where the exact sum leaves the double range. It serves the graded mean and its
+  direct twins — the baseline's and the eras' (`subperiods`) means, `mean_ret_raw` /
+  `mean_ret_bench` and the HAC's centre (so `t_hac` is `mean_ret` over `hac_se`) — and a constant
+  pool's degenerate `boot` interval now sits on the value itself, the `mean_ret` beside it, where
+  it read `np.mean`'s ulp-off value. Moves: those fields in their last bits on ordinary pools (at
+  most 4.2e-15 relative over the baseline reports), exactly 0.0 (and `support` unmet) where the
+  exact sum is 0. The evidence-only means elsewhere — bootstrap draws, episodes, buckets, CSCV —
+  are unchanged.
+- CHANGED the event-time HAC to sum each bar before the quadratic form
+  (`analysis.stats.newey_west_mean`). It accumulated the squared deviations and the same-bar cross
+  terms that cancel them row by row, and on a basket whose members' deviations offset on a bar the
+  cancellation destroyed a much smaller combined variance: ten members firing together on 40 bars,
+  their deviations netting to `(k − 2.5)·2**−24` per bar, read `hac_se` 3.7252902984619143e-10 and
+  `t_hac` 40.0, where the estimator's exact value is 1.05499077648638e-9 and 14.124446891825533 —
+  the SE 65% low. Same-bar pairs carry weight 1, so the long-run variance is
+  `Σ_a Σ_b w(|a−b|)·D_a·D_b` over per-bar deviation sums; it is now computed in that form, each
+  bar's deviations exactly rounded (`fsum`) and each lag's terms exactly summed, with the same
+  weights, divisor and range gates, and no ordering of a bar's rows can move it (the tie-breaking
+  lexsort is gone). Moves: `hac_se` in its last bits on every pool (at most 2.4e-16 relative over
+  the baseline reports; `t_hac` with it and with the exact mean above, at most 2.0e-15), and
+  materially on pools whose same-bar terms cancel.
+- CHANGED the `cross_mean` pooled mean to be exact over partial baskets
+  (`analysis.stats.cross_mean_pooled_mean`). Each bar's excess was `s_closed − (k/N)·s_all`, which
+  rounds the membership fraction before the cancellation: a 22-member bar of 7 zeros, 7 twos and
+  8 ones has mean 1, its 15 firing members (the zeros, the twos, one of the ones) have excesses
+  summing to exactly 0, yet `15 − fl(15/22)·22 = 1.8e-15`, and a 32-bar basket of such bars read
+  pooled `mean_ret` 1.18e-16 over 450 closed rows and passed `support`. The pool's excess sum is
+  the integer-weighted `Σ (N·[closed] − k_t)·raw / N`; it is now computed exactly — each leg split
+  into two halves whose products with its weight are exact doubles, all of them summed by `fsum`,
+  divided by `N·n` once — so the mean is 0 exactly where the selected excesses cancel, with its
+  sign elsewhere, in any member order (the full-bar and identical-legs cases need no special case
+  now). Overflow stays NaN. Moves: `cross_mean` pooled `mean_ret` (and the baseline's pooled row)
+  in its last bit (one baseline cell, −0.005106281896093831 → −0.00510628189609383), and to exactly
+  0.0 where the selected excesses cancel.
+- CHANGED `event_agg`'s running sum to exact (`nb.event_agg_1d`). `acc += v` lost a term a larger
+  one swallowed and never got it back when that term cancelled: one event at bar 0 over
+  `[2**54, 1, −2**54, 0, …]` has an exact sum of 1 from bar 2 on and read 0, so
+  `event_agg(E, X, sum) == 0` fired on 78 bars where it was false on every one. The sum is kept as
+  non-overlapping partials (Shewchuk's expansion, the `math.fsum` algorithm, reset at each event)
+  and read correctly rounded on every bar — `math.fsum(x[s .. t])` bit for bit, its half-even
+  correction across partials included — and `mean` divides it by the count; `max` / `min`
+  unchanged, an overflowing run still NaN until the next event. Moves: since-event sums and means
+  in their last bits wherever the float running sum rounded (the baseline event thesis' root
+  series, 370 of 901 rows; no firing moved), and their firings where the exact sum decides them.
+- CHANGED the window and cross-sectional moments to be taken about their own offset
+  (`nb._window_moments`, `_pair_moments`, `_row_var`, `cross_demean_apply_nb`). Centred on the
+  rounded mean of the raw values, a spread at its level's ulp was lost to that mean's rounding:
+  `[2**52, 2**52 + 1]` read deviations `[0, 1]` for `[−0.5, 0.5]`, a std of 0.707 for 0.5 and a
+  two-point z-score of 1.414 past its bound of 1 — `zscore(F, 2) > 1.1` fired on 40 of 80 bars of
+  an alternating CSV and the cell passed — three points against `[0, 1, 1]` correlated 0.577 for an
+  exact 1, and their cross-section demeaned to `[0, 1, 1]` for `[−2/3, 1/3, 1/3]`. Windows now
+  subtract their first value (exact wherever the window lies within a factor of two of it) and the
+  z-score divides the last bar's deviation; a cross-section centres on its range midpoint, both ends
+  halved first, since its deviations are an output and members farther apart than the double range
+  keep representable ones. The constant-window rule, the 2^600 lift (which commutes with the
+  shift), the range gates and the plain means are unchanged. Moves: SMA `zscore`, `rolling_agg` /
+  `cross_agg` `std`, `rolling_corr` and `cross_demean` in their last bits on ordinary windows (at
+  most 1.3e-13 relative over the baseline root series, on near-zero z-scores; no firing, flag or
+  report moved), feature columns over them, and materially where a spread sits at its level's ulp;
+  a two-member group near 1.7e308 whose demean mean overflowed now emits its deviations (and counts
+  in `cross_breadth`).
+- CHANGED an event snapshot's warmup to read its event bar (`vectorize._derived_latch_at`).
+  `event_value` / `event_agg` read their input from the event bar `s(t)` on, but initialized
+  against the input's init at the current bar, so a value the input carried during its own warmup
+  became usable the moment the input initialized, with no new event: in a four-member basket whose
+  two late members' inputs start at bar 40, with one event at bar 0,
+  `event_value(E, cross_agg(X, mean)) > 0` fired the late members from bar 40 off the 2.0 snapshot
+  taken at bar 0, where the same predicate captured at the event,
+  `event_value(E, mask(cross_agg(X, mean) > 0)) > 0.5`, never fires. The input's init and value
+  latch are now read at `s(t)`; for every input whose init is its own finiteness latch this is the
+  old latch exactly. Moves: only snapshots of an input carrying values before its init (a
+  `cross_agg` broadcast) or init before its values (event nodes, masks), and their firings.
+- CHANGED negation's full warmup to follow the bars a lagged or snapshot operand reads
+  (`vectorize._operand_full`). `not` / `mask` wait until every condition under the operand is past
+  warmup, but the conditions embedded in a threshold's operands were checked at the current bar:
+  with `E = or(a > 0, b > 0)`, `a` starting at bar 40 and `b` firing once at bar 0, and
+  `S = bars_since_event(E)`, `lag(not(S > 1000), 20)` starts at bar 60 while
+  `not(shift(S, 20) > 1000)` fired from bar 40 — reading through the shift a bar where `a` still
+  warmed (38 closed rows and a met checklist against 18 and an unmet one, ledgers clean) — and
+  `not(event_value(E2, S) > 1000)` fired from bar 40 off a snapshot taken at bar 10. The mask now
+  follows each node as its own init does: `shift` / `change` lag it by `periods`,
+  `event_value` / `event_agg` read their input's at `s(t)` (at `t` while the anchor is unknown, so
+  a hole stays ledgered, never warmup) and their event at `t`, every other node ANDs its children.
+  Moves: only negations over such operands, and their firings.
+- CHANGED the cells panel to find its rows by declared identity (`runner._cells_panel`), and ADDED a
+  parse refusal for a shared axis value its param cannot hold exactly. Each (cell × target) frame
+  types its axis columns by the values it holds — int64 for `2**63 − 1`, uint64 for `2**63` — and
+  the concatenated trades frame read both as one float64, so the value partition handed both
+  declared cells' rows to the second (n 44, 86 attempted) and none to the first (n 0: a firing
+  hypothesis reported as never firing), and declaring the second hypothesis moved the first one's
+  numbers. Rows are now partitioned by the (declared cell, target) ordinals `_measure_grid` records
+  beside each frame — the same ascending positions wherever the value partition was right. And
+  `_check_shared_axes` re-reads each fitted value: an int axis value a float param cannot hold
+  exactly refuses at parse (exit 3, `dsl_invalid`, naming the value the kernel would execute —
+  `2**63 − 1` runs as 9.223372036854776e18, `2**53 + 1` as `2**53`), where the report labelled a
+  cell with a threshold the kernel never ran. Every other thesis keeps its `dsl_hash`, and exactly
+  representable ints (`2**63`, `2**64`) still admit and report exactly. Moves: only such theses.
+- CHANGED the CLI's output-collision check to ask the filesystem (`cli._preflight_outputs`). It
+  compared `Path.resolve()` strings, which miss what only the volume knows: on a case-insensitive
+  volume (the macOS and Windows default) `--data T=prices.csv --report-out PRICES.csv` overwrote
+  the CSV the run measured under a report stamping its digest, `--report-out out.json --trades-out
+  OUT.json` wrote both outputs to one file while `outputs` enumerated two, and a hard link was the
+  same hole anywhere. Every nomination is now opened for append in flag order and stat'ed; two
+  nominations, or a nomination and an existing input (the thesis or a `--data` CSV), are one file
+  when `os.path.samestat` says so — exit 3 `usage`, before a byte of data is read — and every file
+  the probe created is removed on every exit. The string checks run first, so the plain cases keep
+  their messages.
+- CHANGED `summary.rotation.n_shifts` to count the pooled null's shifts too
+  (`runner._run_summary`). It read the per-target pass alone, whose roster is closed rows, so a
+  basket whose members fired only where no observation closes (the final bar) stamped
+  `n_shifts: 0`, `p_resolution: null` beside a pooled null formed over all 79 shifts
+  (`rot_n_null` 74). It is now the larger of the two passes' counts, so every panel's `rot_n_null`
+  is at most it. Moves: only such baskets.
+- CHANGED `describe`'s dispersion and volume mean to decide constancy first (`describe._std`,
+  `_mean`). The computed mean of bit-identical values carries its sum's rounding, and the variance
+  was formed before the constancy test: the 63 identical log changes of a doubling series read a
+  log dispersion of 2.238e-16, and a held volume of 1234.56 a 21-bar mean of 1234.5600000000002 and
+  a `last_to_mean` of 0.9999999999999998. An all-equal window now reads std exactly 0.0 and its own
+  value as its mean; every varying window keeps the direct form's bits.
+- CHANGED the gate's numeric reader to refuse an integer past the double range
+  (`gate._read._num`). JSON integers are unbounded and `float(10**400)` raises OverflowError, so a
+  summary carrying such an integer at any numeric field crashed `evaluate_gate` where drifted input
+  refuses; it now reads as no number, like inf. Moves: only such summaries, from a crash to a
+  refusal.
 - Library: `vectorize.fully_initialized`, `vectorize.cross_reduced`,
   `analysis.stats.cross_mean_pooled_mean`, `analysis.stats.episode_bootstrap_ci` / `episode_ledger`
   / `episode_profile` (an optional keyword-only `rets_pool`: row-aligned values the episode sums
@@ -507,7 +699,11 @@ labels, spanning features), `rot_n_null`, `boot`, `source_coverage`, `summary.pb
   field count), `BenchmarkRegressionReason` and `EpisodeBootstrapCI.reason` with
   `not_representable`, and `EpisodeLedgerEntry` / `BucketRecord` `mean_ret` as `float | None`; and
   `validate_summary` refusing an impossible `pbo` block (its message now names
-  `seikan.types/seikan.emitted`, as the document seam's did).
+  `seikan.types/seikan.emitted`, as the document seam's did). Third round:
+  `analysis.stats.exact_mean`; `dsl.schema.iter_child_series` / `iter_child_conditions` (the
+  direct-layer walks, public now that the warmup mask reads them); `dataio.bar_spacing` reading any
+  `DatetimeIndex` resolution; and `newey_west_mean` / `cross_mean_pooled_mean` /
+  `nb.event_agg_apply_nb` with the exact accumulation above (same signatures).
 
 ## 4.0.0 — report schema 5, statistics 4, policy 3
 

@@ -165,10 +165,17 @@ column / csv line. Pre-flight with `seikan check-data <files…>`. The contract:
   cell-by-cell cross-check; a disagreement refuses (`unreadable`) naming the csv line, so save
   with `\n` or `\r\n` endings.
 - **Timestamps**: a column named `datetime` (case-insensitive), else the first column. Strict
-  **ISO-8601** (`YYYY-MM-DD` or a full timestamp), **timezone-naive**, unique, sorted ascending.
+  **ISO-8601** (`YYYY-MM-DD` or a full timestamp), **timezone-naive**, unique, sorted ascending,
+  at most **nanosecond** resolution: a nonzero fractional digit past the ninth refuses
+  (`bad_timestamp`) — the parser would truncate it into an earlier instant, and a release stamped
+  just after midnight would become usable at midnight. Zeros past the ninth digit are admitted.
   No other date format is ever guessed (`01/02/2021` is rejected, not interpreted).
-- **Values**: plain numbers, forced to float. The only missing-value markers are an empty cell or
-  `nan`. No thousands separators, no currency symbols, no `inf`.
+- **Values**: plain ASCII decimal numbers — an optional sign, digits with an optional fraction
+  and exponent (`1`, `1.`, `.5`, `-2.5e-3`) — read **correctly rounded**: the double nearest the
+  decimal written, so every value a writer emits with `repr` (or pandas' `to_csv`) reads back bit
+  for bit, and `0.00000000000000001` is `1e-17`. The only missing-value markers are an empty
+  cell or `nan`. No thousands separators, underscores, non-ASCII digits or currency symbols, and
+  no `inf` (it parses, then refuses as non-finite).
 - **OHLCV shape** (columns `open,high,low,close` + optional `volume`): `high ≥ max(open,close)`,
   `low ≤ min(open,close)`, prices > 0, volume ≥ 0. Violations **refuse — never clamp** (a verifier
   does not mutate evidence).
@@ -303,8 +310,12 @@ a sign against its own average, and the zero-dispersion recipes below divide by 
 can sit flat (a rate pinned at its floor) with `and(rolling_agg(x, N, "std") > 0, …)`. "Equal" means
 bit-identical: a spread built from decimal levels that move in lockstep (`y1 − y2`) carries residue
 at the operands' scale, which is variation as far as any kernel can tell. Every window with any
-variation is computed as before, bit for bit, while its variances and, for `rolling_corr`, their
-product are normal doubles (below); the EW pair differs from its plain recurrence only on the steps
+variation is the direct two-pass form about its OWN offset — its first value; a cross-section's
+range midpoint — bit for bit, while its variances and, for `rolling_corr`, their product are
+normal doubles (below): centered on the rounded mean of the raw values instead, a spread at its
+level's ulp was lost to that mean's rounding (`[2**52, 2**52 + 1]` read a std of 0.707 for 0.5, a
+two-point z-score of 1.414 that `zscore(x, 2) > 1.1` fired on, and three points correlating 0.577
+for an exact 1). The EW pair differs from its plain recurrence only on the steps
 where a rounded update left its exact interval or a held input's deviation is carried, and the EW
 z-score where its plain recurrence left the normal range (below).
 
@@ -349,7 +360,8 @@ a subnormal, so a hold moved onto the mean there (any `window` ≥ 4, RiskMetric
 decided z 0.0 for its whole length — exact where the mean is, of unknown sign where it is not; no
 landing gap arises there, since the exact update lies nearer the old mean than the new input. Every
 window whose variances and, for `rolling_corr`, their product are normal doubles, and every EW
-z-score whose plain recurrence stays in that range, is computed as before, bit for bit.
+z-score whose plain recurrence stays in that range, keeps its direct form's bits (a window's: the
+two-pass form about its offset).
 
 - `ema` (input, exactly one of `window` / `alpha`) — exponentially weighted mean of any Series,
   seeded at the first finite value, NaN-skipping. `window` sets `alpha = 2/(window+1)` with a
@@ -363,7 +375,9 @@ z-score whose plain recurrence stays in that range, is computed as before, bit f
   `alpha = 1/N` with THIS seed (not an SMA seed); `alpha = 1` is the input itself. A list sweeps
   as `ema_window` / `ema_alpha` by which field is set. Rendered `ema(x,20)` / `ema(x,a=0.06)`.
 - `zscore` (input, exactly one of `window` / `alpha`, mean_type `"sma"|"ema"` default `"sma"`)
-  — `(x − mean) / std`: `sma` uses two-pass population moments over the last `window` bars;
+  — `(x − mean) / std`: `sma` uses two-pass population moments over the last `window` bars,
+  about the window's first value (so a spread at the level's ulp keeps its z, and two points
+  read at most ±1);
   `ema` uses the West EW recurrence with the EMA's own two forms. `alpha` is only valid with
   `mean_type: "ema"` and must be `< 1` (`alpha = 1` leaves zero EW variance). Sweeps as
   `zscore_window` / `zscore_alpha`.
@@ -541,8 +555,10 @@ The nodes:
   length is `bars_since_event(not(C))`. Counts one level (no Series child).
 - `{"type": "event_value", "event": <Condition>, "input": <Series>}` — `input[s(t)]`: the input's
   value AT the latest event, held until the next one. A NaN input on the event bar reads NaN until
-  the next event; later holes in the input are irrelevant (the snapshot was taken). Counts one
-  level over `input`.
+  the next event; later holes in the input are irrelevant (the snapshot was taken). The snapshot
+  is warmup unless the input was initialized ON the event bar: a value an input carries during its
+  own warmup (a `cross_agg` broadcast into a member whose own data has not started) never becomes
+  usable without a new event. Counts one level over `input`.
 - `{"type": "event_agg", "event": <Condition>, "input": <Series>, "agg": "sum|max|min|mean"}` —
   the input aggregated over `[s(t), t]`, a resettable running aggregate (`mean` divides by
   `t − s + 1`). Strict finite gate like `rolling_agg`: one NaN input bar inside the window poisons
@@ -702,14 +718,16 @@ thesis never meant — where the thesis has ONE parameter `N` and two hypotheses
   measurement); `"axes": {}` (omit the field instead; `null` ≡ omitted); an axis value that does
   not fit a param that reads it (`[0.5, 1.5]` into an integer window, `2` into
   `rolling_corr`'s ≥ 3 window, a `rolling(count)` window below its `min_count` — every value is
-  re-validated against every referencing param); an axis named `target`/`horizon`, a trade or
+  re-validated against every referencing param — or that the param cannot hold exactly: an int
+  read by a float param past 2**53 can round, and `[2**63 − 1, 2**63]` into `constant.value` would
+  run one threshold under two labels); an axis named `target`/`horizon`, a trade or
   feature column, an auto-named axis present in the tree (`ema_window`), or a swept constant's
   `name`; a reference inside `params.features` (features are scalar); and `params.horizon`
   never reads a shared axis (it is its own axis by construction). An axis of length one is
   legal (a one-level sweep that keeps `N` visible as a named parameter); an axis named like a
   feed or target is legal (separate namespaces).
 - An int axis may serve a float param (`Constant.value` stores `20.0` where `EMA.window`
-  stores `20`; `cells[].params["N"]` is `20`).
+  stores `20`; `cells[].params["N"]` is `20`) wherever a double holds the value exactly.
 
 The rolling beta, correctly:
 ```jsonc
@@ -760,7 +778,11 @@ expression that says the thesis.
   still warms is no-signal, not a decided False, so `not(or(A, B))` ("none of these") waits for
   A and B both. The same holds through `rolling`/`lag` (their windows/shifts) and into conditions
   embedded in the operand's series (`mask`, the event nodes, a cross node's `where`), on each
-  member's own column. The signal-level reads differ by design: an event, a `first_true` edge and
+  member's own column — on the bars the operand reads them: through a `shift` / `change` the bar
+  it reads back to, through an `event_value` / `event_agg` the event bar its input was read on
+  (`not(shift(bars_since_event(or(A, B)), 20) > 1000)` waits for A twenty bars longer, exactly
+  as `lag(not(bars_since_event(or(A, B)) > 1000), 20)` does). The signal-level reads differ by
+  design: an event, a `first_true` edge and
   a `where` population read the TRADABLE SIGNAL, for which a warming branch is simply not firing —
   `bars_since_event(or(A, B)) > 5` counts B's events while A warms, where
   `not(rolling(any, or(A, B), 6))` waits for A. Spell "none of these lately" with the `not` form
@@ -1086,7 +1108,9 @@ and int64 nanosecond counts silently round in IEEE-754 consumers.)
   - `params` — the parameter assignment, with `horizon` **always present** even when you did not
     sweep it.
   - `by_target` — per target: `n`, `n_nonoverlap` (non-overlapping episodes — non-overlap is not independence; compare to `n`
-    to see the overlap inflation), `mean_ret`, `mean_ret_raw` / `mean_ret_bench` (the excess
+    to see the overlap inflation), `mean_ret` (the closed returns' exactly rounded sum over `n`,
+    so its sign and its zero are the exact sum's — the read the support floor grades),
+    `mean_ret_raw` / `mean_ret_bench` (the excess
     mean's own direction-signed legs over the same closed pool — `mean_ret ≈ mean_ret_raw −
     mean_ret_bench`, so "+3.2% against a +2.4% market" and "lost less than a falling market" are
     distinguishable; unbenchmarked, `mean_ret_raw` equals `mean_ret` and `mean_ret_bench` is
@@ -1112,12 +1136,13 @@ and int64 nanosecond counts silently round in IEEE-754 consumers.)
     `mean_ret`, `mean_ret_raw` / `mean_ret_bench` (the pooled attribution legs — under
     `cross_mean` the pooled `mean_ret` is the FIRING subset's cross-sectional selection tilt:
     each closed bar's FULL cross-section demeans to zero, but the pool holds only the members
-    that fired, so 0 appears only when firings are basket-wide or every member's leg is the same
-    value (a shared or duplicated outcome feed: each per-row excess is then exactly 0.0, and
-    every read of it takes its exact value — means, quantiles and std 0.0, `rot_p` 1.0, `t_hac` /
-    `hac_se`, the shape reads, `concentration` and `member_share` null) — exactly 0, the pooled
-    mean being summed from the raw legs in any
-    declaration order (on a full bar with distinct legs each per-row excess is that row's own
+    that fired, so the mean is their EXACT excess sum over `n` — summed from the raw legs, in any
+    declaration order — and is 0 exactly where the selected excesses cancel: always when firings
+    are basket-wide or every member's leg is the same value (a shared or duplicated outcome feed:
+    each per-row excess is then exactly 0.0, and every read of it takes its exact value — means,
+    quantiles and std 0.0, `rot_p` 1.0, `t_hac` / `hac_se`, the shape reads, `concentration` and
+    `member_share` null), and on any subset whose excesses sum to 0 (on a full bar with distinct
+    legs each per-row excess is that row's own
     rounded value, and the pooled reads that SUM whole bars take the identity too: a full bar —
     every member closed in the cell — enters `boot`'s episode sums (same draws), the `subperiods`
     means, the cell's `episodes` / `episode_profile` means and the HAC's per-bar deviation sums
@@ -1365,7 +1390,8 @@ open to quote a statistic honestly.
   cell's null was formed over (a count of the mask's geometry: beside a null `rot_p` still every
   defined shift), so the cell's own smallest attainable value is
   `1/(1+rot_n_null)` (≥ `summary.rotation.p_resolution` = `1/(1+n_shifts)`, the run-level floor
-  over a fully defined null); a `rot_p` sitting at its floor means "no shift beat the
+  over a fully defined null — `n_shifts` counts the shifts ANY null in the report was formed over,
+  a basket's pooled nulls included); a `rot_p` sitting at its floor means "no shift beat the
   observation", not "p ≈ 0". A shift whose mean ties the observed one counts as reaching it —
   ties are judged within the FFT's rounding error (an absolute band, `16·ε·log2(T)·‖f‖₂·√k`
   over the shift's count, ~1e-13 to 1e-11 of the return scale), so when every rotation selects
@@ -1383,8 +1409,11 @@ open to quote a statistic honestly.
   your signal fires.
 - `t_hac` / `hac_se` — the EVENT-TIME Newey-West t: Bartlett weights on actual entry-bar distances,
   so a sparse pool degrades to the iid SE instead of a collapsed one. df = `n_nonoverlap` − 1; the derived
-  p is not emitted, re-derive it if you need one. Null on a (near-)constant pool — its spread is
-  rounding residue, not dispersion. KNOWN CAVEAT: anti-conservative on heavily
+  p is not emitted, re-derive it if you need one. `t_hac` is `mean_ret` over `hac_se`, and the
+  long-run variance is formed from each bar's exactly summed deviations, so basket members whose
+  deviations cancel on a bar keep their small combined variance (summed row by row, ten members
+  netting to `(k − 2.5)·2**−24` per bar read an SE 65% low). Null on a (near-)constant pool — its
+  spread is rounding residue, not dispersion. KNOWN CAVEAT: anti-conservative on heavily
   overlapping pools (the taper understates the long-run variance).
 - `n_nonoverlap` — the greedy non-overlapping observation count. Compare to `n` to see how much of your
   sample is really one event.
@@ -1411,8 +1440,8 @@ open to quote a statistic honestly.
   instead of a degenerate interval, and so does a read past the double range (`reason:
   "not_representable"` — an episode sum or draw that overflowed nulls the interval and `boot_se`
   together, a draws' variance outside the normal range `boot_se` alone); a constant pool's
-  interval is its arithmetic mean — the value itself where that mean's sum overflowed — with
-  `boot_se` exactly 0.0. KNOWN CAVEAT: it assumes episode INDEPENDENCE —
+  interval is its value — the pool's exact mean, its `mean_ret` — with `boot_se` exactly 0.0.
+  KNOWN CAVEAT: it assumes episode INDEPENDENCE —
   adjacent episodes still correlate through slow volatility regimes — so it is less
   anti-conservative than `t_hac`, not calibrated.
 - `by_target[t].subperiods` — the pool's `{start, end, n, mean_ret}` over three
@@ -1463,7 +1492,9 @@ open to quote a statistic honestly.
   finite subset; null when either pool is empty or the adverse mean is exactly zero.
 - `summary.bar_spacing` — `{min,median,max}_seconds` between consecutive bars:
   the clock geometry every horizon-in-bars is denominated in, so "horizon 21" can be translated
-  into calendar language without guessing.
+  into calendar language without guessing. Exact in the index's own resolution, however far apart
+  two bars lie (a whole second is an integer, any other spacing its exact value correctly
+  rounded).
 - `summary.pbo` — ONE nested block `{pbo, reason, n_splits, n_splits_attempted,
   n_candidates_min, n_combos, n_combos_scoreable, n_combos_declared, blocks, lambda_mean,
   oos_degradation_slope, oos_degradation_slope_reason, prob_oos_loss}`; there are no flat
