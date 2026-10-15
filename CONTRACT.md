@@ -277,8 +277,8 @@ leaf, the rotation null judges ties within the FFT's rounding, the `cross_mean` 
 the bootstrap, era, episode and HAC reads beside it keep its zero-excess identities exactly, and
 `cross_breadth`'s `k` counts the members a kernel actually reduced over; later review rounds
 corrected more — among them correctly rounded CSV values, exactly rounded graded means, a HAC
-summed per bar, exact `cross_mean` and `event_agg` sums, window moments about their own offset,
-and warmup that follows the bars a lagged or snapshot operand reads)
+summed per bar, exact `cross_mean` and `event_agg` sums, window and pool moments about their own
+offset, and warmup that follows the bars a lagged or snapshot operand reads)
 names the engine's estimator revision the same way.
 
 The summary is a GRID, not a headline. Run-level keys are geometry and provenance only —
@@ -814,14 +814,18 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   is UNDECIDABLE like `x / 0`: its NaN lands in `signal_coverage`, never fires — guard a z-score
   of a series that can sit flat with `rolling_agg(x, N, std) > 0`. "Equal" means bit-identical: a
   spread built from decimal levels moving in lockstep carries residue at the operands' scale,
-  which no kernel can tell from variation. Every window and cross-section that varies is the
-  direct two-pass form about its OWN offset — the window's first value, a cross-section's range
-  midpoint — bit for bit, while its variances and, for `rolling_corr`, their product are normal
-  doubles (the next bullet): centered on the rounded mean of the raw values, a spread at its
-  level's ulp was lost to that mean's rounding (`[2**52, 2**52 + 1]` read a std of 0.707 for 0.5
-  and a two-point z-score of 1.414, past its bound of 1); the EW recurrences differ from the plain
-  recurrence only on
-  the steps where a rounded update left its exact interval or a held input's deviation is
+  which no kernel can tell from variation. Every window, cross-section and pool that varies is
+  the direct two-pass form about its OWN offset — the window's first value, a cross-section's or a
+  pool's range midpoint (`numeric.midrange`: the pools' `std_ret`, `boot_se` and baseline std, the
+  benchmark regression's second moments, `describe`'s dispersion stds) — bit for bit, while its
+  variances and, for `rolling_corr`, their product are normal doubles (the next bullet): centered
+  on the rounded mean of the raw values, a spread at its level's ulp was lost to that mean's
+  rounding (`[2**52, 2**52 + 1]` read a window std of 0.707 for 0.5, a two-point z-score of
+  1.414, past its bound of 1, and a ddof=1 `std_ret` of 1.0 for 0.707; legs clustered 31 and 62
+  ulps apart read a regression beta of 1.9984 for 2). The pool means stay the exactly rounded
+  sum, and `alpha` stays `mean_raw − beta·mean_bench` on them. The EW recurrences differ from
+  the plain recurrence only on the steps where a rounded update left its exact interval or a
+  held input's deviation is
   carried — rounding-scale steps a varying series with repeated values (tick data) can take too
   — and the EW z-score where its plain recurrence left the normal range (the next bullet).
 - **Out-of-range dispersion is no dispersion, nor a lost one.** The finite-or-NaN line holds for
@@ -897,8 +901,8 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   `x / inf`, and finite levels never a null std while their 1-bar changes and the std itself are
   representable doubles). Every window and pool whose variances and, for `rolling_corr`, their
   product are normal doubles, and whose sums and means stay finite, and every EW z-score whose plain
-  recurrence stays in the normal range, keeps its direct form's bits (a window's: the two-pass form
-  about its offset).
+  recurrence stays in the normal range, keeps its direct form's bits (a window's or a pool's: the
+  two-pass form about its offset).
 - **Strict, frozen DSL.** Types are strict (no str/bool/float coerces to an int, no str to a
   bool; int stays legal for a float field — JSON has one number type), instances are frozen
   (`model_copy(update=...)` is the derive path), a duplicate JSON object key at any depth
@@ -963,7 +967,8 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
 - `numeric.py` — scale-safe numeric rules shared across the layers, a leaf (`math` + `numpy`,
   no numba, nothing from the package, so `describe.py` can share them with `compiler/` and
   `analysis/`): `log_ratio` / `log_ratio_array`, the one log-ratio rule of the decision side, the
-  outcome algebra and `describe`, and `MIN_NORMAL`, the smallest normal double — the one edge of
+  outcome algebra and `describe`, `midrange`, the offset the pools' and `describe`'s dispersions
+  are taken about, and `MIN_NORMAL`, the smallest normal double — the one edge of
   the normal range the kernels' variance tests, the pool statistics and `describe`'s std read.
 - `types/` — the emitted-shape declarations (TypedDicts), one module per report section behind
   the package facade; `emitted.py` validates every success document against them at emission,

@@ -46,6 +46,19 @@ import numpy.typing as npt
 MIN_NORMAL: float = float(np.finfo(np.float64).tiny)
 
 
+def midrange(lo: float, hi: float) -> float:
+    """The midpoint of ``[lo, hi]``, each end halved BEFORE the sum, so it is finite for any two
+    finite ends and no value between them lies farther from it than the double range holds.
+
+    The OFFSET a dispersion is computed about — the pools' ddof=1 std and the regression legs
+    (``analysis._pools``) and ``describe``'s std; the kernels' cross-sections take the same rule
+    row by row (``compiler.nb._row_offset``). A value's deviation from it is exact wherever the
+    values lie within a factor of two of it, so a spread at the level's ulp keeps its bits, where
+    one about the ROUNDED raw mean carries that mean's rounding: ``[2**52, 2**52 + 1]``'s mean
+    rounds onto ``2**52``, and its ddof=1 std read 1.0 for 0.707."""
+    return hi / 2.0 + lo / 2.0
+
+
 def log_ratio(num: float, den: float) -> float:
     """``ln(num/den)`` by ``math.log`` — the direct form wherever the quotient is a finite
     positive normal double, ``ln(num) − ln(den)`` where it overflowed, underflowed or went

@@ -3136,6 +3136,34 @@ def test_pool_moments_null_where_scipy_reads_cancellation_in_its_own_arithmetic(
     assert ordinary["kurtosis"] == float(sps.kurtosis(v, fisher=False))
 
 
+def test_pool_std_is_taken_about_the_pools_own_offset():
+    # The review's case: about the rounded raw mean, [2**52, 2**52 + 1]'s deviations read [0, 1]
+    # — the mean rounds onto a member — and std_ret read 1.0 for the exact sqrt(0.5). About the
+    # pool's range midpoint the deviations are exact. The baseline and the bootstrap's SE take the
+    # same read (`_ddof1_std`).
+    from seikan.analysis._pools import _ddof1_std
+
+    assert pool_moments(np.array([2.0**52, 2.0**52 + 1.0]))["std_ret"] == math.sqrt(0.5)
+    b = 2.0**50
+    clustered = np.array([b, b + 0.25, b + 0.25])
+    assert float(np.std(clustered, ddof=1)) == 0.25
+    assert _ddof1_std(clustered) == pytest.approx(math.sqrt(1.0 / 48.0), rel=1e-15)
+
+
+def test_benchmark_regression_moments_are_taken_about_each_legs_offset():
+    # Legs clustered at 2**40 (spreads of 31 and 62 ulps, past the near-constant gate): about
+    # their rounded raw means the deviations carried each mean's rounding and the fit read beta
+    # 1.9984 and r2 0.9988 for an exact line of slope 2. About each leg's range midpoint the fit
+    # is the exact-rational one; alpha stays on the raw means.
+    level = 2.0**40
+    ulp = float(np.spacing(level))
+    bench = level + ulp * np.array([0.0, 31.0, 31.0])
+    raw = level + ulp * np.array([0.0, 62.0, 62.0])
+    blk = benchmark_regression(raw, bench)
+    assert blk["reason"] is None and blk["beta"] == 2.0 and blk["r2"] == 1.0
+    assert blk["alpha"] == float(np.mean(raw)) - 2.0 * float(np.mean(bench))
+
+
 def test_benchmark_regression_near_constant_legs_are_degenerate():
     # Not exactly constant, but spread within a few ulps of the mean: no resolvable variation —
     # an arbitrary beta (1.9e16 before) on the bench side, a false r2 on the raw side.

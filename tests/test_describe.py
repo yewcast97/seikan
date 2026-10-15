@@ -22,9 +22,16 @@ import pytest
 
 from seikan.cli import MAX_DESCRIBE_WINDOWS, main
 from seikan.dataio import read_strict_csv
+from seikan.numeric import midrange
 from tests._helpers import write_ohlcv as _write_ohlcv
 
 # ---- fixtures -------------------------------------------------------------------------------
+
+
+def _offset_std(values) -> float:
+    """The ddof=1 std every dispersion read takes: ``np.std`` about the values' range midpoint."""
+    v = np.asarray(values, dtype=float)
+    return float(np.std(v - midrange(float(v.min()), float(v.max())), ddof=1))
 
 
 def _write_series(path, values, columns=("y",)):
@@ -375,7 +382,7 @@ def test_subnormal_quotient_reads_the_exact_log_not_its_rounded_one(tmp_path, ca
     # dispersion reads its changes through the ARRAY twin, so its expectation is np.log's
     np_exact = np.log(1e-300) - np.log(3e20)
     assert np_exact != np.log(1e-300 / 3e20)
-    want = float(np.std([np_exact, np.log(1e-300 / 1e-300)], ddof=1))
+    want = _offset_std([np_exact, np.log(1e-300 / 1e-300)])
     assert blocks["dispersion"]["2"]["log"] == want
 
 
@@ -391,8 +398,8 @@ def test_dispersion_pct_past_the_double_range_refuses_by_name_while_log_lives(tm
     assert d2["pct"] is None and d2["ratio_reason"] == "not_representable"
     assert d2["reason"] is None
     log_changes = [np.log(1e10) - np.log(1e-300), np.log(1e10 / 1e10)]  # the array twin's log
-    assert d2["log"] == float(np.std(log_changes, ddof=1))
-    assert d2["diff"] == float(np.std(np.diff([1e-300, 1e10, 1e10]), ddof=1))
+    assert d2["log"] == _offset_std(log_changes)
+    assert d2["diff"] == _offset_std(np.diff([1e-300, 1e10, 1e10]))
     ch2 = blocks["changes"]["2"]
     assert ch2["log"] == math.log(1e10) - math.log(1e-300)
     assert ch2["pct"] is None and ch2["ratio_reason"] == "not_representable"
@@ -403,7 +410,8 @@ def test_dispersion_pct_std_keeps_its_value_where_its_squares_leave_the_range(tm
     # ~5e154, which overflow: the pct std read inf and refused as `not_representable` while the
     # std itself (~7.07e154) is an ordinary double — and while a diff std over the same kind of
     # overflow was rescaled and computed. One rule for every dispersion std: scaled by a power
-    # of two, every bit of the unscaled std, scaled; in range, np.std's, bit for bit.
+    # of two, every bit of the unscaled std, scaled; in range, np.std's about the range
+    # midpoint, bit for bit.
     from seikan.describe import _dispersion_block
 
     # 1 → 3·2**600 is a 1-bar pct of exactly 3·2**600 (the −1 rounds away under its ulp), whose
@@ -414,7 +422,7 @@ def test_dispersion_pct_std_keeps_its_value_where_its_squares_leave_the_range(tm
     walk = 100.0 * np.exp(np.cumsum(np.random.RandomState(5).normal(0.0, 0.02, 300)))
     for w in (2, 5, 21, 63, 252):
         tail = walk[-(w + 1) :]
-        want = float(np.std(tail[1:] / tail[:-1] - 1.0, ddof=1))
+        want = _offset_std(tail[1:] / tail[:-1] - 1.0)
         assert _dispersion_block(walk, w)["pct"] == want, w
     # end to end: computed, never refused, while every 1-bar ratio is a double — the alternating
     # file's pct changes are 1e200 and −1, a std of (1e200 + 1)/√3
@@ -430,7 +438,7 @@ def test_dispersion_pct_std_keeps_its_value_where_its_squares_leave_the_range(tm
         dw = blocks["dispersion"][str(w)]
         assert dw["pct"] == pytest.approx(want, rel=1e-15), name
         assert dw["reason"] is None and dw["ratio_reason"] is None
-        assert dw["log"] == float(np.std(np.log(np.divide(levels[1:], levels[:-1])), ddof=1))
+        assert dw["log"] == _offset_std(np.log(np.divide(levels[1:], levels[:-1])))
 
 
 def test_levels_farther_apart_than_the_double_range_refuse_their_blocks_by_name(tmp_path, capsys):
@@ -599,8 +607,8 @@ def test_ordinary_log_reads_are_the_direct_form_bit_for_bit(tmp_path, capsys):
         assert log == math.log(b / a)
         n_change_moves += log != math.log(b) - math.log(a)
         std = blocks["dispersion"][str(w)]["log"]
-        assert std == float(np.std(np.log(tail[1:] / tail[:-1]), ddof=1))
-        n_dispersion_moves += std != float(np.std(np.log(tail[1:]) - np.log(tail[:-1]), ddof=1))
+        assert std == _offset_std(np.log(tail[1:] / tail[:-1]))
+        n_dispersion_moves += std != _offset_std(np.log(tail[1:]) - np.log(tail[:-1]))
     assert n_change_moves > 0 and n_dispersion_moves > 0
 
 
@@ -668,7 +676,7 @@ def test_an_all_equal_window_reads_its_own_mean_and_an_exact_zero_std(tmp_path, 
     assert float(np.std(np.log(doubling[1:] / doubling[:-1]), ddof=1)) > 0.0  # the residue
     d63 = _dispersion_block(doubling, 63)
     assert d63["log"] == 0.0 and d63["pct"] == 0.0 and d63["reason"] is None
-    assert d63["diff"] == float(np.std(np.diff(doubling), ddof=1))
+    assert d63["diff"] == _offset_std(np.diff(doubling))
     # end to end, on levels every parser reads exactly (integers under 2**53): 30 changes of
     # ln 2 carry the residue too
     assert float(np.std(np.full(30, math.log(2.0)), ddof=1)) > 0.0
@@ -684,14 +692,16 @@ def test_dispersion_diff_std_keeps_its_value_where_its_squares_leave_the_range(t
     # inf — a null beside finite endpoints, with no reason (2**520, 1e160); below it they lost
     # their bits (2**-536 read 9.1647e-162 where the std is 9.1106e-162) or vanished into the 0.0
     # only an all-equal series owns (1e-170, 2**-1000). Scaled by a power of two the std is
-    # computed in range — every bit of the unscaled std, scaled — and in range it is np.std's.
+    # computed in range — every bit of the unscaled std, scaled — and in range it is np.std's
+    # about the range midpoint.
     from seikan.describe import _dispersion_block
 
     levels = np.array([1.0, 3.0, 2.0, 5.0, 4.0, 7.0])
-    unscaled = float(np.std(np.diff(levels), ddof=1))
+    unscaled = _offset_std(np.diff(levels))
     for k in (-500, 520, -536, -1000):
         assert _dispersion_block(levels * 2.0**k, 5)["diff"] == unscaled * 2.0**k, k
-    # an all-equal change keeps its exact 0.0 down there, and an ordinary walk np.std's bits
+    # an all-equal change keeps its exact 0.0 down there, and an ordinary walk the offset form's
+    # bits
     assert _dispersion_block(np.arange(6.0) * 2.0**-1000, 5)["diff"] == 0.0
     # One step of the smallest subnormal, then a hold: the changes [u, 0, 0, 0, 0] vary, but
     # their std (~0.447u) rounds to 0.0 on the subnormal grid — the all-equal answer. It floors
@@ -702,7 +712,7 @@ def test_dispersion_diff_std_keeps_its_value_where_its_squares_leave_the_range(t
     walk = 100.0 + np.random.RandomState(3).randn(300).cumsum()
     for w in (2, 5, 21, 63, 252):
         tail = walk[-(w + 1) :]
-        assert _dispersion_block(walk, w)["diff"] == float(np.std(np.diff(tail), ddof=1)), w
+        assert _dispersion_block(walk, w)["diff"] == _offset_std(np.diff(tail)), w
     # end to end: never a null beside finite endpoints, never a zero for a varying series
     for i, scale in enumerate((1e160, 1e-170)):
         y = _write_series(tmp_path / f"y{i}.csv", levels * scale)
@@ -896,3 +906,16 @@ def test_describe_roles_stamped_identically_in_schema(tmp_path, capsys):
     # the identical map rides `seikan schema` — one shape everywhere, like metric_roles
     _code, schema_doc = _run(capsys, ["schema"])
     assert schema_doc["describe_roles"] == roles
+
+
+def test_dispersion_std_is_taken_about_the_values_own_offset():
+    # The review's case: three changes clustered at 2**50, [B, B + 0.25, B + 0.25]. About their
+    # rounded raw mean the deviations read [0, 0.25, 0.25] and the std 0.25; about their range
+    # midpoint they are exact, and the std is sqrt(1/48) — the engine pools' rule.
+    from seikan.describe import _std
+
+    b = 2.0**50
+    assert _std(np.array([b, b + 0.25, b + 0.25])) == pytest.approx(
+        math.sqrt(1.0 / 48.0), rel=1e-15
+    )
+    assert _std(np.array([2.0**52, 2.0**52 + 1.0])) == math.sqrt(0.5)

@@ -47,7 +47,7 @@ import numpy as np
 import pandas as pd
 
 from seikan.dataio import FileReport, bar_spacing, build_data_report, read_strict_csv
-from seikan.numeric import MIN_NORMAL, log_ratio, log_ratio_array
+from seikan.numeric import MIN_NORMAL, log_ratio, log_ratio_array, midrange
 from seikan.types import (
     ChangeBlock,
     DescribeResult,
@@ -335,15 +335,16 @@ def _mean(vals: np.ndarray) -> float:
 
 def _std(vals: np.ndarray) -> float:
     """The ddof=1 std of n ≥ 2 values — every dispersion read's, one rule for the three
-    algebras — scale-safe: the direct ``np.std`` wherever its variance is a normal double, bit
-    for bit, on every VARYING window. An all-equal window is exactly ``0.0``, decided before any
-    variance is formed: the computed mean of bit-identical values carries its sum's rounding, so
-    their direct variance is a residue, not zero (the 63 identical log changes of a doubling
-    series read a std of 2.238e-16). Elsewhere the squared deviations left the double range —
-    past it the std read ``inf`` (a null beside finite endpoints, with no reason, or a pct
-    refused as unrepresentable while it was an ordinary double); below it a VARYING series read
-    the 0.0 an all-equal one owns, or a std off a subnormal variance's lost bits — so the values
-    are scaled by the power of two that brings the largest magnitude into ``[0.5, 1)`` and the
+    algebras — scale-safe: ``np.std`` of the values' deviations from their range midpoint
+    (:func:`~seikan.numeric.midrange`, the engine pools' offset) wherever that variance is a
+    normal double, on every VARYING window. An all-equal window is exactly ``0.0``, decided
+    before any variance is formed: the computed mean of bit-identical values carries its sum's
+    rounding, so their direct variance is a residue, not zero (the 63 identical log changes of a
+    doubling series read a std of 2.238e-16). Elsewhere the squared deviations left the double
+    range — past it the std read ``inf`` (a null beside finite endpoints, with no reason, or a
+    pct refused as unrepresentable while it was an ordinary double); below it a VARYING series
+    read the 0.0 an all-equal one owns, or a std off a subnormal variance's lost bits — so the
+    deviations are scaled by the power of two that brings the largest into ``[0.5, 1)`` and the
     std is scaled back: exact on the way up (scaling up by a power of two never rounds), to
     rounding on the way down, floored at the smallest subnormal as the kernels' lifted std is
     (``compiler.nb``) — a series that varies never reads zero dispersion. A REPORTED number,
@@ -358,13 +359,18 @@ def _std(vals: np.ndarray) -> float:
         return math.nan
     if lo == hi:
         return 0.0
+    # About the values' OWN offset, their range midpoint — the engine's pool rule: deviations
+    # from it are exact wherever the values lie within a factor of two of it, where the rounded
+    # raw mean's rounding is the level's ulp ([B, B + 0.25, B + 0.25] at B = 2**50 read 0.25
+    # for 0.1443).
+    y = vals - midrange(lo, hi)
     with np.errstate(over="ignore", invalid="ignore"):
-        var = float(np.var(vals, ddof=1))  # np.std IS the root of this variance, bit for bit
+        var = float(np.var(y, ddof=1))
     if MIN_NORMAL <= var < math.inf:
         return math.sqrt(var)
-    e = math.frexp(max(-lo, hi))[1]
+    e = math.frexp(float(np.max(np.abs(y))))[1]
     with np.errstate(over="ignore"):  # a std past DBL_MAX is unrepresentable: inf, refused
-        return max(float(np.ldexp(np.std(np.ldexp(vals, -e), ddof=1), e)), 5e-324)
+        return max(float(np.ldexp(np.std(np.ldexp(y, -e), ddof=1), e)), 5e-324)
 
 
 def _volume_block(v: np.ndarray, windows: Sequence[int]) -> VolumeBlock:

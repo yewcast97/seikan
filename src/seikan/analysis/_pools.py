@@ -20,7 +20,7 @@ import math
 import numpy as np
 from scipy import stats as sps
 
-from seikan.numeric import MIN_NORMAL
+from seikan.numeric import MIN_NORMAL, midrange
 from seikan.types import (
     BenchmarkRegressionBlock,
     BenchmarkRegressionReason,
@@ -99,7 +99,13 @@ def _ddof1_std(v: np.ndarray) -> float:
     variance is not a normal double (:func:`_normal` — deviations below ~1.5e-154 or past
     ~1.3e154) has no representable dispersion, and neither has a pool holding a non-finite value
     (the bootstrap's draws, whose means can overflow — ``inf == inf`` is no degenerate
-    distribution): NaN, never a zero or an infinite dispersion."""
+    distribution): NaN, never a zero or an infinite dispersion.
+
+    The variance is the two-pass form about the pool's OWN offset, its range midpoint
+    (:func:`~seikan.numeric.midrange` — the kernels' cross-section rule): ``np.var`` of ``v − c``,
+    whose deviations are exact wherever the pool lies within a factor of two of ``c``. About the
+    rounded raw mean instead, a spread at the level's ulp lost its bits: ``[2**52, 2**52 + 1]``
+    read a std of 1.0 for 0.707 (and a bootstrap's draws, a baseline pool, the same)."""
     lo, hi = float(np.min(v)), float(np.max(v))
     # Every caller hands in a finite pool today (the moment reads filter, the bootstrap nulls
     # its non-finite draws first); the rule stays HERE, where `inf == inf` would pass for the
@@ -111,7 +117,7 @@ def _ddof1_std(v: np.ndarray) -> float:
     # Deviations past ~1.3e154 overflow the variance (a sum past the range, its mean first):
     # `_normal` decides that read, so the overflow is an expected input here, never a warning.
     with np.errstate(over="ignore", invalid="ignore"):
-        var = float(np.var(v, ddof=1))  # np.std IS the root of this variance, bit for bit
+        var = float(np.var(v - midrange(lo, hi), ddof=1))
     return math.sqrt(var) if _normal(var) else _NAN
 
 
@@ -539,7 +545,12 @@ def benchmark_regression(raw: np.ndarray, bench: np.ndarray) -> BenchmarkRegress
         return _declined("no_paired_observations")
     if n < 3:
         return _declined("insufficient_observations")
-    var_b = float(np.var(b, ddof=1))
+    # The second moments are taken about each leg's OWN offset (:func:`_ddof1_std`'s rule): beta
+    # and r2 are shift-invariant, and a leg's spread at its level's ulp keeps its bits — about the
+    # rounded raw means it read 1 where it is 1/3. alpha stays on the raw means.
+    rc = r - midrange(float(np.min(r)), float(np.max(r)))
+    bc = b - midrange(float(np.min(b)), float(np.max(b)))
+    var_b = float(np.var(bc, ddof=1))
     if _near_constant(b, float(np.mean(b))):
         return _declined("no_benchmark_variation")
     if not _normal(var_b):
@@ -549,12 +560,12 @@ def benchmark_regression(raw: np.ndarray, bench: np.ndarray) -> BenchmarkRegress
     mean_r = float(np.mean(r))
     if _near_constant(r, mean_r):
         return {"n": n, "beta": 0.0, "alpha": mean_r, "r2": _NAN, "reason": None}
-    cv = float(np.cov(r, b, ddof=1)[0, 1])
+    cv = float(np.cov(rc, bc, ddof=1)[0, 1])
     beta = cv / var_b
     alpha = mean_r - beta * float(np.mean(b))
     if not (math.isfinite(beta) and math.isfinite(alpha)):
         return _declined("not_representable")
-    var_r = float(np.var(r, ddof=1))
+    var_r = float(np.var(rc, ddof=1))
     r2 = _r2(cv, var_r, var_b) if _normal(var_r) else _NAN
     return {"n": n, "beta": float(beta), "alpha": float(alpha), "r2": float(r2), "reason": None}
 

@@ -322,7 +322,10 @@ range midpoint — bit for bit, while its variances and, for `rolling_corr`, the
 normal doubles (below): centered on the rounded mean of the raw values instead, a spread at its
 level's ulp was lost to that mean's rounding (`[2**52, 2**52 + 1]` read a std of 0.707 for 0.5, a
 two-point z-score of 1.414 that `zscore(x, 2) > 1.1` fired on, and three points correlating 0.577
-for an exact 1). The EW pair differs from its plain recurrence only on the steps
+for an exact 1). The report's pool reads take the same rule — `std_ret`, `boot_se`, the baseline's
+std and the `benchmark_regression` fit about each pool's or leg's range midpoint (that pair's
+ddof=1 `std_ret` read 1.0 for 0.707), and `describe`'s dispersion stds likewise; the means stay
+exactly rounded sums. The EW pair differs from its plain recurrence only on the steps
 where a rounded update left its exact interval or a held input's deviation is carried, and the EW
 z-score where its plain recurrence left the normal range (below).
 
