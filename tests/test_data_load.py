@@ -425,3 +425,42 @@ def test_load_retains_native_prints_post_lag_shared_and_per_target(tmp_path):
     assert len(p["AAA"]) == 2
     with pytest.raises(ValueError, match="external feed 'nope' has no retained native prints"):
         md.external_native("nope")
+
+
+def test_feed_age_is_exact_tick_arithmetic_past_the_int64_nanosecond_span(tmp_path):
+    # The review's case: a feed stamped at a nanosecond past 1700 against bars in 2026. pandas
+    # formed the age as an int64 nanosecond difference, which overflowed past ~292 years and
+    # crashed the load (OverflowError); in exact ticks the age is defined.
+    _ohlcv(tmp_path / "target.csv", n=3, start="2026-01-01")
+    pd.DataFrame(
+        {"v": [1.0]}, index=pd.Index(["1700-01-01T00:00:00.000000001"], name="datetime")
+    ).to_csv(tmp_path / "old.csv")
+    thesis = _thesis(external={"old": {}})
+    md = load(thesis, {"target": tmp_path / "target.csv", "old": tmp_path / "old.csv"})
+    ages = md.days_since_values("old")[:, 0]
+    np.testing.assert_array_equal(ages, [119069.0, 119070.0, 119071.0])
+
+
+@pytest.mark.parametrize("units", [("us", "us"), ("us", "ns"), ("ns", "us"), ("s", "ms")])
+def test_feed_age_is_pandas_timedelta_division_bit_for_bit_in_range(units):
+    # Wherever the int64 difference held, the age is the very double pandas' Timedelta division
+    # gave: the tick difference in the finer resolution, cast, over the day's ticks — a bar on a
+    # stamp reads 0.0, a bar before the first stamp NaN.
+    from seikan.compiler.data import _feed_age_days
+
+    rng = np.random.default_rng(len(units[0]) * 7 + len(units[1]))
+    base = pd.Timestamp("1990-01-01").value
+    for _ in range(50):
+        f = np.unique(base + rng.integers(0, 4 * 10**17, 30) // 10**9 * 10**9)
+        t = np.unique(np.r_[base - 10**12, f[:10], base + rng.integers(0, 10**18, 40)])
+        native = pd.Series(
+            1.0, index=pd.DatetimeIndex(f.astype("datetime64[ns]")).as_unit(units[1])
+        )
+        bars = pd.DatetimeIndex(t.astype("datetime64[ns]")).as_unit(units[0])
+        stamps = pd.Series(native.index, index=native.index)
+        want = (bars.to_series(index=bars) - stamps.reindex(bars, method="ffill")) / pd.Timedelta(
+            days=1
+        )
+        got = _feed_age_days(native, bars)
+        np.testing.assert_array_equal(got.to_numpy(), want.to_numpy())
+        assert np.isnan(got.iloc[0]) and (got.loc[native.index[:10]] == 0.0).all()

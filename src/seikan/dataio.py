@@ -717,7 +717,7 @@ def _descriptive_warnings(path: str, df: pd.DataFrame, detected: str, rep: FileR
         if median > 0:
             n_gaps = sum(1 for d in spacings if d > _GAP_FACTOR * median)
             if n_gaps:
-                seconds = _seconds(median, _TICKS_PER_SECOND[df.index.unit])
+                seconds = _seconds(median, ticks_per_second(df.index))
                 rep.warn(
                     "calendar_gap",
                     f"{path}: {n_gaps} gap(s) larger than {_GAP_FACTOR}× the median bar spacing "
@@ -728,6 +728,11 @@ def _descriptive_warnings(path: str, df: pd.DataFrame, detected: str, rep: FileR
 #: Ticks per second of each resolution a ``DatetimeIndex`` carries (pandas ≥ 2 keeps the parsed
 #: one: a second-stamped file builds a ``[us]`` index, a nanosecond-stamped one ``[ns]``).
 _TICKS_PER_SECOND = {"s": 1, "ms": 10**3, "us": 10**6, "ns": 10**9}
+
+
+def ticks_per_second(index: pd.DatetimeIndex) -> int:
+    """How many of the index's own ticks (``asi8``) make one second — its resolution."""
+    return _TICKS_PER_SECOND[index.unit]
 
 
 def _tick_spacings(index: pd.DatetimeIndex) -> list[int]:
@@ -765,7 +770,7 @@ def bar_spacing(index: pd.DatetimeIndex) -> BarSpacing:
     an ``[s]``/``[us]`` index holds without complaint — a 1700/2024 pair read −8.2e9 s."""
     if len(index) < 2:
         return {"min_seconds": None, "median_seconds": None, "max_seconds": None}
-    per_second = _TICKS_PER_SECOND[index.unit]
+    per_second = ticks_per_second(index)
     d = _tick_spacings(index)
     return {
         "min_seconds": _seconds(Fraction(min(d)), per_second),

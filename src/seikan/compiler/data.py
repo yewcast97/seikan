@@ -25,7 +25,9 @@ input (there is deliberately no high/low clamping — inconsistent OHLC refuses 
 
 from __future__ import annotations
 
+import bisect
 import dataclasses
+import math
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import NoReturn
@@ -39,6 +41,7 @@ from seikan.dataio import (
     FileReport,
     build_data_report,
     read_strict_csv,
+    ticks_per_second,
 )
 from seikan.dsl.schema import BENCHMARK_KEY, DataSpec, Thesis
 from seikan.types import DataIssue, DataIssueCode, DataReport, JoinInfo, TargetShape
@@ -313,10 +316,25 @@ def _feed_age_days(native: pd.Series, target_index: pd.DatetimeIndex) -> pd.Seri
     """Calendar days since the feed's most recent native stamp at or before each bar (float; NaN
     before the first stamp). The stamps are availability times (post-lag), so the age is exactly
     how stale the value a decision at that bar would read is — and 'an event happened within the
-    last N days' is ``days_since <= N``."""
-    stamps = pd.Series(native.index, index=native.index)
-    last = stamps.reindex(target_index, method="ffill")
-    return (target_index.to_series(index=target_index) - last) / pd.Timedelta(days=1)
+    last N days' is ``days_since <= N``.
+
+    Exact tick arithmetic: both clocks are read as Python integers in the finer of their two
+    resolutions, the latest stamp at or before each bar is found on them (the asof read
+    :func:`_anchor_feed` takes), and the age is that tick difference cast to a double over the
+    day's ticks — bit for bit pandas' Timedelta division, which formed the same difference in
+    int64, wherever that held. Past ~292 years in nanoseconds it overflowed and crashed the load
+    (a feed stamped 1700-01-01T00:00:00.000000001 against 2026 bars); here it is defined."""
+    per_second = max(ticks_per_second(native.index), ticks_per_second(target_index))
+    stamp_scale = per_second // ticks_per_second(native.index)
+    bar_scale = per_second // ticks_per_second(target_index)
+    stamps = [t * stamp_scale for t in native.index.asi8.tolist()]
+    bars = [t * bar_scale for t in target_index.asi8.tolist()]
+    diffs = [
+        float(t - stamps[j - 1]) if (j := bisect.bisect_right(stamps, t)) else math.nan
+        for t in bars
+    ]
+    ages = np.array(diffs, dtype=float) / float(86_400 * per_second)
+    return pd.Series(ages, index=target_index, name=target_index.name)
 
 
 def _frozen_frame(df: pd.DataFrame) -> pd.DataFrame:
