@@ -256,18 +256,18 @@ gained midrank ties, duplicate-candidate collapse and the declared/scoreable/dis
 family is computed CENTERED — zscore-SMA two-pass, zscore-EMA via the West recurrence,
 cross_agg std two-pass — where the one-pass E[x²]−E[x]² forms cancelled catastrophically at
 large input levels; every kernel and binary op enforces the finite-or-NaN invariant, so an
-overflow from finite inputs lands in the undecidable ledger instead of latching warmup or
-firing a threshold; `change(kind="pct")` and `drawdown`/`runup` are positive-domain (the
-ratio algebras inverted silently on signed series — the outcome-side rule, now on the
-decision side too); the event-time HAC uses the n−1 covariance divisor, making the
-sparse-pool reduction to the iid SE exact, with a canonical (bar, ret) tie order; the
-episode panels sort stably with a target tie-break and the episode bootstrap's content-keyed
-seed hashes the same canonical order, so tied-bar row order is genuinely irrelevant; CSCV
-split scores run on SHIFTED moments (level-safe) and `oos_degradation_slope` is a centered
-OLS that nulls with `oos_degradation_slope_reason` on degenerate train scores; and
-zero-dispersion pools null their skewness/kurtosis instead of minting unreliable
-moments; v5 CORRECTED six ways evidence could be manufactured: warmup has no truth value and
-negation waits for its whole operand — `mask` with it, and a series computed from others
+overflow from finite inputs is NaN instead of latching warmup or firing a threshold (undecidable
+once its series has initialized, warmup before — see "Finite or NaN, everywhere" below);
+`change(kind="pct")` and `drawdown`/`runup` are positive-domain (the ratio algebras inverted
+silently on signed series — the outcome-side rule, now on the decision side too); the event-time HAC
+uses the n−1 covariance divisor, making the sparse-pool reduction to the iid SE exact, with a
+canonical (bar, ret) tie order; the episode panels sort stably with a target tie-break and the
+episode bootstrap's content-keyed seed hashes the same canonical order, so tied-bar row order is
+genuinely irrelevant; CSCV split scores run on SHIFTED moments (level-safe) and
+`oos_degradation_slope` is a centered OLS that nulls with `oos_degradation_slope_reason` on
+degenerate train scores; and zero-dispersion pools null their skewness/kurtosis instead of minting
+unreliable moments; v5 CORRECTED six ways evidence could be manufactured: warmup has no truth value
+and negation waits for its whole operand — `mask` with it, and a series computed from others
 initializes only where its inputs are — zero dispersion is exact in every kernel,
 recurrence and pool read that divides by it, a `native` feed's prints are their own `sources`
 leaf, the rotation null judges ties within the FFT's rounding, the `cross_mean` pooled mean and
@@ -357,7 +357,10 @@ Spearman, no p-value) — plus, on BASKET cells only (absent, not null, on conju
 `pooled`: the cell's one cross-target evidence pool over the concatenated (bar × member) closed
 rows (n / n_nonoverlap / mean_ret / mean_ret_raw / mean_ret_bench / benchmark_regression / hit_rate /
 win_loss_ratio / profit_factor / std_ret / skewness / kurtosis / tail_ratio / cvar_5 / t_hac /
-hac_se / rot_p / concentration / `member_share`
+hac_se / rot_p / rot_n_null — the one pair NOT read over the closed rows: the COMMON-SHIFT null
+rotates every FIRED member's complete mask as one block, closed rows or not, so a member whose
+every firing was censored, or whose only firing is the final bar, still moves it (see
+`gate_contract.metric_roles_rationale.caveats.rot_p`) — concentration / `member_share`
 — the full per-member mass decomposition plus `max_member_share_abs` — boot / subperiods /
 ret_quantiles / worst_ret / best_ret / mae_quantiles / mfe_quantiles / edge_ratio / timing —
 under
@@ -712,8 +715,18 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   leaves stay under `source_coverage`).
 - **Finite or NaN, everywhere.** Every series value the engine produces is finite or NaN: kernels
   and binary ops sanitize results whose arithmetic can overflow from finite inputs, and
-  definedness/warmup latching are minted from `isfinite` — so an overflow lands in the
-  undecidable ledger, never latches warmup, and can never fire a signal. The ratio transforms
+  definedness/warmup latching are minted from `isfinite` — so an overflow never latches warmup and
+  can never fire a signal. Where it lands follows the warmup latch ("Warmup is no evidence"), never
+  the overflow: on a bar after its series initialized the NaN is in the undecidable ledger
+  (`signal_coverage`); before, the bar is the series' warmup exactly as a leading `x / 0` is, and no
+  ledger counts it. A series initializes no earlier than its first finite value, so one that
+  overflows on every bar (a `zscore` of levels near 1e160) is warmup throughout: its threshold never
+  fires, and no coverage ledger counts it. The exception is a series the latch initializes before
+  any value — an event node whose anchor became unknowable before its first event, a mask undecided
+  on its first live bar, and a series computed from such an input: it initializes there, finite or
+  not, and every overflowed bar after it is undecidable. A `cross_agg` is never one — its broadcast
+  waits for its own first finite value as well as for the member's own first value — so one that
+  overflows on every bar is warmup throughout, whatever its input. The ratio transforms
   (`change(kind="pct")`, `drawdown`, `runup`) are POSITIVE-domain like the pct/log outcome
   algebras: off a positive scale they invert silently, so a non-positive base censors as NaN
   instead of minting a sign-flipped number. Signed series belong to `diff`. The LOG ratio is
@@ -723,7 +736,7 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   reads `ln b − ln a` exactly where the quotient overflowed, underflowed or went subnormal
   (1e200 → 1e-200 is −921.03…, never `ln(0)`), and the direct form — bit for bit — everywhere
   else. A `pct` (or `diff`) past the double range has no representable value: NaN (a `no_outcome`
-  observation, an undecidable decision bar); a `describe` `pct` past the range (for a dispersion
+  observation, a NaN decision operand as above); a `describe` `pct` past the range (for a dispersion
   std, any one 1-bar ratio past it) is null with `ratio_reason: "not_representable"`, and a
   `describe` `diff` past it — levels of opposite sign ~1.8e308 apart — refuses its whole block as
   `reason: "not_representable"` (`diff` rides every block that did not refuse, so it is never a
@@ -739,14 +752,15 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   itself; a held input is approached strictly from its own side — one ulp short of the value at
   the closest, never on it, so `x > ema(x)` keeps exact arithmetic's answer through a hold — and
   its EW z-score decays, keeping the sign exact arithmetic gives it, the deviation carried once
-  the mean cannot move and never rounding to zero, instead of locking). In the statistics: a constant pool has `std_ret` 0.0, no
-  bucket-monotonicity rank and a degenerate bootstrap (`boot_se` 0.0, `ci_lo == ci_hi` on the
-  pool's own arithmetic mean — the value itself where that mean's sum overflowed — as for any
-  pool whose resampled means are bit-identical on every draw), and the reads that divide by
-  dispersion stand down where the spread is within rounding —
-  the HAC nulls (largest deviation within ~10 ulps of the mean, the skewness/kurtosis gate), the
-  benchmark regression declines a (near-)constant bench leg and fits `beta` exactly 0 on a
-  (near-)constant raw leg, and a CSCV split scores NaN when its pool is exactly constant (the
+  the mean cannot move and never rounding to zero, instead of locking — save a hold whose mean
+  lands ON the held value from the bar the input moved, the residual the next bullet names).
+  In the statistics: a constant pool has `std_ret` 0.0, no bucket-monotonicity rank and a degenerate
+  bootstrap (`boot_se` 0.0, `ci_lo == ci_hi` on the pool's own arithmetic mean — the value itself
+  where that mean's sum overflowed — as for any pool whose resampled means are bit-identical on
+  every draw), and the reads that divide by dispersion stand down where the spread is within
+  rounding — the HAC nulls (largest deviation within ~10 ulps of the mean, the skewness/kurtosis
+  gate), the benchmark regression declines a (near-)constant bench leg and fits `beta` exactly 0 on
+  a (near-)constant raw leg, and a CSCV split scores NaN when its pool is exactly constant (the
   per-block extrema), within the HAC's ~10 ulps, or has a centered sum of squares within its own
   accumulation error. Pool MEANS stay the arithmetic
   mean (a few ulps off a constant pool's value — the summation's rounding — never off its sign;
@@ -767,7 +781,11 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   INTERMEDIATES too, not only results: `x / inf` is a finite 0.0, so no check on a result can see a
   quotient whose divisor overflowed. A window variance that OVERFLOWED (deviations past ~1.3e154)
   read `rolling_corr(x, x)` as 0 at 1e80 and a z-score as 0: it is NaN wherever it is divided by or
-  reported, undecidable like `x / 0`. One that fell BELOW the normal range (deviations under
+  reported, and that NaN lands where any overflow's does ("Finite or NaN, everywhere"):
+  undecidable on a bar after its series initialized, the series' warmup before — like a leading
+  `x / 0`, a z-score of plain data whose every window overflows, its first included, never
+  initializes, never fires and is counted by no ledger (`source_coverage` included: its raw
+  leaves are all there). One that fell BELOW the normal range (deviations under
   ~1.5e-154) is no overflow but a precision loss, and ordinary data reaches it — an `ema` of a
   change decays geometrically through it over a held stretch: its squares lost their bits (a
   z-score past its bound `√(w−1)`, a correlation off in its third digit) or vanished into the `0.0`
@@ -783,10 +801,10 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   variance nears the range — exact, the same doctrine — so its z too is the recurrence's value in
   an unbounded exponent range: never NaN for want of range, nor collapsed toward 0 off a floored
   variance (which decided thresholds the exact z does not), nor past its bound `√((1−α)/α)`; past
-  its warmup, and short of an overflow its recurrence carries forward, it is defined on every window
+  its warmup, save an overflow carried forward and the residual below, it is defined on every window
   `std > 0` admits. Out of the frame's reach is only a held input's decay, whose z exact arithmetic
-  has sent under `2**-158/α` by then: its variance and carried deviation are floored at the
-  smallest subnormal there, sign kept — decided, imprecise in magnitude. The residual is a hold
+  has sent under `2**-158/α` by then: its variance and carried deviation are floored at the smallest
+  subnormal there, sign kept — decided, imprecise in magnitude. The residual is a hold
   whose mean sits ON the held value from the bar the input moved: nothing is carried, and its exact
   deviation is unknown (the mean carries rounding), so it reads z 0.0. It has two origins: the
   LANDING GAP, a step of a few ulps at α ≥ 0.5 (an `ema` converging onto a held price) whose update
@@ -868,8 +886,9 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
 - `describe.py` — pure data profiling behind `seikan describe`: plain numpy/pandas, no numba, no
   RNG, and nothing imported from `compiler/`, `analysis/` or `gate/` (the clock-geometry stamp it
   shares with the run summary is `dataio.bar_spacing`, which lives with the data layer, and the
-  log-ratio rule it shares with the engine's `log` algebra is the leaf `numeric.py`). Admission is the SAME strict read `check-data` performs; refusals get stub
-  profiles, never guesses; bounded output — no per-bar array ever rides the document.
+  log-ratio rule and normal-range edge it shares with the engine live in the leaf `numeric.py`).
+  Admission is the SAME strict read `check-data` performs; refusals get stub profiles, never
+  guesses; bounded output — no per-bar array ever rides the document.
 - `contract.py` — the static contract payloads, data only (imports nothing from the package):
   `METRIC_ROLES` (compact, with its `caveats` map, stamped into every report) and
   `METRIC_ROLES_DOC` / `GATE_CONTRACT_DOC` / `REPORT_FIELDS` (the report/summary field dictionary
@@ -880,9 +899,10 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   `TRADE_COLUMNS`, the reserved sweep/feature namespaces, `DEFAULT_FEATURE_NAMES`,
   `MAX_DECLARED_GRID` (the sealed search cap's validation-side twin).
 - `numeric.py` — scale-safe numeric rules shared across the layers, a leaf (`math` + `numpy`,
-  no numba, nothing from the package, so `describe.py` can share them with `compiler/`):
-  `log_ratio` / `log_ratio_array`, the one log-ratio rule of the decision side, the outcome
-  algebra and `describe`.
+  no numba, nothing from the package, so `describe.py` can share them with `compiler/` and
+  `analysis/`): `log_ratio` / `log_ratio_array`, the one log-ratio rule of the decision side, the
+  outcome algebra and `describe`, and `MIN_NORMAL`, the smallest normal double — the one edge of
+  the normal range the kernels' variance tests, the pool statistics and `describe`'s std read.
 - `types/` — the emitted-shape declarations (TypedDicts), one module per report section behind
   the package facade; `emitted.py` validates every success document against them at emission,
   so the bytes written are the bytes that type-checked, and also checks the cross-field

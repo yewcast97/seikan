@@ -295,35 +295,43 @@ the constant and approaches a held value strictly from its own side (one ulp sho
 closest, never on it, so `x > ema(x)` reads "above its EW mean" through the whole hold), and
 `zscore` with `mean_type: "ema"` decays on a held stretch — keeping the sign exact arithmetic
 gives it, so `z > 0` reads the same through the whole hold, however long — instead of locking at
-`±1/√(1−α)`.
-So a feed stuck at a constant never
-reads as a z-score of ±1, a correlation of 1 or a sign against its own average, and the
-zero-dispersion recipes below divide by an exact zero (→ NaN, never fires). A zero-dispersion bar
-after the series has initialized is UNDECIDABLE, like `x / 0`: it lands in `signal_coverage` and
-leaves the cell unmet — guard a z-score of a series that can sit flat (a rate pinned at its floor)
-with `and(rolling_agg(x, N, "std") > 0, …)`. "Equal" means bit-identical: a spread built from
-decimal levels that move in lockstep (`y1 − y2`) carries residue at the operands' scale, which is
-variation as far as any kernel can tell. Every window with any variation is computed as before,
-bit for bit, while its variances and, for `rolling_corr`, their product are normal doubles
-(below); the EW pair differs from its plain recurrence only on the steps where a rounded update
-left its exact interval or a held input's deviation is carried, and the EW z-score where its
-plain recurrence left the normal range (below).
+`±1/√(1−α)` (save a hold whose mean lands ON the held value from the bar the input moved, the
+residual below). So a feed stuck at a constant never reads as a z-score of ±1, a correlation of 1 or
+a sign against its own average, and the zero-dispersion recipes below divide by an exact zero
+(→ NaN, never fires). A zero-dispersion bar after the series has initialized is UNDECIDABLE, like
+`x / 0`: it lands in `signal_coverage` and leaves the cell unmet — guard a z-score of a series that
+can sit flat (a rate pinned at its floor) with `and(rolling_agg(x, N, "std") > 0, …)`. "Equal" means
+bit-identical: a spread built from decimal levels that move in lockstep (`y1 − y2`) carries residue
+at the operands' scale, which is variation as far as any kernel can tell. Every window with any
+variation is computed as before, bit for bit, while its variances and, for `rolling_corr`, their
+product are normal doubles (below); the EW pair differs from its plain recurrence only on the steps
+where a rounded update left its exact interval or a held input's deviation is carried, and the EW
+z-score where its plain recurrence left the normal range (below).
 
 A window variance that OVERFLOWS (deviations past ~1.3e154, where `(x − mean) / inf` would read a
-finite 0) reads NaN in a `std`, a `zscore` (`mean_type: "sma"`) and a `rolling_corr`, undecidable
-like `x / 0`. One that falls BELOW the normal double range (deviations under ~1.5e-154) is a
-precision loss ordinary data reaches — an `ema` of a change decays geometrically through it over a
-held stretch — whose squares lose their bits (a z-score past its bound `√(w−1)`) or vanish into the
-`0.0` an all-equal window owns. Such a VARYING window is recomputed on its values lifted by
-`2**600` (exact) in the same summation order, so it reads the value the direct form has in an
-unbounded exponent range: a `std` under the smallest subnormal floors there — `std > 0` holds on
+finite 0) reads NaN in a `std`, a `zscore` (`mean_type: "sma"`) and a `rolling_corr`, and that NaN
+lands where an `x / 0` would: UNDECIDABLE on a bar after the series has initialized, the series'
+warmup before it. A series initializes no earlier than its first finite value, so a z-score whose
+every window overflows, its first included (`zscore` of levels near 1e160), never initializes: it
+never fires, an `or` holding it decides on its other branches alone, and no ledger counts it. The
+exception is a series initialized before any value — an event node whose anchor a hole in `E` made
+unknown before its first event (see "Event algebra"), a `mask` undecided on its first live bar, and
+a series computed from such an input: it initializes there, finite or not, and every overflowed bar
+after it is undecidable. A `cross_agg` is never one: its broadcast waits for its own first finite
+value as well as for the member's own first value, so one that overflows on every bar is warmup
+whatever its input. A window variance that falls BELOW the normal double range (deviations under
+~1.5e-154) is a precision loss ordinary data reaches — an `ema` of a change decays geometrically
+through it over a held stretch — whose squares lose their bits (a z-score past its bound `√(w−1)`)
+or vanish into the `0.0` an all-equal window owns. Such a VARYING window is recomputed on its values
+lifted by `2**600` (exact) in the same summation order, so it reads the value the direct form has in
+an unbounded exponent range: a `std` under the smallest subnormal floors there — `std > 0` holds on
 every varying window, exactly where its SMA z-score is defined — and `rolling_corr` takes the
 product of two normal variances the same way, so `rolling_corr(x, x)` is exactly 1 at 1e80, at
 1e-85 and on subnormal values as at 1. The EW `zscore` keeps its variance in a recurrence, which
 runs lifted by `2**600` (exact) once that variance nears the range, so it too reads the recurrence's
-value in an unbounded exponent range: past its warmup (and short of an overflow its recurrence
-carries forward) it is defined on every window `std > 0` admits, at its value — never NaN there,
-nor collapsed toward 0 off a floored variance, nor past its bound `√((1−α)/α)`. Only a held input's
+value in an unbounded exponent range: past its warmup (save an overflow carried forward and the
+residual below) it is defined on every window `std > 0` admits, at its value — never NaN there, nor
+collapsed toward 0 off a floored variance, nor past its bound `√((1−α)/α)`. Only a held input's
 decay is left out of reach, a z exact arithmetic has sent under `2**-158/α` by then: its variance
 and carried deviation are floored at the smallest subnormal there, sign kept (decided, imprecise
 in magnitude). The residual is a hold whose mean sits ON the held value from the bar the input
@@ -1097,7 +1105,8 @@ and int64 nanosecond counts silently round in IEEE-754 consumers.)
     panel REMAINS — as attribution, read by no check; the graded panel is `pooled` below.
   - `pooled` — **basket cells only** (absent — not null — on conjunction cells): the cell's ONE
     cross-target evidence pool over the concatenated (bar × member) closed rows in
-    target-declaration order, mirroring `by_target[t]`'s shape so there is one mental model:
+    target-declaration order — all but `rot_p` / `rot_n_null`, whose null rotates every FIRED
+    member's complete mask (below) — mirroring `by_target[t]`'s shape so there is one mental model:
     `n` (== the sum of `by_target.n`), `n_nonoverlap` (the same greedy non-overlapping kernel over the
     concatenated entry bars — same-bar cross-member firings collapse to ONE non-overlapping window),
     `mean_ret`, `mean_ret_raw` / `mean_ret_bench` (the pooled attribution legs — under
@@ -1137,8 +1146,10 @@ and int64 nanosecond counts silently round in IEEE-754 consumers.)
     `profit_factor`, `t_hac` /
     `hac_se` (the same event-time HAC on the pooled rows;
     same-bar pairs enter at Bartlett weight 1, so one market move seen through several members is
-    one cluster), `rot_p` (a COMMON-SHIFT rotation null — one shift rotates every member's mask
-    as a block), `concentration`, `member_share` (`by_target` — each member's share of the pooled
+    one cluster), `rot_p` / `rot_n_null` (a COMMON-SHIFT rotation null — one shift rotates every
+    FIRED member's complete mask as a block, closed rows or not, so a member whose every firing
+    was censored, or whose only firing is the final bar, still moves it while adding no row),
+    `concentration`, `member_share` (`by_target` — each member's share of the pooled
     |return| mass, a full decomposition and never a ranking — plus `max_member_share_abs`, the
     one read the checklist gates), `boot` (the episode bootstrap over the cross-member-merged
     episodes), `subperiods`, `ret_quantiles` / `worst_ret` / `best_ret`, `mae_quantiles` /
@@ -1387,9 +1398,9 @@ open to quote a statistic honestly.
   `pooled.member_share.by_target` is ATTRIBUTION — a full decomposition of the pooled |return|
   mass, never a ranking, and read by no check (only `max_member_share_abs` gates); a 2-member
   basket reads structurally elevated, its larger member always carrying ≥ 0.5. The pooled
-  `rot_p` is a COMMON-SHIFT null — one shift rotates every member's mask as a block, preserving
-  per-member counts AND the per-bar cross-sectional pattern a rank signal fixes — and it
-  inherits every per-target `rot_p` caveat; never quote it as significance.
+  `rot_p` is a COMMON-SHIFT null — one shift rotates every FIRED member's complete mask as a block,
+  closed rows or not, preserving per-member counts AND the per-bar cross-sectional pattern a rank
+  signal fixes — and it inherits every per-target `rot_p` caveat; never quote it as significance.
 - `by_target[t].boot` — the EPISODE-BOOTSTRAP percentile CI for the pool mean:
   the cell's closed observations cluster into overlap-connected `[t, t+h)` episodes (per target),
   2000 draws resample the episodes with replacement, and the block carries `{method, ci_level,

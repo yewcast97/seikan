@@ -86,7 +86,9 @@ class CellTargetPanel(TypedDict):
 
 class CellPooledPanel(CellTargetPanel):
     """A BASKET cell's one cross-target evidence pool — ``cells[i].pooled``, built by
-    ``compiler.runner`` over the concatenated (bar × member) closed rows.
+    ``compiler.runner`` over the concatenated (bar × member) closed rows — every read but
+    ``rot_p`` / ``rot_n_null``, whose common-shift null rotates every FIRED member's complete
+    mask, closed rows or not (``analysis._rotation.pooled_reliability_summary``).
 
     Mirrors :class:`CellTargetPanel` field for field so there is one mental model, and adds the
     member-mass decomposition. This is the panel the basket rubric GRADES: ``support`` reads

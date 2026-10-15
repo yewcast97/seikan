@@ -36,7 +36,7 @@ from numba import njit
 from numpy.lib.stride_tricks import sliding_window_view
 
 from seikan.constants import MAX_BAR_COUNT_PARAM, MIN_EW_ALPHA
-from seikan.numeric import log_ratio_array
+from seikan.numeric import MIN_NORMAL, log_ratio_array
 
 # =============================================================================
 # Vectorized numpy kernels (windowed + elementwise) — no Python time-loop.
@@ -48,40 +48,51 @@ from seikan.numeric import log_ratio_array
 #
 # FINITE-OR-NaN invariant: every kernel's output is finite or NaN. Kernels whose arithmetic can
 # overflow from finite inputs (sums, ratios with denormal denominators, squared deviations)
-# sanitize their results — a non-finite value becomes NaN, so it lands in the undecidable ledger
-# instead of latching warmup or firing a threshold. Variances are computed CENTERED (two-pass or
-# a Welford/West recurrence), never as E[x²] − E[x]²: the one-pass form cancels catastrophically
-# on large-magnitude series (a price near 5000 with a std near 1 has already lost most of the
+# sanitize their results — a non-finite value becomes NaN, so it never latches its series
+# initialized and never fires a threshold. Where that NaN lands is the node's warmup latch's call
+# (``vectorize._build_series``), never the overflow's: once the series has initialized, in the
+# undecidable ledger; before, it is the series' warmup exactly as a leading ``x / 0`` is, and no
+# ledger records it. A latch initializes a series no earlier than its first finite value, save one
+# arm that initializes it with no value yet: an event node whose anchor became unknowable before its
+# first event, a ``mask`` undecided on its first live bar, and (``_derived_latch``) a series on a
+# bar every input is initialized and one has no value yet. A ``cross_agg`` never takes that arm —
+# its broadcast waits for its own first finite value as well as for the member's own first value. So
+# a series NaN on every bar — a ``zscore`` of plain levels near 1e160, any ``cross_agg`` — never
+# initializes, never fires and is counted by no coverage ledger, while one that arm initialized
+# ledgers every overflowed bar from there on. Variances are computed CENTERED (two-pass or a
+# Welford/West recurrence), never as E[x²] − E[x]²: the one-pass form cancels catastrophically on
+# large-magnitude series (a price near 5000 with a std near 1 has already lost most of the
 # mantissa).
 #
-# OUT-OF-RANGE intermediates: sanitizing the RESULT is not enough where an out-of-range
-# intermediate yields a FINITE one — ``x / inf`` is 0.0, so a correlation whose variance product
-# overflowed read 0.0 for ``corr(x, x)`` at 1e80 scale, and a z-score whose window variance
-# overflowed read 0.0. A window variance that OVERFLOWED (deviations past ~1.3e154) is therefore
-# NaN wherever it is divided by or reported — the undecidable ledger, never a value. One that fell
-# BELOW the normal range is no overflow but a precision loss, and ordinary data reaches it: an
-# ``ema`` of a change decays geometrically through it over a held stretch. The squares of
+# OUT-OF-RANGE intermediates: sanitizing the RESULT is not enough where an out-of-range intermediate
+# yields a FINITE one — ``x / inf`` is 0.0, so a correlation whose variance product overflowed read
+# 0.0 for ``corr(x, x)`` at 1e80 scale, and a z-score whose window variance overflowed read 0.0. A
+# window variance that OVERFLOWED (deviations past ~1.3e154) is therefore NaN wherever it is divided
+# by or reported, never a value: in the undecidable ledger once its series has initialized, and the
+# series' warmup before that (the note above) — a z-score of plain data whose every window
+# overflows, its first included, never fires and no ledger counts it, like a leading ``x / 0``. One
+# that fell BELOW the normal range is no overflow but a precision loss, and ordinary data reaches
+# it: an ``ema`` of a change decays geometrically through it over a held stretch. The squares of
 # deviations under ~1.5e-154 round to multiples of the smallest subnormal or to 0.0, reading a
-# z-score past its population bound ``√(w−1)``, a correlation off in its third digit, or a
-# varying window's std as the 0.0 an all-equal window owns. Such a VARYING window is recomputed
-# LIFTED by ``2**_LIFT`` (``_lifted_windows``): scaling up by a power of two never rounds, and the
-# lifted windows keep the direct form's layout — the same summation order — so every moment is
-# the direct one times its power of two, and the z-score, correlation and std are the values the
-# direct form has in an unbounded exponent range (a std under the smallest subnormal floors there:
-# a varying window is never zero dispersion). The correlation's variance PRODUCT of two normal
-# variances is taken with the exponents moved out wherever it leaves the normal range
-# (``_sqrt_product``), to the same exactness. Every window whose variances and, for
-# ``rolling_corr``, their product are normal doubles keeps every bit. The EW z-score
-# (``zscore_ema_1d``) carries its variance in a recurrence, which the same rule reaches by moving
-# the whole recurrence into a frame lifted by ``2**_LIFT`` once its variance nears the range
-# (``_EW_LIFT_VAR``): its z is the recurrence's value in an unbounded exponent range too — not
-# NaN, nor collapsed toward 0 off a floored variance, nor past its bound ``√((1−α)/α)``. Past the
-# frame's reach only a HELD input's decay is left, a z exact arithmetic has sent under
-# ``2**-158/α`` by then: its variance and carried deviation are floored at the smallest subnormal
-# there, sign kept — decided, imprecise in magnitude; a hold whose mean sits ON the held value
-# with nothing carried (``zscore_ema_1d``'s residual, its exact deviation unknown) is not floored:
-# undefined once its variance rounds to 0.0 at ``α ≥ 0.5`` — below, round-to-nearest holds that
-# variance at a subnormal and its z 0.0 stays decided.
+# z-score past its population bound ``√(w−1)``, a correlation off in its third digit, or a varying
+# window's std as the 0.0 an all-equal window owns. Such a VARYING window is recomputed LIFTED by
+# ``2**_LIFT`` (``_lifted_windows``): scaling up by a power of two never rounds, and the lifted
+# windows keep the direct form's layout — the same summation order — so every moment is the direct
+# one times its power of two, and the z-score, correlation and std are the values the direct form
+# has in an unbounded exponent range (a std under the smallest subnormal floors there: a varying
+# window is never zero dispersion). The correlation's variance PRODUCT of two normal variances is
+# taken with the exponents moved out wherever it leaves the normal range (``_sqrt_product``), to the
+# same exactness. Every window whose variances and, for ``rolling_corr``, their product are normal
+# doubles keeps every bit. The EW z-score (``zscore_ema_1d``) carries its variance in a recurrence,
+# which the same rule reaches by moving the whole recurrence into a frame lifted by ``2**_LIFT``
+# once its variance nears the range (``_EW_LIFT_VAR``): its z is the recurrence's value in an
+# unbounded exponent range too — not NaN, nor collapsed toward 0 off a floored variance, nor past
+# its bound ``√((1−α)/α)``. Past the frame's reach only a HELD input's decay is left, a z exact
+# arithmetic has sent under ``2**-158/α`` by then: its variance and carried deviation are floored at
+# the smallest subnormal there, sign kept — decided, imprecise in magnitude; a hold whose mean sits
+# ON the held value with nothing carried (``zscore_ema_1d``'s residual, its exact deviation unknown)
+# is not floored: undefined once its variance rounds to 0.0 at ``α ≥ 0.5`` — below, round-to-nearest
+# holds that variance at a subnormal and its z 0.0 stays decided.
 #
 # EXACT zero dispersion: a window (or a cross-section) whose finite values are all equal is
 # detected exactly and given its exact answer instead of the arithmetic's: the mean of such a
@@ -115,16 +126,13 @@ def _constant_windows(a: npt.NDArray[np.float64], window: int) -> npt.NDArray[np
     return constant
 
 
-#: The smallest positive NORMAL double: below it a value keeps fewer than 53 significant bits.
-#: ``analysis._pools._TINY`` is the same constant for the pool statistics, which null a variance
-#: out of the normal range on BOTH sides (``analysis._pools._normal`` says why).
-_TINY = float(np.finfo(np.float64).tiny)
-
-
 def _normal(v: npt.NDArray[np.float64]) -> npt.NDArray[np.bool_]:
     """Elementwise: ``v`` is a positive NORMAL double — a variance that carries its full
-    precision (see the out-of-range note above). False on 0.0, a subnormal, ``inf`` and NaN."""
-    ok: npt.NDArray[np.bool_] = (v >= _TINY) & (v < np.inf)
+    precision (see the out-of-range note above). False on 0.0, a subnormal, ``inf`` and NaN.
+    ``analysis._pools._normal`` is the pool statistics' twin, which nulls a variance out of the
+    normal range on BOTH sides (it says why); both read the one :data:`seikan.numeric.MIN_NORMAL`.
+    """
+    ok: npt.NDArray[np.bool_] = (v >= MIN_NORMAL) & (v < np.inf)
     return ok
 
 
@@ -180,7 +188,7 @@ def _sqrt_product(
         mb, eb = np.ldexp(mb, eb & 1), eb - (eb & 1)
         scaled = np.ldexp(np.sqrt(ma * mb), (ea + eb) // 2)
         out: npt.NDArray[np.float64] = np.where(
-            np.isfinite(prod) & (prod >= _TINY), np.sqrt(prod), scaled
+            np.isfinite(prod) & (prod >= MIN_NORMAL), np.sqrt(prod), scaled
         )
     return out
 
@@ -204,7 +212,7 @@ def zscore_sma_apply_nb(arr: npt.NDArray[np.float64], window: int) -> npt.NDArra
         # A VARYING window whose variance fell below the normal range (deviations under
         # ~1.5e-154: a subnormal variance read |z| past its bound √(w−1), one of 0.0 read NaN) is
         # recomputed lifted — the same z, every rounding scaled (the out-of-range note above).
-        lost = finite_all & varies & (var < _TINY)
+        lost = finite_all & varies & (var < MIN_NORMAL)
         if lost.any():
             lifted_mean, lifted_var = _window_moments(_lifted_windows(a, window))
             z = np.where(lost, (np.ldexp(x, _LIFT) - lifted_mean) / np.sqrt(lifted_var), z)
@@ -265,7 +273,7 @@ def rolling_agg_apply_nb(
             # range (squared deviations under ~1.5e-154 — to 0.0 itself under ~1e-162) is
             # recomputed lifted: its std exactly, rounded once to the window's scale and floored
             # at the smallest subnormal — never the 0.0 an all-equal window owns.
-            lost = finite_all & ~constant & (var < _TINY)
+            lost = finite_all & ~constant & (var < MIN_NORMAL)
             if lost.any():
                 _, lifted_var = _window_moments(_lifted_windows(a, window))
                 lifted_std = np.ldexp(np.sqrt(lifted_var), -_LIFT)
@@ -471,8 +479,8 @@ def rolling_corr_apply_nb(
         va, vb, cov = _pair_moments(wa, wb)
         # Each leg is lifted only on the windows where IT lost its variance: lifting a leg whose
         # variance is normal could overflow its squares (an ordinary leg beside a decayed one).
-        lost_a = finite_all & varies & (va < _TINY)
-        lost_b = finite_all & varies & (vb < _TINY)
+        lost_a = finite_all & varies & (va < MIN_NORMAL)
+        lost_b = finite_all & varies & (vb < MIN_NORMAL)
         if lost_a.any() or lost_b.any():
             la = _lifted_windows(a, window)
             lb = _lifted_windows(b, window)
@@ -668,7 +676,7 @@ def cross_agg_apply_nb(
             v = np.sqrt(var)
             # 0.0 only for a CONSTANT row; a VARYING one whose variance fell below the normal
             # range is recomputed lifted and floored (the ``rolling_agg`` std rule).
-            lost = ~constant & (var < _TINY)
+            lost = ~constant & (var < MIN_NORMAL)
             if lost.any():
                 lifted_std = np.ldexp(np.sqrt(_row_var(np.ldexp(a, _LIFT), finite, k)), -_LIFT)
                 v = np.where(lost, np.maximum(lifted_std, 5e-324), v)

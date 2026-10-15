@@ -448,7 +448,7 @@ def test_rolling_corr_is_exactly_scale_invariant_past_the_variance_product_range
 def test_rolling_corr_overflowed_variance_is_nan_never_zero():
     # corr(1e160·x, x): the LEFT variance itself overflows (deviations past ~1.3e154), and
     # `cov / sqrt(inf · vb)` read a finite 0.0 — "uncorrelated" for a perfectly correlated pair.
-    # A variance past the double range is no dispersion estimate: NaN, the undecidable ledger.
+    # A variance past the double range is no dispersion estimate: NaN, landing where `x / 0` does.
     x = np.array([1.0, 3.0, 2.0, 5.0, 4.0, 7.0])
     for left, right in ((1e160 * x, x), (x, 1e160 * x)):
         np.testing.assert_array_equal(rolling_corr_1d(left, right, 3), np.full(6, np.nan))
@@ -1006,7 +1006,7 @@ def test_zscore_sma_translation_invariant_across_levels(base):
 def test_zscore_sma_overflowed_variance_is_nan_and_an_underflowed_one_is_lifted():
     # At 1e160 the squared deviations overflow the window variance to inf, and `(x − mean) / inf`
     # read a FINITE 0.0 — "exactly at the mean" on every bar, which `z > 0` / `z < 0` decided:
-    # NaN now, the undecidable ledger.
+    # NaN now, landing where `x / 0` does (undecidable once the series has initialized).
     x = np.array([1.0, 3.0, 2.0, 5.0, 4.0, 7.0])
     np.testing.assert_array_equal(zscore_sma_1d(1e160 * x, 3), np.full(6, np.nan))
     np.testing.assert_array_equal(ref.zscore_sma(1e160 * x, 3), np.full(6, np.nan))

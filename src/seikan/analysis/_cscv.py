@@ -10,7 +10,8 @@ from typing import cast
 
 import numpy as np
 
-from seikan.analysis._pools import _NEAR_CONSTANT_ULPS, _TINY
+from seikan.analysis._pools import _NEAR_CONSTANT_ULPS
+from seikan.numeric import MIN_NORMAL
 from seikan.types import (
     CellKey,
     DegradationSlopeReason,
@@ -60,7 +61,7 @@ def _representable(mean: np.ndarray, var: np.ndarray) -> np.ndarray:
     """The split's ``mean`` is finite and its ``var`` a positive NORMAL double (the
     ``_pools._normal`` rule) — the Sharpe ``mean / sd`` is read off representable moments only
     (see :func:`_split_scores`)."""
-    ok: np.ndarray = np.isfinite(mean) & (var >= _TINY) & (var < np.inf)
+    ok: np.ndarray = np.isfinite(mean) & (var >= MIN_NORMAL) & (var < np.inf)
     return ok
 
 

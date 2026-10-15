@@ -1308,8 +1308,9 @@ REPORT_FIELDS: dict[str, JsonValue] = {
         "pooled": (
             "BASKET CELLS ONLY (absent — not null — on conjunction cells): the cell's one "
             "cross-target evidence pool over the concatenated (bar × member) closed rows in "
-            "target-declaration order — the panel the basket rubric grades instead of "
-            "per-member floors"
+            "target-declaration order — every read but rot_p / rot_n_null, whose common-shift "
+            "null rotates every FIRED member's complete mask, closed rows or not (see "
+            "pooled.rot_p) — the panel the basket rubric grades instead of per-member floors"
         ),
         "pooled.n / n_nonoverlap": (
             "closed pooled observations, and the greedy NON-OVERLAPPING count over them — the "
@@ -1332,9 +1333,11 @@ REPORT_FIELDS: dict[str, JsonValue] = {
             "with no full bar keeps its rows' plain read (evidence-only)"
         ),
         "pooled.rot_p": (
-            "COMMON-SHIFT rotation null — one shift rotates every member's mask as a block, "
-            "preserving the per-bar cross-sectional pattern; see caveats.rot_p "
-            "(evidence-only)"
+            "COMMON-SHIFT rotation null — one shift rotates every FIRED member's COMPLETE mask "
+            "as a block, preserving the per-bar cross-sectional pattern; the one pooled pair "
+            "(with its rot_n_null, the defined-shift count) NOT read over the closed rows: a "
+            "member whose every firing was censored, or whose only firing is the final bar, "
+            "adds no row yet still rotates with the block; see caveats.rot_p (evidence-only)"
         ),
         "pooled.concentration": (
             "{top_share_abs, n_top, top_frac} over the POOLED rows — the top-share read basket "

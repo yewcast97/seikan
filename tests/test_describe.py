@@ -749,13 +749,32 @@ def test_describe_shares_the_log_ratio_rule_through_a_leaf_never_the_engine():
     engine = ("seikan.compiler", "seikan.analysis", "seikan.gate", "numba")
     assert "seikan.numeric" in _imported_modules(seikan.describe)
     assert not {m for m in _imported_modules(seikan.describe) if m.startswith(engine)}
-    assert _imported_modules(seikan.numeric) <= {
-        "__future__",
-        "math",
-        "sys",
-        "numpy",
-        "numpy.typing",
-    }
+    # `math` + `numpy` and nothing else — exactly what its module note and CONTRACT's module map
+    # say the leaf imports.
+    assert _imported_modules(seikan.numeric) <= {"__future__", "math", "numpy", "numpy.typing"}
+
+
+def test_the_normal_range_edge_has_one_definition():
+    # The smallest normal double decides every out-of-range rule — the log ratio's quotient, the
+    # kernels' variance tests, the pool statistics', CSCV's split moments, describe's std — and it
+    # is DEFINED once, in the leaf: each layer reads the same object, so no copy can drift.
+    import sys
+
+    import seikan.describe
+    import seikan.numeric
+    from seikan.analysis import _cscv, _pools
+    from seikan.compiler import nb
+
+    assert seikan.numeric.MIN_NORMAL == sys.float_info.min == 2.0**-1022
+    for module in (nb, _pools, _cscv, seikan.describe):
+        assert module.MIN_NORMAL is seikan.numeric.MIN_NORMAL, module.__name__
+    src = Path(seikan.numeric.__file__).parent
+    defining = sorted(
+        str(p.relative_to(src))
+        for p in src.rglob("*.py")
+        if any(s in p.read_text(encoding="utf-8") for s in (".tiny", "float_info.min"))
+    )
+    assert defining == ["numeric.py"]
 
 
 def test_document_carries_no_judgment_vocabulary(tmp_path, capsys):

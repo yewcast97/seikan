@@ -1,10 +1,16 @@
 """Scale-safe numeric rules shared across the layers.
 
 A leaf module by design: it imports ``math`` and ``numpy`` and nothing from the package, so
-``describe.py`` (which may import nothing from ``compiler/``) and the engine's kernels and outcome
-algebra can share ONE rule without a dependency between them. No numba either: no ``@njit``
-kernel forms a log ratio (``nb.change_apply_nb`` is a vectorized numpy kernel), and ``describe``
-must stay numba-free.
+``describe.py`` (which may import nothing from ``compiler/``, ``analysis/`` or ``gate/``) and the
+engine's kernels, outcome algebra and pool statistics can share ONE rule without a dependency
+between them. No numba either: no ``@njit`` kernel forms a log ratio (``nb.change_apply_nb`` is a
+vectorized numpy kernel), and ``describe`` must stay numba-free.
+
+**The normal range.** :data:`MIN_NORMAL` is where it begins, defined once: the log ratio's
+quotient test below, the kernels' variance tests (``compiler.nb._normal`` and the lifted
+windows), the pool statistics' (``analysis._pools._normal``, the CSCV split moments) and
+``describe``'s std all read this one constant, so no layer can drift from another on which
+variance still carries its bits.
 
 **The log ratio.** ``ln(num/den)`` of two strictly positive finite levels is always a
 representable double (its magnitude never exceeds 1455), but the QUOTIENT it is read through
@@ -29,14 +35,15 @@ caller already refuses or masks a non-positive endpoint); on them the fallback i
 from __future__ import annotations
 
 import math
-import sys
 
 import numpy as np
 import numpy.typing as npt
 
-#: The smallest positive NORMAL double (2.2250738585072014e-308): a quotient at or above it
-#: carries full relative precision, so ``ln`` of it is the direct form's exact answer.
-_MIN_NORMAL = sys.float_info.min
+#: The smallest positive NORMAL double, ``2**-1022`` (2.2250738585072014e-308): a value at or
+#: above it keeps all 53 significant bits, one below it fewer — a quotient there is no longer the
+#: direct form's exact answer under ``ln``, a variance there no longer an estimate of any
+#: dispersion. The one definition every layer reads (see the module note).
+MIN_NORMAL: float = float(np.finfo(np.float64).tiny)
 
 
 def log_ratio(num: float, den: float) -> float:
@@ -47,7 +54,7 @@ def log_ratio(num: float, den: float) -> float:
     conversion), whose division overflows to ``inf`` silently where ``np.float64``'s warns."""
     num, den = float(num), float(den)
     q = num / den
-    if _MIN_NORMAL <= q < math.inf:
+    if MIN_NORMAL <= q < math.inf:
         return math.log(q)
     return math.log(num) - math.log(den)
 
@@ -67,7 +74,7 @@ def log_ratio_array(
         # bits), a writable 0-d array for the numpy scalar it returns for 0-d ones — so the
         # fallback below can always assign into it.
         out: npt.NDArray[np.float64] = np.asarray(np.log(q))
-        off = ~((q >= _MIN_NORMAL) & (q < np.inf))
+        off = ~((q >= MIN_NORMAL) & (q < np.inf))
         if off.any():
             out[off] = np.log(n[off]) - np.log(d[off])
     return out

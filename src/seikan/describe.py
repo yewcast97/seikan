@@ -11,8 +11,9 @@ Containment, by construction:
 - plain numpy/pandas only — no numba, no RNG, and NOTHING imported from ``compiler/``,
   ``analysis/`` or ``gate/``: the one thing it shares with the run summary is the clock
   geometry stamp, :func:`seikan.dataio.bar_spacing`, which lives with the data layer so both
-  emit it in one vocabulary, and the one rule it shares with the engine's ``log`` algebra
-  lives in the leaf :mod:`seikan.numeric` for the same reason;
+  emit it in one vocabulary, and the two rules it shares with the engine — the ``log``
+  algebra's log ratio and where the normal range begins (:data:`~seikan.numeric.MIN_NORMAL`,
+  its std's edge) — live in the leaf :mod:`seikan.numeric` for the same reason;
 - admission is :func:`seikan.dataio.read_strict_csv` — the SAME strict reader ``check-data``
   runs, called identically, so the ``data_report`` this module builds is byte-equal to
   ``check-data``'s over the same files (a refused file is refused for the same reason by both,
@@ -46,7 +47,7 @@ import numpy as np
 import pandas as pd
 
 from seikan.dataio import FileReport, bar_spacing, build_data_report, read_strict_csv
-from seikan.numeric import log_ratio, log_ratio_array
+from seikan.numeric import MIN_NORMAL, log_ratio, log_ratio_array
 from seikan.types import (
     ChangeBlock,
     DescribeResult,
@@ -327,10 +328,6 @@ def _mean(vals: np.ndarray) -> float:
     return min(max(m, float(vals.min())), float(vals.max()))
 
 
-#: The smallest positive NORMAL double: a variance below it has lost significant bits.
-_TINY = float(np.finfo(np.float64).tiny)
-
-
 def _std(vals: np.ndarray) -> float:
     """The ddof=1 std of n ≥ 2 values — every dispersion read's, one rule for the three
     algebras — scale-safe: the direct ``np.std`` wherever its variance is a normal double, bit
@@ -350,7 +347,7 @@ def _std(vals: np.ndarray) -> float:
     ``ratio_reason``, a ``diff`` std its whole block."""
     with np.errstate(over="ignore", invalid="ignore"):
         var = float(np.var(vals, ddof=1))  # np.std IS the root of this variance, bit for bit
-    if _TINY <= var < math.inf:
+    if MIN_NORMAL <= var < math.inf:
         return math.sqrt(var)
     lo, hi = float(vals.min()), float(vals.max())
     if not (_finite(lo) and _finite(hi)):

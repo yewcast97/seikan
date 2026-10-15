@@ -590,6 +590,168 @@ def test_a_feed_pinned_after_warmup_is_undecidable_not_fired(tmp_path):
     assert _check(report.cells[0], "signal_coverage").met is False
 
 
+@pytest.mark.parametrize("jump_at", [0, 150])
+def test_an_overflowed_window_variance_lands_where_an_x_over_0_would(tmp_path, jump_at):
+    # A window variance past the double range (deviations past ~1.3e154) is NaN, never the
+    # finite 0.0 `x / inf` reads — and WHERE that NaN lands is the warmup latch's call, exactly as
+    # for `x / 0`: a feed scaled to ~1e160 from bar `jump_at` on overflows every z-score window
+    # from there. Scaled from the first bar, the z-score of this plain feed never turns finite, so
+    # it never initializes: every bar is its warmup, nothing fires and no ledger counts it. Scaled
+    # after the z-score initialized, the same NaN is undecidable: every bar of it is in
+    # signal_coverage, which leaves the cell unmet.
+    n_bars = 300
+    rng = np.random.RandomState(5)
+    values = 100.0 * np.exp(np.cumsum(rng.normal(0.0, 0.01, n_bars)))
+    values[jump_at:] *= 1e160
+    path, feed = tmp_path / "px.csv", tmp_path / "feed.csv"
+    _write_px(path, _planted_dip_px(n_bars, 5, 9))
+    _write_feed(feed, values, n_bars)
+    z = {"type": "zscore", "input": _FEED, "window": 5, "mean_type": "sma"}
+    thesis = _feed_thesis(
+        "overflowed_variance",
+        {"type": "threshold", "left": z, "op": ">", "right": {"type": "constant", "value": 0.5}},
+    )
+    md = load(thesis, {"target": path, "px": feed})
+    series = vectorize.build_series(thesis.entry.left, md)[0].to_numpy()[:, 0]
+    assert np.isnan(series[jump_at:]).all()  # every window from the jump on overflowed
+    res = run_backtest(thesis, md)
+    n_undefined = res.summary["cells"][0]["signal_coverage"]["target"]["n_undefined"]
+    signal_coverage = _check(
+        evaluate_gate(res.summary, GateThresholds()).cells[0], "signal_coverage"
+    )
+    if jump_at == 0:
+        assert not np.isfinite(series).any()  # never initialized: warmup throughout
+        assert len(res.trades) == 0 and n_undefined == 0 and signal_coverage.met
+    else:
+        assert np.isfinite(series[:jump_at]).sum() == jump_at - 4  # initialized at bar 4
+        assert n_undefined == n_bars - jump_at and signal_coverage.met is False
+
+
+def _event_unknown_before_its_first(tmp_path, n_bars) -> dict:
+    """E = ``lvl / den > 1.5`` over two shared feeds: an ``x / 0`` at bar 50 leaves E undecided
+    before its first event at bar 100 (E holds on every bar from there), so an event node over E
+    is initialized from bar 50 with no value until bar 100. Writes ``lvl.csv`` / ``den.csv``."""
+    lvl, den = np.ones(n_bars), np.ones(n_bars)
+    lvl[100:], den[50] = 2.0, 0.0
+    for name, values in (("lvl", lvl), ("den", den)):
+        _write_feed(tmp_path / f"{name}.csv", values, n_bars)
+    ratio = {
+        "type": "binary_op",
+        "op": "/",
+        "left": {"type": "external", "name": "lvl"},
+        "right": {"type": "external", "name": "den"},
+    }
+    return {
+        "type": "threshold",
+        "left": ratio,
+        "op": ">",
+        "right": {"type": "constant", "value": 1.5},
+    }
+
+
+@pytest.mark.parametrize(("scale", "n_undefined_expected"), [(1.0, 54), (1e160, 250)])
+def test_an_overflow_off_an_input_initialized_unvalued_is_undecidable(
+    tmp_path, scale, n_undefined_expected
+):
+    # "Initialized" is the warmup latch, not the first finite value: a series computed from an input
+    # initialized with no value yet initializes there too, finite or not (a `cross_agg` excepted,
+    # below). Here that input is `event_value(E, big)`, whose anchor an `x / 0` in E at bar 50 made
+    # unknown before E's first event at bar 100, so `zscore(event_value(E, big) + big)` initializes
+    # at bar 50. Unscaled it ledgers the hole's stretch (bars 50-99) and its own window's fill
+    # (100-103), finite from bar 104. Scaled to ~1e160 every window overflows and it is never
+    # finite, yet no bar of it is warmup from bar 50 on: all 250 are in signal_coverage, unlike the
+    # plain feed above, which no ledger counts.
+    n_bars = 300
+    event = _event_unknown_before_its_first(tmp_path, n_bars)
+    big = scale * 100.0 * np.exp(np.cumsum(np.random.RandomState(5).normal(0.0, 0.01, n_bars)))
+    _write_feed(tmp_path / "big.csv", big, n_bars)
+    path = tmp_path / "px.csv"
+    _write_px(path, _planted_dip_px(n_bars, 5, 9))
+    feeds = ("lvl", "den", "big")
+    big_feed = {"type": "external", "name": "big"}
+    anchored = {"type": "event_value", "event": event, "input": big_feed}
+    z = {
+        "type": "zscore",
+        "input": {"type": "binary_op", "op": "+", "left": anchored, "right": big_feed},
+        "window": 5,
+        "mean_type": "sma",
+    }
+    thesis = Thesis.model_validate(
+        {
+            "name": "overflow_off_an_unvalued_input",
+            "data": {"targets": ["target"], "external": {name: {} for name in feeds}},
+            "entry": {
+                "type": "threshold",
+                "left": z,
+                "op": ">",
+                "right": {"type": "constant", "value": 0.5},
+            },
+            "params": {"horizon": 3},
+        }
+    )
+    md = load(thesis, {"target": path, **{name: tmp_path / f"{name}.csv" for name in feeds}})
+    series, init = (f.to_numpy()[:, 0] for f in vectorize.build_series(thesis.entry.left, md))
+    assert not init[:50].any() and init[50:].all()  # the latch's second arm, at bar 50
+    assert np.isfinite(series).sum() == (0 if scale > 1.0 else n_bars - 104)
+    res = run_backtest(thesis, md)
+    n_undefined = res.summary["cells"][0]["signal_coverage"]["target"]["n_undefined"]
+    assert n_undefined == n_undefined_expected
+    report = evaluate_gate(res.summary, GateThresholds())
+    assert _check(report.cells[0], "signal_coverage").met is False
+    assert _check(report.cells[0], "outcome_coverage").met  # only the decision ledger refuses
+    if scale > 1.0:
+        assert len(res.trades) == 0
+
+
+@pytest.mark.parametrize(("scale", "first_init"), [(1.0, 100), (1e160, None)])
+def test_a_cross_agg_overflow_is_warmup_whatever_its_input(tmp_path, scale, first_init):
+    # A `cross_agg` takes no "initialized with no value yet" arm: its broadcast waits for its own
+    # first finite value (as well as the member's own first value), so over an input initialized
+    # at bar 50 with no value until E's first event it initializes at bar 100, not 50. Scaled to
+    # ~1e160, where every cross-sectional variance overflows, it is never finite and so never
+    # initializes: warmup throughout, nothing fires and no ledger counts it — where the z-score
+    # above, over the same kind of input, ledgers every bar from 50 on.
+    n_bars = 300
+    event = _event_unknown_before_its_first(tmp_path, n_bars)
+    paths = {"t1": tmp_path / "t1.csv", "t2": tmp_path / "t2.csv"}
+    for seed, path in enumerate(paths.values()):
+        _write_px(path, _planted_dip_px(n_bars, 5, 9, seed=seed))
+    close = {"type": "field", "column": "close"}
+    anchored = {"type": "event_value", "event": event, "input": close}
+    scaled = {
+        "type": "binary_op",
+        "op": "*",
+        "left": anchored,
+        "right": {"type": "constant", "value": scale},
+    }
+    thesis = Thesis.model_validate(
+        {
+            "name": "cross_agg_overflow",
+            "target_mode": "basket",
+            "data": {"targets": list(paths), "external": {"lvl": {}, "den": {}}},
+            "entry": {
+                "type": "threshold",
+                "left": {"type": "cross_agg", "input": scaled, "agg": "std"},
+                "op": ">",
+                "right": {"type": "constant", "value": 0.0},
+            },
+            "params": {"horizon": 3},
+        }
+    )
+    md = load(thesis, {**paths, "lvl": tmp_path / "lvl.csv", "den": tmp_path / "den.csv"})
+    input_init = vectorize.build_series(thesis.entry.left.input, md)[1].to_numpy()
+    assert not input_init[:50].any() and input_init[50:].all()  # the input: init at 50, unvalued
+    series, init = (f.to_numpy() for f in vectorize.build_series(thesis.entry.left, md))
+    if first_init is None:
+        assert not np.isfinite(series).any() and not init.any()  # never finite, never initialized
+    else:
+        assert not init[:first_init].any() and init[first_init:].all()
+    res = run_backtest(thesis, md)
+    assert all(res.summary["cells"][0]["signal_coverage"][t]["n_undefined"] == 0 for t in paths)
+    assert _check(evaluate_gate(res.summary, GateThresholds()).cells[0], "signal_coverage").met
+    assert (len(res.trades) == 0) == (first_init is None)
+
+
 @pytest.mark.parametrize(
     "z_form",
     [

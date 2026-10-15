@@ -20,6 +20,7 @@ import math
 import numpy as np
 from scipy import stats as sps
 
+from seikan.numeric import MIN_NORMAL
 from seikan.types import (
     BenchmarkRegressionBlock,
     BenchmarkRegressionReason,
@@ -35,10 +36,6 @@ _NAN = float("nan")
 
 
 _EPS = float(np.finfo(np.float64).eps)
-
-#: The smallest positive NORMAL double: below it a value keeps fewer than 53 significant bits.
-#: ``compiler.nb._TINY`` is the same constant, for the kernels' side of :func:`_normal`'s rule.
-_TINY = float(np.finfo(np.float64).tiny)
 
 #: The zero-dispersion gate's scale: a pool whose largest deviation from its mean is below this
 #: many ulps of the mean's magnitude has no usable dispersion (:func:`_near_constant`). CSCV's
@@ -70,11 +67,12 @@ def _normal(x: float) -> bool:
     multiples of the smallest subnormal or to 0.0, so it has lost its significant bits — no
     estimate of a dispersion, and a varying pool's 0.0 is not zero dispersion either. A
     statistic read off such a variance is NaN → null. ``compiler.nb._normal`` is the kernels'
-    twin on the overflow side; below the range the kernels LIFT the window back into it instead
-    (``compiler.nb._lifted_windows``), because the series they read are derived and decay there
-    from ordinary data (an ``ema`` of a change over a held stretch), where a pool reads measured
-    returns, which reach it only off input data at that scale."""
-    return _TINY <= x < math.inf
+    twin on the overflow side, off the same :data:`seikan.numeric.MIN_NORMAL`; below the range
+    the kernels LIFT the window back into it instead (``compiler.nb._lifted_windows``), because
+    the series they read are derived and decay there from ordinary data (an ``ema`` of a change
+    over a held stretch), where a pool reads measured returns, which reach it only off input
+    data at that scale."""
+    return MIN_NORMAL <= x < math.inf
 
 
 def _ddof1_std(v: np.ndarray) -> float:
@@ -450,7 +448,7 @@ def _r2(cv: float, var_r: float, var_b: float) -> float:
     twin of ``compiler.nb._sqrt_product`` (the rolling correlation's denominator) — a change to
     the rule changes both."""
     prod = var_r * var_b
-    if _TINY <= prod < math.inf:
+    if MIN_NORMAL <= prod < math.inf:
         return (cv * cv) / prod
     m_r, e_r = math.frexp(var_r)
     m_b, e_b = math.frexp(var_b)
