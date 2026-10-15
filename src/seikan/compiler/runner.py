@@ -49,6 +49,7 @@ from seikan.analysis.stats import (
     benchmark_regression,
     cell_conditional_buckets,
     concentration,
+    cross_mean_pooled_hac,
     cross_mean_pooled_mean,
     cscv_pbo,
     edge_ratio,
@@ -60,7 +61,6 @@ from seikan.analysis.stats import (
     feature_outcome_association,
     mae_block,
     mfe_block,
-    newey_west_mean,
     pool_moments,
     pool_quantiles,
     pooled_reliability_summary,
@@ -634,9 +634,9 @@ def _pool_panel(
     by convention. ``rc`` is the pool's reliability read (or the no-evidence default).
 
     ``rets_pool`` (row-aligned with ``closed``; default its ``ret``) is what the panel's
-    bar-closed SUMS read — the bootstrap's episode sums and the era means (the HAC, mounted
-    from ``rc``, is re-read over the same values by :func:`_cells_panel`, the one caller that
-    hands them in). Every row-level read stays on ``ret``.
+    bar-closed SUMS read — the bootstrap's episode sums and the era means (the HAC is mounted
+    from ``rc``; :func:`_cells_panel`, the one caller that hands ``rets_pool`` in, replaces it
+    with the exact read off the raw legs). Every row-level read stays on ``ret``.
 
     A pool with no closed rows still gets a full panel — n=0 and NaN statistics. An OMITTED
     target would read as "not applicable here" when what actually happened is "this cell
@@ -758,6 +758,7 @@ def _cells_panel(
     pooled_per_cell: dict[CellKey, ReliabilityRead],
     undef_by_combo: dict[ComboKey, np.ndarray],
     pooled_mean_ret: dict[CellKey, float],
+    pooled_hac: dict[CellKey, tuple[float, float]],
     pooled_full_bars: dict[CellKey, np.ndarray],
 ) -> list[SummaryCell]:
     """The report's spine: ONE entry per DECLARED combo × horizon, in declaration order,
@@ -815,13 +816,13 @@ def _cells_panel(
         # `cross_mean_pooled_mean` keeps), while its rounded per-row excesses sum to residue:
         # each of its rows reads 0.0 here, every other row its `ret`. None — every read on `ret`
         # — on every pool without a full bar. Valid ONLY over row sets that hold each full bar's
-        # rows entirely or not at all: the pooled panel's bootstrap draws, eras and HAC (which
-        # reads the rows only through per-bar deviation sums), and the cross-target episodes
-        # (one bar, one window, one episode) — never a per-target panel, which holds one row of
-        # the bar, nor a bucket, which may hold some of a bar's rows (the buckets read the full
-        # bars themselves, below). Every row-level read (std and the shape reads, quantiles, hit
-        # rates, |ret| mass, tie order) keeps `ret`: a row's excess is its own, only its bar's
-        # SUM is 0.
+        # rows entirely or not at all: the pooled panel's bootstrap draws and eras, and the
+        # cross-target episodes (one bar, one window, one episode) — never a per-target panel,
+        # which holds one row of the bar, nor a bucket, which may hold some of a bar's rows (the
+        # buckets read the full bars themselves, below). The pooled HAC needs more than a full
+        # bar's 0: it reads EVERY bar's exact excess sum off the raw legs (`_measure_grid`).
+        # Every row-level read (std and the shape reads, quantiles, hit rates, |ret| mass, tie
+        # order) keeps `ret`: a row's excess is its own, only its bar's SUM is 0.
         rets_pool: np.ndarray | None = None
         full_bars = pooled_full_bars.get(combo_key)
         if full_bars is not None and full_bars.any():
@@ -931,24 +932,18 @@ def _cells_panel(
             )
             if combo_key in pooled_mean_ret:
                 # `cross_mean`: the pool's excess mean from the raw legs, so the full-basket
-                # identity is exact (see `_measure_grid`) — the read the support floor grades.
-                mean_exact = pooled_mean_ret[combo_key]
-                pooled_panel["mean_ret"] = mean_exact
-                if rets_pool is not None:
-                    # A pool holding a full bar re-reads its HAC over the pool values: same-bar
-                    # pairs enter at Bartlett weight 1, so the long-run variance is
-                    # Σ w(|a−b|)·D_a·D_b over per-BAR deviation sums — a bar-closed read — and
-                    # over the rounded rows a full bar's D_a carries their residue: an all-full
-                    # pool's exact variance is 0, its computed one residue of either sign (a
-                    # ~1e-8 SE or a null by the series length's rounding luck). Over the pool
-                    # values an all-full pool is null, as on identical legs, and any other
-                    # reads the exact mean over its SE (`t_hac` IS `mean / hac_se`). Pools
-                    # without a full bar keep the reliability pass's read, byte for byte.
-                    _, hac_se = newey_west_mean(
-                        rets_pool, rows_closed["entry_bar"].to_numpy(dtype=np.int64), dc["h"]
-                    )
-                    pooled_panel["hac_se"] = hac_se
-                    pooled_panel["t_hac"] = mean_exact / hac_se if 0.0 < hac_se < np.inf else _NAN
+                # identity is exact (see `_measure_grid`) — the read the support floor grades —
+                # and its HAC over every bar's exact excess sum around that mean, so `t_hac` IS
+                # `mean_ret / hac_se`. Same-bar pairs enter at Bartlett weight 1, so the
+                # long-run variance reads per-BAR deviation sums, and the rounded rows' sums
+                # carry residue where the exact one is 0: an all-zero-excess pool (all-full, or
+                # a firing subset whose excesses cancel on every bar) read a `t_hac` of 5.43
+                # beside a `mean_ret` of exactly 0. The reliability pass's read over the rounded
+                # rows is replaced on every pool.
+                pooled_panel["mean_ret"] = pooled_mean_ret[combo_key]
+                t_hac, hac_se = pooled_hac[combo_key]
+                pooled_panel["t_hac"] = t_hac
+                pooled_panel["hac_se"] = hac_se
             head["pooled"] = {
                 **pooled_panel,
                 "member_share": {
@@ -1008,8 +1003,8 @@ class _GridResult(NamedTuple):
     (cell, target) each one measures, the reliability-pass inputs (per-target and pooled), the
     DECLARED grid (recorded before anything about firing is known — the honesty invariant's raw
     material), the per-combo undefined-decision masks, the cross-sectional breadth ledger, the
-    attempted combo count, and a `cross_mean` basket's exact pooled mean and full-bar mask per
-    cell."""
+    attempted combo count, and a `cross_mean` basket's exact pooled mean, pooled HAC and full-bar
+    mask per cell."""
 
     frames: list[pd.DataFrame]
     frame_cells: list[tuple[int, int]]
@@ -1020,6 +1015,7 @@ class _GridResult(NamedTuple):
     undef_by_combo: dict[ComboKey, np.ndarray]
     cross_breadth: list[CrossBreadthEntry]
     pooled_mean_ret: dict[CellKey, float]
+    pooled_hac: dict[CellKey, tuple[float, float]]
     pooled_full_bars: dict[CellKey, np.ndarray]
 
 
@@ -1096,10 +1092,13 @@ def _measure_grid(
     # all fire together has a pooled mean of zero BY CONSTRUCTION — summed from the rounded
     # per-row excesses it read ±1e-19, its sign set by the targets' declaration order, and the
     # support floor's `mean_ret > 0` graded that residue. Mounted as `pooled.mean_ret`. Beside
-    # it the cell's FULL bars (every member closed — the bars that mean's identity zeroes), the
-    # ones whose rows the cell's other bar-closed sums then read at 0.0 (`_cells_panel`'s
-    # `rets_pool` and its bucket means, and the grid's CSCV split means).
+    # it the pooled HAC around that mean over every bar's exact excess sum, from the same raw
+    # legs (`pooled.t_hac` / `hac_se`, so `t_hac` IS `mean_ret / hac_se`), and the cell's FULL
+    # bars (every member closed — the bars that mean's identity zeroes), the ones whose rows the
+    # cell's other bar-closed sums then read at 0.0 (`_cells_panel`'s `rets_pool` and its bucket
+    # means, and the grid's CSCV split means).
     pooled_mean_ret: dict[CellKey, float] = {}
+    pooled_hac: dict[CellKey, tuple[float, float]] = {}
     pooled_full_bars: dict[CellKey, np.ndarray] = {}
     exact_pooled_mean = basket and bench_mode == "cross_mean"
     for combo, entry in vectorize.iter_param_assignments(thesis.entry, thesis.axes):
@@ -1261,7 +1260,9 @@ def _measure_grid(
                         }
                     )
             if closed_mask is not None:
-                pooled_mean_ret[combo_key] = cross_mean_pooled_mean(hf.raw, closed_mask)
+                mean_ret = cross_mean_pooled_mean(hf.raw, closed_mask)
+                pooled_mean_ret[combo_key] = mean_ret
+                pooled_hac[combo_key] = cross_mean_pooled_hac(fwd, hf.raw, closed_mask, mean_ret, h)
                 pooled_full_bars[combo_key] = np.logical_and.reduce(closed_mask, axis=1)
 
     return _GridResult(
@@ -1274,6 +1275,7 @@ def _measure_grid(
         undef_by_combo=undef_by_combo,
         cross_breadth=cross_breadth,
         pooled_mean_ret=pooled_mean_ret,
+        pooled_hac=pooled_hac,
         pooled_full_bars=pooled_full_bars,
     )
 
@@ -1480,6 +1482,7 @@ def run_backtest(thesis: Thesis, md: MarketData) -> EventStudyResult:
         pooled_rel["per_cell"] if pooled_rel is not None else {},
         undef_by_combo,
         grid.pooled_mean_ret,
+        grid.pooled_hac,
         grid.pooled_full_bars,
     )
     # ---- the summary: the run-level stamps (what was measured, over what geometry, in which

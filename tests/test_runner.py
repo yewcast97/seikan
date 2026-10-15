@@ -4015,7 +4015,8 @@ def test_cross_mean_mixed_bars_zero_only_the_full_ones(tmp_path):
     # are full, 6..20 partial. A full bar reads 0.0 in the pooled bar-closed sums; a sum over
     # partial bars alone is the plain mean of their rows, byte for byte; the per-member panels,
     # which hold one row of a full bar, never see the zeros; a pool without a full bar is the
-    # plain pool in every read, its HAC included; the trades frame keeps its columns.
+    # plain pool in every read but the HAC, whose per-bar sums are every bar's exact excess sum
+    # (its t the exact mean over its SE, on every pool); the trades frame keeps its columns.
     from seikan.analysis.stats import episode_bootstrap_ci, episode_ledger, newey_west_mean
     from seikan.constants import DEFAULT_FEATURE_NAMES, TRADE_COLUMNS
 
@@ -4053,8 +4054,10 @@ def test_cross_mean_mixed_bars_zero_only_the_full_ones(tmp_path):
     # the bootstrap sums the pool values on the draw stream the rows alone give
     assert pooled["boot"] == episode_bootstrap_ci(rets, bars, 1, rets_pool=pool)
     assert pooled["boot"]["n_episodes"] == 22
-    # the HAC reads the same per-bar sums: its SE over the pool values, its t the exact mean
-    assert pooled["hac_se"] == newey_west_mean(pool, bars, 1)[1] > 0.0
+    # the HAC reads every bar's exact excess sum: a full bar's is 0, as in the pool values, and
+    # a partial bar's is its rows' sum to the last bits; its t is the exact mean over its SE
+    assert pooled["hac_se"] == pytest.approx(newey_west_mean(pool, bars, 1)[1], rel=1e-14)
+    assert pooled["hac_se"] > 0.0
     assert pooled["t_hac"] == pooled["mean_ret"] / pooled["hac_se"]
     # the per-member panels are ordinary pools
     for tgt in ("A", "B", "C"):
@@ -4070,11 +4073,58 @@ def test_cross_mean_mixed_bars_zero_only_the_full_ones(tmp_path):
     sel_rets = sel_closed["ret"].to_numpy(dtype=float)
     sel_bars = sel_closed["entry_bar"].to_numpy(dtype=np.int64)
     assert sel_cell["pooled"]["boot"] == episode_bootstrap_ci(sel_rets, sel_bars, 1)
-    # the reliability pass's HAC, its t over the rows' own mean — not the exact mean beside it
-    t_sel, se_sel = newey_west_mean(sel_rets, sel_bars, 1)
-    assert (sel_cell["pooled"]["t_hac"], sel_cell["pooled"]["hac_se"]) == (t_sel, se_sel)
+    # the HAC over the exact per-bar sums agrees with the rows' to rounding, and its t is the
+    # exact mean beside it over that SE — never the rows' own mean over theirs
+    _, se_sel = newey_west_mean(sel_rets, sel_bars, 1)
+    sel_pooled = sel_cell["pooled"]
+    assert sel_pooled["hac_se"] == pytest.approx(se_sel, rel=1e-14)
+    assert sel_pooled["t_hac"] == sel_pooled["mean_ret"] / sel_pooled["hac_se"]
     assert sel_cell["episodes"] == episode_ledger(sel_closed)
     assert json_safe(sel_cell["episode_profile"]) == json_safe(episode_profile(sel_closed))
+
+
+def test_cross_mean_cancelling_partial_pool_has_no_hac(tmp_path):
+    # The review's basket: four members (a, b, a, b) of log outcomes, only A and B firing, three
+    # bars apart; on every other firing bar they move (0.99, 0.98) and C and D mirror them, so
+    # each firing bar's two excesses cancel exactly — the pooled mean_ret is exactly 0 — while
+    # their two rounded rows sum to residue. Read off those rows, the HAC divided the residue:
+    # t_hac 5.43, hac_se 1.6e-19 beside mean_ret 0.0. Every bar's exact excess sum is 0, so the
+    # pool has no long-run variance: null.
+    n = 92
+    idx = pd.date_range("2024-01-01", periods=n, freq="1D")
+    a, b, fire = np.ones(n), np.ones(n), np.zeros(n)
+    for k in range(30):
+        fire[3 * k] = 1.0
+        if k % 2 == 0:
+            a[3 * k + 2], b[3 * k + 2] = 0.99, 0.98
+    files = {}
+    for name, levels in (("A", a), ("B", b), ("C", a), ("D", b)):
+        files[name] = _write_bars(tmp_path / f"{name}.csv", levels, idx)
+        feed = pd.DataFrame({"fire": fire if name in "AB" else np.zeros(n)}, index=idx)
+        feed.index.name = "datetime"
+        feed.to_csv(tmp_path / f"fire_{name}.csv")
+        files[f"fire@{name}"] = str(tmp_path / f"fire_{name}.csv")
+    thesis = Thesis.model_validate(
+        {
+            "name": "cm_cancel",
+            "target_mode": "basket",
+            "data": {"targets": ["A", "B", "C", "D"], "external": {"fire": {"per_target": True}}},
+            "entry": {
+                "type": "threshold",
+                "left": {"type": "external", "name": "fire"},
+                "op": ">",
+                "right": {"type": "constant", "value": 0.5},
+            },
+            "params": {"horizon": 1, "outcome": {"kind": "log"}, "benchmark": "cross_mean"},
+        }
+    )
+    res = run_backtest(thesis, load(thesis, files))
+    pooled = res.summary["cells"][0]["pooled"]
+    closed = res.trades[~res.trades["is_open"]]
+    assert pooled["n"] == 60 and set(closed["target"]) == {"A", "B"}
+    assert (closed.groupby("entry_bar")["ret"].sum() != 0.0).any()  # the premise: residue
+    assert pooled["mean_ret"] == 0.0
+    assert math.isnan(pooled["t_hac"]) and math.isnan(pooled["hac_se"])
 
 
 def test_cross_mean_ledger_rebuilds_from_the_trades_csv_past_its_cap(tmp_path):

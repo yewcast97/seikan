@@ -6,7 +6,14 @@ import math
 
 import numpy as np
 
-from seikan.analysis._pools import _EPS, _NEAR_CONSTANT_ULPS, _near_constant, _normal, exact_mean
+from seikan.analysis._pools import (
+    _EPS,
+    _NEAR_CONSTANT_ULPS,
+    _near_constant,
+    _normal,
+    cross_mean_bar_deviations,
+    exact_mean,
+)
 
 _NAN = float("nan")
 
@@ -159,6 +166,44 @@ def _hac_from_bar_sums(
         return (_NAN, _NAN)
     se = math.sqrt(v)
     return (mean / se, se)
+
+
+def cross_mean_pooled_hac(
+    excess: np.ndarray, raw: np.ndarray, closed: np.ndarray, mean: float, h: int
+) -> tuple[float, float]:
+    """The event-time HAC ``(t_stat, se)`` of a ``cross_mean`` basket's POOLED excess mean —
+    :func:`newey_west_mean`'s estimator, read off every bar's EXACT excess sum.
+
+    ``excess`` and ``raw`` are the (bars × members) excess and signed raw legs of one horizon,
+    ``closed`` the pool's closed observations (rows indexed by entry bar), ``mean`` the pool's
+    :func:`~seikan.analysis._pools.cross_mean_pooled_mean` — the ``mean_ret`` the cell reports.
+    The long-run variance reads the rows only through their per-bar deviation sums, and a
+    ``cross_mean`` bar's closed excesses have an exact sum the rounded rows do not carry (each
+    full bar's is 0, ``S − 1.0·S``): each ``D_t`` is formed from the raw legs, in the same
+    weighted terms as the mean (:func:`~seikan.analysis._pools.cross_mean_bar_deviations`), so
+    the centre and the sums it centres agree to the last bit. Read off the rounded rows instead,
+    a pool whose every bar's excess sum is 0 — every member firing together, or a firing subset
+    whose excesses cancel on each bar — divided the residue: a ``mean_ret`` of exactly 0 beside
+    ``t_hac`` 5.43, its ``hac_se`` 1.6e-19.
+
+    ``t`` is computed here as ``mean / se``, so the panel's ``t_hac`` is its ``mean_ret`` over its
+    ``hac_se`` on every pool. ``(NaN, NaN)`` under the same rules as :func:`newey_west_mean`: fewer
+    than two rows, a non-finite mean, a (near-)constant pool, every bar at the mean (an all-zero
+    excess pool among them), and a sum or variance out of the double range.
+    """
+    c = np.asarray(closed, dtype=bool)
+    rows = np.asarray(excess, dtype=float)[c]
+    n = int(rows.size)
+    if n < 2 or h < 1 or not math.isfinite(mean):
+        return (_NAN, _NAN)
+    with np.errstate(over="ignore", invalid="ignore"):
+        if _near_constant(rows, mean):
+            return (_NAN, _NAN)
+    parts = cross_mean_bar_deviations(raw, c, mean)
+    if parts is None:
+        return (_NAN, _NAN)
+    u, count, d_bar = parts
+    return _hac_from_bar_sums(mean, u, count, d_bar, h, n)
 
 
 #: An int below any real bar index — the "no window open yet" sentinel for the greedy walk.

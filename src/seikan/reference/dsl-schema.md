@@ -1145,12 +1145,13 @@ and int64 nanosecond counts silently round in IEEE-754 consumers.)
     legs each per-row excess is that row's own
     rounded value, and the pooled reads that SUM whole bars take the identity too: a full bar —
     every member closed in the cell — enters `boot`'s episode sums (same draws), the `subperiods`
-    means, the cell's `episodes` / `episode_profile` means and the HAC's per-bar deviation sums
-    at exactly 0, so a pool whose every bar is full reads `t_hac` / `hac_se` null (no long-run
-    variance, as on identical legs) and any other pool holding a full bar reads `t_hac` as this
-    exact mean over its `hac_se`; a pool with no full bar reads each of these over its rows
-    plainly. `rot_p` counts the identity's ties only where the demeaning's residue sits inside
-    its FFT tie band — a basket-wide ENTRY (every member firing on the same bars, so every
+    means and the cell's `episodes` / `episode_profile` means at exactly 0, and a pool with no
+    full bar reads each of these over its rows plainly; the HAC's per-bar deviation sums are
+    every bar's EXACT excess sum around this exact mean, on every pool, so `t_hac` is this mean
+    over its `hac_se`, and a pool whose every bar's excess sum is exactly 0 (every bar full, or a
+    firing subset whose excesses cancel on each bar) reads `t_hac` / `hac_se` null (no long-run
+    variance, as on identical legs). `rot_p` counts the identity's ties only where the
+    demeaning's residue sits inside its FFT tie band — a basket-wide ENTRY (every member firing on the same bars, so every
     rotated pool is full too) on ordinary dispersed legs reads 1, while legs equal but for
     their last bits, one instrument in two quote units, leave it residue-driven. The grid-level
     `pbo` takes the identity too: a CSCV block holds whole bars, so a split holding a full bar

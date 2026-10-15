@@ -393,33 +393,89 @@ def cross_mean_pooled_mean(raw: np.ndarray, closed: np.ndarray) -> float:
     exact total, leaves the double range have no finite pooled mean: NaN, which the gate refuses
     as non-finite — never an exception out of the run. The same all-closed rows of ``closed``
     are the full bars whose rows the pool's other bar-closed sums read at 0.0 (the runner's
-    ``rets_pool``), so the bootstrap, the eras, the episode means and the HAC keep the full-bar
-    identity too, as do the CSCV split means (a block holds whole bars —
+    ``rets_pool``), so the bootstrap, the eras and the episode means keep the full-bar identity
+    too, as do the CSCV split means (a block holds whole bars —
     :func:`~seikan.analysis.stats.cscv_pbo`'s ``full_bars``) and the conditional-bucket means
     wherever a full bar's rows all land in one bucket
     (:func:`~seikan.analysis.stats.cell_conditional_buckets`' ``full_bars``) — the rotation
-    null only through its tie band."""
+    null only through its tie band. The pooled HAC reads every bar's exact excess sum
+    (:func:`cross_mean_bar_deviations`, the same weighted terms) around this mean."""
     c = np.asarray(closed, dtype=bool)
     n = int(c.sum())
     if n == 0:
         return _NAN
-    rows = c.any(axis=1)
-    r = np.ascontiguousarray(np.asarray(raw, dtype=float)[rows])
-    c = c[rows]
-    if not np.isfinite(r).all():
+    parts = _cross_mean_weighted_parts(raw, c)
+    if parts is None:
         return _NAN
-    n_members = int(r.shape[1])
-    weight = (n_members * c - c.sum(axis=1, keepdims=True)).astype(float)
-    high = (r.view(np.int64) & ~_SPLIT_LOW_BITS).view(np.float64)
-    with np.errstate(over="ignore", invalid="ignore"):
-        parts = np.concatenate([(weight * high).ravel(), (weight * (r - high)).ravel()])
-    if not np.isfinite(parts).all():
-        return _NAN
+    _, _, wh, wl = parts
     try:
-        total = math.fsum(parts.tolist())
+        total = math.fsum([*wh.ravel().tolist(), *wl.ravel().tolist()])
     except OverflowError:  # the exact total leaves the double range
         return _NAN
-    return float(total / (n_members * n))
+    return float(total / (wh.shape[1] * n))
+
+
+def _cross_mean_weighted_parts(
+    raw: np.ndarray, closed: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None:
+    """``(rows, k, wh, wl)``: the bars holding a closed member (ascending), each one's closed
+    count ``k_t``, and the (rows × members) products of each leg's two halves with its integer
+    weight ``N·[closed_tg] − k_t`` — exact doubles whose sum over a bar is ``N`` times its closed
+    members' exact excess sum (:func:`cross_mean_pooled_mean`). ``None`` where a leg or a
+    product is not finite."""
+    rows = np.flatnonzero(closed.any(axis=1))
+    r = np.ascontiguousarray(np.asarray(raw, dtype=float)[rows])
+    c = closed[rows]
+    if not np.isfinite(r).all():
+        return None
+    k = c.sum(axis=1)
+    weight = (int(r.shape[1]) * c - k[:, None]).astype(float)
+    high = (r.view(np.int64) & ~_SPLIT_LOW_BITS).view(np.float64)
+    with np.errstate(over="ignore", invalid="ignore"):
+        wh, wl = weight * high, weight * (r - high)
+    if not (np.isfinite(wh).all() and np.isfinite(wl).all()):
+        return None
+    return rows, k, wh, wl
+
+
+def cross_mean_bar_deviations(
+    raw: np.ndarray, closed: np.ndarray, mean: float
+) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+    """``(rows, k, d)`` — each bar's deviation sum ``D_t = Σ_{closed g} e_tg − k_t·mean`` of a
+    ``cross_mean`` basket's closed EXCESS returns around ``mean`` (the pool's
+    :func:`cross_mean_pooled_mean`), from the raw legs, for the pooled HAC: the bars holding a
+    closed member (ascending), their closed counts and their sums.
+
+    ``N·D_t`` is ONE ``math.fsum`` over the bar's weighted leg halves — the terms the pooled mean
+    sums — and ``k_t`` copies each of ``−N·mean``'s two halves (``mean`` split like a leg, so
+    both products are exact doubles; never one ``k_t·N·mean`` product, inexact past 2**26):
+    the bar's exact numerator, correctly rounded, then divided by ``N``. A bar whose closed
+    excesses sum to exactly ``k_t·mean`` reads exactly 0 — a full bar at a zero mean, a bar
+    of identical legs, a firing subset whose excesses cancel — where the rounded per-row
+    excesses summed to residue, and an all-zero-excess pool's HAC divided by it: ``t_hac``
+    5.43 beside a ``mean_ret`` of exactly 0.
+
+    ``None`` — no estimate — on an empty pool, a non-finite leg, product or ``N·mean`` half, and
+    a bar's sum past the double range."""
+    parts = _cross_mean_weighted_parts(raw, np.asarray(closed, dtype=bool))
+    if parts is None or parts[0].size == 0 or not math.isfinite(mean):
+        return None
+    rows, k, wh, wl = parts
+    n_members = int(wh.shape[1])
+    high = float((np.array([mean]).view(np.int64) & ~_SPLIT_LOW_BITS).view(np.float64)[0])
+    # Python floats: a product past the range is inf (decided below), never a numpy warning.
+    centre = (-(n_members * high), -(n_members * (mean - high)))
+    if not (math.isfinite(centre[0]) and math.isfinite(centre[1])):
+        return None
+    d = np.empty(rows.size)
+    try:
+        for t, (h_row, l_row, k_t) in enumerate(
+            zip(wh.tolist(), wl.tolist(), k.tolist(), strict=True)
+        ):
+            d[t] = math.fsum([*h_row, *l_row, *(centre * k_t)]) / n_members
+    except OverflowError:
+        return None
+    return rows, k, d
 
 
 @np.errstate(over="ignore", invalid="ignore")

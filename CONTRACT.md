@@ -383,17 +383,17 @@ every read of it takes its exact value — means, quantiles and std 0.0, `rot_p`
 distinct legs each per-row excess is that row's own rounded value, and the pooled reads that SUM
 whole bars take the identity too — a full bar's rows enter them at exactly 0.0 (re-derivable
 from the trades: a bar on which every member has a closed row in the cell), so the bootstrap's
-episode sums (same draws, same seed), the `subperiods` means, the `episodes` ledger and
-`episode_profile` means (with the profile's hit rate, streaks and quantiles over them) and the
-HAC (its long-run variance reads the rows only through per-bar deviation sums, same-bar pairs
-at weight 1, and is computed from them — each bar's deviation sum exactly rounded from its own
-returns and the centre before the quadratic form, so members whose deviations cancel on a bar
-keep their combined variance) are
-exact where the identity holds and the rows' own values everywhere else: a
-pool whose every bar is full has no long-run variance — `t_hac` / `hac_se` null, as on
-identical legs — and any other pool holding a full bar reads `t_hac` as the exact `mean_ret`
-over its `hac_se`; on a pool with no full bar each of these is the plain read over its rows;
-the grid-level CSCV takes the identity too — a block holds whole bars (its purge reads the bar
+episode sums (same draws, same seed), the `subperiods` means and the `episodes` ledger and
+`episode_profile` means (with the profile's hit rate, streaks and quantiles over them) are exact
+where the identity holds and the rows' own values everywhere else — on a pool with no full bar
+each is the plain read over its rows; the HAC reads more than the identity: its long-run variance
+reads the rows only through per-bar deviation sums (same-bar pairs at weight 1), and under
+`cross_mean` each bar's is its closed members' EXACT excess sum around the exact `mean_ret`,
+from the raw legs in the same weighted terms, on every pool — so `t_hac` is `mean_ret` over
+`hac_se` on every pool, and a pool whose every bar's excess sum is exactly 0 (every bar full at a
+zero mean, or a firing subset whose excesses cancel on each bar, where the rounded rows' bar sums
+are residue — a `t_hac` of 5.43 beside a `mean_ret` of exactly 0) has no long-run variance:
+`t_hac` / `hac_se` null, as on identical legs; the grid-level CSCV takes the identity too — a block holds whole bars (its purge reads the bar
 and the cell's horizon alone), so a split holding a full bar takes its MEAN from the same
 bar-closed sums over the rows' own sd, and every split a grid of all-full cells scores is a
 full tie (`pbo`, `lambda_mean` and `prob_oos_loss` 0.0 whenever the block scores, in any target

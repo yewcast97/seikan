@@ -291,7 +291,9 @@ def pooled_reliability_summary(cells: list[ReliabilityCell], length: int) -> Rel
 
     ``t_hac`` / ``hac_se`` — :func:`newey_west_mean` over the CONCATENATED member rows (closed
     bars/returns appended in cells-list order, which the runner fixes as target-declaration
-    order). Two same-bar observations sit ``d = 0`` apart, so their cross term enters at
+    order); under ``cross_mean`` the runner replaces the pair with
+    :func:`~seikan.analysis._hac.cross_mean_pooled_hac`, the same estimator over every bar's exact
+    excess sum. Two same-bar observations sit ``d = 0`` apart, so their cross term enters at
     Bartlett weight ``max(0, 1 − 0/h) = 1``: one market move seen through several members is
     ONE cluster, priced at full covariance, never counted as independent evidence — the
     cluster-robust treatment for free, the kernel stays PSD under ties, and its exactly rounded

@@ -1336,11 +1336,11 @@ REPORT_FIELDS: dict[str, JsonValue] = {
             "rounded from its own returns and the centre, then the weighted quadratic form over "
             "bars, so members whose deviations cancel on a bar keep their combined variance; a "
             "pool whose bars all sit at its mean (every row on one bar among them) reads both "
-            "null, like a (near-)constant pool. Under cross_mean a pool "
-            "holding a full bar (every member closed) is read with that bar at its exact 0, so an "
-            "all-full pool reads both null (no long-run variance, as on identical legs), any "
-            "other pool holding a full bar reads t_hac as the exact pooled mean_ret over hac_se, "
-            "and a pool with no full bar keeps its rows' own read (evidence-only)"
+            "null, like a (near-)constant pool. Under cross_mean each bar's deviation sum is its "
+            "closed members' EXACT excess sum around the exact pooled mean_ret, from the raw legs, "
+            "on every pool: t_hac is mean_ret / hac_se, and a pool whose every bar's excess sum is "
+            "exactly 0 (all-full bars, or a firing subset whose excesses cancel on each bar) reads "
+            "both null — no long-run variance, as on identical legs (evidence-only)"
         ),
         "pooled.rot_p": (
             "COMMON-SHIFT rotation null — one shift rotates every FIRED member's COMPLETE mask "
