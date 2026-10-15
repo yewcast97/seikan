@@ -526,13 +526,24 @@ class Thesis(_Strict):
                 continue
             for value in site.values:
                 try:
-                    type(site.node).model_validate({**dict(site.node), site.param: value})
+                    fitted = type(site.node).model_validate({**dict(site.node), site.param: value})
                 except ValidationError as exc:
                     first = exc.errors()[0]
                     raise ValueError(
                         f"shared axis {site.level!r} value {value!r} does not fit "
                         f"{site.kind}.{site.param}: {first['msg']}"
                     ) from None
+                # The param holds what the kernel executes: an int axis value read by a float
+                # param is a double, and one past 2**53 can round — 2**63 − 1 executes as
+                # 9.223372036854776e18, as 2**63 does — so the cell reported as one value would
+                # measure another, and two cells one threshold.
+                executed = getattr(fitted, site.param)
+                if executed != value:
+                    raise ValueError(
+                        f"shared axis {site.level!r} value {value!r} is not exactly "
+                        f"representable by {site.kind}.{site.param}, which would execute "
+                        f"{executed!r} — declare a value the param holds exactly"
+                    )
         return self
 
     @model_validator(mode="after")

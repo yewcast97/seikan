@@ -591,6 +591,40 @@ def test_bar_spacing_stamp_daily_and_irregular(tmp_path):
     assert bar_spacing(pd.to_datetime(["2021-01-01"]))["median_seconds"] is None
 
 
+def test_cells_partition_rows_by_declared_identity_never_by_axis_value(tmp_path):
+    # Each (cell × target) frame types its axis columns by the values it holds — int64 for
+    # 2**63 − 1, uint64 for 2**63 — and the concatenated trades frame read both as ONE float64,
+    # so a partition by axis VALUE lumped both declared cells' rows under one key: the second
+    # cell's value matched it (n 44, 86 attempted), the first one's matched nothing (n 0 — a
+    # firing hypothesis reported as never firing), and declaring the second hypothesis moved the
+    # first one's numbers. The parse refuses that axis now (a double cannot hold 2**63 − 1), so
+    # this thesis is built past it, as a library caller can; the rows are partitioned by
+    # declared identity, which no value can merge.
+    px = _bars(tmp_path / "px.csv", [100.0 + math.sin(i) for i in range(44)])
+    ok = Thesis.model_validate(
+        {
+            "name": "t",
+            "data": {"targets": ["target"]},
+            "axes": {"N": [1000, 2000]},
+            "entry": {
+                "type": "threshold",
+                "left": {"type": "field", "column": "close"},
+                "op": "<",
+                "right": {"type": "constant", "value": {"axis": "N"}},
+            },
+            "params": {"horizon": 21},
+        }
+    )
+    md = load(ok, {"target": px})
+    one = run_backtest(ok.model_copy(update={"axes": {"N": [2**63 - 1]}}), md)
+    two = run_backtest(ok.model_copy(update={"axes": {"N": [2**63 - 1, 2**63]}}), md)
+    c1, (c2a, c2b) = one.summary["cells"][0], two.summary["cells"]
+    assert c1["by_target"]["target"]["n"] == c2a["by_target"]["target"]["n"] == 22
+    assert c2b["by_target"]["target"]["n"] == 22 and c2b["params"]["N"] == 2**63
+    assert json_safe(c2a) == json_safe(c1)  # the second hypothesis changes nothing in the first
+    assert len(two.trades) == 2 * len(one.trades)
+
+
 def test_cell_count_equals_the_declared_grid_across_shapes(tmp_path):
     # len(cells) == n_hypotheses_attempted by construction, whatever the grid's shape — including
     # the degenerate one-cell run whose horizon was never swept.

@@ -213,18 +213,6 @@ def _aligned_column(df: pd.DataFrame, name: str) -> np.ndarray:
     return col
 
 
-def _norm_key(key: object) -> CellKey:
-    """A pandas groupby key → a plain-python tuple, so it compares and hashes identically to the
-    parameter values the declared grid carries.
-
-    ``groupby`` hands back numpy scalars (and a bare scalar rather than a 1-tuple for a single
-    grouping column); the declared cells hold the DSL's own python values. Normalizing both sides
-    through one function is what lets a cell find its rows by exact dictionary lookup instead of a
-    per-cell rescan of the frame."""
-    values = key if isinstance(key, tuple) else (key,)
-    return tuple(v.item() if hasattr(v, "item") else v for v in values)
-
-
 def _baseline_panel(
     frames_by_h: dict[int, _HorizonFrames],
     horizon_values: list[int],
@@ -765,6 +753,7 @@ def _cells_panel(
     cfg: _RunConfig,
     declared_cells: list[DeclaredCell],
     trades: pd.DataFrame,
+    frame_blocks: list[tuple[int, int, int]],
     per_cell: dict[CellKey, ReliabilityRead],
     pooled_per_cell: dict[CellKey, ReliabilityRead],
     undef_by_combo: dict[ComboKey, np.ndarray],
@@ -780,23 +769,26 @@ def _cells_panel(
     n_bars = cfg.n_bars
     targets = cfg.targets
     # The cell axes: the swept entry axes with the horizon LAST and ALWAYS present — the
-    # trades frame carries every one of them as a column, so this is both the partition key and
-    # the rendered label's order.
+    # trades frame carries every one of them as a column, in the rendered label's order.
     cell_axes = [*cfg.sweep_levels, "horizon"]
     # ---- the per-cell panel: one entry per DECLARED hypothesis ---------------------------------
     #
-    # Partition the trades frame ONCE by the cell axes. A per-cell rescan of the frame would be
-    # O(cells × rows); the grid is capped at 64 cells but the row count is not, and the
-    # partition is exact — every row carries the assignment that produced it. The finer
-    # (cell × target) partition is what the per-target loop reads, in the frame's own ascending
-    # row order (`.indices` preserves it), so the sub-frames are exact.
-    row_groups: dict[CellKey, np.ndarray] = {}
-    target_groups: dict[CellKey, np.ndarray] = {}
-    if not trades.empty:
-        grouped = trades.groupby(cell_axes, sort=False, dropna=False).indices
-        row_groups = {_norm_key(k): idx for k, idx in grouped.items()}
-        grouped_t = trades.groupby([*cell_axes, "target"], sort=False, dropna=False).indices
-        target_groups = {_norm_key(k): idx for k, idx in grouped_t.items()}
+    # Partition the trades frame ONCE by DECLARED identity. Each (cell × target) frame
+    # `_measure_grid` appended is one contiguous block of it (the concatenation keeps frame
+    # order), named by `frame_blocks` as (declared-cell ordinal, target ordinal, rows); a cell's
+    # rows are its target blocks in declaration order, ascending. A row belongs to the hypothesis
+    # that produced it — never to whichever cell its axis columns' VALUES match: a frame types
+    # its columns by the values it holds (int64 for 2**63 − 1, uint64 for 2**63), and the
+    # concatenation of the two reads both as one float64, so a value partition handed both
+    # cells' rows to one of them and none to the other.
+    row_groups: dict[int, list[np.ndarray]] = {}
+    target_groups: dict[tuple[int, int], np.ndarray] = {}
+    start = 0
+    for ci, g, n_rows in frame_blocks:
+        block = np.arange(start, start + n_rows)
+        target_groups[ci, g] = block
+        row_groups.setdefault(ci, []).append(block)
+        start += n_rows
     empty_rows = trades.iloc[0:0]
 
     # Subperiod geometry, computed ONCE from the shared index so every cell reads
@@ -810,11 +802,10 @@ def _cells_panel(
 
     undef_union: np.ndarray | None = None
     cells_panel: list[SummaryCell] = []
-    for dc in declared_cells:
-        cell_key = tuple(dc["params"][lvl] for lvl in cell_axes)
+    for ci, dc in enumerate(declared_cells):
         combo_key = dc["combo_key"]
-        idx = row_groups.get(_norm_key(cell_key))
-        rows = trades.iloc[idx] if idx is not None else empty_rows
+        blocks = row_groups.get(ci)
+        rows = trades.iloc[np.concatenate(blocks)] if blocks else empty_rows
         # The cell needs BOTH pools: the FULL rows (censored firings included) are the only place
         # an unmeasured firing is visible, and the CLOSED rows are the only ones any statistic may
         # describe.
@@ -867,7 +858,7 @@ def _cells_panel(
         # Per-member |return|-mass, the raw material of the basket's `member_share` decomposition.
         mass_by_target: dict[str, float] = {}
         for g, tgt in enumerate(targets):
-            idx_t = target_groups.get(_norm_key((*cell_key, tgt)))
+            idx_t = target_groups.get((ci, g))
             rows_t = trades.iloc[idx_t] if idx_t is not None else empty_rows
             closed_t = rows_t[~rows_t["is_open"]] if not rows_t.empty else rows_t
             # The reliability pass holds only cells that fired with closed rows; a cell it never
@@ -1013,13 +1004,15 @@ def _cells_panel(
 
 
 class _GridResult(NamedTuple):
-    """Everything the measurement loop produces: the per-observation frames, the
-    reliability-pass inputs (per-target and pooled), the DECLARED grid (recorded before anything
-    about firing is known — the honesty invariant's raw material), the per-combo
-    undefined-decision masks, the cross-sectional breadth ledger, the attempted combo
-    count, and a `cross_mean` basket's exact pooled mean and full-bar mask per cell."""
+    """Everything the measurement loop produces: the per-observation frames and the declared
+    (cell, target) each one measures, the reliability-pass inputs (per-target and pooled), the
+    DECLARED grid (recorded before anything about firing is known — the honesty invariant's raw
+    material), the per-combo undefined-decision masks, the cross-sectional breadth ledger, the
+    attempted combo count, and a `cross_mean` basket's exact pooled mean and full-bar mask per
+    cell."""
 
     frames: list[pd.DataFrame]
+    frame_cells: list[tuple[int, int]]
     rel_cells: list[ReliabilityCell]
     pooled_cells: list[ReliabilityCell]
     declared_cells: list[DeclaredCell]
@@ -1055,6 +1048,9 @@ def _measure_grid(
     sweep_levels = cfg.sweep_levels
     targets = cfg.targets
     frames: list[pd.DataFrame] = []
+    # Beside each frame, the (declared-cell ordinal, target ordinal) it measures — its rows'
+    # cell identity, which `_cells_panel` partitions the trades frame by.
+    frame_cells: list[tuple[int, int]] = []
     rel_cells: list[ReliabilityCell] = []
     # The basket's OWN reliability roster, kept SEPARATE from `rel_cells` on purpose: the pooled
     # rotation null must rotate every FIRED member's COMPLETE mask — including a member whose
@@ -1067,8 +1063,8 @@ def _measure_grid(
     pooled_cells: list[ReliabilityCell] = []
     # THE DECLARED GRID — one entry per (param combo × horizon), recorded as the loop declares it
     # and BEFORE anything about firing is known. `rel_cells` above only ever holds cells that fired
-    # with closed rows, and a groupby over the trades frame cannot invent a row for a combo with no
-    # observations, so driving the per-cell panel off either of those would silently DELETE every
+    # with closed rows, and the trades frame holds no row for a combo with no observations, so
+    # driving the per-cell panel off either of those would silently DELETE every
     # non-firing hypothesis from the report — precisely the hypothesis a reader most needs to see,
     # because its absence is what makes a surviving cell look inevitable. The panel is built off
     # this list instead, which is why `len(summary["cells"]) == n_hypotheses_attempted` holds by
@@ -1253,6 +1249,7 @@ def _measure_grid(
                 for fname, farr in features.items():
                     df[fname] = farr[fire, g]
                 frames.append(df)
+                frame_cells.append((len(declared_cells) - 1, g))
 
                 if closed.any():
                     rel_cells.append(
@@ -1269,6 +1266,7 @@ def _measure_grid(
 
     return _GridResult(
         frames=frames,
+        frame_cells=frame_cells,
         rel_cells=rel_cells,
         pooled_cells=pooled_cells,
         declared_cells=declared_cells,
@@ -1477,6 +1475,7 @@ def run_backtest(thesis: Thesis, md: MarketData) -> EventStudyResult:
         cfg,
         declared_cells,
         trades,
+        [(ci, g, len(f)) for (ci, g), f in zip(grid.frame_cells, frames, strict=True)],
         rel["per_cell"],
         pooled_rel["per_cell"] if pooled_rel is not None else {},
         undef_by_combo,

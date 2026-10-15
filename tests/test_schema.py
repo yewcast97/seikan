@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 
 import pytest
 from pydantic import ValidationError
@@ -3242,6 +3243,29 @@ def test_axis_int_list_fits_constant_and_window():
     assert [c for c, _ in combos] == [{"N": 20}, {"N": 60}]
     _, tree = combos[0]
     assert tree.conditions[0].left.window == 20 and tree.conditions[1].right.value == 20.0
+
+
+def test_axis_int_value_a_float_param_cannot_hold_exactly_refuses():
+    # A float param stores an int axis value as a double, and the kernel executes that double:
+    # past 2**53 an int can round — 2**63 − 1 executes as 9.223372036854776e18, exactly as 2**63
+    # does — so the cell reported as 2**63 − 1 would measure 2**63's threshold, and two declared
+    # cells one hypothesis. Each value is checked against what the param holds after fitting.
+    entry = {
+        "type": "threshold",
+        "left": _CLOSE,
+        "op": ">",
+        "right": {"type": "constant", "value": _AX},
+    }
+    for bad, executed in ((2**63 - 1, "9.223372036854776e+18"), (2**53 + 1, "9007199254740992.0")):
+        with pytest.raises(
+            ValidationError,
+            match=rf"shared axis 'N' value {bad} is not exactly representable by "
+            rf"constant\.value, which would execute {re.escape(executed)}",
+        ):
+            Thesis.model_validate(_axes_doc(entry, {"N": [5, bad]}))
+    # an int a double holds exactly admits, past int64 included, and keeps its exact value
+    t = Thesis.model_validate(_axes_doc(entry, {"N": [2**53, 2**63, 2**64]}))
+    assert t.axes == {"N": [2**53, 2**63, 2**64]}
 
 
 def test_axis_ref_rolling_window_min_count_checked_per_axis_value():
