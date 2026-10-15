@@ -175,8 +175,12 @@ def pool_moments(rets: np.ndarray) -> PoolMoments:
     if n > 2 and not degenerate:
         m2 = np.var(v)
         shaped3, shaped4 = _normal(float(m2**1.5)), _normal(float(m2 * m2))
-    out["skewness"] = float(sps.skew(v)) if shaped3 else _NAN
-    out["kurtosis"] = float(sps.kurtosis(v, fisher=False)) if n > 3 and shaped4 else _NAN
+    # ...and the moment itself can overflow under a normal power (one deviation past ~5.6e102
+    # cubes to inf beside a variance its many small rows keep in range): ±inf, never a value.
+    skew = float(sps.skew(v)) if shaped3 else _NAN
+    kurt = float(sps.kurtosis(v, fisher=False)) if n > 3 and shaped4 else _NAN
+    out["skewness"] = skew if math.isfinite(skew) else _NAN
+    out["kurtosis"] = kurt if math.isfinite(kurt) else _NAN
     if n > 1:
         p5, p95 = (float(q) for q in np.percentile(v, [5.0, 95.0]))
         out["tail_ratio"] = abs(_finite_ratio(p95, p5)) if p5 != 0 else _NAN

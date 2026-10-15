@@ -3030,6 +3030,15 @@ def test_pool_moments_shape_reads_off_an_out_of_range_variance_power_are_null():
     assert (big["skewness"], big["kurtosis"]) == (base["skewness"], base["kurtosis"])
 
 
+def test_pool_moments_shape_read_whose_moment_overflows_under_a_normal_power_is_null():
+    # One deviation past ~5.6e102 cubes to inf while the 999 small rows keep m2**1.5 (~1e304) a
+    # normal double: scipy's skewness read inf / finite = -inf, a non-finite value in the
+    # in-memory summary (json_safe nulled it only on the way out). NaN, like every other read.
+    out = pool_moments(np.array([-6e102] + [1e99] * 999))
+    assert np.isnan(out["skewness"]) and np.isnan(out["kurtosis"])
+    assert np.isfinite(out["std_ret"])
+
+
 def test_pool_moments_exact_constant_pool_moments_are_null():
     import warnings
 
