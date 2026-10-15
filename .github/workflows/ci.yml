@@ -1,0 +1,41 @@
+# The README's dev loop, run on every push to main and every pull request, against the locked
+# environment (`uv sync --locked` fails if uv.lock is out of step with pyproject.toml), plus a
+# wheel build: the DSL guide `seikan schema --markdown` reads ships as package data, so a
+# packaging omission fails here rather than as an exit 4 in a user's hands.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: format, lint, types, tests, wheel
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - name: Install the locked environment
+        run: uv sync --locked
+      - name: Format
+        run: uv run ruff format --check src tests
+      - name: Lint
+        run: uv run ruff check src tests
+      - name: Types
+        run: uv run mypy
+      - name: Tests
+        run: uv run pytest -q
+      - name: Build the wheel
+        run: uv build --wheel

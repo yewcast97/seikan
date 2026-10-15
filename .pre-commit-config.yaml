@@ -1,0 +1,8 @@
+# `pre-commit install` runs the same ruff checks CI runs, at commit time. Keep `rev` equal to the
+# ruff version locked in uv.lock, so the hook and `uv run ruff` never disagree.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.2
+    hooks:
+      - id: ruff-check
+      - id: ruff-format

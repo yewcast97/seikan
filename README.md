@@ -95,6 +95,10 @@ uv run mypy                            # strict, over the whole package
 uv run pytest                          # the whole suite, zero skips
 ```
 
+CI (`.github/workflows/ci.yml`) runs these four checks on every push to `main` and every pull
+request, plus a wheel build. `pre-commit install` runs the two ruff checks at commit time
+(`.pre-commit-config.yaml`).
+
 ## Where the depth lives
 
 `CONTRACT.md` (repo root) is the working contract: the CLI and data-binding semantics, the

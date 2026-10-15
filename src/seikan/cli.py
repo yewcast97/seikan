@@ -84,6 +84,7 @@ import platform
 import sys
 import traceback
 from collections.abc import Callable
+from importlib.resources import files
 from pathlib import Path
 from typing import Final, NamedTuple, NoReturn
 
@@ -917,7 +918,10 @@ def _cmd_describe(args: argparse.Namespace) -> int:
 
 def _cmd_schema(args: argparse.Namespace) -> int:
     if args.markdown:
-        ref = Path(__file__).parent / "reference" / "dsl-schema.md"
+        # A package resource, not a path beside this file: an install that is not a plain
+        # directory tree (a zipped package) answers too. A wheel without it still raises
+        # FileNotFoundError — the packaging omission pyproject's package-data comment describes.
+        ref = files("seikan") / "reference" / "dsl-schema.md"
         sys.stdout.write(ref.read_text(encoding="utf-8"))
         return EXIT_OK
     doc = _base_doc("schema")
