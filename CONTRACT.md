@@ -201,9 +201,9 @@ with the same top-level header `{seikan_version, report_schema_version, command}
 averaged per-cell means across horizons), the nominal `t_iid`/`p_iid` pair and the derivable
 `sharpe`/`firing_rate`, renamed the trades column `bars_held` → `horizon` (always present), and
 ADDED the integrity reads `rot_n_null` per panel and `pbo.n_splits_attempted`/`n_candidates_min`;
-every surviving number is byte-identical to v4 — the full history is in CHANGELOG.md); an error
-envelope then carries `error: {type, message, errors?}`
-with `type` ∈ {usage, data_invalid, dsl_invalid, thresholds_invalid, internal}. The `run` report —
+every surviving number is byte-identical to v4); an error envelope then carries
+`error: {type, message, errors?}` with `type` ∈ {usage, data_invalid, dsl_invalid,
+thresholds_invalid, internal}. The `run` report —
 the file `--report-out` nominates, never stdout — has ONE FIXED layer order after the header, no
 variants, so a reader never has to discover which keys this particular invocation happened to
 produce: `identity` (`name`, `dsl_hash`, `data_digests` — one entry per data key the thesis
@@ -278,7 +278,7 @@ the bootstrap, era, episode and HAC reads beside it keep its zero-excess identit
 `cross_breadth`'s `k` counts the members a kernel actually reduced over; later review rounds
 corrected more — among them correctly rounded CSV values, exactly rounded graded means, a HAC
 summed per bar, exact `cross_mean` and `event_agg` sums, window moments about their own offset,
-and warmup that follows the bars a lagged or snapshot operand reads — see CHANGELOG.md)
+and warmup that follows the bars a lagged or snapshot operand reads)
 names the engine's estimator revision the same way.
 
 The summary is a GRID, not a headline. Run-level keys are geometry and provenance only —

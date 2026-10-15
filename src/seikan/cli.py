@@ -151,12 +151,12 @@ EXIT_INTERNAL: Final = 4
 #: gate -> metric_roles), the ``outputs`` block naming the files a run wrote, and the error
 #: envelope ``{type, message, errors?}``. It is the one number that tells an agent whether the
 #: binary in front of it is the contract it is holding, so a reader-visible shape change bumps it
-#: rather than arriving silently. The revision history is in CHANGELOG.md; v5 (this build)
-#: REMOVED the legacy ``stats_table``/``by_target``/``by_param``/``n_stats_rows`` grid
-#: breakdown, the nominal ``t_iid``/``p_iid`` pair and the derivable ``sharpe``/``firing_rate``
-#: from the summary, renamed the trades column ``bars_held`` → ``horizon`` (always present),
-#: and ADDED the integrity reads ``rot_n_null`` (per panel) and ``pbo.n_splits_attempted`` /
-#: ``pbo.n_candidates_min``; every surviving number is byte-identical to v4.
+#: rather than arriving silently. v5 (this build) REMOVED the legacy ``stats_table`` /
+#: ``by_target``/``by_param``/``n_stats_rows`` grid breakdown, the nominal ``t_iid``/``p_iid``
+#: pair and the derivable ``sharpe``/``firing_rate`` from the summary, renamed the trades column
+#: ``bars_held`` → ``horizon`` (always present), and ADDED the integrity reads ``rot_n_null``
+#: (per panel) and ``pbo.n_splits_attempted`` / ``pbo.n_candidates_min``; every surviving number
+#: is byte-identical to v4.
 REPORT_SCHEMA_VERSION = 5
 
 

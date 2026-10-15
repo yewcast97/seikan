@@ -15,7 +15,7 @@ from seikan.types import (
 #: (new check, changed branch logic, changed default meaning) or the section's emitted shape
 #: moves, so two results are comparable only when their policy versions match. It names the
 #: CHECKLIST semantics — ``seikan_version`` names the package and ``analysis.STATISTICS_VERSION``
-#: the estimators the checklist reads. The revision history is in CHANGELOG.md.
+#: the estimators the checklist reads.
 POLICY_VERSION = 3
 
 

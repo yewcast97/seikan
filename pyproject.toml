@@ -36,7 +36,6 @@ dependencies = [
 
 [project.urls]
 Repository = "https://github.com/yewcast97/seikan"
-Changelog = "https://github.com/yewcast97/seikan/blob/main/CHANGELOG.md"
 
 [project.scripts]
 seikan = "seikan.cli:main"

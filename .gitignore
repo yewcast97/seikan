@@ -1,5 +1,7 @@
 # local agent docs & settings — untracked at any depth, kept on disk
+# (CHANGELOG.md is the coding agent's own memo of what changed and why)
 CLAUDE.md
+CHANGELOG.md
 .claude/
 
 # environments & build artifacts

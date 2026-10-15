@@ -67,7 +67,7 @@ from seikan.analysis._rotation import pooled_reliability_summary, reliability_su
 #: (``seikan_version`` names the package, ``gate.POLICY_VERSION`` the checklist semantics — this
 #: names the ESTIMATORS). The gate reads it as a drift detector: a summary stamped with anything
 #: but this build's number refuses ungraded rather than being graded under assumptions that may
-#: not hold of it. The revision history is in CHANGELOG.md.
+#: not hold of it.
 STATISTICS_VERSION = 5
 
 __all__ = [
