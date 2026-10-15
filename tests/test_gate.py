@@ -670,19 +670,52 @@ def test_unreadable_cells_panel_yields_no_graded_cells_without_raising():
         assert "cells panel" in check.detail
 
 
-@pytest.mark.parametrize("bad", [math.nan, math.inf, -math.inf, 3.5, None, "4"])
+@pytest.mark.parametrize(
+    "bad", [math.nan, math.inf, -math.inf, 3.5, None, "4", pytest.param(10**400, id="10**400")]
+)
 def test_evidence_complete_uncountable_grid_size_refuses(bad):
     # int(1.9) == 1 truncation is drifted input, not a countable search size — and int(inf) used
-    # to raise OverflowError, a crash where the contract promises a refusal.
+    # to raise OverflowError, a crash where the contract promises a refusal. So did float() of a
+    # JSON integer past the double range (json.loads keeps 10**400 exact).
     check = _run(evaluate_gate(_summary(cells=[_cell()], n_hypotheses_attempted=bad)))[
         "evidence_complete"
     ]
     assert not check.met
 
 
-@pytest.mark.parametrize("bad", [math.nan, math.inf, 1.5, None])
+@pytest.mark.parametrize(
+    "bad", [math.nan, math.inf, 1.5, None, pytest.param(10**400, id="10**400")]
+)
 def test_evidence_complete_uncountable_n_bars_refuses(bad):
     assert not _run(evaluate_gate(_summary(n_bars=bad)))["evidence_complete"].met
+
+
+def _numeric_paths(obj: object, path: tuple = ()) -> list[tuple]:
+    """The key path of every numeric leaf of a summary document."""
+    if isinstance(obj, dict):
+        return [p for k, v in obj.items() for p in _numeric_paths(v, (*path, k))]
+    if isinstance(obj, list):
+        return [p for i, v in enumerate(obj) for p in _numeric_paths(v, (*path, i))]
+    if isinstance(obj, (int, float)) and not isinstance(obj, bool):
+        return [path]
+    return []
+
+
+@pytest.mark.parametrize("build", [_summary, _basket], ids=["conjunction", "basket"])
+def test_an_integer_past_the_double_range_anywhere_never_raises(build):
+    # The reader funnels refuse what does not convert to a finite double; an unbounded JSON
+    # integer is one more such value. Planted at every numeric leaf in turn, it must leave a
+    # report that serializes — a refusal wherever it is read, never an OverflowError.
+    base = build()
+    paths = _numeric_paths(base)
+    assert len(paths) > 50
+    for path in paths:
+        s = json.loads(json.dumps(base))
+        node = s
+        for key in path[:-1]:
+            node = node[key]
+        node[path[-1]] = 10**400
+        json.dumps(evaluate_gate(s).to_dict())
 
 
 # ---- source_coverage (run level, fail-closed availability) -----------------------------------

@@ -20,16 +20,19 @@ from seikan.types import (
 def _num(value: object) -> float | None:
     """float(value), with None/NaN/±inf/garbage collapsed to None (a NaN would sail past
     comparisons and an inf would sail THROUGH them; drifted non-finite input must produce a
-    refusal, never a crash or a certified impossibility)."""
+    refusal, never a crash or a certified impossibility). An integer past the double range is
+    the same class: JSON integers are unbounded, ``json.loads`` keeps a 400-digit one exact, and
+    ``float()`` of it raises rather than returning inf."""
     if value is None or isinstance(value, bool):
         return None
     try:
         # The conversion is duck-typed BY DESIGN — the ``except`` below IS the contract for
-        # everything that does not convert (a dict, a list, a non-numeric string), which is why
-        # the parameter is an untrusted ``object``. The cast states that intent to the checker;
-        # nothing about it changes what a non-convertible value does here.
+        # everything that does not convert (a dict, a list, a non-numeric string, an int past
+        # the double range), which is why the parameter is an untrusted ``object``. The cast
+        # states that intent to the checker; nothing about it changes what a non-convertible
+        # value does here.
         v = float(cast("SupportsFloat", value))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     return v if math.isfinite(v) else None
 
@@ -45,7 +48,7 @@ def _int(value: object) -> int | None:
         if v != int(v):
             return None
         return int(v)
-    except (OverflowError, ValueError):  # _num already blocks inf; belt-and-braces
+    except (OverflowError, ValueError):  # _num already blocks inf and huge ints; belt-and-braces
         return None
 
 
