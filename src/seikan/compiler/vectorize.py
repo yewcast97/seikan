@@ -709,9 +709,10 @@ def cross_reduced(
         whole: npt.NDArray[np.bool_] = entering & emitted.any(axis=1, keepdims=True)
         return whole
     labels = np.where(entering, build_series(node.group, md)[0].to_numpy(dtype=float), np.nan)
+    ranks = nb.row_group_ranks(labels)  # the kernel's own per-bar groups
     reduced: npt.NDArray[np.bool_] = np.zeros_like(entering)
-    for value in np.unique(labels[np.isfinite(labels)]):
-        in_group = labels == value
+    for j in range(int(ranks.max(initial=-1)) + 1):
+        in_group = ranks == j
         reduced |= in_group & (in_group & emitted).any(axis=1, keepdims=True)
     return reduced
 

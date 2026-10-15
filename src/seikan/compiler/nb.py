@@ -731,6 +731,24 @@ def cross_agg_apply_nb(
     return np.broadcast_to(np.where(ok, v, np.nan), a.shape).copy()
 
 
+def row_group_ranks(labels: npt.NDArray[np.float64]) -> npt.NDArray[np.int64]:
+    """``(rows × members)``: each finite label's rank among its OWN ROW's distinct finite labels
+    (0 for the row's smallest), −1 for a NaN (non-finite) label — the members of row ``r`` that
+    share rank ``j`` are exactly one group of that bar. Labels compare like ``==`` (``-0.0`` and
+    ``0.0`` are one group). One stable sort per row, so O(rows × members · log members) however
+    many distinct labels the whole history holds."""
+    lab = np.asarray(labels, dtype=float)
+    key = np.where(np.isfinite(lab), lab, np.nan)  # NaN sorts last
+    order = np.argsort(key, axis=1, kind="stable")
+    srt = np.take_along_axis(key, order, axis=1)
+    step = np.ones(srt.shape, dtype=np.int64)
+    step[:, 1:] = srt[:, 1:] != srt[:, :-1]
+    ranked = np.where(np.isnan(srt), -1, np.cumsum(step, axis=1) - 1)
+    ranks = np.empty(lab.shape, dtype=np.int64)
+    np.put_along_axis(ranks, order, ranked, axis=1)
+    return ranks
+
+
 def cross_grouped_apply_nb(
     kernel: Callable[[npt.NDArray[np.float64]], npt.NDArray[np.float64]],
     arr: npt.NDArray[np.float64],
@@ -738,23 +756,29 @@ def cross_grouped_apply_nb(
 ) -> npt.NDArray[np.float64]:
     """Apply a cross-sectional kernel WITHIN each distinct finite label at each bar.
 
-    Grouping wraps the existing kernel per label rather than re-deriving it: for every distinct
-    finite label the kernel sees the (rows × targets) input with every OTHER member masked to
-    NaN, and only the labelled members' outputs are kept. Every property the ungrouped kernel
-    has — the per-group ``min_valid`` floor, ``rankdata(method="average")`` ties, the overflow
-    sanitization, ``cross_agg``'s broadcast (now to the group's members only) — is inherited
-    unchanged, and ONE label reproduces the ungrouped result bit-exactly (a pandas
-    ``groupby.transform`` was measured NOT bit-exact — summation order — and rejected). Labels are
-    point-in-time: a member's label may change from bar to bar. A NaN label excludes the member.
-    """
+    Grouping wraps the existing kernel rather than re-deriving it: pass ``j`` hands the kernel the
+    (rows × targets) input with every member masked to NaN but those holding their row's ``j``-th
+    distinct label (:func:`row_group_ranks`), and keeps only those members' outputs. Every
+    property the ungrouped kernel has — the per-group ``min_valid`` floor,
+    ``rankdata(method="average")`` ties, the overflow sanitization, ``cross_agg``'s broadcast (now
+    to the group's members only) — is inherited unchanged, and ONE label reproduces the
+    ungrouped result bit-exactly (a pandas ``groupby.transform`` was measured NOT bit-exact —
+    summation order — and rejected). Labels are point-in-time: a member's label may change from
+    bar to bar. A NaN label excludes the member.
+
+    Every kernel is row-wise, so a pass per ROW-rank is bit-exact with a pass per distinct label
+    (each row's masked member set is the same) and costs at most ``targets`` passes, never one
+    per label the history holds: under a fresh label each bar (a date code, a running count) that
+    was a pass per bar — 1.3 s for 4,000 bars of four members, where one label took under a
+    millisecond."""
     a = np.asarray(arr, dtype=float)
     lab = np.asarray(labels, dtype=float)
     if a.shape != lab.shape:
         raise ValueError(f"cross_grouped shape mismatch: {a.shape} vs {lab.shape}")
     out = np.full(a.shape, np.nan)
-    finite = np.isfinite(lab)
-    for value in np.unique(lab[finite]):
-        in_group = finite & (lab == value)
+    ranks = row_group_ranks(lab)
+    for j in range(int(ranks.max(initial=-1)) + 1):
+        in_group = ranks == j
         res = kernel(np.where(in_group, a, np.nan))
         out[in_group] = res[in_group]
     return out

@@ -1967,6 +1967,60 @@ def test_cross_grouped_shape_mismatch_raises():
         nb.cross_grouped_apply_nb(_rank_kernel(), np.ones((3, 2)), np.ones((3, 3)))
 
 
+def test_row_group_ranks_rank_each_rows_own_distinct_labels():
+    lab = np.array([[2.0, 1.0, np.nan, 1.0], [-0.0, 0.0, np.inf, 5.0], [np.nan] * 4])
+    np.testing.assert_array_equal(
+        nb.row_group_ranks(lab), [[1, 0, -1, 0], [0, 0, -1, 1], [-1, -1, -1, -1]]
+    )
+    assert nb.row_group_ranks(np.empty((0, 3))).shape == (0, 3)
+
+
+def _per_label_reference(kernel, a, lab):
+    """The grouping as a pass per distinct label over the whole history."""
+    out = np.full(a.shape, np.nan)
+    finite = np.isfinite(lab)
+    for value in np.unique(lab[finite]):
+        in_group = finite & (lab == value)
+        out[in_group] = kernel(np.where(in_group, a, np.nan))[in_group]
+    return out
+
+
+@pytest.mark.parametrize(
+    "kernel",
+    [_rank_kernel(), _demean_kernel(), *(_agg_kernel(a) for a in ("mean", "median", "std"))],
+    ids=["rank", "demean", "mean", "median", "std"],
+)
+def test_cross_grouped_is_one_pass_per_row_rank_bit_for_bit(kernel):
+    # The review's construction: a fresh label on every bar is ONE group per bar — the same
+    # result as one constant label, bit for bit, in at most `targets` kernel passes (a pass per
+    # label over the history made 4,000 of them here). Mixed labels match the per-label passes.
+    rng = np.random.default_rng(0)
+    a = rng.standard_normal((4000, 4))
+    a[rng.random(a.shape) < 0.1] = np.nan
+    fresh = np.repeat(np.arange(4000.0).reshape(-1, 1), 4, axis=1)
+    got = nb.cross_grouped_apply_nb(kernel, a, fresh)
+    assert np.array_equal(
+        got, nb.cross_grouped_apply_nb(kernel, a, np.zeros_like(a)), equal_nan=True
+    )
+    head = a[:300]  # the reference makes a pass per label: ~900 here
+    mixed = rng.integers(0, 3, head.shape) + 10.0 * np.arange(300).reshape(-1, 1)
+    mixed[rng.random(head.shape) < 0.1] = np.nan
+    assert np.array_equal(
+        nb.cross_grouped_apply_nb(kernel, head, mixed),
+        _per_label_reference(kernel, head, mixed),
+        equal_nan=True,
+    )
+    calls = 0
+
+    def counted(x):
+        nonlocal calls
+        calls += 1
+        return kernel(x)
+
+    nb.cross_grouped_apply_nb(counted, a, fresh)
+    assert calls == 1
+
+
 # ---- rolling median / mad, and the explicit-decay EW forms --------------------------------
 
 
