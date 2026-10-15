@@ -3179,6 +3179,20 @@ def test_bootstrap_interval_over_an_overflowed_episode_is_null_never_one_sided(s
     assert ok["reason"] is None
 
 
+def test_bootstrap_episode_sums_are_exactly_rounded():
+    # Eight separated episodes of [1, −2**54, −1, 2**54] on consecutive bars (h = 2 chains each
+    # into one): every episode sums to exactly 0, and so does the pool. Summed in floating
+    # point (np.add.reduceat) each episode read 1, and the bootstrap a zero-width interval at
+    # 0.25 with boot_se 0.0 beside a mean_ret of 0 — excluding the mean it brackets.
+    rets = np.array([1.0, -(2.0**54), -1.0, 2.0**54] * 8)
+    bars = (np.arange(8)[:, None] * 10 + np.arange(4)[None, :]).ravel()
+    assert float(np.add.reduceat(rets, [0, 4])[0]) == 1.0  # the premise: the old segment sum
+    ci = episode_bootstrap_ci(rets, bars, 2)
+    assert ci["reason"] is None and ci["n_episodes"] == 8
+    assert ci["ci_lo"] == ci["ci_hi"] == pool_moments(rets)["mean_ret"] == 0.0
+    assert ci["boot_se"] == 0.0
+
+
 def test_degenerate_bootstrap_distribution_has_exactly_zero_se():
     # A pool that varies, but whose episodes all carry the same (sum, count): every draw's mean
     # is the same bits, so the distribution is degenerate — an SE of rounding residue (~3e-17,

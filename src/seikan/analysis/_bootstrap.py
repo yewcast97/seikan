@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+from itertools import pairwise
 
 import numpy as np
 
@@ -38,6 +39,15 @@ BOOT_MIN_EPISODES = 5
 _BOOT_CHUNK = 1 << 22
 
 
+def _exact_sum(v: np.ndarray) -> float:
+    """``v``'s exactly rounded sum, ``inf`` where it leaves the double range (``math.fsum``
+    raises there rather than returning an infinity)."""
+    try:
+        return math.fsum(v.tolist())
+    except (OverflowError, ValueError):
+        return math.inf
+
+
 def episode_bootstrap_ci(
     rets: np.ndarray,
     entry_bars: np.ndarray,
@@ -54,7 +64,11 @@ def episode_bootstrap_ci(
     ``[entry_bar, entry_bar + h)`` windows (:func:`overlap_clusters` — the frozen half-open
     greedy merge, applied per target here). Each draw resamples ``n_episodes`` episodes with
     replacement; the draw's statistic is the pooled mean over the resampled observations
-    (Σ episode return-sums / Σ episode counts). Same keys always: ``{method, ci_level, n_boot,
+    (Σ episode return-sums / Σ episode counts). Each episode's return-sum is exactly rounded
+    (``math.fsum``): summed in floating point, ``[1, −2**54, −1, 2**54]`` read 1 for its exact 0,
+    and eight such episodes a zero-width interval at 0.25 with ``boot_se`` 0.0 beside a
+    ``mean_ret`` of 0 — an interval excluding the mean it brackets. A draw's sum over its
+    episodes' sums stays ordinary arithmetic. Same keys always: ``{method, ci_level, n_boot,
     n_episodes, ci_lo, ci_hi, boot_se, reason}`` — an empty pool reports
     ``reason="no_observations"``, fewer than ``min_episodes`` episodes reports the honest
     ``n_episodes`` with ``reason="insufficient_episodes"`` (a dense every-bar pool transitively
@@ -125,9 +139,13 @@ def episode_bootstrap_ci(
         out["boot_se"] = 0.0
         return out
     # Clusters partition the sorted rows into CONTIGUOUS runs (the greedy merge walks the rows in
-    # order), so each episode is a reduceat segment.
+    # order), so each episode is one segment of the sorted pool. Its sum is exactly rounded; a
+    # sum past the double range is inf, which the finiteness test below decides.
     starts = np.fromiter((c[0] for c in clusters), dtype=np.int64, count=n_ep)
     ep_counts = np.diff(np.append(starts, rets.size))
+    ep_sums = np.array(
+        [_exact_sum(pool[a:b]) for a, b in pairwise([*starts.tolist(), int(pool.size)])]
+    )
 
     digest = hashlib.sha256(np.int64(h).tobytes() + bars.tobytes() + rets.tobytes()).digest()
     rng = np.random.default_rng([_BOOT_SEED, *np.frombuffer(digest, dtype="<u4").tolist()])
@@ -135,10 +153,9 @@ def episode_bootstrap_ci(
     stats_arr = np.empty(n_boot, dtype=float)
     rows_per_chunk = max(1, _BOOT_CHUNK // n_ep)
     done = 0
-    # An episode sum, or a draw's sum of them, may leave the double range: the finiteness test
-    # below decides every such read, so the overflow is an expected input, never a warning.
+    # A draw's sum of episode sums may leave the double range: the finiteness test below decides
+    # every such read, so the overflow is an expected input, never a warning.
     with np.errstate(over="ignore", invalid="ignore"):
-        ep_sums = np.add.reduceat(pool, starts)
         while done < n_boot:
             rows = min(rows_per_chunk, n_boot - done)
             idx = rng.integers(0, n_ep, size=(rows, n_ep))

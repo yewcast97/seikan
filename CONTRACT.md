@@ -784,8 +784,9 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   rounding — the HAC nulls (largest deviation within ~10 ulps of the mean, the skewness/kurtosis
   gate, or every BAR's mean deviation within them: a pooled pool whose bars all sit at its mean,
   every row on one bar among them), the skewness/kurtosis null too wherever scipy's own
-  cancellation test (about its pairwise mean, in its arithmetic) reads one, the benchmark regression declines a (near-)constant bench leg and fits `beta` exactly 0 on
-  a (near-)constant raw leg, and a CSCV split scores NaN when its pool is exactly constant (the
+  cancellation test (about its pairwise mean, in its arithmetic) reads one, the benchmark
+  regression declines a (near-)constant bench leg and fits `beta` exactly 0 on a (near-)constant
+  raw leg, and a CSCV split scores NaN when its pool is exactly constant (the
   per-block extrema), within the HAC's ~10 ulps, or has a centered sum of squares within its own
   accumulation error. The pool MEANS the checklist grades, and their direct twins — the legs,
   the eras, the baseline, the HAC's centre — are the exactly rounded sum over `n` (`math.fsum`):
@@ -795,7 +796,9 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   from the raw legs, and the bar-closed sums beside it — the CSCV split means and the bucket
   means over whole bars among them — read a full bar's rows at exactly 0 (see the pooled
   panel). The evidence-only means elsewhere (bootstrap draws, episodes, buckets, CSCV) stay the
-  arithmetic mean.
+  arithmetic mean, save that each bootstrap episode's sum is exactly rounded too — summed in
+  floating point, eight episodes of `[1, −2**54, −1, 2**54]` read a zero-width interval at 0.25
+  beside a `mean_ret` of 0; a draw's sum over its episodes' sums stays ordinary arithmetic.
   A post-warmup zero-dispersion bar
   is UNDECIDABLE like `x / 0`: its NaN lands in `signal_coverage`, never fires — guard a z-score
   of a series that can sit flat with `rolling_agg(x, N, std) > 0`. "Equal" means bit-identical: a
