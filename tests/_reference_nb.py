@@ -440,9 +440,7 @@ def _cross_value(vals: list[float], agg: str) -> float:
     if agg == "mean":
         return vals[0] if constant else sum(vals) / len(vals)
     if agg == "median":
-        s = sorted(vals)
-        m = len(s) // 2
-        return s[m] if len(s) % 2 else (s[m - 1] + s[m]) / 2.0
+        return _sorted_median(vals)
     if agg == "std":
         if constant:
             return 0.0
@@ -827,10 +825,17 @@ def cross_agg_grouped_ref(
 # ---- robust window statistics and the explicit-decay EW forms -----------------------------
 
 
+def _midpoint(lo: float, hi: float) -> float:
+    """The midpoint of two doubles: ``(lo + hi) / 2`` wherever finite, else the halves' sum —
+    exact there, an overflowing sum's operands lying far above the subnormal range."""
+    mid = (lo + hi) / 2.0
+    return mid if math.isfinite(mid) else lo / 2.0 + hi / 2.0
+
+
 def _sorted_median(vals: list[float]) -> float:
     s = sorted(vals)
     m = len(s) // 2
-    return s[m] if len(s) % 2 else (s[m - 1] + s[m]) / 2.0
+    return s[m] if len(s) % 2 else _midpoint(s[m - 1], s[m])
 
 
 def rolling_median(arr: np.ndarray, window: int) -> np.ndarray:

@@ -770,7 +770,11 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   std, any one 1-bar ratio past it) is null with `ratio_reason: "not_representable"`, and a
   `describe` `diff` past it — levels of opposite sign ~1.8e308 apart — refuses its whole block as
   `reason: "not_representable"` (`diff` rides every block that did not refuse, so it is never a
-  reasonless null).
+  reasonless null). A value that IS representable is never lost to an intermediate's overflow
+  either: an even median's middle pair (`rolling_agg` / `cross_agg` `median`, and `mad`) meets at
+  numpy's own `(lo + hi) / 2` wherever that is finite, else at the halves' sum — exact there — so
+  levels past half the double range read their median (a constant window its value and a MAD of
+  0.0), never the NaN their overflowed sum read beside a mean of 1e308.
 - **Zero dispersion is exact.** The floating-point mean of a constant DECIMAL series is not the
   constant, and its rounding residue (~1e-17) used to read as dispersion — a z-score of exactly
   ±1, a correlation of 1, a flat feed drifting off its own EMA, an EW z-score locked at

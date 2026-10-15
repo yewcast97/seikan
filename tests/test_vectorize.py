@@ -3395,6 +3395,22 @@ def test_rolling_median_and_mad_parity(ohlcv, agg):
     _assert_series(RollingAgg(input=Change(input=Field(column="close")), window=5, agg=agg), ohlcv)
 
 
+def test_a_median_of_a_level_near_the_ceiling_reads_the_level():
+    # The review's case through the evaluator: a feed held at 1e308 read an even-window median and
+    # MAD of NaN, and a cross-sectional median of NaN, where its mean read 1e308 — a threshold over
+    # them never decided. They read the level and a MAD of exactly 0.0, initialized.
+    md = _mdk(6, x=[1e308] * 4)
+    for node, want, warm in (
+        (RollingAgg(input=_X, window=2, agg="median"), 1e308, 1),
+        (RollingAgg(input=_X, window=2, agg="mad"), 0.0, 1),
+        (CrossAgg(input=_X, agg="median"), 1e308, 0),
+    ):
+        v, i = (f.to_numpy() for f in vz.build_series(node, md))
+        assert (v[warm:] == want).all() and i[warm:].all(), node.type
+        thr = ThresholdCondition(left=node, op=">=", right=Constant(value=0.0))
+        assert vz.signal(thr, md).to_numpy()[warm:].all() and not vz.undefined_mask(thr, md).any()
+
+
 def test_robust_zscore_recipe_matches_hand_computation():
     # (x − median_N) / (1.4826 · mad_N): a flat window (mad = 0) divides by zero → NaN, no firing.
     idx = pd.date_range("2020-01-01", periods=8, freq="1D")

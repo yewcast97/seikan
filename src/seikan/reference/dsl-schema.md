@@ -415,7 +415,10 @@ two-pass form about its offset).
   `(x − rolling_agg(x, N, median)) / (1.4826 · rolling_agg(x, N, mad))` — a zero-dispersion
   window has `mad = 0` and divides to NaN (never fires). A rolling median of
   `|x − rolling_median(x)|` is NOT the MAD: each bar's deviation would be taken about a
-  different window's median.
+  different window's median. An even window's median is the midpoint of its middle pair, taken
+  so it never overflows (numpy's `(lo + hi) / 2` wherever finite, else the halves' sum, exact):
+  levels past half the double range read their median, and a constant window its value with a
+  `mad` of exactly 0.0 — the same rule as `cross_agg`'s `median`.
 - `drawdown` (optional `input` defaulting to close, optional `window`) — fractional depth below a
   peak: `input / peak − 1` (≤ 0). POSITIVE-scale domain: a non-positive peak → NaN (the ratio
   inverts on a negative scale; signed series compose level reads with `change(kind:"diff")`

@@ -209,6 +209,29 @@ def _sqrt_product(
     return out
 
 
+def _midpoint(lo: npt.NDArray[np.float64], hi: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+    """The midpoint of two doubles, elementwise — an even median's middle pair (a ``lo`` that IS
+    ``hi`` reads the value itself, an odd median's middle).
+
+    ``(lo + hi) / 2`` — bit for bit numpy's even median, the mean of the pair — wherever that is
+    finite; where the SUM overflowed (two members past half the double range — a constant window
+    of 1e308 read NaN, where its mean read 1e308), the halves' sum ``lo/2 + hi/2``. That is exact
+    there: an overflowing sum has two operands of one sign, the smaller at least half the
+    largest double's ulp (2**970), so halving each never rounds and their sum is the correctly
+    rounded midpoint. The direct form stays wherever finite because halving a SUBNORMAL loses its
+    last bit (``5e-324 / 2`` is 0.0)."""
+    with np.errstate(over="ignore", invalid="ignore"):
+        mid = (lo + hi) / 2.0
+        out: npt.NDArray[np.float64] = np.where(np.isfinite(mid), mid, lo / 2.0 + hi / 2.0)
+    return out
+
+
+def _sorted_median(s: npt.NDArray[np.float64], k: int) -> npt.NDArray[np.float64]:
+    """The median over the last axis of ``s``, sorted along it, whose leading ``k`` entries are
+    the values (``k`` ≥ 1): the middle one, or the :func:`_midpoint` of the middle pair."""
+    return _midpoint(s[..., (k - 1) // 2], s[..., k // 2])
+
+
 def zscore_sma_apply_nb(arr: npt.NDArray[np.float64], window: int) -> npt.NDArray[np.float64]:
     a = np.asarray(arr, dtype=float)
     n = a.shape[0]
@@ -295,12 +318,14 @@ def rolling_agg_apply_nb(
                 lifted_std = np.ldexp(np.sqrt(lifted_var), -_LIFT)
                 v = np.where(lost, np.maximum(lifted_std, 5e-324), v)
             v = np.where(constant, 0.0, v)
-        elif agg == "median":
-            v = np.median(win, axis=-1)
-        elif agg == "mad":
-            # Median absolute deviation about the SAME window's median, unscaled.
-            med = np.median(win, axis=-1)
-            v = np.median(np.abs(win - med[..., None]), axis=-1)
+        elif agg in ("median", "mad"):
+            # The sorted window's middle, an even window's pair met at its overflow-safe
+            # midpoint (bit for bit ``np.median`` wherever that is finite): a constant window
+            # reads its value and a MAD of exactly 0.0, at any level.
+            v = _sorted_median(np.sort(win, axis=-1), window)
+            if agg == "mad":
+                # Median absolute deviation about the SAME window's median, unscaled.
+                v = _sorted_median(np.sort(np.abs(win - v[..., None]), axis=-1), window)
         else:
             raise ValueError(f"unknown rolling_agg agg: {agg!r}")
     # `isfinite(v)`: a finite window can still overflow its sum/squared deviations to ±inf.
@@ -704,11 +729,14 @@ def cross_agg_apply_nb(
             v = np.where(finite, a, 0.0).sum(axis=1, keepdims=True) / k
             v = np.where(constant, np.where(finite, a, -np.inf).max(axis=1, keepdims=True), v)
         elif agg == "median":
-            masked = np.where(finite, a, np.nan)
+            # NaN sorts last, so each row's k finite members lead its sorted copy; the middle
+            # pair meets at the overflow-safe midpoint (``np.nanmedian`` bit for bit wherever
+            # finite — it summed even an odd row's middle with itself, overflowing at 1e308).
+            s = np.sort(np.where(finite, a, np.nan), axis=1)
             v = np.full((a.shape[0], 1), np.nan)
-            rows = k.reshape(-1) > 0
-            if rows.any():
-                v[rows, 0] = np.nanmedian(masked[rows], axis=1)
+            rows = np.flatnonzero(k.reshape(-1) > 0)
+            kr = k.reshape(-1)[rows].astype(np.int64)
+            v[rows, 0] = _midpoint(s[rows, (kr - 1) // 2], s[rows, kr // 2])
         elif agg == "std":
             # Two-pass centered variance — the one-pass Σx²/k − mean² form cancels to a silent
             # 0.0 std at large member levels, which the documented z-score recipe then divides by.

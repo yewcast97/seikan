@@ -2066,6 +2066,54 @@ def test_rolling_mad_overflow_yields_nan_never_inf():
     assert not np.isinf(got).any()
 
 
+def test_an_even_median_and_its_mad_never_overflow_at_the_ceiling():
+    # The review's case: a constant window of 1e308 read its mean 1e308 but its median and MAD
+    # NaN — numpy's even median sums its middle pair, and np.nanmedian summed even an odd row's
+    # middle with itself. The pair now meets at its overflow-safe midpoint.
+    x = np.full(3, 1e308)
+    np.testing.assert_array_equal(rolling_agg_1d(x, 2, "median"), [np.nan, 1e308, 1e308])
+    np.testing.assert_array_equal(rolling_agg_1d(x, 2, "mad"), [np.nan, 0.0, 0.0])
+    np.testing.assert_array_equal(rolling_agg_1d(x, 2, "mean"), [np.nan, 1e308, 1e308])
+    for row in ([1e308, 1e308], [1e308, 1e308, 1e308, np.nan], [-1e308, -1e308, -1e308]):
+        a = np.array([row])
+        np.testing.assert_array_equal(
+            nb.cross_agg_apply_nb(a, "median", 2), np.full(a.shape, row[0])
+        )
+    # A varying pair past half the range reads its correctly rounded midpoint, the halves' sum.
+    big = np.finfo(float).max
+    assert rolling_agg_1d(np.array([big, 1.5e308]), 2, "median")[1] == big / 2 + 1.5e308 / 2
+    mad = rolling_agg_1d(np.array([big, 1.5e308]), 2, "mad")[1]
+    assert mad == pytest.approx(big / 2 - 1.5e308 / 2, rel=1e-15)
+    got = nb.cross_agg_apply_nb(np.array([[big, 1.5e308, -1.0]]), "median", 2)
+    np.testing.assert_array_equal(got, [[1.5e308] * 3])
+    # The direct sum stays wherever it is finite: halving a subnormal would lose its last bit.
+    tiny = np.array([5e-324, 5e-324, 1.5e-323])
+    np.testing.assert_array_equal(rolling_agg_1d(tiny, 2, "median"), [np.nan, 5e-324, 1e-323])
+    assert ref.rolling_median(np.array([1e308, 1e308]), 2)[1] == 1e308
+
+
+@pytest.mark.parametrize("window", [2, 3, 8, 9, 20])
+def test_rolling_median_and_mad_are_numpy_bit_for_bit(window):
+    rng = np.random.default_rng(window)
+    a = rng.normal(100.0, 5.0, (300, 3))
+    win = sliding_window_view(a, window, axis=0)
+    med = np.median(win, axis=-1)
+    mad = np.median(np.abs(win - med[..., None]), axis=-1)
+    np.testing.assert_array_equal(nb.rolling_agg_apply_nb(a, window, "median")[window - 1 :], med)
+    np.testing.assert_array_equal(nb.rolling_agg_apply_nb(a, window, "mad")[window - 1 :], mad)
+
+
+def test_cross_median_is_nanmedian_bit_for_bit():
+    rng = np.random.default_rng(5)
+    a = rng.normal(1e6, 1.0, (2000, 7))
+    a[rng.random(a.shape) < 0.3] = np.nan
+    a = a[np.isfinite(a).sum(axis=1) >= 2]  # the floor's rows; nanmedian warns on an empty one
+    want = np.nanmedian(a, axis=1, keepdims=True)
+    np.testing.assert_array_equal(
+        nb.cross_agg_apply_nb(a, "median", 2), np.broadcast_to(want, a.shape)
+    )
+
+
 def test_ema_params_window_form_and_alpha_form():
     assert nb.ema_params(20, None) == (2.0 / 21.0, 20)
     assert nb.ema_params(None, 0.06) == (0.06, 33)
