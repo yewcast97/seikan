@@ -1457,7 +1457,10 @@ open to quote a statistic honestly.
   long-run variance is formed from each bar's deviation sum, exactly rounded from the bar's own
   returns and the centre, so basket members whose deviations cancel on a bar keep their small
   combined variance (summed row by row, ten members netting to `(k − 2.5)·2**−24` per bar read an
-  SE 65% low). Null on a (near-)constant pool — its spread is rounding residue, not dispersion —
+  SE 65% low). The deviations are read in shifted coordinates — each return less the pool's range
+  midpoint, their mean correctly rounded at that scale — so a pool and its translate read the same
+  `hac_se` (about the reported mean, whose rounding is the level's ulp, returns at `1 + k·2**-52`
+  read an SE 30% high, and the same pool shifted onto 0 the exact one). Null on a (near-)constant pool — its spread is rounding residue, not dispersion —
   on a pooled pool whose every bar sits at its mean (every row on one bar among them), and where
   the long-run variance leaves the double range. KNOWN CAVEAT: anti-conservative on heavily
   overlapping pools (the taper understates the long-run variance).

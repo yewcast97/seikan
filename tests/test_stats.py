@@ -1070,17 +1070,41 @@ def test_newey_west_same_bar_sum_past_the_double_range_is_null_never_a_crash():
 
 
 def test_newey_west_bar_deviation_sums_are_exactly_rounded():
-    # Each bar's Σ(r − mean): its exact value, correctly rounded — one fsum over the bar's raw
-    # returns and its copies of −mean, never a sum of rounded deviations.
+    # Each bar's Σ(y − m) in shifted coordinates — y = r − c about the pool's range midpoint, m
+    # their correctly rounded mean: its exact value, correctly rounded — one fsum over the bar's
+    # shifted returns and its copies of −m, never a sum of rounded deviations.
     rng = np.random.RandomState(21)
-    rets = rng.normal(0.0, 0.02, 400) * 10.0 ** rng.randint(-4, 5, 400)
-    bars = np.sort(rng.randint(0, 90, 400))
-    mean = exact_mean(rets)
-    u, count, d = _bar_deviation_sums(rets, bars, mean)
-    assert (count > 1).any() and (count == 1).any()
-    for a, k, got in zip(u.tolist(), count.tolist(), d.tolist(), strict=True):
-        exact = sum((Fraction(x) for x in rets[bars == a].tolist()), Fraction(0))
-        assert got == float(exact - k * Fraction(mean)), a
+    for level in (0.0, 1.0, 1e6):
+        rets = level + rng.normal(0.0, 0.02, 400) * 10.0 ** rng.randint(-4, 5, 400)
+        bars = np.sort(rng.randint(0, 90, 400))
+        y = rets - (float(rets.max()) / 2.0 + float(rets.min()) / 2.0)
+        m = math.fsum(y.tolist()) / y.size
+        u, count, d = _bar_deviation_sums(rets, bars)
+        assert (count > 1).any() and (count == 1).any()
+        for a, k, got in zip(u.tolist(), count.tolist(), d.tolist(), strict=True):
+            exact = sum((Fraction(v) for v in y[bars == a].tolist()), Fraction(0))
+            assert got == float(exact - k * Fraction(m)), (level, a)
+
+
+def test_newey_west_deviations_are_summed_about_the_pools_offset():
+    # The review's pool: 10,000 returns at 1 + k·2**-52 (k alternating 0 and 1, the last 32),
+    # three bars apart at h = 1, so the estimate is the iid std/√n. The reported mean rounds at
+    # the LEVEL's ulp, as large as the deviations themselves, and about it the HAC read an SE of
+    # 1.714e-18 for the exact 1.312e-18 — while the same pool shifted onto 0, whose mean is
+    # representable, read the exact value: the estimate hung on the level. Summed in shifted
+    # coordinates, the pool and its shift read the same SE, the exact one to rounding.
+    u = np.tile([0.0, 1.0], 5000)
+    u[-1] = 32.0
+    rets = 1.0 + 2.0**-52 * u
+    bars = 3 * np.arange(rets.size)
+    t, se = newey_west_mean(rets, bars, 1)
+    q = [Fraction(r) for r in rets.tolist()]
+    mu = sum(q) / len(q)
+    se_exact = math.sqrt(sum((x - mu) ** 2 for x in q) / (len(q) - 1) / len(q))
+    assert se == pytest.approx(se_exact, rel=1e-15)
+    assert newey_west_mean(rets - 1.0, bars, 1)[1] == se
+    assert se == pytest.approx(float(np.std(rets - 1.0, ddof=1)) / 100.0, rel=1e-15)
+    assert t == exact_mean(rets) / se  # t stays the reported mean over the SE
 
 
 def test_newey_west_pool_whose_bars_sit_at_its_mean_is_null():

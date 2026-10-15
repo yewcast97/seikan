@@ -14,6 +14,7 @@ from seikan.analysis._pools import (
     cross_mean_bar_deviations,
     exact_mean,
 )
+from seikan.numeric import midrange
 
 _NAN = float("nan")
 
@@ -42,9 +43,10 @@ def newey_west_mean(rets: np.ndarray, entry_bars: np.ndarray, h: int) -> tuple[f
     variance: ten members firing together whose deviations cancel to ``(k − 2.5)·2**−24`` per
     bar read an SE of 3.73e-10 where the estimator's exact value is 1.05e-9 (``t`` 40.0 for
     14.12). Rows with the same per-bar sums give the same estimate, and no permutation of a
-    bar's rows can move it (the basket pooled path). The centre is the pool's exactly rounded
-    mean (``_pools.exact_mean``), the ``mean_ret`` the cell reports, so ``t`` is that mean over
-    this SE.
+    bar's rows can move it (the basket pooled path). The deviations are taken about the pool's
+    mean read in shifted coordinates, to the rounding of the deviations themselves (see
+    :func:`_bar_deviation_sums`), so a pool and its translate read the same SE; ``t`` is the
+    reported mean — the pool's exactly rounded ``mean_ret`` (``_pools.exact_mean``) — over it.
 
     A (near-)constant pool (:func:`_near_constant`) is ``(NaN, NaN)``, like any other pool
     without a positive long-run variance: its dispersion is rounding residue — the computed mean
@@ -89,34 +91,43 @@ def newey_west_mean(rets: np.ndarray, entry_bars: np.ndarray, h: int) -> tuple[f
         if _near_constant(rets, mean):
             return (_NAN, _NAN)
         try:
-            u, count, d_bar = _bar_deviation_sums(rets, bars, mean)
+            u, count, d_bar = _bar_deviation_sums(rets, bars)
         except OverflowError:
             return (_NAN, _NAN)
     return _hac_from_bar_sums(mean, u, count, d_bar, h, n)
 
 
 def _bar_deviation_sums(
-    rets: np.ndarray, bars: np.ndarray, mean: float
+    rets: np.ndarray, bars: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """``(u, count, d_bar)`` of a pool sorted by bar: its distinct entry bars, the rows on each,
-    and each bar's deviation sum ``D_a = Σ_{i∈a} (r_i − mean)``, exactly rounded.
+    """``(u, count, d_bar)`` of a finite pool sorted by bar: its distinct entry bars, the rows
+    on each, and each bar's deviation sum ``D_a = Σ_{i∈a} (r_i − μ)`` about the pool's mean.
 
-    A bar of one row reads ``r − mean``, itself one rounding of the exact value; a bar of
-    ``k > 1`` rows is ONE ``math.fsum`` over its raw returns and ``k`` copies of ``−mean`` — no
-    row's deviation is rounded before the bar sums it, and no ``k·mean`` product is rounded
-    either. Summing the rounded deviations lost the centre wherever a row's ``r − mean``
-    rounded it away: on ``[0.5, −0.5, 0.5, −0.5, 2**−53]`` at bars ``[0, 0, 3, 3, 6]`` (h = 1)
-    the two-row bars read 0 for their exact ``−2·mean`` and the SE 1.986e-17 for the exact
-    2.432e-17. The order of a bar's rows cannot move the sum.
+    The sums are read in SHIFTED coordinates: ``y = r − c`` about the pool's range midpoint
+    ``c`` (:func:`~seikan.numeric.midrange` — exact wherever the pool lies within a factor of two
+    of it, the pools' ddof=1 std rule), the centre ``m = fsum(y) / n`` correctly rounded at THAT
+    scale. The reported mean rounds at the level's ulp instead, and where the deviations are
+    themselves a few ulps of the level that rounding is one of them: 10,000 returns at
+    ``1 + k·2**-52`` read an SE of 1.714e-18 about it for the exact 1.312e-18, and the same pool
+    shifted onto 0, whose mean is representable, the exact value. A pool and its translate read
+    the same sums. A bar of one row reads ``y − m``, one rounding of its value; a bar of ``k > 1``
+    rows is ONE ``math.fsum`` over its shifted returns and ``k`` copies of ``−m`` — no row's
+    deviation is rounded before the bar sums it, and no ``k·m`` product is rounded either.
+    Summing the rounded deviations lost the centre wherever a row's deviation rounded it away: on
+    ``[0.5, −0.5, 0.5, −0.5, 2**−53]`` at bars ``[0, 0, 3, 3, 6]`` (h = 1) the two-row bars read
+    0 for their exact ``−2·mean`` and the SE 1.986e-17 for the exact 2.432e-17. The order of a
+    bar's rows cannot move the sum.
 
     Runs under the caller's ``errstate``: a one-row deviation past the double range is ±inf
-    (decided by :func:`_hac_from_bar_sums`), and a same-bar sum past it raises OverflowError.
+    (decided by :func:`_hac_from_bar_sums`), and a sum past it raises OverflowError.
     """
+    y = rets - midrange(float(np.min(rets)), float(np.max(rets)))
+    m = math.fsum(y.tolist()) / y.size
     u, start, count = np.unique(bars, return_index=True, return_counts=True)
-    d_bar = rets[start] - mean
+    d_bar = y[start] - m
     for i in np.flatnonzero(count > 1):
         a, k = int(start[i]), int(count[i])
-        d_bar[i] = math.fsum([*rets[a : a + k].tolist(), *([-mean] * k)])
+        d_bar[i] = math.fsum([*y[a : a + k].tolist(), *([-m] * k)])
     return u, count, d_bar
 
 

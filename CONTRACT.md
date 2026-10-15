@@ -810,7 +810,7 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   raw leg, and a CSCV split scores NaN when its pool is exactly constant (the
   per-block extrema), within the HAC's ~10 ulps, or has a centered sum of squares within its own
   accumulation error. The pool MEANS the checklist grades, and their direct twins — the legs,
-  the eras, the baseline, the HAC's centre — are the exactly rounded sum over `n` (`math.fsum`):
+  the eras, the baseline, the HAC's `t` numerator — are the exactly rounded sum over `n` (`math.fsum`):
   the exact sum's sign, exactly 0.0 where it is 0 (a pairwise float sum lost a term a larger one
   swallowed before its cancelling partner arrived — an exact zero read as a positive mean), and a
   constant pool's own value; a `cross_mean` basket's pooled `mean_ret` is its exact excess sum
@@ -835,7 +835,10 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   which no kernel can tell from variation. Every window, cross-section and pool that varies is
   the direct two-pass form about its OWN offset — the window's first value, a cross-section's or a
   pool's range midpoint (`numeric.midrange`: the pools' `std_ret`, `boot_se` and baseline std, the
-  benchmark regression's second moments, `describe`'s dispersion stds) — bit for bit, while its
+  benchmark regression's second moments, the HAC's bar deviation sums — their centre the pool's
+  mean in those shifted coordinates, so a pool and its translate read one `hac_se` (about the
+  reported mean, returns at `1 + k·2**-52` read an SE 30% high) — `describe`'s dispersion stds)
+  — bit for bit, while its
   variances and, for `rolling_corr`, their product are normal doubles (the next bullet): centered
   on the rounded mean of the raw values, a spread at its level's ulp was lost to that mean's
   rounding (`[2**52, 2**52 + 1]` read a window std of 0.707 for 0.5, a two-point z-score of
