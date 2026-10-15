@@ -654,6 +654,28 @@ def test_a_pool_whose_exact_sum_is_zero_reads_a_zero_mean_and_no_support(tmp_pat
     assert not support.met and "mean_ret=0.0" in support.detail
 
 
+def test_an_unreachable_z_score_never_fires_on_an_ulp_scale_alternation(tmp_path):
+    # A two-bar population z-score is at most 1 in magnitude, but about the rounded mean of the
+    # raw values the alternation 2**52, 2**52 + 1 read 1.414: `zscore(close, 2) > 1.1` fired on
+    # 40 of 80 bars and the cell passed. About the window's own offset it reads exactly ±1.
+    px = _bars(tmp_path / "px.csv", [2.0**52 + (i % 2) for i in range(80)])
+    thesis = Thesis.model_validate(
+        {
+            "name": "ulp_z",
+            "data": {"targets": ["target"]},
+            "entry": {
+                "type": "threshold",
+                "left": {"type": "zscore", "input": {"type": "field"}, "window": 2},
+                "op": ">",
+                "right": {"type": "constant", "value": 1.1},
+            },
+            "params": {"horizon": 1},
+        }
+    )
+    res = run_backtest(thesis, load(thesis, {"target": px}))
+    assert res.trades.empty and res.summary["cells"][0]["by_target"]["target"]["n"] == 0
+
+
 def test_cell_count_equals_the_declared_grid_across_shapes(tmp_path):
     # len(cells) == n_hypotheses_attempted by construction, whatever the grid's shape — including
     # the degenerate one-cell run whose horizon was never swept.

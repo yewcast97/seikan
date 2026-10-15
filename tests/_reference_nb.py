@@ -10,7 +10,9 @@ overflowed is NaN wherever it is divided by or reported; a VARYING window whose 
 the normal range (subnormal, or 0.0) is recomputed on its values lifted by ``2**_LIFT`` — exact —
 its std floored at the smallest subnormal; the correlation's variance PRODUCT of two normal
 variances is taken in an unbounded exponent range (:func:`_sqrt_product`); and the EW z-score's
-recurrence runs in a frame lifted by a power of two once its variance nears that range.
+recurrence runs in a frame lifted by a power of two once its variance nears that range. Every
+window moment is taken about the window's own offset (its first value; a cross-section's is the
+midpoint of its range), never about the rounded mean of the raw values.
 """
 
 from __future__ import annotations
@@ -79,27 +81,26 @@ def zscore_sma(arr: np.ndarray, window: int) -> np.ndarray:
             continue
         if len(set(arr[i - window + 1 : i + 1].tolist())) == 1:
             continue  # a constant window has no dispersion to standardize by
-        mean = s / cnt
-        # Two-pass centered variance (population), matching the production kernel: the one-pass
-        # E[x²] − E[x]² form loses the mantissa to cancellation at large input levels.
-        ss = 0.0
-        with np.errstate(over="ignore", invalid="ignore"):
-            for j in range(i - window + 1, i + 1):
-                d = arr[j] - mean
-                ss += d * d
-        var = ss / cnt
-        x = arr[i]
+        # Two-pass centered variance (population) about the window's first value, matching the
+        # production kernel: the one-pass E[x²] − E[x]² form loses the mantissa to cancellation
+        # at large input levels, and the raw mean's rounding loses an ulp-scale spread.
+        var, dev = _shifted_moments([float(v) for v in arr[i - window + 1 : i + 1]])
         if var < _MIN_NORMAL:  # a VARYING window whose squared deviations underflowed: lift it
-            vals = [math.ldexp(v, _LIFT) for v in arr[i - window + 1 : i + 1]]
-            mean = sum(vals) / cnt
-            var = sum((v - mean) * (v - mean) for v in vals) / cnt
-            x = vals[-1]
+            var, dev = _shifted_moments([math.ldexp(v, _LIFT) for v in arr[i - window + 1 : i + 1]])
         if not (_MIN_NORMAL <= var < math.inf):
             continue  # an overflowed variance
-        z = (x - mean) / math.sqrt(var)
+        z = dev / math.sqrt(var)
         if np.isfinite(z):
             out[i] = z
     return out
+
+
+def _shifted_moments(vals: list[float]) -> tuple[float, float]:
+    """``(population variance, last value's deviation)`` of a window, about its first value."""
+    with np.errstate(over="ignore", invalid="ignore"):
+        y = np.asarray(vals, dtype=np.float64) - vals[0]
+        d = y - y.mean()
+        return float(np.mean(d * d)), float(d[-1])
 
 
 def zscore_ema(arr: np.ndarray, window: int) -> np.ndarray:
@@ -244,15 +245,12 @@ def rolling_agg(arr: np.ndarray, window: int, agg: str) -> np.ndarray:
             out[i] = vals.min()
         elif agg == "mean":
             out[i] = vals[0] if constant else vals.mean()
-        else:  # std, population
-            m = vals.mean()
-            with np.errstate(over="ignore", invalid="ignore"):
-                var = float(np.mean((vals - m) ** 2))
+        else:  # std, population, about the window's first value
+            var, _ = _shifted_moments(vals.tolist())
             if constant:
                 out[i] = 0.0
             elif var < _MIN_NORMAL:  # VARYING, its squared deviations underflowed: lift it
-                lifted = np.ldexp(vals, _LIFT)
-                lvar = float(np.mean((lifted - lifted.mean()) ** 2))
+                lvar, _ = _shifted_moments(np.ldexp(vals, _LIFT).tolist())
                 out[i] = max(math.ldexp(math.sqrt(lvar), -_LIFT), 5e-324)
             elif var < math.inf:
                 out[i] = math.sqrt(var)
@@ -448,17 +446,32 @@ def _cross_value(vals: list[float], agg: str) -> float:
     if agg == "std":
         if constant:
             return 0.0
-        mu = sum(vals) / len(vals)
-        var = sum((x - mu) * (x - mu) for x in vals) / len(vals)
+        var = _row_variance(vals)
         if var < _MIN_NORMAL:  # a VARYING row whose squared deviations underflowed: lift it
-            lifted = [math.ldexp(x, _LIFT) for x in vals]
-            mu = sum(lifted) / len(lifted)
-            lvar = sum((x - mu) * (x - mu) for x in lifted) / len(lifted)
+            lvar = _row_variance([math.ldexp(x, _LIFT) for x in vals])
             return max(math.ldexp(math.sqrt(lvar), -_LIFT), 5e-324)
         return math.sqrt(var) if var < math.inf else math.nan  # NaN: an overflowed variance
     if agg == "frac_positive":
         return sum(1.0 for x in vals if x > 0.0) / len(vals)
     raise ValueError(agg)
+
+
+def _row_offset(vals: list[float]) -> float:
+    """A cross-section's offset: the midpoint of its range, each end halved first."""
+    return max(vals) / 2.0 + min(vals) / 2.0
+
+
+def _row_deviations(vals: list[float]) -> list[float]:
+    """Each member's deviation from the cross-section's mean, about the row's offset."""
+    c = _row_offset(vals)
+    y = [x - c for x in vals]
+    mu = sum(y) / len(y)
+    return [v - mu for v in y]
+
+
+def _row_variance(vals: list[float]) -> float:
+    """A cross-section's population variance, two-pass about the row's offset."""
+    return sum(d * d for d in _row_deviations(vals)) / len(vals)
 
 
 def rolling_corr_ref(left: np.ndarray, right: np.ndarray, window: int) -> np.ndarray:
@@ -471,10 +484,11 @@ def rolling_corr_ref(left: np.ndarray, right: np.ndarray, window: int) -> np.nda
 
     def moments(a: np.ndarray, b: np.ndarray) -> tuple[float, float, float]:
         with np.errstate(over="ignore", invalid="ignore"):
-            ma, mb = a.mean(), b.mean()
-            va = float(np.mean((a - ma) ** 2))
-            vb = float(np.mean((b - mb) ** 2))
-            cov = float(np.mean((a - ma) * (b - mb)))
+            da = (a - a[0]) - (a - a[0]).mean()
+            db = (b - b[0]) - (b - b[0]).mean()
+            va = float(np.mean(da * da))
+            vb = float(np.mean(db * db))
+            cov = float(np.mean(da * db))
         return va, vb, cov
 
     n = left.shape[0]
@@ -782,9 +796,9 @@ def cross_demean_grouped_ref(arr: np.ndarray, labels: np.ndarray, min_valid: int
             if len(members) < max(min_valid, 2):
                 continue
             vals = [float(arr[i, g]) for g in members]
-            mean = sum(vals) / len(vals)
-            for g in members:
-                out[i, g] = 0.0 if len(set(vals)) == 1 else arr[i, g] - mean
+            devs = _row_deviations(vals)
+            for g, d in zip(members, devs, strict=True):
+                out[i, g] = 0.0 if len(set(vals)) == 1 else d
     return out
 
 

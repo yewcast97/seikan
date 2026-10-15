@@ -62,7 +62,10 @@ from seikan.numeric import MIN_NORMAL, log_ratio_array
 # ledgers every overflowed bar from there on. Variances are computed CENTERED (two-pass or a
 # Welford/West recurrence), never as E[x²] − E[x]²: the one-pass form cancels catastrophically on
 # large-magnitude series (a price near 5000 with a std near 1 has already lost most of the
-# mantissa).
+# mantissa). The two-pass windows are centered about the window's OWN offset (its first value; a
+# cross-section's range midpoint — ``_window_moments``, ``_row_offset``), never about the rounded
+# mean of the raw values: that mean's rounding is the size of the level's ulp, and a spread at that
+# scale (``[2**52, 2**52 + 1]``) read a std of 0.707 for 0.5 and a z-score past its bound.
 #
 # OUT-OF-RANGE intermediates: sanitizing the RESULT is not enough where an out-of-range intermediate
 # yields a FINITE one — ``x / inf`` is 0.0, so a correlation whose variance product overflowed read
@@ -102,10 +105,10 @@ from seikan.numeric import MIN_NORMAL, log_ratio_array
 # residual minted a z-score of exactly ±1 and a correlation of 1 out of a constant series. The
 # recurrences hold the same line (``ema_1d``, ``zscore_ema_1d``, ``event_agg_1d``). Every window
 # with any variation whose variances and, for ``rolling_corr``, their product are normal doubles
-# is computed exactly as before, bit for bit (the EW recurrences differ only on the steps whose
-# rounded update left its exact interval, or a held input's carried deviation, and the EW z-score
-# where its plain recurrence left the normal range; the out-of-range windows and the lifted EW
-# frame are the note above);
+# is the direct two-pass form about its offset, bit for bit (the EW recurrences differ from their
+# plain update only on the steps whose rounded update left its exact interval, or a held input's
+# carried deviation, and the EW z-score where its plain recurrence left the normal range; the
+# out-of-range windows and the lifted EW frame are the note above);
 # "constant" means bit-identical
 # values — arithmetic on decimal levels (a spread ``y1 − y2`` moving in lockstep) leaves residue
 # at the operands' scale, which is variation as far as any kernel can tell.
@@ -147,11 +150,24 @@ _LIFT = 600
 def _window_moments(
     win: npt.NDArray[np.float64],
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
-    """The mean and the two-pass centered population variance over the LAST axis — stable at
-    any input level, where the one-pass ``E[x²] − E[x]²`` form NaNs out around 1e8 already."""
-    mean = win.mean(axis=-1)
-    var: npt.NDArray[np.float64] = ((win - mean[..., None]) ** 2).mean(axis=-1)
-    return mean, var
+    """The two-pass centered population variance over the LAST axis, and the last bar's
+    deviation from the window mean — computed around the window's OWN offset, its first value:
+    ``y = x − x_first`` (exact wherever the window lies within a factor of two of that value),
+    then ``y``'s mean and the deviations ``y − mean_y``.
+
+    Centered about the rounded mean of the RAW values instead, a window whose spread sits near
+    its level's ulp lost that spread to the mean's rounding: the mean of ``[2**52, 2**52 + 1]``
+    rounds onto a member, so the deviations read ``[0, 1]`` for ``[−0.5, 0.5]``, the std 0.707
+    for 0.5, and the z-score 1.414 — past the population bound ``√(w−1) = 1``. Around the offset
+    they are the exact ``[−0.5, 0.5]``. Shifting commutes with the power-of-two lift
+    (:func:`_lifted_windows`), and a difference that overflows (members farther apart than the
+    double range) overflows the variance with it. Stable at any level, where the one-pass
+    ``E[x²] − E[x]²`` form NaNs out around 1e8 already."""
+    y = win - win[..., :1]
+    dev = y - y.mean(axis=-1)[..., None]
+    var: npt.NDArray[np.float64] = (dev**2).mean(axis=-1)
+    last: npt.NDArray[np.float64] = dev[..., -1]
+    return var, last
 
 
 def _lifted_windows(a: npt.NDArray[np.float64], window: int) -> npt.NDArray[np.float64]:
@@ -205,17 +221,17 @@ def zscore_sma_apply_nb(arr: npt.NDArray[np.float64], window: int) -> npt.NDArra
     # mean's rounding leaves (see the zero-dispersion note above).
     varies = ~_constant_windows(a, window)
     with np.errstate(all="ignore"):
-        # Two-pass centered population variance (the ``rolling_agg`` std pattern).
-        mean, var = _window_moments(win)
-        x = a[window - 1 :]
-        z = (x - mean) / np.sqrt(var)
+        # Two-pass centered population moments about the window's own offset (the ``rolling_agg``
+        # std pattern): the current bar's deviation over the window std.
+        var, dev = _window_moments(win)
+        z = dev / np.sqrt(var)
         # A VARYING window whose variance fell below the normal range (deviations under
         # ~1.5e-154: a subnormal variance read |z| past its bound √(w−1), one of 0.0 read NaN) is
         # recomputed lifted — the same z, every rounding scaled (the out-of-range note above).
         lost = finite_all & varies & (var < MIN_NORMAL)
         if lost.any():
-            lifted_mean, lifted_var = _window_moments(_lifted_windows(a, window))
-            z = np.where(lost, (np.ldexp(x, _LIFT) - lifted_mean) / np.sqrt(lifted_var), z)
+            lifted_var, lifted_dev = _window_moments(_lifted_windows(a, window))
+            z = np.where(lost, lifted_dev / np.sqrt(lifted_var), z)
             var = np.where(lost, lifted_var, var)
     # `_normal(var)`: squared deviations past ~1.3e154 overflow the variance to inf, and the
     # z-score `(x − mean) / inf` is a FINITE 0.0 that `isfinite(z)` cannot catch.
@@ -266,7 +282,7 @@ def rolling_agg_apply_nb(
             # A constant window's mean IS its value (the zero-dispersion note above).
             v = np.where(_constant_windows(a, window), win[..., -1], win.mean(axis=-1))
         elif agg == "std":
-            _, var = _window_moments(win)
+            var, _ = _window_moments(win)
             constant = _constant_windows(a, window)
             v = np.sqrt(var)
             # 0.0 only for a CONSTANT window. A VARYING one whose variance fell below the normal
@@ -275,7 +291,7 @@ def rolling_agg_apply_nb(
             # at the smallest subnormal — never the 0.0 an all-equal window owns.
             lost = finite_all & ~constant & (var < MIN_NORMAL)
             if lost.any():
-                _, lifted_var = _window_moments(_lifted_windows(a, window))
+                lifted_var, _ = _window_moments(_lifted_windows(a, window))
                 lifted_std = np.ldexp(np.sqrt(lifted_var), -_LIFT)
                 v = np.where(lost, np.maximum(lifted_std, 5e-324), v)
             v = np.where(constant, 0.0, v)
@@ -434,9 +450,13 @@ def _pair_moments(
     wa: npt.NDArray[np.float64], wb: npt.NDArray[np.float64]
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """The two population variances and the covariance of two aligned window stacks, two-pass
-    (centered) over the LAST axis — the correlation's direct form."""
-    da = wa - wa.mean(axis=-1)[..., None]
-    db = wb - wb.mean(axis=-1)[..., None]
+    (centered) over the LAST axis, each leg about its own window offset — the correlation's direct
+    form (:func:`_window_moments` says why the offset: three points ``[2**52, 2**52 + 1, 2**52 +
+    1]`` against ``[0, 1, 1]`` correlate exactly 1.0, and read 0.577 about the raw mean)."""
+    ya = wa - wa[..., :1]
+    yb = wb - wb[..., :1]
+    da = ya - ya.mean(axis=-1)[..., None]
+    db = yb - yb.mean(axis=-1)[..., None]
     va: npt.NDArray[np.float64] = (da**2).mean(axis=-1)
     vb: npt.NDArray[np.float64] = (db**2).mean(axis=-1)
     cov: npt.NDArray[np.float64] = (da * db).mean(axis=-1)
@@ -582,6 +602,21 @@ def _constant_rows(a: npt.NDArray[np.float64], finite: npt.NDArray[np.bool_]) ->
     return constant
 
 
+def _row_offset(a: npt.NDArray[np.float64], finite: npt.NDArray[np.bool_]) -> np.ndarray:
+    """(rows, 1): the offset a cross-section's moments are computed around — the midpoint of its
+    finite members' range, each end halved before the sum so that no member's difference from it
+    overflows (0.0 on an empty row). A row's deviations are an OUTPUT (``cross_demean``), and
+    members farther apart than the double range still have representable deviations from their
+    mean, which an offset AT a member would overflow. Differences from it are exact wherever the
+    row lies within a factor of two of it (:func:`_window_moments` says why that matters)."""
+    hi = np.where(finite, a, -np.inf).max(axis=1, keepdims=True)
+    lo = np.where(finite, a, np.inf).min(axis=1, keepdims=True)
+    with np.errstate(invalid="ignore"):
+        mid = hi / 2.0 + lo / 2.0
+    offset: np.ndarray = np.where(finite.any(axis=1, keepdims=True), mid, 0.0)
+    return offset
+
+
 def cross_rank_apply_nb(arr: npt.NDArray[np.float64], min_valid: int) -> npt.NDArray[np.float64]:
     """Cross-sectional fraction rank ACROSS targets at each bar (axis=1, no time window).
 
@@ -610,9 +645,13 @@ def cross_rank_apply_nb(arr: npt.NDArray[np.float64], min_valid: int) -> npt.NDA
 def cross_demean_apply_nb(arr: npt.NDArray[np.float64], min_valid: int) -> npt.NDArray[np.float64]:
     """Cross-sectional demean ACROSS targets at each bar (axis=1, no time window).
 
-    Column g gets x_g - mean(finite values at bar t), self included. NaN where x_g is NaN or
-    fewer than max(min_valid, 2) targets are finite. A cross-section whose members all share one
-    value demeans to exactly 0.0 (the zero-dispersion note above). Inherently 2-D — no 1-D form.
+    Column g gets x_g - mean(finite values at bar t), self included, computed about the row's
+    offset (:func:`_row_offset`): ``y = x − c``, then ``y − mean(y)`` — ``[2**52, 2**52 + 1,
+    2**52 + 1]`` demeans to ``[−2/3, 1/3, 1/3]`` (to rounding), where the raw sum and mean
+    rounded onto the lowest member and read ``[0, 1, 1]``.
+    NaN where x_g is NaN or fewer than max(min_valid, 2) targets are finite. A cross-section whose
+    members all share one value demeans to exactly 0.0 (the zero-dispersion note above).
+    Inherently 2-D — no 1-D form.
     """
     a = np.asarray(arr, dtype=float)
     out = np.full(a.shape, np.nan)
@@ -621,9 +660,9 @@ def cross_demean_apply_nb(arr: npt.NDArray[np.float64], min_valid: int) -> npt.N
     finite = np.isfinite(a)
     k = finite.sum(axis=1, keepdims=True).astype(float)
     with np.errstate(all="ignore"):
-        sums = np.where(finite, a, 0.0).sum(axis=1, keepdims=True)
-        mean = sums / k
-        dev = np.where(_constant_rows(a, finite), 0.0, a - mean)
+        y = np.where(finite, a - _row_offset(a, finite), 0.0)
+        mean = y.sum(axis=1, keepdims=True) / k
+        dev = np.where(_constant_rows(a, finite), 0.0, y - mean)
     # `isfinite(dev)`: the row sum (or the subtraction at the float ceiling) can overflow.
     ok = finite & (k >= float(max(min_valid, 2))) & np.isfinite(dev)
     return np.where(ok, dev, np.nan)
@@ -633,9 +672,10 @@ def _row_var(
     a: npt.NDArray[np.float64], finite: npt.NDArray[np.bool_], k: npt.NDArray[np.float64]
 ) -> npt.NDArray[np.float64]:
     """``(rows, 1)``: each row's population variance over its ``k`` finite members, two-pass
-    (centered) — ``cross_agg`` std's direct form."""
-    mean = np.where(finite, a, 0.0).sum(axis=1, keepdims=True) / k
-    dev = np.where(finite, a - mean, 0.0)
+    (centered) about the row's offset (:func:`_row_offset`) — ``cross_agg`` std's direct form."""
+    y = np.where(finite, a - _row_offset(a, finite), 0.0)
+    mean = y.sum(axis=1, keepdims=True) / k
+    dev = np.where(finite, y - mean, 0.0)
     var: npt.NDArray[np.float64] = (dev * dev).sum(axis=1, keepdims=True) / k
     return var
 

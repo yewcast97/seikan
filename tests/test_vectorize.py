@@ -3056,11 +3056,18 @@ def test_cross_reduced_records_a_member_thinned_while_its_mask_warms():
 def test_cross_reduced_drops_a_population_whose_reduction_overflowed():
     # A population above the floor whose mean overflows emits nothing: it was not evaluated.
     md = _md4(x=[1.7e308, 1.6e308, 1.0, 2.0], sector=[1, 1, 2, 2])
-    node = CrossDemean(input=_X, group=External(name="sector"))
+    node = CrossAgg(input=_X, agg="mean", group=External(name="sector"))
     v = vz.build_series(node, md)[0].to_numpy()
     reduced = vz.cross_reduced(node, md)
     np.testing.assert_array_equal(reduced, np.isfinite(v))
     np.testing.assert_array_equal(reduced[-1], [False, False, True, True])
+    # The demean of the same population does not overflow: it is taken about the group's own
+    # offset, so its deviations (±(1.7e308 − 1.6e308)/2) are emitted, and the population counts.
+    node = CrossDemean(input=_X, group=External(name="sector"))
+    v = vz.build_series(node, md)[0].to_numpy()
+    assert v[-1, 0] == -v[-1, 1] == pytest.approx((1.7e308 - 1.6e308) / 2.0, rel=1e-15)
+    np.testing.assert_array_equal(v[-1, 2:], [-0.5, 0.5])
+    np.testing.assert_array_equal(vz.cross_reduced(node, md)[-1], [True, True, True, True])
 
 
 def test_cross_reduced_counts_a_demean_member_whose_own_deviation_overflowed():

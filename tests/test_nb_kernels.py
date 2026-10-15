@@ -478,10 +478,13 @@ def test_rolling_corr_with_an_underflowed_variance_reads_the_unscaled_correlatio
     np.testing.assert_array_equal(rolling_corr_1d(a * 2.0**-500, b * 2.0**-500, 3), exact)
 
 
-def test_ordinary_windows_are_bit_identical_to_the_direct_forms():
+def test_ordinary_windows_are_bit_identical_to_the_shifted_direct_forms():
     # The out-of-range rules bind only where a variance left the normal range (or the
     # correlation's variance product did): on ordinary windows — scales from 1e-60 to 1e60 — the
-    # correlation, the SMA z-score and both stds keep the direct forms' exact bits.
+    # correlation, the SMA z-score and both stds keep the direct forms' exact bits, every moment
+    # taken about the window's own first value (a cross-section's about its range's midpoint).
+    # About the rounded raw mean instead they agree to rounding here; the offset matters where a
+    # spread sits near its level's ulp (the 2**52 tests below).
     rng = np.random.RandomState(15)
     for _ in range(40):
         scale = 10.0 ** rng.uniform(-60.0, 60.0)
@@ -491,23 +494,58 @@ def test_ordinary_windows_are_bit_identical_to_the_direct_forms():
         w = int(rng.randint(3, 40))
         wa = sliding_window_view(a, w, axis=0)
         wb = sliding_window_view(b, w, axis=0)
-        ma, mb = wa.mean(axis=-1), wb.mean(axis=-1)
-        va = ((wa - ma[..., None]) ** 2).mean(axis=-1)
-        vb = ((wb - mb[..., None]) ** 2).mean(axis=-1)
-        cov = ((wa - ma[..., None]) * (wb - mb[..., None])).mean(axis=-1)
+        ya, yb = wa - wa[..., :1], wb - wb[..., :1]
+        da = ya - ya.mean(axis=-1)[..., None]
+        db = yb - yb.mean(axis=-1)[..., None]
+        va, vb = (da**2).mean(axis=-1), (db**2).mean(axis=-1)
+        cov = (da * db).mean(axis=-1)
         direct = {
             "corr": cov / np.sqrt(va * vb),
-            "z": (a[w - 1 :] - ma) / np.sqrt(va),
-            "std": np.sqrt(np.maximum(va, 0.0)),
+            "z": da[..., -1] / np.sqrt(va),
+            "std": np.sqrt(va),
         }
         assert np.isfinite(direct["corr"]).all() and (va > 0.0).all()
         np.testing.assert_array_equal(nb.rolling_corr_apply_nb(a, b, w)[w - 1 :], direct["corr"])
         np.testing.assert_array_equal(nb.zscore_sma_apply_nb(a, w)[w - 1 :], direct["z"])
         np.testing.assert_array_equal(nb.rolling_agg_apply_nb(a, w, "std")[w - 1 :], direct["std"])
+        raw_var = ((wa - wa.mean(axis=-1)[..., None]) ** 2).mean(axis=-1)
+        np.testing.assert_allclose(np.sqrt(raw_var), direct["std"], rtol=1e-9)
         rows = (level + scale * rng.randn(50, 6)).astype(float)
-        dev = rows - rows.sum(axis=1, keepdims=True) / 6.0
-        cross = np.sqrt(np.maximum((dev * dev).sum(axis=1, keepdims=True) / 6.0, 0.0))
+        y = rows - (rows.max(axis=1, keepdims=True) / 2.0 + rows.min(axis=1, keepdims=True) / 2.0)
+        dev = y - y.sum(axis=1, keepdims=True) / 6.0
+        cross = np.sqrt((dev * dev).sum(axis=1, keepdims=True) / 6.0)
         np.testing.assert_array_equal(nb.cross_agg_apply_nb(rows, "std", 2), np.repeat(cross, 6, 1))
+        np.testing.assert_array_equal(nb.cross_demean_apply_nb(rows, 2), dev)
+
+
+def test_moments_about_the_window_offset_keep_an_ulp_scale_spread():
+    # About the rounded mean of the raw values a spread at its level's ulp was lost: the mean of
+    # [2**52, 2**52 + 1] rounds onto a member, the deviations read [0, 1] for [−0.5, 0.5], the
+    # std 0.707 for 0.5 and the z-score 1.414 — past the two-point population bound of 1, so
+    # `zscore(F, 2) > 1.1` fired on every bar of an alternating series where it is unreachable.
+    # Three points [2**52, 2**52 + 1, 2**52 + 1] against [0, 1, 1] correlate exactly 1 (read
+    # 0.577), and their cross-section demeans to [−2/3, 1/3, 1/3] (read [0, 1, 1]).
+    big = 2.0**52
+    pair = _c1([big, big + 1.0])
+    assert zscore_sma_1d(pair.ravel(), 2)[1] == 1.0
+    assert rolling_agg_1d(pair.ravel(), 2, "std")[1] == 0.5
+    alt = np.resize([big, big + 1.0], 80)
+    z = zscore_sma_1d(alt, 2)
+    assert np.nanmax(np.abs(z)) == 1.0 and not (z > 1.1).any()
+    three = np.array([big, big + 1.0, big + 1.0])
+    assert rolling_corr_1d(three, np.array([0.0, 1.0, 1.0]), 3)[2] == 1.0
+    row = three[None, :]
+    np.testing.assert_allclose(nb.cross_demean_apply_nb(row, 2), [[-2 / 3, 1 / 3, 1 / 3]], 1e-15)
+    np.testing.assert_array_equal(row - row.mean(axis=1, keepdims=True), [[0.0, 1.0, 1.0]])
+    assert nb.cross_agg_apply_nb(row, "std", 2)[0, 0] == pytest.approx(math.sqrt(2.0) / 3.0)
+    # the references agree, and the power-of-two lift still commutes with the offset
+    np.testing.assert_array_equal(zscore_sma_1d(alt, 2), ref.zscore_sma(alt, 2))
+    np.testing.assert_array_equal(rolling_agg_1d(alt, 2, "std"), ref.rolling_agg(alt, 2, "std"))
+    assert zscore_sma_1d(alt * 2.0**-1000, 2)[1] == z[1]
+    # members farther apart than the double range keep their representable deviations
+    np.testing.assert_array_equal(
+        nb.cross_demean_apply_nb(np.array([[1e308, -1e308]]), 2), [[1e308, -1e308]]
+    )
 
 
 # ---- Phase-1 kernels: shift / unary_op --------------------------------------
