@@ -868,9 +868,7 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   since the exact update lies nearer the old mean than the new input. The pool statistics read
   measured returns, which reach that range only off input data at that scale, and hold the
   undecidable line on both sides: a share, ratio, `t_hac`, CSCV split Sharpe, episode-mean read,
-  regression read or `cvar_5` read off a sum, mean, quantile or variance that overflowed, a
-  `rot_p` whose rotation transform overflowed at any defined shift (its `rot_n_null` still
-  counts every defined shift), and a
+  regression read or `cvar_5` read off a sum, mean, quantile or variance that overflowed, and a
   `std_ret`, `boot_se`, `t_hac`, skewness/kurtosis, split Sharpe or `r2`/beta read off a variance
   (or the power of it a moment divides by) outside the normal range, is null —
   `benchmark_regression` declines with reason `not_representable`, an overflowed |return| mass
@@ -884,7 +882,15 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   feature whose values span more than the double range (its quantile interpolation overflowing
   across zero) is bucketed off its halved values — exact there, every such value lying past
   2**970 in magnitude — never cut on an infinite edge. None of these reads warns: an overflow
-  there is an expected input, never a warning (an exception under `python -W error`).
+  there is an expected input, never a warning (an exception under `python -W error`). The
+  rotation null meets neither edge: its transform runs on each forward column scaled by a power
+  of two into a UNIT FRAME (largest magnitude in `[0.5, 1)`; a basket's members brought into
+  their largest member's frame exactly), where nothing can leave the double range and the p,
+  scale-free, is never scaled back — a column near the ceiling reads exact arithmetic's p where
+  its overflowed transform read null, and a subnormal one its ties (every rotation of constant
+  `1e-323` returns reads 1.0, where the transform's few-bit arithmetic read 0.05). Every column
+  the raw transform carried reads bit-identically (the FFT is exactly equivariant under such a
+  scaling).
   `describe` reports numbers it never divides by, so it computes them instead: its dispersion stds
   (`diff`, `pct` and `log` alike) and its trailing volume mean are scaled by a power of two where
   their squares or sum leave the range (a varying series never reads std 0.0, `last_to_mean` never

@@ -1158,26 +1158,35 @@ def test_tail_p_of_an_overflowed_observed_mean_is_nan_never_the_floor():
         assert np.isnan(p) and n_null == 3
 
 
-def test_rotation_null_with_an_overflowed_shift_is_void_never_a_partial_p():
-    # One firing on a forward column holding 5e307 and 1e307: the transform's unscaled partial
-    # sums (~T × 5e307) leave the double range at two DEFINED shifts — one of them the shift
-    # onto 5e307, the only one that beats the observed 1e307. Dropped like an undefined shift,
-    # the p read 1/7 over the six survivors where exact arithmetic gives 2/9: a stronger
-    # rotation read minted from an overflow. No null, no p: NaN, as for an overflowed observed.
+def test_rotation_null_near_the_ceiling_reads_its_exact_p_in_the_unit_frame():
+    # One firing on a forward column holding 5e307 and 1e307: the raw transform's partial sums
+    # (~T × 5e307) left the double range at two DEFINED shifts — one of them the shift onto
+    # 5e307, the only one that beats the observed 1e307 — and the read was voided (null, never
+    # the 1/7 of its survivors). In the column's unit frame nothing leaves the range: exact
+    # arithmetic's 2/9 over all 8 defined shifts, as on the same column far below the ceiling.
     fwd = np.array([-0.4, -0.75, 0.2, 5e307, -1.6, 2.0, -1.0, -0.2, 1e307])
     mask = np.zeros(9)
     mask[8] = 1.0
-    read = reliability_summary(
-        [{"key": ("t",), "mask_col": mask, "fwd_col": fwd, "h": 1}], 9, ["t"]
-    )["per_cell"][("t",)]
-    # ... and its count stays the mask's geometry, all 8 defined shifts — the size exact
-    # arithmetic forms the null over, never the 6 the overflow spared
-    assert np.isnan(read["rot_p"]) and read["rot_n_null"] == 8
-    # the same column a scale below the ceiling keeps the exact-arithmetic p, every shift defined
-    small = reliability_summary(
-        [{"key": ("t",), "mask_col": mask, "fwd_col": fwd * 1e-300, "h": 1}], 9, ["t"]
-    )["per_cell"][("t",)]
-    assert small["rot_p"] == pytest.approx(2 / 9) and small["rot_n_null"] == 8
+    for column in (fwd, fwd * 1e-300):
+        read = reliability_summary(
+            [{"key": ("t",), "mask_col": mask, "fwd_col": column, "h": 1}], 9, ["t"]
+        )["per_cell"][("t",)]
+        assert read["rot_p"] == 2 / 9 and read["rot_n_null"] == 8
+
+
+def test_a_subnormal_constant_column_ties_every_rotation():
+    # The review's case: forward returns of 1e-323 on every finite bar, so every rotation's mean
+    # IS the observed one. The raw transform ran on values of a few bits, its means came out as
+    # rounding noise, and rot_p read 0.05 — the floor — where the same mask over unit-scale
+    # returns read 1.0. The unit frame runs it on 0.5.
+    T = 20
+    mask = np.zeros(T)
+    mask[[16, 18, 19]] = 1.0
+    for c in (1e-323, 5e-324, 1e-310, 1.0, 1.7e308):
+        fwd = np.full(T, c)
+        fwd[18:] = np.nan
+        read = _one_cell_read(mask, fwd)
+        assert read["rot_p"] == 1.0 and read["rot_n_null"] == T - 1, c
 
 
 def test_rotation_den_is_an_exact_count():
@@ -1328,15 +1337,22 @@ def test_rotation_tie_band_does_not_swallow_a_resolvable_gap():
     assert read["rot_p"] == k / T and read["rot_n_null"] == T - 1
 
 
-def test_rotation_tie_band_norm_is_scale_safe():
-    # sqrt(x·x) overflows past ~1.3e154 (an infinite band would count every shift as a tie) and
-    # underflows below ~1e-162 (a zero band would let the residue break ties again).
-    from seikan.analysis._rotation import _fft_tie_band, _norm2
+def test_rotation_unit_frame_bounds_the_column_and_keeps_its_norm():
+    # The transform runs on fwd · 2**-e, e the exponent of its largest finite magnitude, so that
+    # magnitude lies in [0.5, 1): the 2-norm the tie band scales with is finite and positive at
+    # every scale (sqrt(x·x) of the raw column overflowed past ~1.3e154 and vanished below
+    # ~1e-162), NaN bars stay NaN, and a column of zeros sets no frame.
+    from seikan.analysis._rotation import _ffts_for
 
-    assert np.isfinite(_norm2(np.full(100, 1e200))) and _norm2(np.full(100, 1e200)) > 0.0
-    assert _norm2(np.full(100, 1e-170)) > 0.0
-    assert _norm2(np.zeros(5)) == 0.0
-    assert _fft_tie_band(100, float("inf"), 10) == 0.0
+    for c in (5e-324, 1e-323, 1e-170, 0.01, 1e200, 1.7e308):
+        fwd = np.full(100, c)
+        fwd[7] = np.nan
+        _f, valid, f_norm, e = _ffts_for(fwd, {})
+        m, e_c = math.frexp(c)
+        assert e == e_c and f_norm == pytest.approx(m * math.sqrt(99), rel=1e-15), c
+        assert valid[0] == 99.0
+    assert _ffts_for(np.zeros(5), {})[2:] == (0.0, 0)
+    assert _ffts_for(np.full(5, np.nan), {})[2:] == (0.0, 0)
 
 
 @pytest.mark.parametrize("c", [0.1 * 1e-170, 1e200])
@@ -1690,11 +1706,11 @@ def test_pooled_reliability_empty_and_short_guards_mirror_reliability_summary():
     ) == {"per_cell": {}, "n_shifts": 0}
 
 
-def test_pooled_rotation_over_opposite_overflowed_members_is_null_and_silent():
-    # Two members firing on one bar whose forward returns are +1.7e308 and -1.7e308: each
-    # member's transform overflows, to +inf and to -inf, and the common-shift null SUMS them —
-    # inf − inf. The pooled mean is exactly 0 there, but no shift's computed mean is known: the
-    # read is null, never a warning.
+def test_pooled_rotation_over_opposite_members_at_the_ceiling_ties_every_shift():
+    # Two members firing on one bar whose forward returns are +1.7e308 and -1.7e308: each raw
+    # transform overflowed, to +inf and to -inf, and the common-shift null summed them — inf − inf,
+    # a null read. In the unit frame each numerator is finite and the pair cancels exactly at
+    # every shift: every rotation's pooled mean is the observed 0, a tie — rot_p 1.0, silently.
     T = 16
     m = np.zeros(T)
     m[3] = 1.0
@@ -1704,7 +1720,56 @@ def test_pooled_rotation_over_opposite_overflowed_members_is_null_and_silent():
         fwd[3] = v
         cells.append({"key": ("c", tgt), "mask_col": m, "fwd_col": fwd, "h": 1})
     read = pooled_reliability_summary(cells, T)["per_cell"][("c",)]
-    assert np.isnan(read["rot_p"]) and read["n_nonoverlap"] == 1
+    assert read["rot_p"] == 1.0 and read["rot_n_null"] == T - 1 and read["n_nonoverlap"] == 1
+
+
+def test_pooled_rotation_frames_members_of_different_scales_together():
+    # The common frame is the largest member's — a member of zeros sets none. A subnormal member
+    # (small integer multiples of 2**-1074, ties galore) pooled beside a member of zeros reads the
+    # rot_p of the same pool at unit scale; framed at the zero member's exponent 0 instead, its
+    # rotation means ran at their raw subnormal scale, where distinct means round together.
+    rng = np.random.RandomState(4)
+    T = 40
+    for _ in range(20):
+        masks = [(rng.rand(T) < 0.3).astype(float) for _ in range(2)]
+        ints = rng.randint(1, 9, T).astype(float)
+        ints[rng.rand(T) < 0.2] = np.nan
+        reads = []
+        for column in (np.ldexp(ints, -1074), ints):
+            cells = [
+                {"key": ("c", "A"), "mask_col": masks[0], "fwd_col": column, "h": 1},
+                {"key": ("c", "B"), "mask_col": masks[1], "fwd_col": np.zeros(T), "h": 1},
+            ]
+            reads.append(pooled_reliability_summary(cells, T)["per_cell"][("c",)]["rot_p"])
+        assert reads[0] == reads[1]
+
+
+@pytest.mark.parametrize("k", [-1008, -600, -7, 3, 600, 1021])
+def test_rotation_p_is_bit_identical_under_power_of_two_rescaling(k):
+    # The FFT is bit-exactly equivariant under a power-of-two scaling that keeps its arithmetic in
+    # range, and the unit frame removes the scale before the transform: every rescaling of a
+    # column that stays exactly representable reads the same rot_p — dispersed returns, tick
+    # ties and constants alike, per target and pooled.
+    rng = np.random.RandomState(17)
+    T = 97
+    columns = [
+        np.clip(rng.normal(0.001, 0.01, T), 1e-4, None) * rng.choice([-1.0, 1.0], T),
+        np.round(rng.normal(0.0, 0.01, T) * 400) / 400 + 0.25,
+        np.full(T, 0.013),
+    ]
+    masks = [_random_mask(rng, T, n) for n in (5, 30, 70)]
+    for f in columns:
+        f = f.copy()
+        f[-3:] = np.nan
+        for mask in masks:
+            assert _one_cell_read(mask, np.ldexp(f, k))["rot_p"] == _one_cell_read(mask, f)["rot_p"]
+    cells = [
+        {"key": ("c", str(g)), "mask_col": masks[g], "fwd_col": columns[g], "h": 1}
+        for g in range(3)
+    ]
+    scaled = [{**c, "fwd_col": np.ldexp(c["fwd_col"], k)} for c in cells]
+    base = pooled_reliability_summary(cells, T)["per_cell"][("c",)]
+    assert pooled_reliability_summary(scaled, T)["per_cell"][("c",)]["rot_p"] == base["rot_p"]
 
 
 # ---- CSCV → PBO (grid-level evidence, attached to no hypothesis) ------------

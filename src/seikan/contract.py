@@ -1069,7 +1069,7 @@ REPORT_FIELDS: dict[str, JsonValue] = {
             "benchmark_regression declines one); no statistic is a finite number read off a "
             "sum, mean, quantile or variance that overflowed, nor off a variance (or the power "
             "of one a moment divides by) below the normal double range — x/inf is not 0, and a "
-            "subnormal variance has lost its bits: such a share, ratio, std, t, rotation p, "
+            "subnormal variance has lost its bits: such a share, ratio, std, t, "
             "shape moment, Sharpe, quantile, tail mean or rank read is null too, and so is an "
             "episode or bucket mean whose finite returns sum past the range (its true value is "
             "finite, the computed one not even sign-safe)"
@@ -1225,8 +1225,11 @@ REPORT_FIELDS: dict[str, JsonValue] = {
         "by_target.rot_p / rot_n_null": (
             "one-sided right-tail circular-rotation p, and the number of DEFINED shifts its "
             "null was formed over — the cell's own resolution floor is 1/(1 + rot_n_null), "
-            ">= summary.rotation.p_resolution. The count is the mask's geometry: beside a null "
-            "rot_p it is still every defined shift, the null's size in exact arithmetic"
+            ">= summary.rotation.p_resolution. The count is the mask's geometry: every defined "
+            "shift, the null's size in exact arithmetic. The transform runs in each forward "
+            "column's unit frame (scaled by a power of two), so rot_p is never null for scale "
+            "and reads alike at every scale a column is exact at — near the ceiling and below "
+            "the normal range, the tie-aware p it reads at unit scale"
         ),
         "by_target.concentration": (
             "{top_share_abs, n_top, top_frac}: |return|-mass share of the top 5% observations"

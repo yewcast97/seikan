@@ -24,26 +24,22 @@ _NAN = float("nan")
 #: per-element bound). Measured per-value errors stay below ~3x that unscaled envelope in every
 #: configuration tried (constant, dense-mask columns — the ones the band exists for — are the
 #: worst case), so ``C = 16`` keeps a margin of at least ~5x. The band is ABSOLUTE and scales with
-#: the column's 2-norm, level included — the transform's own error does — which on return columns
-#: is ~1e-13 to 1e-11 of the return scale, far below the O(σ/√k) spacing of any null with real
-#: dispersion.
+#: the column's 2-norm — the transform's own error does — which on return columns is ~1e-13 to
+#: 1e-11 of the return scale, far below the O(σ/√k) spacing of any null with real dispersion. It
+#: is formed, like the transform, in the column's unit frame (:func:`_ffts_for`).
 _FFT_TIE_C = 16.0
+
+#: One forward column's rotation inputs, in its UNIT FRAME (:func:`_ffts_for`): the two spectra
+#: of :func:`_fwd_ffts`, the framed column's 2-norm, and the frame's exponent ``e`` (the column
+#: is ``fwd · 2**-e``).
+type _Spectra = tuple[np.ndarray, np.ndarray, float, int]
 
 
 def _fft_tie_band(n: int, f_norm: float, n_fire: int) -> float:
-    """The absolute error envelope of one member's FFT-computed ``num[tau]`` (any ``tau``) — 0.0
-    when it is not finite (a column at the float ceiling, whose transform has overflowed anyway:
-    an infinite band would count every shift as a tie)."""
+    """The absolute error envelope of one member's FFT-computed ``num[tau]`` (any ``tau``), for a
+    column of 2-norm ``f_norm`` — a unit-frame column's, at most ``√n``."""
     eps = float(np.finfo(np.float64).eps)
-    band = _FFT_TIE_C * eps * math.log2(n) * f_norm * math.sqrt(n_fire)
-    return band if math.isfinite(band) else 0.0
-
-
-def _norm2(x: np.ndarray) -> float:
-    """``‖x‖₂`` computed scale-safely (``max|x| · ‖x / max|x|‖₂``): the plain ``sqrt(x·x)``
-    overflows past ~1.3e154 and underflows to 0 below ~1e-162, which would void the tie band."""
-    peak = float(np.max(np.abs(x))) if x.size else 0.0
-    return peak * float(np.linalg.norm(x / peak)) if peak > 0.0 else 0.0
+    return _FFT_TIE_C * eps * math.log2(n) * f_norm * math.sqrt(n_fire)
 
 
 def _fwd_ffts(fwd: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -58,10 +54,7 @@ def _fwd_ffts(fwd: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     finite = np.isfinite(fwd)
     f = np.where(finite, fwd, 0.0)
     valid = finite.astype(float)
-    # A column near the double ceiling overflows its transform; :func:`_reliability_read`
-    # decides that read, so the overflow is an expected input here, never a warning.
-    with np.errstate(over="ignore", invalid="ignore"):
-        return np.fft.rfft(f), np.fft.rfft(valid)
+    return np.fft.rfft(f), np.fft.rfft(valid)
 
 
 def _rotation_num_den(
@@ -81,24 +74,34 @@ def _rotation_num_den(
     it is returned ROUNDED — exact, like the count it is."""
     s = (np.asarray(mask) > 0).astype(float)
     s_conj = np.conj(np.fft.rfft(s))
-    with np.errstate(over="ignore", invalid="ignore"):  # decided in `_reliability_read`
-        num = np.fft.irfft(f_fft * s_conj, n=n)
+    num = np.fft.irfft(f_fft * s_conj, n=n)
     den = np.rint(np.fft.irfft(valid_fft * s_conj, n=n))
     return num, den
 
 
-def _ffts_for(
-    fwd: np.ndarray, memo: dict[bytes, tuple[np.ndarray, np.ndarray, float]]
-) -> tuple[np.ndarray, np.ndarray, float]:
+def _ffts_for(fwd: np.ndarray, memo: dict[bytes, _Spectra]) -> _Spectra:
     """The content-keyed FFT lookup both reliability passes share: one transform per DISTINCT
     forward series, keyed by its bytes (immune to synthetic inputs whose nominal key fields do
-    not determine the column; the O(T) hash is cheap beside the FFT it saves) — the two spectra
-    plus the zero-filled column's 2-norm, the scale of their rounding error."""
+    not determine the column; the O(T) hash is cheap beside the FFT it saves).
+
+    The transform runs in the column's UNIT FRAME: ``fwd · 2**-e``, ``e`` the ``frexp`` exponent
+    of its largest finite magnitude (0 for a column of zeros), so that magnitude lies in
+    ``[0.5, 1)``. The FFT is bit-exactly equivariant under a power-of-two scaling that leaves its
+    arithmetic in range, so every column the raw transform could carry reads the same comparisons
+    in the frame, while the rest no longer leave the range: a column near the double ceiling
+    overflowed its partial sums (its ``rot_p`` was null), and a SUBNORMAL one ran the transform on
+    values of a few bits — every rotation of ``1e-323`` returns is a tie, yet their means came out
+    as rounding noise and ``rot_p`` read 0.05 where unit-scale returns read 1.0. Scaling up never
+    rounds; scaling down drops only bits far inside the transform's own error. Returns the two
+    spectra of the framed column, its 2-norm (the scale of their rounding error) and ``e``."""
     fkey = fwd.tobytes()
     ffts = memo.get(fkey)
     if ffts is None:
-        f_norm = _norm2(np.where(np.isfinite(fwd), fwd, 0.0))
-        ffts = memo[fkey] = (*_fwd_ffts(fwd), f_norm)
+        finite = np.isfinite(fwd)
+        e = math.frexp(float(np.max(np.abs(fwd[finite]), initial=0.0)))[1]
+        framed = np.ldexp(fwd, -e)
+        f_norm = float(np.linalg.norm(np.where(finite, framed, 0.0)))
+        ffts = memo[fkey] = (*_fwd_ffts(framed), f_norm, e)
     return ffts
 
 
@@ -135,7 +138,7 @@ def _reliability_read(
     members: list[ReliabilityCell],
     length: int,
     shifts: np.ndarray,
-    fft_memo: dict[bytes, tuple[np.ndarray, np.ndarray, float]],
+    fft_memo: dict[bytes, _Spectra],
 ) -> ReliabilityRead:
     """ONE overlap-aware read over a member list — the shared kernel of both reliability passes.
 
@@ -145,27 +148,33 @@ def _reliability_read(
     a combo's members, whose rotation numerators/denominators SUM across the group (the
     common-shift null) and whose closed rows concatenate into one pooled pool.
 
+    The rotation means live in ONE frame, the largest member's unit frame (:func:`_ffts_for`;
+    a member of zeros sets none): each member's numerator and tie band come into it by an exact
+    power of two, the counts ``den`` are scale-free, and so is the p — nothing is scaled back.
+    No mean in the frame can leave the double range (each member's column is bounded by 1).
+
     Ties are judged within the transform's rounding: each member's ``num`` carries an error well
     inside :func:`_fft_tie_band` at every shift (an estimated envelope with a safety factor, see
     ``_FFT_TIE_C``), the bands add across members, and the exact (rounded) ``den`` divides the
     sum — so a forward series of identical returns, whose every shift ties the observed mean
-    exactly, reads ``rot_p == 1``, not the coin flips of its rounding residue.
+    exactly, reads ``rot_p == 1`` at any scale, not the coin flips of its rounding residue.
     """
     h = int(members[0]["h"])  # shared across the group: a swept horizon rides the key prefix
+    spectra = [_ffts_for(np.asarray(cell["fwd_col"], dtype=float), fft_memo) for cell in members]
+    frame = max((e for _, _, f_norm, e in spectra if f_norm > 0.0), default=0)
     num_sum = np.zeros(length)
     den_sum = np.zeros(length)
     tol_num = 0.0
     bars_parts: list[np.ndarray] = []
     rets_parts: list[np.ndarray] = []
-    for cell in members:
+    for cell, (f_fft, valid_fft, f_norm, e) in zip(members, spectra, strict=True):
         mask = np.asarray(cell["mask_col"])
         fwd = np.asarray(cell["fwd_col"], dtype=float)
-        f_fft, valid_fft, f_norm = _ffts_for(fwd, fft_memo)
         num, den = _rotation_num_den(mask, f_fft, valid_fft, length)
-        with np.errstate(over="ignore", invalid="ignore"):  # decided below
-            num_sum += num
+        num_sum += np.ldexp(num, e - frame)
         den_sum += den
-        tol_num += _fft_tie_band(length, f_norm, int(np.count_nonzero(mask > 0)))
+        band = _fft_tie_band(length, f_norm, int(np.count_nonzero(mask > 0)))
+        tol_num += math.ldexp(band, e - frame)
         t_closed = np.flatnonzero((mask > 0) & np.isfinite(fwd))
         bars_parts.append(t_closed)
         rets_parts.append(fwd[t_closed])
@@ -173,18 +182,13 @@ def _reliability_read(
     with np.errstate(divide="ignore", invalid="ignore"):
         means = np.where(defined, num_sum / den_sum, _NAN)
         tol = np.where(defined, tol_num / den_sum, _NAN)
-    # A DEFINED shift — its rotated mask lands on finite forward bars — whose numerator left the
-    # double range (the transform's partial sums overflowed, or the members' sum did) has no
-    # known mean, and the finite ones beside it are read off the same overflowed transform.
-    # Dropped like an undefined shift, it formed the p over the survivors — and the shift that
-    # overflowed can be the very one that beat the observed (a p of 0.143 for 0.222): no null,
-    # no p, exactly as for an overflowed observed mean.
+    # Every DEFINED shift's mean is finite in the frame; the check stands as an invariant — a
+    # defined shift without a known mean voids the null (no p), never drops out of it, since the
+    # p formed over the survivors can lose the very shift that beat the observed.
     observed = float(means[0]) if np.isfinite(means[defined]).all() else _NAN
     rot_p, _n_finite = _tail_p(observed, means[shifts], float(tol[0]), tol[shifts])
     # The count is the mask's geometry: every DEFINED shift (its exact, rounded `den`), the
-    # null's size in exact arithmetic — equal to the finite count `_tail_p` formed the p over
-    # wherever a p is formed, and never, beside a voided one, a count of the shifts an overflow
-    # spared.
+    # null's size in exact arithmetic — equal to the finite count `_tail_p` formed the p over.
     rot_n_null = int(np.count_nonzero(defined[shifts]))
     bars = np.concatenate(bars_parts)
     rets = np.concatenate(rets_parts)
@@ -255,7 +259,7 @@ def reliability_summary(
     # log T) transforms run once per distinct forward series, not once per cell. Content-keyed
     # rather than (h, target)-keyed on purpose: it is immune to synthetic inputs whose key fields
     # do not determine the column, and the O(T) hash is cheap beside the FFT it saves.
-    fft_memo: dict[bytes, tuple[np.ndarray, np.ndarray, float]] = {}
+    fft_memo: dict[bytes, _Spectra] = {}
     for cell in cells:
         per_cell[tuple(cell["key"])] = _reliability_read([cell], length, shifts, fft_memo)
 
@@ -325,7 +329,7 @@ def pooled_reliability_summary(cells: list[ReliabilityCell], length: int) -> Rel
         groups.setdefault(tuple(cell["key"])[:-1], []).append(cell)
 
     per_cell: dict[CellKey, ReliabilityRead] = {}
-    fft_memo: dict[bytes, tuple[np.ndarray, np.ndarray, float]] = {}
+    fft_memo: dict[bytes, _Spectra] = {}
     for combo_key, members in groups.items():
         per_cell[combo_key] = _reliability_read(members, length, shifts, fft_memo)
 

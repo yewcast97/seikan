@@ -1408,15 +1408,20 @@ open to quote a statistic honestly.
   rotates, preserving the firing count, temporal clustering and overlap exactly. It answers "was
   THIS mask's timing informative against its own null?" and nothing else — it is **not** a survival
   probability over your search. Beside it, `rot_n_null` is the number of DEFINED shifts the
-  cell's null was formed over (a count of the mask's geometry: beside a null `rot_p` still every
-  defined shift), so the cell's own smallest attainable value is
+  cell's null was formed over (a count of the mask's geometry), so the cell's own smallest
+  attainable value is
   `1/(1+rot_n_null)` (≥ `summary.rotation.p_resolution` = `1/(1+n_shifts)`, the run-level floor
   over a fully defined null — `n_shifts` counts the shifts ANY null in the report was formed over,
   a basket's pooled nulls included); a `rot_p` sitting at its floor means "no shift beat the
   observation", not "p ≈ 0". A shift whose mean ties the observed one counts as reaching it —
   ties are judged within the FFT's rounding error (an absolute band, `16·ε·log2(T)·‖f‖₂·√k`
   over the shift's count, ~1e-13 to 1e-11 of the return scale), so when every rotation selects
-  the same mean — a forward series of identical returns — `rot_p` reads exactly `1`. Means that
+  the same mean — a forward series of identical returns — `rot_p` reads exactly `1`, at any
+  scale: the transform runs on the forward column scaled by a power of two so that its largest
+  magnitude lies in `[0.5, 1)` (a basket's members in their largest member's frame), so a column
+  near the double ceiling or below its normal range reads the p it reads at unit scale — never a
+  null for an overflowed transform, nor the coin flips of a subnormal one's few-bit arithmetic
+  (constant `1e-323` returns read `0.05`). Means that
   differ by less than the band count as ties whatever caused the difference, so an outcome whose
   values are exactly representable (a count, a `diff` on a binary-exact tick such as 0.25 or
   1/32) counts its ties exactly, while a `diff` of decimal-quoted levels — each value carrying
