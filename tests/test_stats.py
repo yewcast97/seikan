@@ -3182,6 +3182,21 @@ def test_benchmark_regression_moments_are_taken_about_each_legs_offset():
     assert blk["alpha"] == float(np.mean(raw)) - 2.0 * float(np.mean(bench))
 
 
+def test_benchmark_regression_r2_never_exceeds_one():
+    # An exactly linear pair explains all of its variance, and the computed ratio's rounding read
+    # an r2 past 1 (by up to 8.9e-16) on about a third of `raw = k·bench + c` pools — a share of
+    # the variance explained that no fit has. Clipped to 1, the `rolling_corr` rule.
+    rng = np.random.RandomState(18)
+    on_bound = 0
+    for _ in range(300):
+        bench = np.round(rng.randn(int(rng.randint(3, 40))) * 0.02, 6)
+        raw = float(rng.choice([3.0, -3.0, 0.5, 1.7])) * bench + float(rng.choice([0.0, 7.0]))
+        blk = benchmark_regression(raw, bench)
+        assert blk["reason"] is None and 1.0 - 1e-14 < blk["r2"] <= 1.0
+        on_bound += blk["r2"] == 1.0
+    assert on_bound > 0
+
+
 def test_benchmark_regression_near_constant_legs_are_degenerate():
     # Not exactly constant, but spread within a few ulps of the mean: no resolvable variation —
     # an arbitrary beta (1.9e16 before) on the bench side, a false r2 on the raw side.

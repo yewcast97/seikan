@@ -488,7 +488,8 @@ def rolling_corr_ref(left: np.ndarray, right: np.ndarray, window: int) -> np.nda
 
     Population moments (ddof=0), NaN unless the whole window is finite in BOTH inputs AND both
     windows vary (neither constant) AND neither variance overflowed — a leg whose variance fell
-    below the normal range is lifted by ``2**_LIFT`` first — matches ``nb.rolling_corr_apply_nb``.
+    below the normal range is lifted by ``2**_LIFT`` first — clipped to ``[−1, 1]``; matches
+    ``nb.rolling_corr_apply_nb``.
     """
 
     def moments(a: np.ndarray, b: np.ndarray) -> tuple[float, float, float]:
@@ -520,7 +521,7 @@ def rolling_corr_ref(left: np.ndarray, right: np.ndarray, window: int) -> np.nda
             continue
         r = cov / _sqrt_product(va, vb)
         if math.isfinite(r):
-            out[i] = r
+            out[i] = min(max(r, -1.0), 1.0)  # an exactly linear window's rounding stays at ±1
     return out
 
 

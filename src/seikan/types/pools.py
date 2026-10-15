@@ -80,8 +80,9 @@ class BenchmarkRegressionBlock(TypedDict):
     ``reason`` naming why (``no_paired_observations`` — which covers every unbenchmarked run —
     / ``insufficient_observations`` / ``no_benchmark_variation`` / ``not_representable`` — a
     varying bench leg's variance is not a normal double, or beta or alpha left the double
-    range); ``r2`` alone is NaN → null when the raw leg has zero variance (nothing to explain;
-    beta and alpha are still real) or one that is not a normal double.
+    range); ``r2`` (at most 1 — an exactly linear pair's rounding no longer reads past it) alone
+    is NaN → null when the raw leg has zero variance (nothing to explain; beta and alpha are
+    still real) or one that is not a normal double.
     Evidence only, read by no check; not a factor model.
     """
 

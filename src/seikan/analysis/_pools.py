@@ -548,7 +548,8 @@ def benchmark_regression(raw: np.ndarray, bench: np.ndarray) -> BenchmarkRegress
     The leg-attribution question the two means alone cannot answer: is the excess mean alpha, or
     beta ≠ 1 riding market drift? ``beta = cov(raw, bench) / var(bench)`` (both ddof=1),
     ``alpha = mean(raw) − beta·mean(bench)`` — per h-bar window, NEVER annualized, this engine
-    carrying no calendar-return framing — and ``r2 = cov² / (var_raw · var_bench)``. The identity
+    carrying no calendar-return framing — and ``r2 = cov² / (var_raw · var_bench)``, at most 1
+    (:func:`_r2`). The identity
     ``alpha + beta·mean(bench) == mean(raw)`` holds exactly and is a reader's to re-check.
 
     The two arrays must be ROW-ALIGNED (the same closed rows, in the same order): pairing is the
@@ -617,16 +618,20 @@ def _r2(cv: float, var_r: float, var_b: float) -> float:
     direct form's value in an unbounded exponent range. Only because the variances are normal: a
     subnormal one has already lost its bits (r2 read 2.0 for 0.99 off two of them). The scalar
     twin of ``compiler.nb._sqrt_product`` (the rolling correlation's denominator) — a change to
-    the rule changes both."""
+    the rule changes both.
+
+    Clipped to 1, the ``rolling_corr`` rule: an exactly linear pair's rounding carries the ratio
+    an ulp or two past its bound (``raw = 3·bench + 7`` read an r2 above 1 on about a third of
+    such pools) — a share of the variance explained that no fit has."""
     prod = var_r * var_b
     if MIN_NORMAL <= prod < math.inf:
-        return (cv * cv) / prod
+        return min((cv * cv) / prod, 1.0)
     m_r, e_r = math.frexp(var_r)
     m_b, e_b = math.frexp(var_b)
     m_r, e_r = math.ldexp(m_r, e_r & 1), e_r - (e_r & 1)
     m_b, e_b = math.ldexp(m_b, e_b & 1), e_b - (e_b & 1)
     c = math.ldexp(cv, -((e_r + e_b) // 2))
-    return (c * c) / (m_r * m_b)
+    return min((c * c) / (m_r * m_b), 1.0)
 
 
 def timing_summary(bars_to_positive: np.ndarray, bars_to_trough: np.ndarray) -> TimingBlock:

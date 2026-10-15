@@ -1342,6 +1342,43 @@ def test_rolling_corr_entry_end_to_end(tmp_path):
     assert st["n"] > 0 and 0.0 <= st["rot_p"] <= 1.0
 
 
+def test_rolling_corr_never_fires_past_its_bound(tmp_path):
+    # An exactly linear pair correlates exactly 1, and the computed ratio's rounding read
+    # 1.0000000000000002 on about a third of its windows: `rolling_corr(x, 3x + 7, 3) > 1` fired
+    # where it is unreachable. Clipped to [−1, 1], it fires nowhere; `>= 1` still fires.
+    idx = pd.date_range("2020-01-01", periods=200, freq="D")
+    close = 100 + np.cumsum(np.random.default_rng(3).normal(0, 1, len(idx)))
+    pd.DataFrame(
+        {"open": close, "high": close, "low": close, "close": close, "volume": 1000.0}, index=idx
+    ).to_csv(tmp_path / "px.csv")
+    x = np.random.default_rng(5).integers(-100, 100, len(idx)).astype(float)
+    pd.Series(x, index=idx, name="x").to_frame().to_csv(tmp_path / "x.csv")
+    pd.Series(3.0 * x + 7.0, index=idx, name="y").to_frame().to_csv(tmp_path / "y.csv")
+    files = {"target": tmp_path / "px.csv", "x": tmp_path / "x.csv", "y": tmp_path / "y.csv"}
+    corr = {
+        "type": "rolling_corr",
+        "left": {"type": "external", "name": "x"},
+        "right": {"type": "external", "name": "y"},
+        "window": 3,
+    }
+    for op, fires in ((">", False), (">=", True)):
+        thesis = Thesis.model_validate(
+            {
+                "name": "corr_bound",
+                "data": {"targets": ["target"], "external": {"x": {}, "y": {}}},
+                "entry": {
+                    "type": "threshold",
+                    "left": corr,
+                    "op": op,
+                    "right": {"type": "constant", "value": 1.0},
+                },
+                "params": {"horizon": 1},
+            }
+        )
+        res = run_backtest(thesis, load(thesis, files))
+        assert (res.summary["cells"][0]["by_target"]["target"]["n"] > 0) is fires
+
+
 def test_per_target_external_matches_shared_form(tmp_path):
     idx = pd.date_range("2020-01-01", periods=160, freq="D")
     for sym, seed in [("AAA", 1), ("BBB", 2)]:

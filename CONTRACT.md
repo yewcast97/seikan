@@ -867,7 +867,10 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   exponent range; a `std` under the smallest subnormal floors there, so `std > 0` holds on every
   varying window, exactly where the SMA z-score it guards is defined. The correlation's variance
   PRODUCT of two normal variances is taken in an unbounded exponent range too, so
-  `rolling_corr(x, x)` is exactly 1 at 1e80, at 1e-85 and on subnormal values as at 1. The EW
+  `rolling_corr(x, x)` is exactly 1 at 1e80, at 1e-85 and on subnormal values as at 1; and a
+  correlation is clipped to `[−1, 1]`, the regression's `r2` to at most 1 — an exactly linear
+  window's or pool's rounding read 1.0000000000000002 (`rolling_corr(x, 3x + 7, 3) > 1` fired on
+  it). The EW
   `zscore` carries its variance in a recurrence, which runs in a frame lifted by `2**600` once that
   variance nears the range — exact, the same doctrine — so its z too is the recurrence's value in
   an unbounded exponent range: never NaN for want of range, nor collapsed toward 0 off a floored

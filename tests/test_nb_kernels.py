@@ -446,6 +446,31 @@ def test_rolling_corr_is_exactly_scale_invariant_past_the_variance_product_range
     _assert(ref.rolling_corr_ref(a * s, b * s, 10), base)
 
 
+def test_rolling_corr_never_leaves_its_range():
+    # The review's windows: y = ±3x + 7 over [−83, 70, −13] correlate exactly ±1, and the
+    # computed ratio read ±1.0000000000000002 — `rolling_corr(x, y) > 1` fired where it is
+    # unreachable. The ratio is clipped to [−1, 1] (numpy's corrcoef and scipy's pearsonr
+    # rule), so every exactly linear window reads within an ulp or two of ±1, never past it.
+    x = np.array([-83.0, 70.0, -13.0])
+    for k in (3.0, -3.0):
+        assert rolling_corr_1d(x, k * x + 7.0, 3)[-1] == k / 3.0
+    rng = np.random.RandomState(17)
+    on_bound = 0
+    for _ in range(200):
+        x = rng.randint(-100, 100, 40).astype(float)
+        k = float(rng.choice([3.0, -3.0, 0.5, -1.75, 7.0]))
+        w = int(rng.randint(3, 10))
+        got = rolling_corr_1d(x, k * x + float(rng.choice([0.0, 7.0, -2.5])), w)
+        finite = got[np.isfinite(got)]
+        assert (np.abs(finite) <= 1.0).all()
+        np.testing.assert_allclose(finite, math.copysign(1.0, k), rtol=1e-15)
+        on_bound += int((np.abs(finite) == 1.0).sum())
+        np.testing.assert_array_equal(
+            ref.rolling_corr_ref(x, k * x, w), rolling_corr_1d(x, k * x, w)
+        )
+    assert on_bound > 0
+
+
 def test_rolling_corr_overflowed_variance_is_nan_never_zero():
     # corr(1e160·x, x): the LEFT variance itself overflows (deviations past ~1.3e154), and
     # `cov / sqrt(inf · vb)` read a finite 0.0 — "uncorrelated" for a perfectly correlated pair.
@@ -502,7 +527,7 @@ def test_ordinary_windows_are_bit_identical_to_the_shifted_direct_forms():
         va, vb = (da**2).mean(axis=-1), (db**2).mean(axis=-1)
         cov = (da * db).mean(axis=-1)
         direct = {
-            "corr": cov / np.sqrt(va * vb),
+            "corr": np.clip(cov / np.sqrt(va * vb), -1.0, 1.0),
             "z": da[..., -1] / np.sqrt(va),
             "std": np.sqrt(va),
         }

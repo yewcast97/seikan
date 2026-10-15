@@ -123,7 +123,8 @@ from seikan.numeric import MIN_NORMAL, log_ratio_array
 # residual minted a z-score of exactly ±1 and a correlation of 1 out of a constant series. The
 # recurrences hold the same line (``ema_1d``, ``zscore_ema_1d``, ``event_agg_1d``). Every window
 # with any variation whose variances and, for ``rolling_corr``, their product are normal doubles
-# is the direct two-pass form about its offset, bit for bit (the EW recurrences differ from their
+# is the direct two-pass form about its offset, bit for bit (a correlation clipped to ``[−1, 1]``,
+# where an exactly linear window's rounding carried it past; the EW recurrences differ from their
 # plain update only on the steps whose rounded update left its exact interval, or a held input's
 # carried deviation, and the EW z-score where its plain recurrence left the normal range; the
 # out-of-range windows and the lifted EW frame are the note above);
@@ -527,6 +528,12 @@ def rolling_corr_apply_nb(
     the window reads the correlation the direct form has in an unbounded exponent range. Every
     window whose variances and their product are normal doubles keeps every bit. A leg whose
     variance OVERFLOWED (deviations past ~1.3e154) is NaN: ``cov / inf`` read a finite 0.0.
+
+    The correlation is clipped to ``[−1, 1]``, numpy's ``corrcoef`` and scipy's ``pearsonr``
+    rule: the rounding of an exactly linear window carries the computed ratio an ulp or two past
+    its bound (``y = 3x + 7`` over ``[−83, 70, −13]`` read 1.0000000000000002, and
+    ``rolling_corr(x, y) > 1`` fired where it is unreachable). The clip binds only where the
+    ratio left the range.
     """
     a = np.asarray(left, dtype=float)
     b = np.asarray(right, dtype=float)
@@ -559,7 +566,7 @@ def rolling_corr_apply_nb(
                     va = np.where(lost, lva, va)
                     vb = np.where(lost, lvb, vb)
                     cov = np.where(lost, lcov, cov)
-        corr = cov / _sqrt_product(va, vb)
+        corr = np.clip(cov / _sqrt_product(va, vb), -1.0, 1.0)
     # `_normal(va)` / `_normal(vb)`: an overflowed variance divides `cov` by inf — a FINITE ±0.0
     # that `isfinite(corr)` cannot catch (it still catches a covariance at the float ceiling).
     ok = finite_all & varies & _normal(va) & _normal(vb) & np.isfinite(corr)

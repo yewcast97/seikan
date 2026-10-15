@@ -457,7 +457,8 @@ two-pass form about its offset).
   a leg whose variance fell below the normal range is lifted and the product of two variances
   taken in an unbounded exponent range, so `rolling_corr(x, x)` is exactly 1 at 1e80, 1e-85 and
   on subnormal values as at 1; a leg whose variance overflowed (deviations past ~1.3e154) is
-  NaN. Counts as one
+  NaN. The value is clipped to `[−1, 1]` (numpy's `corrcoef` rule): an exactly linear window's
+  rounding read 1.0000000000000002, which `rolling_corr(x, 3x + 7, 3) > 1` fired on. Counts as one
   operator level with two children. Recipe for "corr(stock daily return, Δ option EOD IV30)":
   declare the IV feed in `data.external`, then
   `rolling_corr(change(close), change(iv30, kind="diff"), window)`.
