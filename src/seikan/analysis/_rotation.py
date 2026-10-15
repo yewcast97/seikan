@@ -294,12 +294,11 @@ def pooled_reliability_summary(cells: list[ReliabilityCell], length: int) -> Rel
     order). Two same-bar observations sit ``d = 0`` apart, so their cross term enters at
     Bartlett weight ``max(0, 1 − 0/h) = 1``: one market move seen through several members is
     ONE cluster, priced at full covariance, never counted as independent evidence — the
-    cluster-robust treatment for free, the kernel stays PSD under ties, and its canonical
-    (bar, ret) lexsort makes the estimate bit-identical under any tied-row input order — the
+    cluster-robust treatment for free, the kernel stays PSD under ties, and its exactly rounded
+    per-bar deviation sums make the estimate bit-identical under any tied-row input order — the
     same-bar covariance is order-symmetric, so only the fp accumulation sequence was ever at
-    stake. Performance note: pooled sorted bars repeat, so the
-    kernel's event-lag loop runs ~(members × h) lags before its no-overlap break — still
-    trivial beside the FFTs.
+    stake. Performance note: the kernel's lag loop runs over the distinct entry bars, ~h lags
+    before its no-overlap break — trivial beside the FFTs.
 
     ``n_nonoverlap`` — :func:`nonoverlap_count` over the concatenated entry bars: the SAME greedy
     non-overlapping kernel as everywhere else in the engine, deliberately NOT the episode

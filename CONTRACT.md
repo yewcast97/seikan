@@ -386,8 +386,9 @@ from the trades: a bar on which every member has a closed row in the cell), so t
 episode sums (same draws, same seed), the `subperiods` means, the `episodes` ledger and
 `episode_profile` means (with the profile's hit rate, streaks and quantiles over them) and the
 HAC (its long-run variance reads the rows only through per-bar deviation sums, same-bar pairs
-at weight 1, and is computed from them — each bar's deviations exactly summed before the
-quadratic form, so members whose deviations cancel on a bar keep their combined variance) are
+at weight 1, and is computed from them — each bar's deviation sum exactly rounded from its own
+returns and the centre before the quadratic form, so members whose deviations cancel on a bar
+keep their combined variance) are
 exact where the identity holds and the rows' own values everywhere else: a
 pool whose every bar is full has no long-run variance — `t_hac` / `hac_se` null, as on
 identical legs — and any other pool holding a full bar reads `t_hac` as the exact `mean_ret`
@@ -781,7 +782,8 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   where that mean's sum overflowed — as for any pool whose resampled means are bit-identical on
   every draw), and the reads that divide by dispersion stand down where the spread is within
   rounding — the HAC nulls (largest deviation within ~10 ulps of the mean, the skewness/kurtosis
-  gate), the benchmark regression declines a (near-)constant bench leg and fits `beta` exactly 0 on
+  gate, or every BAR's mean deviation within them: a pooled pool whose bars all sit at its mean,
+  every row on one bar among them), the benchmark regression declines a (near-)constant bench leg and fits `beta` exactly 0 on
   a (near-)constant raw leg, and a CSCV split scores NaN when its pool is exactly constant (the
   per-block extrema), within the HAC's ~10 ulps, or has a centered sum of squares within its own
   accumulation error. The pool MEANS the checklist grades, and their direct twins — the legs,

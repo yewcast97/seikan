@@ -1015,6 +1015,54 @@ def test_newey_west_sums_each_bar_before_the_quadratic_form():
     assert t == pytest.approx(t_exact, rel=1e-13) and se == pytest.approx(se_exact, rel=1e-13)
 
 
+def test_newey_west_same_bar_sum_keeps_the_centre_a_rounded_deviation_lost():
+    # mean = 2**-53 / 5. Each row's `r − mean` rounded to ±0.5, so the two-row bars summed to 0
+    # for their exact −2·mean and the SE read 1.986e-17 for the exact 2.432e-17. One fsum over a
+    # bar's raw returns and its copies of −mean keeps it: the estimator's exact value.
+    rets, bars = np.array([0.5, -0.5, 0.5, -0.5, 2.0**-53]), np.array([0, 0, 3, 3, 6])
+    t, se = newey_west_mean(rets, bars, 1)
+    assert (t, se) == _hac_exact(rets, bars, 1) == (0.9128709291752769, 2.432376777795247e-17)
+    # the bar's rows enter in any order
+    assert newey_west_mean(rets[[1, 0, 3, 2, 4]], bars, 1) == (t, se)
+
+
+def test_newey_west_same_bar_sum_past_the_double_range_is_null_never_a_crash():
+    # Finite returns whose same-bar sum leaves the double range: fsum raised OverflowError out
+    # of the run (exit 4 on valid input) where every other unrepresentable estimate is null.
+    rets, bars = np.array([-1e308, 8e307, 8e307, -1e308]), np.array([0, 1, 1, 2])
+    t, se = newey_west_mean(rets, bars, 1)
+    assert np.isnan(t) and np.isnan(se)
+    # the basket pooled read that reaches it: members A and B fire together on bar 1
+    T = 50
+    fwd_a, fwd_b, ma, mb = np.zeros(T), np.zeros(T), np.zeros(T), np.zeros(T)
+    fwd_a[[0, 1]], fwd_b[[1, 2]] = [-1e308, 8e307], [8e307, -1e308]
+    ma[[0, 1]], mb[[1, 2]] = 1.0, 1.0
+    cells = [
+        {"key": ("c", "A"), "mask_col": ma, "fwd_col": fwd_a, "h": 1},
+        {"key": ("c", "B"), "mask_col": mb, "fwd_col": fwd_b, "h": 1},
+    ]
+    read = pooled_reliability_summary(cells, T)["per_cell"][("c",)]
+    assert np.isnan(read["t_hac"]) and np.isnan(read["hac_se"])
+    # a deviation past the range reads quietly in the zero-dispersion gate: no overflow warning
+    t, se = newey_west_mean(np.array([1.7e308, -1.7e308, 1.7e308]), np.arange(3), 2)
+    assert np.isnan(t) and np.isnan(se)
+
+
+def test_newey_west_pool_whose_bars_sit_at_its_mean_is_null():
+    # Every row on ONE bar: the one deviation sum Σr − n·mean is exactly 0 for the exact mean,
+    # and the quadratic form read the centre's rounding — (1.03e16, 2.27e-17) for rows that vary.
+    t, se = newey_west_mean(np.array([0.1, 0.2, 0.4]), np.zeros(3, dtype=int), 5)
+    assert np.isnan(t) and np.isnan(se)
+    # Two bars, each at the pool's mean however its rows vary: the same residue.
+    rets = np.array([0.1, 0.2, 0.4, 0.4, 0.1, 0.2])
+    t, se = newey_west_mean(rets, np.array([0, 0, 0, 5, 5, 5]), 1)
+    assert np.isnan(t) and np.isnan(se)
+    # bars whose means genuinely differ still read
+    shifted = rets + np.array([0.0, 0.0, 0.0, 0.3, 0.0, 0.0])
+    t, se = newey_west_mean(shifted, np.array([0, 0, 0, 5, 5, 5]), 1)
+    assert np.isfinite(t) and se > 0.0
+
+
 def test_exact_mean_keeps_the_exact_sum_sign_and_zero():
     # np.mean sums pairwise in floating point, and a large term swallows a small one before its
     # cancelling partner arrives: the 49 diff returns of [0, 2**54, 0, −1, 0] × 10 sum to exactly
