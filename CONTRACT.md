@@ -333,7 +333,8 @@ mean_ret_raw − mean_ret_bench` and a reader can tell "+3.2% against a +2.4% ma
 less than a falling market"; unbenchmarked runs: `mean_ret_raw` equals `mean_ret` and
 `mean_ret_bench` is null — `benchmark_regression` — {n, beta, alpha, r2, reason}, the legs'
 per-window OLS attribution: is the excess mean alpha, or beta ≠ 1 riding market drift; `alpha +
-beta·mean_ret_bench == mean_ret_raw` exactly, alpha per h-bar window and never annualized, null
+beta·mean_ret_bench == mean_ret_raw` to the rounding of one product and one difference (alpha
+reads the exactly rounded leg means), alpha per h-bar window and never annualized, null
 fields + reason when unbenchmarked/thin/degenerate/out of range — hit_rate / win_loss_ratio /
 profit_factor (Σwins/|Σlosses|, null never infinity when a side is empty) / std_ret / skewness /
 kurtosis (Pearson, normal = 3) / tail_ratio (≡ |p95/p05|, derivable) / cvar_5 (the mean at or below

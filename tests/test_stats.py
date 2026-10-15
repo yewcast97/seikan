@@ -2857,9 +2857,10 @@ def test_benchmark_regression_recovers_a_planted_beta_and_alpha():
     assert blk["beta"] == pytest.approx(2.0, abs=0.05)
     assert blk["alpha"] == pytest.approx(0.002, abs=0.001)
     assert 0.9 < blk["r2"] <= 1.0
-    # the identity a reader re-checks: alpha + beta·mean(bench) == mean(raw), exactly
-    assert blk["alpha"] + blk["beta"] * float(np.mean(bench)) == pytest.approx(
-        float(np.mean(raw)), abs=1e-15
+    # the identity a reader re-checks on the exactly rounded leg means: alpha + beta·mean(bench)
+    # == mean(raw), to the rounding of one product and one difference
+    assert blk["alpha"] + blk["beta"] * exact_mean(bench) == pytest.approx(
+        exact_mean(raw), abs=1e-17
     )
 
 
@@ -2908,7 +2909,7 @@ def test_benchmark_regression_constant_decimal_legs_are_degenerate_exactly():
     assert flat_bench["reason"] == "no_benchmark_variation" and flat_bench["beta"] is None
     flat_raw = benchmark_regression(np.full(5, 0.007), np.array([0.01, 0.03, 0.02, 0.05, 0.04]))
     assert flat_raw["reason"] is None and flat_raw["beta"] == 0.0
-    assert flat_raw["alpha"] == float(np.mean(np.full(5, 0.007))) and np.isnan(flat_raw["r2"])
+    assert flat_raw["alpha"] == 0.007 and np.isnan(flat_raw["r2"])  # the leg's exact mean
 
 
 @pytest.mark.parametrize("k", [500, 262, -262, -500])
@@ -3179,7 +3180,21 @@ def test_benchmark_regression_moments_are_taken_about_each_legs_offset():
     raw = level + ulp * np.array([0.0, 62.0, 62.0])
     blk = benchmark_regression(raw, bench)
     assert blk["reason"] is None and blk["beta"] == 2.0 and blk["r2"] == 1.0
-    assert blk["alpha"] == float(np.mean(raw)) - 2.0 * float(np.mean(bench))
+    assert blk["alpha"] == exact_mean(raw) - 2.0 * exact_mean(bench)
+
+
+def test_benchmark_regression_alpha_reads_the_exact_leg_means():
+    # The review's legs: the bench leg at 2**50 + 8i, the raw leg 1 above it — beta exactly 1,
+    # and the panel's exactly rounded leg means exactly 1 apart. alpha centred on the pairwise
+    # means instead, whose rounding at the level's ulp (0.25) put them 0.75 apart: alpha 0.75
+    # beside a mean_ret_raw − mean_ret_bench of 1, an identity the panel itself contradicted.
+    bench = 2.0**50 + 8.0 * np.arange(31)
+    raw = bench + 1.0
+    assert float(np.mean(raw)) - float(np.mean(bench)) == 0.75  # the premise
+    blk = benchmark_regression(raw, bench)
+    assert blk["reason"] is None and blk["beta"] == 1.0 and blk["r2"] == 1.0
+    assert blk["alpha"] == 1.0 == exact_mean(raw) - exact_mean(bench)
+    assert blk["alpha"] + blk["beta"] * exact_mean(bench) == exact_mean(raw)
 
 
 def test_benchmark_regression_r2_never_exceeds_one():
@@ -3207,7 +3222,7 @@ def test_benchmark_regression_near_constant_legs_are_degenerate():
     assert flat_bench["reason"] == "no_benchmark_variation" and flat_bench["beta"] is None
     flat_raw = benchmark_regression(near, other)
     assert flat_raw["reason"] is None and flat_raw["beta"] == 0.0 and np.isnan(flat_raw["r2"])
-    assert flat_raw["alpha"] == float(np.mean(near))
+    assert flat_raw["alpha"] == exact_mean(near)
 
 
 @pytest.mark.parametrize("c", [0.1, 0.007, 0.3])

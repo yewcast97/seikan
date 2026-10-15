@@ -75,7 +75,9 @@ class BenchmarkRegressionBlock(TypedDict):
     The leg-attribution question the two means alone cannot answer: is the excess mean alpha, or
     beta ≠ 1 riding market drift? ``beta`` is unitless, ``alpha`` is in outcome units per h-bar
     window — NEVER annualized (this engine carries no calendar-return framing) — and
-    ``alpha + beta·mean(bench) == mean(raw)`` is an identity a reader re-checks. All three
+    ``alpha + beta·mean(bench) == mean(raw)`` — on the legs' exactly rounded means, the panel's
+    ``mean_ret_raw`` / ``mean_ret_bench`` — holds to the rounding of one product and one
+    difference, an identity a reader re-checks. All three
     statistical fields are genuinely None — not NaN — when the block declined to fit, with
     ``reason`` naming why (``no_paired_observations`` — which covers every unbenchmarked run —
     / ``insufficient_observations`` / ``no_benchmark_variation`` / ``not_representable`` — a

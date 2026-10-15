@@ -549,8 +549,11 @@ def benchmark_regression(raw: np.ndarray, bench: np.ndarray) -> BenchmarkRegress
     beta ≠ 1 riding market drift? ``beta = cov(raw, bench) / var(bench)`` (both ddof=1),
     ``alpha = mean(raw) − beta·mean(bench)`` — per h-bar window, NEVER annualized, this engine
     carrying no calendar-return framing — and ``r2 = cov² / (var_raw · var_bench)``, at most 1
-    (:func:`_r2`). The identity
-    ``alpha + beta·mean(bench) == mean(raw)`` holds exactly and is a reader's to re-check.
+    (:func:`_r2`). The means are the legs' exactly rounded ones (:func:`exact_mean`) — the
+    ``mean_ret_raw`` / ``mean_ret_bench`` the panel reports beside the fit — so the identity
+    ``alpha + beta·mean(bench) == mean(raw)`` holds to the rounding of one product and one
+    difference, a reader's to re-check. On the pairwise means it did not: legs at ``2**50``
+    whose raw leg is the bench leg plus 1 read alpha 0.75 beside leg means 1 apart.
 
     The two arrays must be ROW-ALIGNED (the same closed rows, in the same order): pairing is the
     whole point, which is why this takes the raw columns and filters PAIRS — a pre-filtered
@@ -587,22 +590,23 @@ def benchmark_regression(raw: np.ndarray, bench: np.ndarray) -> BenchmarkRegress
         return _declined("insufficient_observations")
     # The second moments are taken about each leg's OWN offset (:func:`_ddof1_std`'s rule): beta
     # and r2 are shift-invariant, and a leg's spread at its level's ulp keeps its bits — about the
-    # rounded raw means it read 1 where it is 1/3. alpha stays on the raw means.
+    # rounded raw means it read 1 where it is 1/3. alpha reads the legs' exactly rounded means.
     rc = r - midrange(float(np.min(r)), float(np.max(r)))
     bc = b - midrange(float(np.min(b)), float(np.max(b)))
     var_b = float(np.var(bc, ddof=1))
-    if _near_constant(b, float(np.mean(b))):
+    mean_b = exact_mean(b)
+    if _near_constant(b, mean_b):
         return _declined("no_benchmark_variation")
     if not _normal(var_b):
         # a VARYING leg (a constant one is near-constant, above) whose variance left the range:
         # no zero variation, and no divisor either
         return _declined("not_representable")
-    mean_r = float(np.mean(r))
+    mean_r = exact_mean(r)
     if _near_constant(r, mean_r):
         return {"n": n, "beta": 0.0, "alpha": mean_r, "r2": _NAN, "reason": None}
     cv = float(np.cov(rc, bc, ddof=1)[0, 1])
     beta = cv / var_b
-    alpha = mean_r - beta * float(np.mean(b))
+    alpha = mean_r - beta * mean_b
     if not (math.isfinite(beta) and math.isfinite(alpha)):
         return _declined("not_representable")
     var_r = float(np.var(rc, ddof=1))
