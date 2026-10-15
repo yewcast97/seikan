@@ -53,7 +53,7 @@ _OHLC = ("open", "high", "low", "close")
 #: |1-bar close return| beyond this warns of a possible unadjusted split (never refuses).
 _LARGE_MOVE = 0.5
 #: An index gap larger than this multiple of the median spacing warns (never refuses).
-_GAP_FACTOR = 10.0
+_GAP_FACTOR = 10
 #: How many offending rows an error message names before truncating.
 MAX_EXAMPLES = 5
 #: Fewer than this many possible anchor bars beyond the longest horizon → barely_sufficient warning.
@@ -709,21 +709,47 @@ def _descriptive_warnings(path: str, df: pd.DataFrame, detected: str, rep: FileR
                 examples=_examples(big, df["close"].astype(str)),
             )
     if len(df) > 2:
-        deltas = df.index.to_series().diff().dropna()
-        median = deltas.median()
-        if median > pd.Timedelta(0):
-            gaps = deltas > _GAP_FACTOR * median
-            if gaps.any():
+        # Exact tick arithmetic, as `bar_spacing` reads the clock: a Timedelta median times the
+        # factor overflowed int64 nanoseconds past ~29 years of spacing and crashed the read
+        # (three nanosecond-stamped rows 200 years apart), where every spacing is near the median.
+        spacings = _tick_spacings(df.index)
+        median = _median_ticks(spacings)
+        if median > 0:
+            n_gaps = sum(1 for d in spacings if d > _GAP_FACTOR * median)
+            if n_gaps:
+                seconds = _seconds(median, _TICKS_PER_SECOND[df.index.unit])
                 rep.warn(
                     "calendar_gap",
-                    f"{path}: {int(gaps.sum())} gap(s) larger than {_GAP_FACTOR:.0f}× the median "
-                    f"bar spacing ({median})",
+                    f"{path}: {n_gaps} gap(s) larger than {_GAP_FACTOR}× the median bar spacing "
+                    f"({seconds} s)",
                 )
 
 
 #: Ticks per second of each resolution a ``DatetimeIndex`` carries (pandas ≥ 2 keeps the parsed
 #: one: a second-stamped file builds a ``[us]`` index, a nanosecond-stamped one ``[ns]``).
 _TICKS_PER_SECOND = {"s": 1, "ms": 10**3, "us": 10**6, "ns": 10**9}
+
+
+def _tick_spacings(index: pd.DatetimeIndex) -> list[int]:
+    """The spacings between consecutive bars in the index's OWN ticks, as Python integers in index
+    order — exact at any span (an int64-nanosecond difference overflows past ~292 years)."""
+    ticks: list[int] = index.asi8.tolist()
+    return [b - a for a, b in itertools.pairwise(ticks)]
+
+
+def _median_ticks(spacings: list[int]) -> Fraction:
+    """The exact median of tick spacings — an even count's is the midpoint of its two middle
+    ones (non-empty input)."""
+    d = sorted(spacings)
+    mid = len(d) // 2
+    return Fraction(d[mid]) if len(d) % 2 else Fraction(d[mid - 1] + d[mid], 2)
+
+
+def _seconds(ticks: Fraction, per_second: int) -> int | float:
+    """A tick count in seconds: an integer where it is a whole second, else the exact quotient
+    correctly rounded to a float."""
+    q = ticks / per_second
+    return q.numerator if q.denominator == 1 else float(q)
 
 
 def bar_spacing(index: pd.DatetimeIndex) -> BarSpacing:
@@ -740,19 +766,11 @@ def bar_spacing(index: pd.DatetimeIndex) -> BarSpacing:
     if len(index) < 2:
         return {"min_seconds": None, "median_seconds": None, "max_seconds": None}
     per_second = _TICKS_PER_SECOND[index.unit]
-    ticks: list[int] = index.asi8.tolist()
-    d = sorted(b - a for a, b in itertools.pairwise(ticks))
-    mid = len(d) // 2
-    median = Fraction(d[mid]) if len(d) % 2 else Fraction(d[mid - 1] + d[mid], 2)
-
-    def _sec(t: Fraction) -> int | float:
-        q = t / per_second
-        return q.numerator if q.denominator == 1 else float(q)
-
+    d = _tick_spacings(index)
     return {
-        "min_seconds": _sec(Fraction(d[0])),
-        "median_seconds": _sec(median),
-        "max_seconds": _sec(Fraction(d[-1])),
+        "min_seconds": _seconds(Fraction(min(d)), per_second),
+        "median_seconds": _seconds(_median_ticks(d), per_second),
+        "max_seconds": _seconds(Fraction(max(d)), per_second),
     }
 
 

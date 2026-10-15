@@ -656,7 +656,32 @@ def test_calendar_gap_warns_but_passes(tmp_path):
     )
     _, rep = _run(tmp_path, text)
     assert rep.ok
-    assert "calendar_gap" in {w["code"] for w in rep.warnings}
+    gaps = [w for w in rep.warnings if w["code"] == "calendar_gap"]
+    assert len(gaps) == 1
+    assert gaps[0]["message"].endswith(
+        ": 1 gap(s) larger than 10× the median bar spacing (86400 s)"
+    )
+
+
+def test_calendar_gap_is_read_in_exact_ticks_at_any_span(tmp_path):
+    # The review's case: three nanosecond-stamped rows 200 years apart. The Timedelta median
+    # times the factor overflowed int64 nanoseconds and crashed the read (OverflowError); every
+    # spacing sits near the median, so the file loads clean.
+    text = (
+        "datetime,x\n"
+        "1700-01-01T00:00:00.000000001,1\n"
+        "1900-01-01T00:00:00.000000001,2\n"
+        "2100-01-01T00:00:00.000000001,3\n"
+    )
+    df, rep = _run(tmp_path, text)
+    assert rep.ok and df is not None and df.index.unit == "ns"
+    assert "calendar_gap" not in {w["code"] for w in rep.warnings}
+    # a gap past ten times a sub-second median still warns, its spacing stated exactly
+    stamps = ["2021-01-01T00:00:00", "2021-01-01T00:00:00.5", "2021-01-01T00:00:01", "2021-01-02"]
+    _, rep = _run(tmp_path, "datetime,x\n" + "".join(f"{t},1\n" for t in stamps))
+    assert [w["message"].split(": ", 1)[1] for w in rep.warnings] == [
+        "1 gap(s) larger than 10× the median bar spacing (0.5 s)"
+    ]
 
 
 # ---- structural sufficiency -----------------------------------------------------------------
