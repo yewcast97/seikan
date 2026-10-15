@@ -81,6 +81,12 @@ REJECTIONS = [
     ("unsorted_timestamp", "datetime,close\n2021-01-02,100\n2021-01-01,101\n"),
     ("non_numeric_value", "datetime,close\n2021-01-01,abc\n2021-01-02,100\n"),
     ("non_numeric_value", 'datetime,close\n2021-01-01,"1,234"\n2021-01-02,100\n'),  # thousands sep
+    ("non_numeric_value", "datetime,close\n2021-01-01,1_000\n2021-01-02,100\n"),  # float() reads it
+    ("non_numeric_value", "datetime,close\n2021-01-01,١٢٣\n2021-01-02,100\n"),  # Arabic-Indic
+    ("non_numeric_value", "datetime,close\n2021-01-01,１２３\n2021-01-02,100\n"),  # full-width
+    ("non_numeric_value", "datetime,close\n2021-01-01,0x10\n2021-01-02,100\n"),  # hex
+    ("non_numeric_value", "datetime,close\n2021-01-01,-nan\n2021-01-02,100\n"),  # not a marker
+    ("non_numeric_value", "datetime,close\n2021-01-01,1e\n2021-01-02,100\n"),  # no exponent
     ("no_value_columns", "datetime\n2021-01-01\n"),
     ("integrity", "datetime,open,high,low,close\n2021-01-01,100,90,110,105\n"),  # high < low
     ("integrity", "datetime,open,high,low,close\n2021-01-01,-1,1,-2,0.5\n"),  # non-positive price
@@ -125,6 +131,39 @@ def test_a_fractional_digit_past_the_nanosecond_refuses_and_trailing_zeros_admit
         pd.Timestamp("2021-01-01T00:00:00.12345679"),
         pd.Timestamp("2021-01-01T00:00:01.5"),
     ]
+
+
+def test_value_cells_read_correctly_rounded(tmp_path):
+    # pandas' parser is not correctly rounded: it read 0.00000000000000001 as 0.0 and missed by an
+    # ulp on nearly half of all 17-significant-digit strings — the form repr and every
+    # pandas-written CSV use — so a file read back did not hold the values written to it. Every
+    # cell now reads as the double nearest its decimal, which is float()'s value.
+    rng = np.random.default_rng(3)
+    vals = np.concatenate(
+        [rng.standard_normal(2000) * 10.0 ** rng.integers(-30, 30, 2000), rng.random(2000)]
+    )
+    written = [repr(float(v)) for v in vals] + [f"{v:.15f}" for v in vals[:1000]]
+    written += ["0.00000000000000001", "123456789.123456789", "1.e5", "+.5", "-0", "1E+05"]
+    written += ["1e-400", "7e00000000000000000000000001", "000.12345678901234567890123"]
+    idx = pd.date_range("2021-01-01", periods=len(written), freq="1min")
+    lines = ["datetime,y"] + [f"{t.isoformat()},{w}" for t, w in zip(idx, written, strict=True)]
+    df, rep = _run(tmp_path, "\n".join(lines) + "\n")
+    assert rep.ok and df is not None
+    got = df["y"].to_numpy()
+    want = np.array([float(w) for w in written])
+    assert np.array_equal(got, want)
+    assert got[: len(vals)].tolist() == vals.tolist()  # every repr round-trips, bit for bit
+    assert got[len(vals) + 1000] == 1e-17 and np.signbit(got[len(vals) + 1004])
+    # the old reading missed on this very file
+    assert (pd.to_numeric(pd.Series(written)).to_numpy() != want).sum() > 1000
+    # inf/infinity in any case still parse, and still refuse as non-finite — never as text
+    for cell in ("inf", "-Infinity", "INF", "1e400"):
+        df, rep = _run(tmp_path, f"datetime,close\n2021-01-01,{cell}\n2021-01-02,1\n")
+        assert df is None and [e["code"] for e in rep.errors] == ["integrity"], cell
+    # the only missing markers are an empty cell and nan, in any case
+    df, rep = _run(tmp_path, "datetime,y\n2021-01-01,\n2021-01-02,NaN\n2021-01-03, 2.5 \n")
+    assert rep.ok and df is not None
+    assert np.isnan(df["y"].iloc[0]) and np.isnan(df["y"].iloc[1]) and df["y"].iloc[2] == 2.5
 
 
 def test_unpadded_iso_ordering_accepted(tmp_path):

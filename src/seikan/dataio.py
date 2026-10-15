@@ -76,6 +76,11 @@ _SPACED_QUOTE = re.compile(rb'\n[ \t]+"')
 #: instant (``…T00:00:00.0000000001`` as midnight, a duplicate of the bar stamped there). Zeros
 #: past the ninth digit name the same instant and are admitted.
 _PAST_NANOSECOND = r"\.\d{9}\d*[1-9]"
+#: The value-cell grammar, ASCII only: a signed decimal (``1``, ``1.``, ``.5``, ``-0``) with an
+#: optional exponent, or a signed ``inf``/``infinity`` in any case (non-finite, refused later by
+#: :func:`check_frame`). It is the set pandas' parser used to admit, and it gates ``float()``,
+#: which alone would also read ``1_000``, Arabic-Indic (``١٢٣``) and full-width digits.
+_NUMBER = r"[+-]?(?:(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?|(?i:inf|infinity))"
 
 
 class IntegrityError(ValueError):
@@ -253,7 +258,9 @@ def read_strict_csv(
       no ``dayfirst``/format inference, ever; at most nanosecond resolution — a nonzero digit past
       the ninth fractional digit refuses (``bad_timestamp``) rather than being truncated
     - unique, ascending timestamps
-    - value columns parse as numbers; the only missing-value markers are an empty cell or ``nan``
+    - value cells are ASCII decimal numbers (optional sign, fraction and exponent) or a signed
+      ``inf``/``infinity``, each read correctly rounded — the double nearest the decimal written;
+      the only missing-value markers are an empty cell or ``nan``
     - no duplicate column names, no empty/header-only file
     - :func:`check_frame` invariants for the detected (or ``expected_shape``) shape
 
@@ -621,24 +628,34 @@ def _parse_value_columns(
     path: str, raw: pd.DataFrame, ts_col: str, rep: FileReport
 ) -> dict[str, np.ndarray]:
     """Stage 7: forced-float value columns; an empty cell and ``nan`` are the ONLY missing
-    markers — anything else non-numeric refuses, named per column."""
+    markers — anything else outside the numeric grammar (:data:`_NUMBER`) refuses, named per
+    column.
+
+    A number is read CORRECTLY ROUNDED — the double nearest the decimal the file writes, which
+    is what ``float()`` returns. ``pd.to_numeric`` is not: it read ``0.00000000000000001`` as
+    ``0.0`` and missed by an ulp on nearly half of all 17-significant-digit strings, the form
+    ``repr`` and every pandas-written CSV use, so a file read back did not hold the values that
+    were written to it."""
     value_cols = [c for c in raw.columns if c != ts_col]
     if not value_cols:
         rep.error("no_value_columns", f"{path}: no value columns besides the timestamp")
     data: dict[str, np.ndarray] = {}
     for c in value_cols:
         s = raw[c].str.strip()
-        num = pd.to_numeric(s, errors="coerce")
-        is_missing = (s == "") | (s.str.lower() == "nan")
-        bad = num.isna() & ~is_missing
+        is_number = s.str.fullmatch(_NUMBER).to_numpy(dtype=bool)
+        is_missing = ((s == "") | (s.str.lower() == "nan")).to_numpy(dtype=bool)
+        bad = ~(is_number | is_missing)
         if bad.any():
             rep.error(
                 "non_numeric_value",
                 f"{path}: column {c!r} has {int(bad.sum())} non-numeric value(s)",
                 column=c,
-                examples=_examples(bad, s),
+                examples=_examples(pd.Series(bad), s),
             )
-        data[c] = num.astype(float).to_numpy()  # positional values; the frame gets the ts index
+        vals = np.full(len(s), np.nan)  # positional values; the frame gets the ts index
+        cells = s.to_numpy(dtype=object)[is_number]
+        vals[is_number] = [float(x) for x in cells]
+        data[c] = vals
     return data
 
 

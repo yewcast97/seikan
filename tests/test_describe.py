@@ -685,8 +685,6 @@ def test_dispersion_diff_std_keeps_its_value_where_its_squares_leave_the_range(t
     # their bits (2**-536 read 9.1647e-162 where the std is 9.1106e-162) or vanished into the 0.0
     # only an all-equal series owns (1e-170, 2**-1000). Scaled by a power of two the std is
     # computed in range — every bit of the unscaled std, scaled — and in range it is np.std's.
-    # (The exact reads call the block directly: the CSV parse itself may land a 17-digit level
-    # one ulp off its repr.)
     from seikan.describe import _dispersion_block
 
     levels = np.array([1.0, 3.0, 2.0, 5.0, 4.0, 7.0])
