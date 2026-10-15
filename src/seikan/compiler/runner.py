@@ -468,6 +468,7 @@ def _run_summary(
     cfg: _RunConfig,
     frames_by_h: dict[int, _HorizonFrames],
     rel: ReliabilitySummary,
+    pooled_rel: ReliabilitySummary | None,
     rel_cells: list[ReliabilityCell],
     cross_breadth: list[CrossBreadthEntry],
     n_combos_attempted: int,
@@ -483,8 +484,14 @@ def _run_summary(
     # every non-identity shift of the series — and the implied smallest achievable
     # p = 1/(1+n_shifts) over a fully defined null. A cell's own floor is 1/(1+rot_n_null),
     # which a sparse mask lifts above this; either way a `rot_p` at its floor means "no shift
-    # beat the observation", not "p ≈ 0".
-    n_shifts = int(rel.get("n_shifts", 0))
+    # beat the observation", not "p ≈ 0". In a basket it is the count ANY null in the report was
+    # formed over: the pooled pass rotates every fired member's mask, closed rows or not, so a
+    # basket whose members fired only where no observation closes (the final bar) has no
+    # per-target null at all while its pooled nulls rotated every shift.
+    n_shifts = max(
+        int(rel.get("n_shifts", 0)),
+        int(pooled_rel.get("n_shifts", 0)) if pooled_rel is not None else 0,
+    )
     # Per-SOURCE availability, computed UNCONDITIONALLY. Every raw decision leaf
     # the entry tree reads (`Field`/`External`/`DaysSince`, and `native:<feed>` — the prints a
     # native node reads), counted over the WHOLE evaluated interval from its own first_available
@@ -1464,14 +1471,14 @@ def run_backtest(thesis: Thesis, md: MarketData) -> EventStudyResult:
     # pattern a rank signal fixes) and the pooled event-time HAC / greedy n_nonoverlap over the
     # concatenated member closed rows (a member with none adds nothing there). Conjunction runs
     # form no pooled read at all.
-    pooled_per_cell = pooled_reliability_summary(pooled_cells, n_bars)["per_cell"] if basket else {}
+    pooled_rel = pooled_reliability_summary(pooled_cells, n_bars) if basket else None
 
     cells = _cells_panel(
         cfg,
         declared_cells,
         trades,
         rel["per_cell"],
-        pooled_per_cell,
+        pooled_rel["per_cell"] if pooled_rel is not None else {},
         undef_by_combo,
         grid.pooled_mean_ret,
         grid.pooled_full_bars,
@@ -1485,6 +1492,7 @@ def run_backtest(thesis: Thesis, md: MarketData) -> EventStudyResult:
         cfg,
         frames_by_h,
         rel,
+        pooled_rel,
         rel_cells,
         cross_breadth,
         n_combos_attempted,

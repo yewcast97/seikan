@@ -5089,6 +5089,36 @@ def test_pooled_rotation_rotates_a_member_whose_only_firing_is_the_final_bar(tmp
     assert flags_b[-1] == 1 and int(flags_b.sum()) == 1
 
 
+def test_rotation_stamp_counts_the_shifts_a_pooled_null_rotated(tmp_path):
+    # The run-level stamp read only the per-target pass, whose roster is closed rows. A basket
+    # whose members fire only on the final bar has none — no per-target null at all — while the
+    # pooled pass rotates every FIRED member's mask: its null was formed over 79 shifts (74 of
+    # them defined) and the stamp said 0 shifts, resolution null, below the cell's own count.
+    n = 80
+    idx = pd.date_range("2021-01-01", periods=n, freq="1D")
+    rng = np.random.RandomState(5)
+    files = {}
+    for g in ("A", "B", "C"):
+        px = 100.0 + rng.uniform(-2.0, 2.0, n)
+        px[n - 1] += 10.0  # each member's ONLY threshold crossing: the final bar
+        files[g] = _write_bars(tmp_path / f"{g}.csv", px, idx)
+    thesis = Thesis.model_validate(
+        {
+            "name": "final_bar_basket",
+            "target_mode": "basket",
+            "data": {"targets": ["A", "B", "C"]},
+            "entry": _gt(105.0),
+            "params": {"horizon": 5},
+        }
+    )
+    s = run_backtest(thesis, load(thesis, files)).summary
+    pooled = s["cells"][0]["pooled"]
+    assert all(st["n"] == 0 and st["rot_n_null"] == 0 for st in s["cells"][0]["by_target"].values())
+    assert pooled["n"] == 0 and pooled["rot_n_null"] == 74  # rotated firings land on bars 0..73
+    assert s["rotation"] == {"n_shifts": n - 1, "p_resolution": 1.0 / n}
+    assert pooled["rot_n_null"] <= s["rotation"]["n_shifts"]
+
+
 # ---- run-level unconditional baseline (evidence-only) ------------------------
 # The base rate every conditional mean must be read against: the SAME measurement with the entry
 # condition removed, per horizon × target — plus, in basket mode, one pooled (bar × member) row.

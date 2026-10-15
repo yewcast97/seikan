@@ -64,7 +64,9 @@ class RotationStamp(TypedDict):
 
     ``p_resolution`` is ``1/(1 + n_shifts)`` (NaN → null when no shift ran — a grid that never
     fired): a ``rot_p`` sitting at that floor means "no shift beat the observation", not
-    "p ≈ 0". Evidence only.
+    "p ≈ 0". ``n_shifts`` counts the shifts ANY null in the summary was formed over, so every
+    panel's ``rot_n_null`` is at most it — in a basket the pooled nulls included, which rotate
+    a fired member's mask even where none of its firings closed. Evidence only.
     """
 
     n_shifts: int
