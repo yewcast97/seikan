@@ -25,11 +25,13 @@ import codecs
 import csv
 import hashlib
 import io
+import itertools
 import re
 from collections.abc import Iterator
 from dataclasses import dataclass
 from dataclasses import field as dc_field
-from typing import Literal, SupportsFloat, Unpack
+from fractions import Fraction
+from typing import Literal, Unpack
 
 import numpy as np
 import pandas as pd
@@ -686,28 +688,38 @@ def _descriptive_warnings(path: str, df: pd.DataFrame, detected: str, rep: FileR
                 )
 
 
+#: Ticks per second of each resolution a ``DatetimeIndex`` carries (pandas ≥ 2 keeps the parsed
+#: one: a second-stamped file builds a ``[us]`` index, a nanosecond-stamped one ``[ns]``).
+_TICKS_PER_SECOND = {"s": 1, "ms": 10**3, "us": 10**6, "ns": 10**9}
+
+
 def bar_spacing(index: pd.DatetimeIndex) -> BarSpacing:
     """{min,median,max}_seconds between consecutive bars of an index — the clock geometry every
     horizon-in-bars is denominated in, stamped by the run summary and by every ``describe``
     profile in one vocabulary. Pure self-description: integers where the spacing is a whole
-    second, floats otherwise, None below two bars. The engine still never interprets cadence —
-    translation into "trading days" stays the caller's."""
+    second, floats otherwise (the exact spacing, correctly rounded), None below two bars. The
+    engine still never interprets cadence — translation into "trading days" stays the caller's.
+
+    Exact in the index's OWN resolution: its ticks are differenced as Python integers, and the
+    median of an even count is the exact midpoint of its two middle spacings. A cast to int64
+    nanoseconds overflowed wherever two consecutive bars lie more than ~292 years apart, which
+    an ``[s]``/``[us]`` index holds without complaint — a 1700/2024 pair read −8.2e9 s."""
     if len(index) < 2:
         return {"min_seconds": None, "median_seconds": None, "max_seconds": None}
-    d = np.diff(index.values.astype("datetime64[ns]").astype("int64"))
+    per_second = _TICKS_PER_SECOND[index.unit]
+    ticks: list[int] = index.asi8.tolist()
+    d = sorted(b - a for a, b in itertools.pairwise(ticks))
+    mid = len(d) // 2
+    median = Fraction(d[mid]) if len(d) % 2 else Fraction(d[mid - 1] + d[mid], 2)
 
-    def _sec(v: SupportsFloat) -> int | float:
-        ns = float(v)
-        if ns.is_integer():
-            q, r = divmod(int(ns), 1_000_000_000)
-            if r == 0:
-                return q
-        return ns / 1e9
+    def _sec(t: Fraction) -> int | float:
+        q = t / per_second
+        return q.numerator if q.denominator == 1 else float(q)
 
     return {
-        "min_seconds": _sec(d.min()),
-        "median_seconds": _sec(np.median(d)),
-        "max_seconds": _sec(d.max()),
+        "min_seconds": _sec(Fraction(d[0])),
+        "median_seconds": _sec(median),
+        "max_seconds": _sec(Fraction(d[-1])),
     }
 
 

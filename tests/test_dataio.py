@@ -627,3 +627,44 @@ def test_full_ohlcv_demanded_as_series_refuses_as_ambiguous(tmp_path):
     df, rep = _run(tmp_path, _GOOD, expected_shape="series")
     assert df is None and not rep.ok
     assert any("ambiguous shape" in e["message"] for e in rep.errors)
+
+
+# ---- bar spacing ---------------------------------------------------------------------------
+
+
+def _spacing(stamps: list[str]) -> tuple:
+    s = dataio.bar_spacing(pd.DatetimeIndex(pd.to_datetime(stamps, format="ISO8601")))
+    return s["min_seconds"], s["median_seconds"], s["max_seconds"]
+
+
+def test_bar_spacing_is_exact_in_the_index_resolution(tmp_path):
+    # The stamp was computed on int64 NANOSECONDS, which overflowed wherever two consecutive bars
+    # lie more than ~292 years apart — spans an [s]/[us] index (pandas ≥ 2 keeps the parsed
+    # resolution) holds without complaint: a 1700/2024 pair read −8222340873.709552 s.
+    assert _spacing(["1700-01-01", "2024-01-01"]) == (10_224_403_200,) * 3
+    assert _spacing(["1500-01-01", "1500-01-02", "2000-01-01"]) == (
+        86400,
+        7_889_227_200,
+        15_778_368_000,
+    )
+    # whole seconds stay integers, fractions are the exact spacing correctly rounded, and an even
+    # count's median is the exact midpoint of its two middle spacings
+    assert _spacing(
+        ["2020-01-01", "2020-01-01T23:59:59.5", "2020-01-02T23:59:59.25", "2020-01-03T23:59:59"]
+    ) == (86399.5, 86399.75, 86399.75)
+    assert _spacing(
+        ["2020-01-01T00:00:00", "2020-01-01T00:00:01", "2020-01-01T00:00:03.000000001"]
+    ) == (1, 1.5000000005, 2.000000001)
+    daily = pd.date_range("2021-01-01", periods=4, freq="1D")
+    for unit in ("s", "ms", "us", "ns"):
+        s = dataio.bar_spacing(daily.as_unit(unit))
+        assert s == {"min_seconds": 86400, "median_seconds": 86400, "max_seconds": 86400}, unit
+        assert all(type(v) is int for v in s.values()), unit
+    # end to end: the strict read admits the old stamps, and the stamp states them
+    df, rep = _run(tmp_path, "datetime,y\n1700-01-01,1.0\n2024-01-01,2.0\n2024-01-02,3.0\n")
+    assert rep.ok and df is not None
+    assert dataio.bar_spacing(df.index) == {
+        "min_seconds": 86400,
+        "median_seconds": 5_112_244_800,
+        "max_seconds": 10_224_403_200,
+    }
