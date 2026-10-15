@@ -791,9 +791,12 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   recurrences never leave the interval their exact update lies in (a constant input stays exactly
   itself; a held input is approached strictly from its own side — one ulp short of the value at
   the closest, never on it, so `x > ema(x)` keeps exact arithmetic's answer through a hold — and
-  its EW z-score decays, keeping the sign exact arithmetic gives it, the deviation carried once
-  the mean cannot move and never rounding to zero, instead of locking — save a hold whose mean
-  lands ON the held value from the bar the input moved, the residual the next bullet names).
+  its EW z-score decays, keeping the sign exact arithmetic gives it, instead of locking: its mean
+  is compensated — carried as two doubles, each update taken with TwoSum — so a deviation at the
+  level's ulp keeps its bits, a step whose update rounds the mean onto the new value keeps its
+  gap, a hold onto the exact mean reads a decided 0.0, and the z never passes its bound
+  `√((1−α)/α)` — a plain mean read `[1, 1, 1 + 2**-52]` at α 0.5 as z 2, off a mean rounded
+  back onto 1, where the exact z is 1).
   In the statistics: a constant pool has `std_ret` 0.0, no bucket-monotonicity rank and a degenerate
   bootstrap (`boot_se` 0.0, `ci_lo == ci_hi` on the pool's own arithmetic mean — the value itself
   where that mean's sum overflowed — as for any pool whose resampled means are bit-identical on
@@ -843,11 +846,11 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   their rounded mean, two selected rows "beating the basket" by 1 beside an exact pooled mean of
   1/3; its bench leg is the bar's mean rounded once, so `ret == ret_raw − ret_bench` holds to that
   rounding (exactly under `market`), and a bar whose legs' plain sum overflows still has its mean
-  (only a centred sum past the range voids the bar). The EW recurrences differ from
-  the plain recurrence only on the steps where a rounded update left its exact interval or a
-  held input's deviation is
-  carried — rounding-scale steps a varying series with repeated values (tick data) can take too
-  — and the EW z-score where its plain recurrence left the normal range (the next bullet).
+  (only a centred sum past the range voids the bar). `ema` differs from its plain recurrence
+  only on the steps where a rounded update left its exact interval — rounding-scale steps a
+  varying series with repeated values (tick data) can take too; the EW z-score reads the plain
+  West recurrence's value to its rounding (the compensated mean), lifted where that recurrence
+  leaves the normal range (the next bullet).
 - **Out-of-range dispersion is no dispersion, nor a lost one.** The finite-or-NaN line holds for
   INTERMEDIATES too, not only results: `x / inf` is a finite 0.0, so no check on a result can see a
   quotient whose divisor overflowed. A window variance that OVERFLOWED (deviations past ~1.3e154)
@@ -875,24 +878,15 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   variance nears the range — exact, the same doctrine — so its z too is the recurrence's value in
   an unbounded exponent range: never NaN for want of range, nor collapsed toward 0 off a floored
   variance (which decided thresholds the exact z does not), nor past its bound `√((1−α)/α)`; past
-  its warmup, save an overflow carried forward and the residual below, it is defined on every window
-  `std > 0` admits. Out of the frame's reach is only a held input's decay, whose z exact arithmetic
-  has sent under `2**-158/α` by then: its variance and carried deviation are floored at the smallest
-  subnormal there, sign kept — decided, imprecise in magnitude. The residual is a hold
-  whose mean sits ON the held value from the bar the input moved: nothing is carried, and its exact
-  deviation is unknown (the mean carries rounding), so it reads z 0.0. It has two origins: the
-  LANDING GAP, a step of a few ulps at α ≥ 0.5 (an `ema` converging onto a held price) whose update
-  lands the mean ON the new value, where exact arithmetic keeps the step's sign; and an input that
-  moves exactly onto the mean (5.0, 5.5, then 5.25 held at window 3), whose exact z is 0 where the
-  mean is exact and of either sign where it is not. Its variance decays with nothing to feed it. At
-  α ≥ 0.5 it rounds to 0.0 — never floored into a decided 0.0 — and the z is undefined from there,
-  after ~490 held bars at α 0.75 off a few-ulp step at unit levels and ~1070 at α 0.5 in the example
-  (fewer off a smaller step; under `2**-300`, where the frame lifts that variance, earlier or later
-  with the level); a `std` window longer than that still admits those bars, and `signal_coverage`
-  refuses them. Below α 0.5 round-to-nearest holds that variance at a subnormal, so a hold moved
-  onto the mean there (any `window` ≥ 4, RiskMetrics' 0.06) reads a decided z 0.0 for its whole
-  length — exact where the mean is, of unknown sign where it is not; no landing gap arises there,
-  since the exact update lies nearer the old mean than the new input. The pool statistics read
+  its warmup, save an overflow carried forward, it is defined on every window `std > 0` admits, a
+  hold included however long. Out of the frame's reach is only a held input's decay, whose z exact
+  arithmetic has sent under `2**-158/α` by then: its variance and deviation are floored at the
+  smallest subnormal there, sign kept — decided, imprecise in magnitude. A plain mean left a
+  residual on holds that the compensated one closes: a step of a few ulps whose update landed the
+  mean ON the new value (the LANDING GAP — an `ema` converging onto a held price), or an input
+  moved onto the mean, read z 0.0 off a deviation it could not know, and at α ≥ 0.5 turned
+  undefined once that hold's variance rounded to 0.0 (~490 held bars after a two-ulp step at α
+  0.75) — `signal_coverage` refused holds exact arithmetic decides. The pool statistics read
   measured returns, which reach that range only off input data at that scale, and hold the
   undecidable line on both sides: a share, ratio, `t_hac`, CSCV split Sharpe, episode-mean read,
   regression read or `cvar_5` read off a sum, mean, quantile or variance that overflowed, and a
@@ -923,9 +917,9 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   their squares or sum leave the range (a varying series never reads std 0.0, `last_to_mean` never
   `x / inf`, and finite levels never a null std while their 1-bar changes and the std itself are
   representable doubles). Every window and pool whose variances and, for `rolling_corr`, their
-  product are normal doubles, and whose sums and means stay finite, and every EW z-score whose plain
-  recurrence stays in the normal range, keeps its direct form's bits (a window's or a pool's: the
-  two-pass form about its offset).
+  product are normal doubles, and whose sums and means stay finite, keeps its direct form's bits
+  (a window's or a pool's: the two-pass form about its offset), and every EW z-score whose
+  recurrence stays in the normal range reads that recurrence's value to its rounding.
 - **Strict, frozen DSL.** Types are strict (no str/bool/float coerces to an int, no str to a
   bool; int stays legal for a float field — JSON has one number type), instances are frozen
   (`model_copy(update=...)` is the derive path), a duplicate JSON object key at any depth

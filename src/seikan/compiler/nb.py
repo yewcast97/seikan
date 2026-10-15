@@ -109,11 +109,8 @@ from seikan.numeric import MIN_NORMAL, log_ratio_array
 # once its variance nears the range (``_EW_LIFT_VAR``): its z is the recurrence's value in an
 # unbounded exponent range too — not NaN, nor collapsed toward 0 off a floored variance, nor past
 # its bound ``√((1−α)/α)``. Past the frame's reach only a HELD input's decay is left, a z exact
-# arithmetic has sent under ``2**-158/α`` by then: its variance and carried deviation are floored at
-# the smallest subnormal there, sign kept — decided, imprecise in magnitude; a hold whose mean sits
-# ON the held value with nothing carried (``zscore_ema_1d``'s residual, its exact deviation unknown)
-# is not floored: undefined once its variance rounds to 0.0 at ``α ≥ 0.5`` — below, round-to-nearest
-# holds that variance at a subnormal and its z 0.0 stays decided.
+# arithmetic has sent under ``2**-158/α`` by then: its variance and its deviation are floored at the
+# smallest subnormal there, sign kept — decided, imprecise in magnitude.
 #
 # EXACT zero dispersion: a window (or a cross-section) whose finite values are all equal is
 # detected exactly and given its exact answer instead of the arithmetic's: the mean of such a
@@ -124,9 +121,9 @@ from seikan.numeric import MIN_NORMAL, log_ratio_array
 # recurrences hold the same line (``ema_1d``, ``zscore_ema_1d``, ``event_agg_1d``). Every window
 # with any variation whose variances and, for ``rolling_corr``, their product are normal doubles
 # is the direct two-pass form about its offset, bit for bit (a correlation clipped to ``[−1, 1]``,
-# where an exactly linear window's rounding carried it past; the EW recurrences differ from their
-# plain update only on the steps whose rounded update left its exact interval, or a held input's
-# carried deviation, and the EW z-score where its plain recurrence left the normal range; the
+# where an exactly linear window's rounding carried it past; ``ema_1d`` differs from its plain
+# update only on the steps whose rounded update left its exact interval, and the EW z-score carries
+# its mean compensated — the plain West recurrence's value to its rounding, not bit for bit; the
 # out-of-range windows and the lifted EW frame are the note above);
 # "constant" means bit-identical
 # values — arithmetic on decimal levels (a spread ``y1 − y2`` moving in lockstep) leaves residue
@@ -943,7 +940,8 @@ _EW_MAX_LIFT = 2 * _LIFT
 def zscore_ema_1d(
     arr: npt.NDArray[np.float64], alpha: float, warmup: int
 ) -> npt.NDArray[np.float64]:
-    """EW z-score via the West variance recurrence: ``d = x − μ; μ += α·d; s = (1−α)(s + α·d²)``.
+    """EW z-score via the West variance recurrence: ``d = x − μ; μ += α·d; s = (1−α)(s + α·d²)``
+    and ``z = (x − μ) / √s``.
 
     Algebraically identical (in exact arithmetic) to the EW[x²] − EW[x]² pair it replaces, but
     computed on centered quantities, so it is translation-invariant in floating point — the
@@ -951,65 +949,53 @@ def zscore_ema_1d(
     input offset. Same seeding (first finite value → μ = x, s = 0), same NaN-skipping warmup
     (``warmup`` observations, from ``ema_params``), same ``s > 0`` emission gate.
 
-    The mean update is a convex combination, clamped into ``[min(μ, x), max(μ, x)]`` like
-    ``ema_1d``'s. On a HELD input (the same value again) exact arithmetic moves the deviation
-    ``x − μ`` to ``(1−α)·(x − μ)`` every bar — it decays, keeping its sign — which μ can no
-    longer represent once its update is absorbed (``α·d`` below half an ulp of μ) or lands on the
-    value: from there the deviation is CARRIED exactly, ``r ← (1−α)·r``, and the z-score reads
-    ``r / √s`` until the input moves. Without the carry μ sticks a few ulps off, ``d`` freezes at
-    that residue, ``s`` settles at ``(1−α)·d²`` and the z-score reads exactly ``±1/√(1−α)`` for as
-    long as the input holds; zeroing the deviation instead would flip the sign every ``z > 0``
-    read takes on the stretch. Only those held bars, an update that left its exact interval and
-    the out-of-range steps below differ from the plain recurrence.
-
-    The carry starts on a held bar only, so a hold whose μ is ON the held value from the bar the
-    input MOVED carries nothing: it reads z 0.0 off an exact deviation the kernel cannot know (μ
-    carries rounding) — the documented residual, of two origins. The LANDING GAP: a step of a few
-    ulps at ``α ≥ 0.5`` (an ``ema`` converging onto a held price moves in 1-ulp steps) whose
-    update lands μ ON its input, where exact arithmetic keeps the step's sign (a carry started
-    there would move ordinary data). And an input that moves exactly ONTO μ (5.0, 5.5, then 5.25
-    held, at window 3), whose exact z is 0 where μ is exact and of either sign where it is not.
-    Its variance decays with no deviation to feed it. At ``α ≥ 0.5`` it rounds to 0.0 and the z
-    is undefined from there — the refusal the ledger records, never floored into a decided 0.0
-    for the rest of the hold — after ~490 held bars at α 0.75 off a few-ulp step at unit levels
-    and ~1070 at α 0.5 in the example (fewer off a smaller step; under ``2**-300``, where the
-    frame below lifts it, earlier or later with the level). Below ``α = 0.5`` round-to-nearest
-    holds it at a subnormal (``(1−α)·5e-324`` rounds back to 5e-324), so a hold moved onto μ there
-    reads a decided z 0.0 for its whole length — exact where μ is, of unknown sign where it is
-    not; no landing gap feeds it, the exact update lying nearer μ than its input.
+    The mean is COMPENSATED: μ is held as the unevaluated sum ``mu + lo`` of two doubles, each
+    update ``μ + α·d`` taken with TwoSum (Knuth), so ``lo`` keeps exactly the part of it ``mu``
+    cannot represent, and every deviation is read ``(x − mu) − lo``. The mean is then known to the
+    rounding of its STEPS, not of its level. A plain update rounds at the level: over ``[1, 1,
+    1 + 2**-52]`` at α 0.5 it rounded the mean back onto 1, so the deviation read the whole step
+    and the z-score 2 — past its bound ``√((1−α)/α) = 1``, which the exact z sits on. On a HELD
+    input (the same value again) exact arithmetic moves the deviation to ``(1−α)·(x − μ)`` every
+    bar — it decays and keeps its sign — and so does the compensated one: ``mu`` settles on the
+    held value and the deviation decays in ``lo``, so ``z > 0`` reads the same on every bar of a
+    hold, however long (a plain mean stuck a few ulps off the value, its deviation froze at that
+    residue and the z locked at ``±1/√(1−α)``). A step of a few ulps whose update rounds ``mu``
+    ONTO the new value keeps its gap in ``lo``, and an input that moves exactly onto the mean reads
+    a decided 0.0 for as long as it holds — exact arithmetic's z, to the mean's rounding. The z is
+    clipped to ``±√((1−α)/α)``: the exact z never exceeds that bound, and a step off a flat
+    stretch sits ON it, where the ratio's last rounding could carry it past.
 
     Out of range: the squares of deviations under ~1.5e-154 lose their bits, and an input that
     DECAYS geometrically — an ``ema`` of a change over a held stretch, from ordinary levels — gets
     there with a z exact arithmetic keeps constant. Read as computed, ``s`` rounded to subnormals
-    or to 0.0: the z read past its bound ``√((1−α)/α)``, NaN, or (floored) collapsed toward 0 —
-    deciding thresholds the exact z does not. The recurrence therefore runs in a frame lifted by
+    or to 0.0: the z read past its bound, NaN, or (floored) collapsed toward 0 — deciding
+    thresholds the exact z does not. The recurrence therefore runs in a frame lifted by
     ``2**_LIFT`` once its variance nears the range (``_EW_LIFT_VAR``), lowered once the input
     returns. Scaling by a power of two never rounds, so every step in the frame is the plain step
     times its power of two: the z is the recurrence's value in an unbounded exponent range, and a
-    series whose plain recurrence stays in the normal range keeps every bit. Out of the frame's
-    reach is only a HELD input's decay (a carried deviation, a mean decaying onto a held 0.0, or
-    a mean already ON the held value, the residual above), whose z exact arithmetic sends to 0
-    like ``(1−α)**(t/2)``: under ``2**-158/α`` (~5e-47 at RiskMetrics' 0.06; ~1e-140 on a hold at
-    ordinary levels) once ``s`` leaves the normal range in the frame. Below ``α = 1`` exact
-    arithmetic keeps ``s`` and the carried deviation nonzero once the input has moved; where the
-    deviation is KNOWN nonzero — carried, or this step's — an update that rounded either to 0.0
-    is floored at the smallest subnormal, sign kept: the z stays decided, with the carried sign
-    and an imprecise magnitude. After a step whose deviation IS 0.0 the exact one is unknown (the
-    residual above), and a floored ``s`` would decide the z 0.0 for the rest of the hold: its
-    ``s`` keeps the 0.0 it rounds to at ``α ≥ 0.5``, undefined. An ``s`` that OVERFLOWED is
-    carried forward: undefined from there on. At ``α = 1`` (the DSL refuses it) the mean is the
-    last value and ``s`` IS 0: undefined throughout.
+    series whose recurrence stays in the normal range keeps every bit. Out of the frame's reach is
+    only a HELD input's decay (the deviation decaying in ``lo`` at ordinary levels, or a mean
+    decaying onto a held 0.0), whose z exact arithmetic sends to 0 like ``(1−α)**(t/2)``: under
+    ``2**-158/α`` (~5e-47 at RiskMetrics' 0.06; ~1e-140 on a hold at ordinary levels) once ``s``
+    leaves the normal range in the frame. Below ``α = 1`` exact arithmetic keeps ``s`` positive
+    once the input has moved, and a moved step's deviation ``(1−α)·d`` nonzero: an ``s`` that
+    rounds to 0.0 while it, or the step's deviation, is nonzero, and a deviation that rounds to 0.0
+    (``mu`` on the input, nothing left in ``lo``) after a nonzero step, are floored at the smallest
+    subnormal — the deviation with that step's sign — so the z stays decided, imprecise in
+    magnitude. An ``s`` that OVERFLOWED is carried forward: undefined from there on. At ``α = 1``
+    (the DSL refuses it) the mean is the last value and ``s`` IS 0: undefined throughout.
     """
     n = arr.shape[0]
     out = np.full(n, np.nan)
     if warmup < 1 or not (0.0 < alpha <= 1.0):
         return out
-    mu = np.nan
+    bound = math.sqrt((1.0 - alpha) / alpha)
+    seeded = False
+    mu = 0.0
+    lo = 0.0  # the part of the mean ``mu`` cannot represent: μ = mu + lo, exactly
     s = 0.0
     seen = 0
-    prev = np.nan
-    carry = np.nan  # the exact deviation x − μ while a held input's update cannot move μ
-    lift = 0  # the frame's exponent: μ, s (twice over), the carry and x are held times 2**lift
+    lift = 0  # the frame's exponent: mu, lo, s (twice over) and x are held times 2**lift
     for i in range(n):
         raw = arr[i]
         if np.isnan(raw):
@@ -1021,56 +1007,33 @@ def zscore_ema_1d(
             while lift > 0 and abs(raw) > math.ldexp(_EW_LOWER_AT, -lift):
                 lift -= _LIFT
                 mu = math.ldexp(mu, -_LIFT)
+                lo = math.ldexp(lo, -_LIFT)
                 s = math.ldexp(s, -2 * _LIFT)
-                carry = math.ldexp(carry, -_LIFT)
             x = math.ldexp(raw, lift)
-        if np.isnan(mu):
+        if not seeded:
+            seeded = True
             mu = x
-            s = 0.0
-            carry = np.nan
-        elif raw == prev and not np.isnan(carry):
-            d = carry
-            s = (1.0 - alpha) * (s + alpha * d * d)
-            carry = (1.0 - alpha) * d
-            # Exact arithmetic never reaches zero below alpha 1: floor the carried pair at the
-            # smallest subnormal, sign kept (round-to-nearest already does so for alpha < 0.5;
-            # without it a long hold at alpha >= 0.5 read undecidable, or lost its sign). At
-            # alpha 1 the EW variance IS 0 — the mean is the last value — and stays undefined.
-            if s == 0.0 and alpha < 1.0:
-                s = 5e-324
-            if carry == 0.0:
-                carry = 5e-324 if d > 0.0 else -5e-324
+            dev = 0.0
         else:
-            d = x - mu
-            v = mu + alpha * d
-            lo = min(mu, x)
-            hi = max(mu, x)
-            moved = lo if v < lo else (hi if v > hi else v)
+            d = (x - mu) - lo
             s_next = (1.0 - alpha) * (s + alpha * d * d)
-            # The same floor where this step's deviation is KNOWN nonzero — defense in depth: the
-            # frame keeps s normal across every step whose d² it loses, and a mean decaying onto
-            # a held 0.0 lands, its deviation then carried, while s is still normal. Never at
-            # d == 0.0, though exact arithmetic keeps s > 0 there too: a mean ON a held value
-            # with nothing carried (at ANY level) reads z 0.0 off an exact deviation unknown here
-            # — the landing gap's keeps the step's sign; an input moved exactly onto μ may be
-            # exactly 0, or either sign off a μ that carries rounding — so its decaying s keeps
-            # the 0.0 it rounds to at alpha >= 0.5: undefined. Floored, it decided that 0.0 for
-            # the whole hold. Below alpha 0.5 round-to-nearest holds that s at a subnormal and
-            # the 0.0 stays decided: the documented residual, never a landing gap's there.
-            if s_next == 0.0 and alpha < 1.0 and d != 0.0:
+            # exact arithmetic keeps s > 0 below alpha 1 once the input has moved: floored where
+            # it rounds to 0.0 (round-to-nearest already holds it at a subnormal below alpha 0.5)
+            if s_next == 0.0 and alpha < 1.0 and (s > 0.0 or d != 0.0):
                 s_next = 5e-324
             s = s_next
-            # On a held input whose update cannot move μ (absorbed, or landing on x) the exact
-            # deviation is carried; μ takes the rounded update either way, so a landing leaves
-            # no stale mean once the input moves.
-            held = raw == prev and d != 0.0 and moved in (mu, x)
-            carry = (1.0 - alpha) * d if held else np.nan
-            if carry == 0.0:  # underflowed at alpha >= 0.5: floored, sign kept, as held below
-                carry = 5e-324 if d > 0.0 else -5e-324
-            mu = moved
-        prev = raw
+            # TwoSum: mu + lo after the step is mu + (lo + alpha·d) before it, exactly
+            t = lo + alpha * d
+            hi = mu + t
+            b = hi - mu
+            lo = (mu - (hi - b)) + (t - b)
+            mu = hi
+            # the step's exact deviation (1 − alpha)·d is nonzero: one that rounded to 0.0 is
+            # floored at the smallest subnormal, the step's sign kept
+            if mu == x and lo == 0.0 and d != 0.0 and alpha < 1.0:
+                lo = -5e-324 if d > 0.0 else 5e-324
+            dev = (x - mu) - lo
         seen += 1
-        dev = (x - mu) if np.isnan(carry) else carry
         # the variance nears the subnormal range with every value it is built from small: lift
         if (
             lift < _EW_MAX_LIFT
@@ -1079,8 +1042,8 @@ def zscore_ema_1d(
         ):
             lift += _LIFT
             mu = math.ldexp(mu, _LIFT)
+            lo = math.ldexp(lo, _LIFT)
             s = math.ldexp(s, 2 * _LIFT)
-            carry = math.ldexp(carry, _LIFT)
             dev = math.ldexp(dev, _LIFT)
         if seen < warmup:
             continue
@@ -1088,7 +1051,7 @@ def zscore_ema_1d(
             continue
         z = dev / np.sqrt(s)
         if np.isfinite(z):
-            out[i] = z
+            out[i] = min(max(z, -bound), bound)
     return out
 
 

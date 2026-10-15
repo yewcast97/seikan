@@ -10,7 +10,8 @@ overflowed is NaN wherever it is divided by or reported; a VARYING window whose 
 the normal range (subnormal, or 0.0) is recomputed on its values lifted by ``2**_LIFT`` — exact —
 its std floored at the smallest subnormal; the correlation's variance PRODUCT of two normal
 variances is taken in an unbounded exponent range (:func:`_sqrt_product`); and the EW z-score's
-recurrence runs in a frame lifted by a power of two once its variance nears that range. Every
+recurrence, on a mean compensated by TwoSum, runs in a frame lifted by a power of two once its
+variance nears that range. Every
 window moment is taken about the window's own offset (its first value; a cross-section's is the
 midpoint of its range), never about the rounded mean of the raw values, and every MEAN a decision
 reads (``rolling_agg`` / ``cross_agg`` ``mean``, a cross-section's centre) is the exactly rounded
@@ -133,60 +134,55 @@ _EW_LIFT_AT = 2.0**-300
 _EW_LOWER_AT = 2.0**400
 
 
+def _two_sum(a: float, b: float) -> tuple[float, float]:
+    """Knuth's TwoSum: ``(s, e)``, ``s`` the rounded ``a + b`` and ``s + e == a + b`` exactly."""
+    s = a + b
+    bb = s - a
+    return s, (a - (s - bb)) + (b - bb)
+
+
 def _zscore_ema_west(arr: np.ndarray, alpha: float, warmup: int) -> np.ndarray:
-    """The West recurrence with the exact-interval rules, written out step by step: the mean's
-    convex update stays between the old mean and the input; on a repeated input whose update
-    cannot move the stored mean (absorbed, or landing on the input) the deviation is tracked on
-    its own and shrinks by (1 − alpha) per repeat, as it does in exact arithmetic. Where the
-    variance would leave the normal range the whole state is carried scaled by a power of two
+    """The West recurrence on a COMPENSATED mean, written out step by step: the mean is carried
+    as ``mean + comp``, each update taken with TwoSum so ``comp`` keeps what the rounded mean
+    drops, and every deviation is read off both. Where exact arithmetic keeps the variance
+    positive (or a step's deviation nonzero) and the computed one rounds to 0.0, it floors at the
+    smallest subnormal, the step's sign kept; the z is clipped to its bound ``√((1−α)/α)``. Where
+    the variance would leave the normal range the whole state is carried scaled by a power of two
     (exact), so the steps are the plain ones in an unbounded exponent range."""
     n = arr.shape[0]
     out = np.full(n, np.nan, dtype=np.float64)
     if warmup < 1 or not (0.0 < alpha <= 1.0):
         return out
-    mean = np.nan
+    bound = math.sqrt((1.0 - alpha) / alpha)
+    mean: float | None = None
+    comp = 0.0
     var = 0.0
     seen = 0
-    last = np.nan
-    dev = None  # tracked deviation while a repeated input pins the stored mean
     scale = 0  # the state is held times 2**scale
     for i in range(n):
-        raw = arr[i]
-        if np.isnan(raw):
+        raw = float(arr[i])
+        if math.isnan(raw):
             continue
         while scale > 0 and abs(raw) > math.ldexp(_EW_LOWER_AT, -scale):
             scale -= _LIFT
+            assert mean is not None
             mean = math.ldexp(mean, -_LIFT)
+            comp = math.ldexp(comp, -_LIFT)
             var = math.ldexp(var, -2 * _LIFT)
-            dev = None if dev is None else math.ldexp(dev, -_LIFT)
-        x = math.ldexp(raw, scale) if scale else raw
-        if np.isnan(mean):
-            mean, var, dev = x, 0.0, None
-        elif dev is not None and raw == last:
-            var = (1.0 - alpha) * (var + alpha * dev * dev)
-            dev_next = (1.0 - alpha) * dev
-            # exact arithmetic never reaches zero below alpha 1: the smallest subnormal, sign kept
-            var = var if var != 0.0 or alpha == 1.0 else 5e-324
-            dev = dev_next if dev_next != 0.0 else math.copysign(5e-324, dev)
+        x = math.ldexp(raw, scale)
+        if mean is None:
+            mean, r = x, 0.0
         else:
-            d = x - mean
-            step = mean + alpha * d
-            step = min(max(step, min(mean, x)), max(mean, x))
+            d = (x - mean) - comp
             moved_var = (1.0 - alpha) * (var + alpha * d * d)
-            # nor where the step's deviation is known nonzero: an update that underflowed floors the
-            # same way; at d == 0 (the mean on the input, nothing carried: the exact deviation
-            # unknown) it stays undefined once it rounds to 0.0, at alpha >= 0.5 (below, rounding
-            # holds it at a subnormal and the z 0.0 stays decided)
-            if moved_var == 0.0 and alpha < 1.0 and d != 0.0:
-                moved_var = 5e-324
+            if moved_var == 0.0 and alpha < 1.0 and (var > 0.0 or d != 0.0):
+                moved_var = 5e-324  # exact arithmetic keeps the variance positive
             var = moved_var
-            dev = (1.0 - alpha) * d if (raw == last and d != 0.0 and step in (mean, x)) else None
-            if dev == 0.0:  # a carried deviation that underflowed: floored, sign kept
-                dev = math.copysign(5e-324, d)
-            mean = step
-        last = raw
+            mean, comp = _two_sum(mean, comp + alpha * d)
+            if mean == x and comp == 0.0 and d != 0.0 and alpha < 1.0:
+                comp = math.copysign(5e-324, -d)  # the step's deviation, floored, sign kept
+            r = (x - mean) - comp
         seen += 1
-        r = (x - mean) if dev is None else dev
         if (
             scale < 2 * _LIFT
             and var < _EW_LIFT_VAR
@@ -194,14 +190,14 @@ def _zscore_ema_west(arr: np.ndarray, alpha: float, warmup: int) -> np.ndarray:
         ):
             scale += _LIFT
             mean = math.ldexp(mean, _LIFT)
+            comp = math.ldexp(comp, _LIFT)
             var = math.ldexp(var, 2 * _LIFT)
-            dev = None if dev is None else math.ldexp(dev, _LIFT)
             r = math.ldexp(r, _LIFT)
-        if seen < warmup or var <= 0.0 or not np.isfinite(var):
+        if seen < warmup or not (0.0 < var < math.inf):
             continue
         z = r / math.sqrt(var)
-        if np.isfinite(z):
-            out[i] = z
+        if math.isfinite(z):
+            out[i] = min(max(z, -bound), bound)
     return out
 
 

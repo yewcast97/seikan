@@ -848,15 +848,14 @@ def test_a_held_feed_read_through_its_ema_fires_where_its_exact_ew_z_does(tmp_pa
     assert _check(evaluate_gate(res.summary, GateThresholds()).cells[0], "signal_coverage").met
 
 
-def test_a_landed_step_held_is_undecidable_once_its_ew_variance_underflows(tmp_path):
-    # The EW z-score's documented residual, end to end: a feed that steps by two ulps (1.0 to
-    # 1.0000000000000004) and holds. At alpha 0.75 the mean's update lands ON the new value on the
-    # bar the feed MOVED, so nothing is carried: the hold reads z 0.0 where exact arithmetic keeps
-    # it above 0 (`z > 0` decided False — the residual), until the variance, with no deviation to
-    # feed it, rounds to 0.0 after ~490 held bars. From there the z is undefined: those bars land
-    # in the ledger and signal_coverage refuses the cell. Floored like a carried hold's, the
-    # variance read a decided 0.0 on all 999 bars from the step on — n_undefined 0, the check met
-    # on a mask exact arithmetic contradicts on every one of them.
+def test_a_landed_step_held_is_decided_and_signed(tmp_path):
+    # The landing gap, end to end: a feed that steps by two ulps (1.0 to 1.0000000000000004) and
+    # holds. At alpha 0.75 a plain mean's update lands ON the new value on the bar the feed moved,
+    # so the hold read z 0.0 where exact arithmetic keeps it above 0 (`z > 0` decided False)
+    # until the variance, with no deviation to feed it, rounded to 0.0 after ~490 held bars: from
+    # there the z was undefined, and signal_coverage refused the cell over a hold exact
+    # arithmetic decides. The compensated mean keeps the gap below its last bit: z > 0 on all
+    # 999 bars from the step on, every one decided, and the entry fires on each of them.
     n_bars = 1000
     values = np.full(n_bars, np.nextafter(np.nextafter(1.0, 2.0), 2.0))
     values[0] = 1.0
@@ -870,15 +869,12 @@ def test_a_landed_step_held_is_undecidable_once_its_ew_variance_underflows(tmp_p
     )
     md = load(thesis, {"target": path, "px": feed})
     hold = vectorize.build_series(thesis.entry.left, md)[0].to_numpy()[1:, 0]
-    undefined = np.flatnonzero(np.isnan(hold))
-    assert undefined.size and 400 < undefined[0] < 600, undefined[:1]
-    k = int(undefined[0])
-    assert (hold[:k] == 0.0).all() and np.isnan(hold[k:]).all()
+    assert np.isfinite(hold).all() and (hold > 0.0).all()
+    assert vectorize.signal(thesis.entry, md).to_numpy()[1:, 0].all()
     res = run_backtest(thesis, md)
-    assert len(res.trades) == 0
-    assert res.summary["cells"][0]["signal_coverage"]["target"]["n_undefined"] == hold.size - k
+    assert res.summary["cells"][0]["signal_coverage"]["target"]["n_undefined"] == 0
     report = evaluate_gate(res.summary, GateThresholds())
-    assert _check(report.cells[0], "signal_coverage").met is False
+    assert _check(report.cells[0], "signal_coverage").met
 
 
 def test_deleting_losing_decision_inputs_cannot_improve_a_cell(tmp_path):

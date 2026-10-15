@@ -309,9 +309,12 @@ the constant and approaches a held value strictly from its own side (one ulp sho
 closest, never on it, so `x > ema(x)` reads "above its EW mean" through the whole hold), and
 `zscore` with `mean_type: "ema"` decays on a held stretch — keeping the sign exact arithmetic
 gives it, so `z > 0` reads the same through the whole hold, however long — instead of locking at
-`±1/√(1−α)` (save a hold whose mean lands ON the held value from the bar the input moved, the
-residual below). So a feed stuck at a constant never reads as a z-score of ±1, a correlation of 1 or
-a sign against its own average, and the zero-dispersion recipes below divide by an exact zero
+`±1/√(1−α)`. Its mean is COMPENSATED (carried as two doubles, each update taken with TwoSum), so a
+deviation at the level's ulp keeps its bits: a step whose update rounds the mean onto the new
+value keeps its gap, an input that moves exactly onto the mean reads a decided 0.0 for as long as
+it holds, and the z never passes its bound `√((1−α)/α)` (a plain mean read `[1, 1, 1 + 2**-52]`
+at α 0.5 as z 2 for the exact 1). So a feed stuck at a constant never reads as a z-score of ±1, a
+correlation of 1 or a sign against its own average, and the zero-dispersion recipes below divide by an exact zero
 (→ NaN, never fires). A zero-dispersion bar after the series has initialized is UNDECIDABLE, like
 `x / 0`: it lands in `signal_coverage` and leaves the cell unmet — guard a z-score of a series that
 can sit flat (a rate pinned at its floor) with `and(rolling_agg(x, N, "std") > 0, …)`. "Equal" means
@@ -325,9 +328,9 @@ two-point z-score of 1.414 that `zscore(x, 2) > 1.1` fired on, and three points 
 for an exact 1). The report's pool reads take the same rule — `std_ret`, `boot_se`, the baseline's
 std and the `benchmark_regression` fit about each pool's or leg's range midpoint (that pair's
 ddof=1 `std_ret` read 1.0 for 0.707), and `describe`'s dispersion stds likewise; the means stay
-exactly rounded sums. The EW pair differs from its plain recurrence only on the steps
-where a rounded update left its exact interval or a held input's deviation is carried, and the EW
-z-score where its plain recurrence left the normal range (below).
+exactly rounded sums. `ema` differs from its plain recurrence only on the steps where a rounded
+update left its exact interval; the EW z-score reads the plain West recurrence's value to its
+rounding (the compensated mean), lifted where that recurrence leaves the normal range (below).
 
 Every MEAN a decision reads is exactly rounded too: `rolling_agg`'s and `cross_agg`'s `mean`, and
 the cross-sectional centre that `cross_demean`, `cross_agg`'s `std` and the `cross_mean` benchmark
@@ -360,28 +363,19 @@ every varying window, exactly where its SMA z-score is defined — and `rolling_
 product of two normal variances the same way, so `rolling_corr(x, x)` is exactly 1 at 1e80, at
 1e-85 and on subnormal values as at 1. The EW `zscore` keeps its variance in a recurrence, which
 runs lifted by `2**600` (exact) once that variance nears the range, so it too reads the recurrence's
-value in an unbounded exponent range: past its warmup (save an overflow carried forward and the
-residual below) it is defined on every window `std > 0` admits, at its value — never NaN there, nor
-collapsed toward 0 off a floored variance, nor past its bound `√((1−α)/α)`. Only a held input's
-decay is left out of reach, a z exact arithmetic has sent under `2**-158/α` by then: its variance
-and carried deviation are floored at the smallest subnormal there, sign kept (decided, imprecise
-in magnitude). The residual is a hold whose mean sits ON the held value from the bar the input
-moved: nothing is carried, and its exact deviation is unknown (the mean carries rounding), so it
-reads z 0.0. It has two origins: the LANDING GAP, a step of a few ulps at α ≥ 0.5 (an `ema`
-converging onto a held price) whose update lands the mean ON the new value, where exact arithmetic
-keeps the step's sign; and an input that moves exactly onto the mean (5.0, 5.5, then 5.25 held at
-window 3), whose exact z is 0 where the mean is exact and of either sign where it is not. Its
-variance decays with nothing to feed it. At α ≥ 0.5 it rounds to 0.0 — never floored into a decided
-0.0 — and the z is undefined from there, after ~490 held bars at α 0.75 off a few-ulp step at unit
-levels and ~1070 at α 0.5 in the example (fewer off a smaller step; under `2**-300`, where the frame
-lifts that variance, earlier or later with the level); a `std` window longer than that still admits
-those bars, and `signal_coverage` refuses them. Below α 0.5 round-to-nearest holds that variance at
-a subnormal, so a hold moved onto the mean there (any `window` ≥ 4, RiskMetrics' 0.06) reads a
-decided z 0.0 for its whole length — exact where the mean is, of unknown sign where it is not; no
-landing gap arises there, since the exact update lies nearer the old mean than the new input. Every
-window whose variances and, for `rolling_corr`, their product are normal doubles, and every EW
-z-score whose plain recurrence stays in that range, keeps its direct form's bits (a window's: the
-two-pass form about its offset).
+value in an unbounded exponent range: past its warmup (save an overflow carried forward) it is
+defined on every window `std > 0` admits, a hold included however long, at its value — never NaN
+there, nor collapsed toward 0 off a floored variance, nor past its bound `√((1−α)/α)`. Only a held
+input's decay is left out of reach, a z exact arithmetic has sent under `2**-158/α` by then: its
+variance and deviation are floored at the smallest subnormal there, sign kept (decided, imprecise
+in magnitude). A plain mean left a residual on holds that the compensated one closes: a step of a
+few ulps whose update landed the mean ON the new value (the LANDING GAP — an `ema` converging onto
+a held price), or an input moved onto the mean, read z 0.0 off a deviation it could not know, and
+at α ≥ 0.5 turned undefined once that hold's variance rounded to 0.0 (~490 held bars after a
+two-ulp step at α 0.75) — `signal_coverage` refused holds exact arithmetic decides. Every window
+whose variances and, for `rolling_corr`, their product are normal doubles keeps its direct form's
+bits (the two-pass form about its offset), and every EW z-score whose recurrence stays in that
+range reads that recurrence's value to its rounding.
 
 - `ema` (input, exactly one of `window` / `alpha`) — exponentially weighted mean of any Series,
   seeded at the first finite value, NaN-skipping. `window` sets `alpha = 2/(window+1)` with a

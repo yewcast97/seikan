@@ -1224,7 +1224,7 @@ def test_zscore_ema_is_exactly_scale_invariant_past_the_variance_range(k):
     walk = np.round(rng.randn(300).cumsum() * 4.0)  # integers: every scaled value is exact
     walk[[50, 51]] = np.nan
     steps = np.array([1.0, 3.0, 2.0, 5.0, 4.0, 7.0, 6.0, 9.0, 8.0, 11.0])
-    held = np.r_[steps, np.full(40, 11.0), steps]  # a carried deviation, then moving again
+    held = np.r_[steps, np.full(40, 11.0), steps]  # a hold's decaying deviation, then moves
     for x in (walk, steps, held):
         for spec in ((2, None), (3, None), (5, None), (20, None), (None, 0.06), (None, 0.9)):
             alpha, _ = nb.ema_params(*spec)
@@ -1453,15 +1453,17 @@ def test_zscore_ema_of_a_held_stretch_keeps_its_exact_sign():
 
 
 @pytest.mark.parametrize("c", [0.007, 0.1, 100.1])
-def test_zscore_ema_carry_needs_a_held_input(c):
-    # An update absorbed on an input that MOVED (c and its next float, alternating) is
-    # variation: the plain recurrence runs, bit for bit — only a repeated input carries its
-    # deviation.
+def test_zscore_ema_of_an_ulp_alternation_is_variation(c):
+    # An input alternating between c and its next float moves by one ulp every bar: variation,
+    # read at its own scale — the z exact arithmetic gives it, never the zero dispersion of a
+    # mean that cannot represent half an ulp.
     x = np.tile([c, np.nextafter(c, np.inf)], 200)
     for w in (3, 10):
         got = nb.zscore_ema_1d(x, *nb.ema_params(w, None))
         np.testing.assert_array_equal(got, ref.zscore_ema(x, w))
         assert np.nanmax(np.abs(got)) > 0.5
+    exact, _ = _exact_ew_z(x, *nb.ema_params(3, None))
+    np.testing.assert_allclose(nb.zscore_ema_1d(x, *nb.ema_params(3, None)), exact, rtol=1e-14)
     np.testing.assert_array_equal(
         nb.zscore_ema_1d(x, *nb.ema_params(None, 0.06)), ref.zscore_ema_alpha(x, 0.06, 33)
     )
@@ -1523,7 +1525,7 @@ def test_event_agg_running_sum_is_exact():
 def test_ema_of_a_held_stretch_never_reaches_the_held_value(lo, hi, w):
     # Exact arithmetic: after a step the EW mean approaches the held value and NEVER reaches it,
     # so `x > ema(x)` (after a step up) holds on every held bar — the same predicate as the
-    # engine's own `zscore(x, w, ema) > 0`, which carries its deviation to keep exactly that sign.
+    # engine's own `zscore(x, w, ema) > 0`, whose compensated mean keeps exactly that sign.
     # An ema that lands ON the held value reads `x <= ema(x)` there: firings exact arithmetic
     # never makes.
     x = np.r_[np.full(5, lo), np.full(400, hi)]
@@ -1534,42 +1536,72 @@ def test_ema_of_a_held_stretch_never_reaches_the_held_value(lo, hi, w):
     np.testing.assert_array_equal(np.sign(hi - e), np.sign(z))
 
 
-def _plain_west(x, alpha, warmup):
-    """The 4.0.0 West recurrence, no clamp, no carry."""
-    out = np.full(x.size, np.nan)
-    mu, s, seen = np.nan, 0.0, 0
+def _exact_ew_z(x, alpha, warmup):
+    """The EW z-score in exact rational arithmetic — ``alpha`` and every input read as the
+    doubles they are — with the variance it divides by; the root and the quotient are taken in
+    floating point at the end."""
+    a = Fraction(alpha)
+    z = np.full(x.size, np.nan)
+    var = np.zeros(x.size)
+    mu, s, seen = None, Fraction(0), 0
     for i, xi in enumerate(x):
         if np.isnan(xi):
             continue
-        if np.isnan(mu):
-            mu, s = xi, 0.0
+        v = Fraction(float(xi))
+        if mu is None:
+            mu = v
         else:
-            d = xi - mu
-            mu = mu + alpha * d
-            s = (1.0 - alpha) * (s + alpha * d * d)
+            d = v - mu
+            s = (1 - a) * (s + a * d * d)
+            mu += a * d
         seen += 1
-        if seen >= warmup and s > 0.0:
-            out[i] = (xi - mu) / math.sqrt(s)
-    return out
+        var[i] = float(s)
+        if seen >= warmup and s > 0:
+            dev = v - mu
+            z[i] = math.copysign(math.sqrt(float(dev * dev / s)), dev) if dev else 0.0
+    return z, var
 
 
-@pytest.mark.parametrize("level", [4500.0, 100.0])
-def test_zscore_ema_carry_leaves_no_trace_once_the_input_moves(level):
-    # Window 3 (alpha = 0.5): the held stretch's last mean update ties onto the held value, so the
-    # deviation is carried from there. Once the input MOVES the recurrence is the plain one again
-    # (no clamp binds on these bars): the post-hold bars read exactly what the plain West
-    # recurrence — and exact arithmetic — reads, not a mean left one ulp short of the held value.
-    x = np.r_[
-        np.full(5, level - 0.25), np.full(200, level), [level + 0.25, level + 0.5, level + 0.25]
-    ]
-    alpha, warm = nb.ema_params(3, None)
-    z = nb.zscore_ema_1d(x, alpha, warm)
-    np.testing.assert_array_equal(z[205:], _plain_west(x, alpha, warm)[205:])
+def test_zscore_ema_keeps_the_mean_it_cannot_represent():
+    # The review's walk: [1, 1, 1 + 2**-52] at alpha 0.5. A plain mean update rounds at the
+    # level: μ + α·d = 1 + 2**-53 rounded back onto 1, so the deviation read the whole step and z
+    # read 2 — past the bound √((1−α)/α) = 1, which the exact z sits on. The compensated mean
+    # keeps the half step it cannot represent: z is exactly 1, as it is for the same walk shifted
+    # onto 0, where the mean is representable.
+    x = np.array([1.0, 1.0, 1.0 + 2.0**-52])
+    assert nb.zscore_ema_1d(x, 0.5, 3)[2] == 1.0
+    assert nb.zscore_ema_1d(x - 1.0, 0.5, 3)[2] == 1.0
+    np.testing.assert_array_equal(ref.zscore_ema_alpha(x, 0.5, 3), nb.zscore_ema_1d(x, 0.5, 3))
+    # A step off a flat stretch sits ON the bound, which the ratio's last rounding could pass:
+    # the z never leaves it, and reads exact arithmetic's value wherever the variance is normal.
+    rng = np.random.RandomState(19)
+    for alpha in (0.5, 0.2, 0.9, 2.0 / 3.0):
+        bound = math.sqrt((1.0 - alpha) / alpha)
+        for level in (0.0, 1.0, 1e4):
+            x = level + np.r_[np.zeros(3), rng.randn(57)]
+            z = nb.zscore_ema_1d(x, alpha, 1)
+            assert np.nanmax(np.abs(z)) <= bound
+            exact, _ = _exact_ew_z(x, alpha, 1)
+            np.testing.assert_allclose(z[3:], exact[3:], rtol=1e-12)
+
+
+def test_zscore_ema_hold_leaves_no_trace_once_the_input_moves():
+    # Window 3 (alpha 0.5) over a step, a 200-bar hold — whose last mean update ties onto the
+    # held value — and three moves: once the input moves, the z is exact arithmetic's, the hold
+    # leaving no stale mean behind it.
+    for level in (4500.0, 100.0):
+        x = np.r_[
+            np.full(5, level - 0.25), np.full(200, level), [level + 0.25, level + 0.5, level + 0.25]
+        ]
+        alpha, warm = nb.ema_params(3, None)
+        z = nb.zscore_ema_1d(x, alpha, warm)
+        np.testing.assert_allclose(z[205:], _exact_ew_z(x, alpha, warm)[0][205:], rtol=1e-13)
+        np.testing.assert_array_equal(z, ref.zscore_ema(x, 3))
 
 
 @pytest.mark.parametrize("w", [2, 3])
 def test_zscore_ema_long_hold_stays_defined_and_signed(w):
-    # alpha >= 0.5: the carried deviation and the EW variance shrink by (1 - alpha) per held bar
+    # alpha >= 0.5: the hold's deviation and the EW variance shrink by (1 - alpha) per held bar
     # and would round to exactly 0.0 once subnormal (alpha < 0.5 rounds back up to the smallest
     # subnormal and keeps a signed z for ever). Exact arithmetic keeps z > 0 on every held bar of
     # a hold reached from below — never 0.0, never undefined (no refusal on its own hold).
@@ -1585,13 +1617,13 @@ def test_zscore_ema_deviation_that_underflows_keeps_its_exact_sign(side):
     # hold: the input steps (∓3 to ∓1 of them, or ∓1 of them to 0.0) and holds for 1,500 bars.
     # Exact arithmetic moves the deviation to (1 − α)·d every held bar: it decays and keeps the
     # step's sign. Read as computed, the EW variance rounded to 0.0 (z NaN on the first bars, or
-    # on every bar of a hold onto 0.0), and a carried deviation (1 − α)·d that rounded to ±0.0
-    # was floored at the NEGATIVE subnormal whatever d's sign: z below the mean on a hold exact
+    # on every bar of a hold onto 0.0), and a deviation (1 − α)·d that rounded to ±0.0 was
+    # floored at the NEGATIVE subnormal whatever d's sign: z below the mean on a hold exact
     # arithmetic keeps above it. Floored where it rounded to 0.0, the variance collapsed z to
     # 2.2e-162 from the first held bar (the bound √((1−α)/α) = 0.707 there). Lifted, the decay
     # reads the z-scores of the same steps at ordinary scale, bit for bit, as long as those stay
-    # in range (~650 bars); past the frame's reach the variance and the carry are floored where
-    # they underflow, the sign kept.
+    # in range (~650 bars); past the frame's reach the variance and the deviation are floored
+    # where they underflow, the sign kept.
     u = 5e-324
     alpha, warm = nb.ema_params(2, None)
     for first, held in ((-3.0 * u, -u), (-u, 0.0)):
@@ -1603,39 +1635,6 @@ def test_zscore_ema_deviation_that_underflows_keeps_its_exact_sign(side):
         np.testing.assert_array_equal(z, ref.zscore_ema_alpha(x, alpha, warm))
 
 
-def _carried_west(x, alpha, warmup):
-    """The West recurrence before the out-of-range frame: the clamp and the carry, the carried
-    pair floored at the smallest subnormal — no lift, and no floor off a carried hold."""
-    out = np.full(x.size, np.nan)
-    mu, s, seen, prev, carry = np.nan, 0.0, 0, np.nan, None
-    for i, xi in enumerate(x):
-        if np.isnan(xi):
-            continue
-        if np.isnan(mu):
-            mu, s, carry = xi, 0.0, None
-        elif xi == prev and carry is not None:
-            d = carry
-            s = (1.0 - alpha) * (s + alpha * d * d)
-            carry = (1.0 - alpha) * d
-            s = s if s != 0.0 else 5e-324
-            carry = carry if carry != 0.0 else math.copysign(5e-324, d)
-        else:
-            d = xi - mu
-            v = mu + alpha * d
-            lo, hi = min(mu, xi), max(mu, xi)
-            moved = lo if v < lo else (hi if v > hi else v)
-            s = (1.0 - alpha) * (s + alpha * d * d)
-            carry = (1.0 - alpha) * d if (xi == prev and d != 0.0 and moved in (mu, xi)) else None
-            mu = moved
-        prev = xi
-        seen += 1
-        if seen >= warmup and 0.0 < s < math.inf:
-            z = ((xi - mu) if carry is None else carry) / math.sqrt(s)
-            if math.isfinite(z):
-                out[i] = z
-    return out
-
-
 @pytest.mark.parametrize(
     ("x0", "ulps", "spec"),
     [
@@ -1645,131 +1644,90 @@ def _carried_west(x, alpha, warmup):
         (-3.0, -2, (None, 0.75)),
     ],
 )
-def test_zscore_ema_landing_gap_hold_is_undefined_once_its_variance_underflows(x0, ulps, spec):
-    # The documented residual, the LANDING GAP: a step of a few ulps whose update lands μ ON the
-    # new value — on the bar the input MOVED, so nothing is carried — then a hold. Exact
-    # arithmetic keeps the deviation (1 − α)**t·(x1 − x0) on the step's side on every held bar;
-    # the kernel reads 0.0 there, and the variance decays with no deviation to feed it until it
-    # rounds to 0.0 (~490 bars at alpha 0.75): undefined from there, the refusal the coverage
-    # ledger records — the recurrence before the frame reads exactly that. Floored like a carried
-    # hold's, that variance read a decided 0.0 on every bar of the hold instead: `z > 0` decided
-    # False for ever against exact True, and the cell's refusal a met signal_coverage.
+def test_zscore_ema_landing_gap_hold_is_decided_and_signed(x0, ulps, spec):
+    # The LANDING GAP: a step of a few ulps whose update rounds μ ON the new value, then a hold.
+    # Exact arithmetic keeps the deviation (1 − α)**t·(x1 − x0) on the step's side on every held
+    # bar, and the compensated mean keeps that gap below μ's last bit: the z is decided on every
+    # held bar with the step's sign, at exact arithmetic's value wherever the variance is a normal
+    # double. A plain mean read 0.0 there — `z > 0` decided False against exact True — until the
+    # variance, with no deviation to feed it, rounded to 0.0 (~490 bars at alpha 0.75) and the z
+    # was undefined from there: refusals the coverage ledger recorded on a decided hold.
     x1 = x0
     for _ in range(abs(ulps)):
         x1 = np.nextafter(x1, math.copysign(np.inf, ulps))
     x = np.r_[x0, np.full(3000, x1)]
     alpha, warm = nb.ema_params(*spec)
     z = nb.zscore_ema_1d(x, alpha, warm)
-    np.testing.assert_array_equal(z, _carried_west(x, alpha, warm))
     np.testing.assert_array_equal(z, ref.zscore_ema_alpha(x, alpha, warm))
-    undefined = np.flatnonzero(np.isnan(z[1:])) + 1
-    assert undefined.size and 250 < undefined[0] < 700, undefined[:1]
-    assert (z[1 : undefined[0]] == 0.0).all() and np.isnan(z[undefined[0] :]).all()
-
-
-@pytest.mark.parametrize(
-    ("path", "spec", "first_undefined"),
-    [
-        ((5.0, 5.5, 5.25), (3, None), (1000, 1100)),
-        ((100.0, 102.0, 101.0), (3, None), (1000, 1100)),
-        ((5.0, 5.5, 5.375), (None, 0.75), (500, 600)),
-    ],
-)
-def test_zscore_ema_hold_moved_exactly_onto_its_mean_is_undefined_once_its_variance_underflows(
-    path, spec, first_undefined
-):
-    # The residual's other origin: an input that moves exactly ONTO the computed mean (a rate at
-    # 5.0, 5.5, then 5.25 held, at window 3) and holds. Its deviation is 0.0 from the bar it MOVED,
-    # so nothing is carried, and the kernel cannot tell this hold from the landing gap's (μ carries
-    # rounding in general). Here μ is exact, and so is the z 0.0 read off it; the variance still
-    # decays with no deviation to feed it, and once it rounds to 0.0 (at alpha >= 0.5: ~1070 held
-    # bars at 0.5, ~535 at 0.75 off an ordinary step) the z is undefined — the recurrence before
-    # the frame bit for bit, and the fail-closed price of a deviation the kernel cannot know.
-    # Floored like a carried hold's, the variance read 0.0 on every bar of the hold, a landing
-    # gap's included.
-    *head, held = path
-    x = np.r_[head, np.full(2000, held)]
-    alpha, warm = nb.ema_params(*spec)
-    mu = Fraction(head[0])
-    for xi in head[1:]:
-        mu += Fraction(alpha) * (Fraction(xi) - mu)
-    assert mu == Fraction(held)  # exact arithmetic: the hold's deviation is exactly 0
-    z = nb.zscore_ema_1d(x, alpha, warm)
-    np.testing.assert_array_equal(z, _carried_west(x, alpha, warm))
-    np.testing.assert_array_equal(z, ref.zscore_ema_alpha(x, alpha, warm))
-    hold = z[len(head) :]
-    undefined = np.flatnonzero(np.isnan(hold))
-    lo, hi = first_undefined
-    assert undefined.size and lo < undefined[0] < hi, undefined[:1]
-    assert (hold[: undefined[0]] == 0.0).all() and np.isnan(hold[undefined[0] :]).all()
+    held = z[max(warm - 1, 1) :]
+    assert np.isfinite(held).all() and (np.sign(held) == math.copysign(1.0, ulps)).all()
+    exact, var = _exact_ew_z(x[:500], alpha, warm)
+    normal = np.isfinite(exact) & (var >= 2.0**-1022)
+    assert normal.sum() > 250
+    np.testing.assert_allclose(z[:500][normal], exact[normal], rtol=1e-13)
 
 
 @pytest.mark.parametrize(
     ("path", "spec", "exact_sign"),
     [
+        ((5.0, 5.5, 5.25), (3, None), 0),
+        ((100.0, 102.0, 101.0), (3, None), 0),
+        ((5.0, 5.5, 5.375), (None, 0.75), 0),
         ((5.0, 5.5, 5.125), (7, None), 0),
         ((5.0, 5.5, 5.03), (None, 0.06), 1),
         ((5.0, 5.5, 5.225), (None, 0.45), -1),
     ],
 )
-def test_zscore_ema_hold_moved_onto_its_mean_below_alpha_half_reads_a_decided_zero(
-    path, spec, exact_sign
-):
-    # The residual below alpha 0.5, pinned as documented: there round-to-nearest holds the
-    # variance of a hold moved onto μ at a subnormal — (1 − α)·5e-324 rounds back to 5e-324 — so
-    # its z 0.0 stays decided for the whole hold, the recurrence before the frame bit for bit:
-    # exact off an exact μ (window 7), of unknown sign off a μ that carries rounding (RiskMetrics'
-    # 0.06 onto 5.03, whose exact deviation is above 0). No landing gap reaches it there — the
-    # exact update lies nearer μ than its input — so a few-ulp step is carried, its sign kept.
+def test_zscore_ema_hold_onto_its_mean_reads_its_exact_deviation(path, spec, exact_sign):
+    # An input that moves onto the computed mean (a rate at 5.0, 5.5, then 5.25 held, at window
+    # 3) and holds for 20,000 bars. Its exact deviation is 0 where the step lands on the exact
+    # mean, and otherwise the few ulps the computed mean rounded away (RiskMetrics' 0.06 onto
+    # 5.03 sits above it). The compensated mean keeps those ulps, so the z reads exact
+    # arithmetic's for the whole hold: a decided 0.0, or a decaying z with the exact sign. A plain
+    # mean read 0.0 either way and, at alpha >= 0.5, undefined once its variance rounded to 0.0
+    # (~1070 held bars at 0.5, ~535 at 0.75): the hold refused where exact arithmetic decides it.
     *head, held = path
     alpha, warm = nb.ema_params(*spec)
     assert held == head[0] + alpha * (head[1] - head[0])  # the input moves ONTO the computed μ
     dev = Fraction(held) - Fraction(head[0]) - Fraction(alpha) * Fraction(head[1] - head[0])
     assert (dev > 0) - (dev < 0) == exact_sign
-    n_hold = 20000
-    d = head[1] - head[0]
-    s = (1.0 - alpha) * (0.0 + alpha * d * d)
-    for _ in range(n_hold):
-        s = (1.0 - alpha) * s
-    assert 0.0 < s < np.finfo(float).tiny  # decayed into the subnormals, where it holds
-    x = np.r_[head, np.full(n_hold, held)]
+    x = np.r_[head, np.full(20000, held)]
     z = nb.zscore_ema_1d(x, alpha, warm)
-    np.testing.assert_array_equal(z, _carried_west(x, alpha, warm))
     np.testing.assert_array_equal(z, ref.zscore_ema_alpha(x, alpha, warm))
-    assert (z[max(warm - 1, len(head)) :] == 0.0).all()
-    for ulps in (1, 2, 3, 4):
-        step = np.r_[1.0, np.full(n_hold, 1.0 + ulps * 2.0**-52)]
-        assert (nb.zscore_ema_1d(step, alpha, warm)[warm - 1 :] > 0.0).all()
+    hold = z[max(warm - 1, len(head)) :]
+    assert np.isfinite(hold).all() and (np.sign(hold) == exact_sign).all()
 
 
-def test_zscore_ema_of_ordinary_walks_with_holds_is_the_pre_frame_recurrence_bit_for_bit():
-    # The out-of-range frame and its floors move nothing at ordinary levels: price walks that hold
-    # — read directly (the hold's deviation carried) and through an `ema`, whose last step onto
-    # the held value is an ulp that alpha 0.75 and 0.9 LAND on (the landing gap, undefined once
-    # its variance underflows) — read the recurrence before them bit for bit.
+def test_zscore_ema_of_ordinary_walks_with_holds_is_decided_on_every_bar():
+    # Price walks that hold — read directly and through an `ema`, whose last steps onto the held
+    # value are ulps that alpha 0.75 and 0.9 LAND on (the landing gap) — are decided on every bar
+    # past warmup, and each hold keeps one sign, exact arithmetic's (x − μ) decaying by (1 − α)
+    # per bar. A plain mean refused 5,000+ of these bars once a landing gap's variance
+    # underflowed.
     rng = np.random.default_rng(13)
-    refused = 0
     for _ in range(16):
         level = float(rng.choice([0.05, 1.0, 100.0, 4500.0]))
         walk = level * np.exp(np.cumsum(rng.normal(0.0, 0.01, int(rng.integers(50, 150)))))
         px = np.r_[walk, np.full(int(rng.integers(700, 1200)), walk[-1])]
         px[rng.integers(1, px.size, 3)] = np.nan
         for series in (px, nb.ema_1d(px, *nb.ema_params(int(rng.choice([5, 10, 20])), None))):
+            finite = np.flatnonzero(np.isfinite(series))
+            moves = finite[1:][series[finite[1:]] != series[finite[:-1]]]
             for spec in ((2, None), (3, None), (None, 0.06), (None, 0.75), (None, 0.9)):
                 alpha, warm = nb.ema_params(*spec)
                 z = nb.zscore_ema_1d(series, alpha, warm)
-                np.testing.assert_array_equal(z, _carried_west(series, alpha, warm))
                 np.testing.assert_array_equal(z, ref.zscore_ema_alpha(series, alpha, warm))
                 live = np.isfinite(series) & (np.cumsum(np.isfinite(series)) >= warm)
-                refused += int((np.isnan(z) & live).sum())
-    assert refused > 5000  # landing-gap holds past their variance's underflow; floored, it read 0.0
+                assert not (np.isnan(z) & live).any()
+                tail = z[moves[-1] + 1 :]
+                assert np.unique(np.sign(tail[np.isfinite(tail)])).size == 1
 
 
 def test_zscore_ema_at_alpha_one_is_undefined_on_every_bar():
     # At alpha 1 (the DSL refuses it) the EW mean IS the last value and the EW variance exactly 0:
     # undefined throughout. A full-weight update that rounds off the value (1.1 + (0.1 − 1.1) is
-    # 0.10000000000000009) carried a deviation into the hold, and the held branch's floor read
-    # z = −2.2e-162 off a variance exact arithmetic keeps at 0 — every bar from the fourth on.
+    # 0.10000000000000009) left a deviation in the hold, and a floor read z = −2.2e-162 off a
+    # variance exact arithmetic keeps at 0 — every bar from the fourth on. No floor binds at 1.
     x = np.r_[1.1, np.full(5, 0.1)]
     np.testing.assert_array_equal(nb.zscore_ema_1d(x, 1.0, 1), np.full(6, np.nan))
     np.testing.assert_array_equal(ref.zscore_ema_alpha(x, 1.0, 1), np.full(6, np.nan))
