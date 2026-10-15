@@ -71,6 +71,11 @@ _CSV_FIELD_LIMIT = 131072
 #: only behind ~262k leading spaces, one field past ``_CSV_FIELD_LIMIT`` the header stage refuses.
 _LONE_CR = re.compile(rb"\r(?!\n)")
 _SPACED_QUOTE = re.compile(rb'\n[ \t]+"')
+#: A seconds fraction with a nonzero digit past the ninth. The parsed clock is nanosecond
+#: resolution and ``pd.to_datetime`` TRUNCATES the rest, so the stamp would read as another
+#: instant (``…T00:00:00.0000000001`` as midnight, a duplicate of the bar stamped there). Zeros
+#: past the ninth digit name the same instant and are admitted.
+_PAST_NANOSECOND = r"\.\d{9}\d*[1-9]"
 
 
 class IntegrityError(ValueError):
@@ -245,7 +250,8 @@ def read_strict_csv(
       ``\\r`` line ending, a NUL byte, a line led by spaces and then a quote, a byte-order mark
       past the file's start) its frame is cross-checked and a disagreement refuses (``unreadable``)
     - strict **ISO-8601** timestamps (``YYYY-MM-DD`` or full ISO timestamps), timezone-**naive**;
-      no ``dayfirst``/format inference, ever
+      no ``dayfirst``/format inference, ever; at most nanosecond resolution — a nonzero digit past
+      the ninth fractional digit refuses (``bad_timestamp``) rather than being truncated
     - unique, ascending timestamps
     - value columns parse as numbers; the only missing-value markers are an empty cell or ``nan``
     - no duplicate column names, no empty/header-only file
@@ -552,8 +558,8 @@ def _tokenizer_parity(path: str, blob: bytes, raw: pd.DataFrame, rep: FileReport
 def _parse_timestamps(
     path: str, raw: pd.DataFrame, ts_col: str, rep: FileReport
 ) -> pd.Series | None:
-    """Stage 6: strict ISO-8601, tz-naive, unique, ascending — violations accumulate as
-    machine-readable errors, and nothing is ever format-guessed."""
+    """Stage 6: strict ISO-8601, tz-naive, at most nanosecond resolution, unique, ascending —
+    violations accumulate as machine-readable errors, and nothing is ever format-guessed."""
     ts_raw = raw[ts_col].str.strip()
     ts: pd.Series | None
     try:
@@ -566,6 +572,7 @@ def _parse_timestamps(
         )
     if ts is not None:
         bad = ts.isna()
+        past_ns = ~bad & ts_raw.str.contains(_PAST_NANOSECOND, regex=True, na=False)
         if bad.any():
             rep.error(
                 "bad_timestamp",
@@ -579,6 +586,17 @@ def _parse_timestamps(
                 "tz_aware_timestamp",
                 f"{path}: timestamps carry a timezone offset — provide timezone-naive "
                 "ISO-8601 timestamps (drop the offset at export time)",
+            )
+            ts = None
+        if past_ns.any():
+            rep.error(
+                "bad_timestamp",
+                f"{path}: {int(past_ns.sum())} timestamp(s) in column {ts_col!r} carry "
+                "fractional seconds past the nanosecond — the clock is nanosecond resolution "
+                "and the rest would be truncated, reading another instant "
+                "('…00:00:00.0000000001' as midnight); round them at export (zeros past the "
+                "ninth digit are admitted)",
+                examples=_examples(past_ns, ts_raw),
             )
             ts = None
     if ts is not None:

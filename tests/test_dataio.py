@@ -70,6 +70,10 @@ REJECTIONS = [
     ("bad_timestamp", "datetime,close\n01/02/2021,100\n01/03/2021,100\n"),  # US-style
     ("bad_timestamp", "datetime,close\n02.01.2021,100\n03.01.2021,100\n"),  # EU-style
     (
+        "bad_timestamp",
+        "datetime,close\n2021-01-01T00:00:00.0000000001,100\n2021-01-02,101\n",
+    ),  # a digit past the nanosecond: truncated, it read as midnight
+    (
         "tz_aware_timestamp",
         "datetime,close\n2021-01-01T00:00:00+09:00,100\n2021-01-02T00:00:00+09:00,101\n",
     ),
@@ -94,6 +98,33 @@ def test_rejections(tmp_path, code, text):
     df, rep = _run(tmp_path, text)
     assert df is None and not rep.ok
     assert code in {e["code"] for e in rep.errors}, rep.errors
+
+
+def test_a_fractional_digit_past_the_nanosecond_refuses_and_trailing_zeros_admit(tmp_path):
+    # The parsed clock is nanosecond resolution and the ISO parser TRUNCATES further digits, so
+    # `.0000000001` read as midnight — admitted as another instant, or as a duplicate of the bar
+    # stamped there. A nonzero digit past the ninth refuses, naming the cause; zeros past it name
+    # the same instant and admit.
+    df, rep = _run(
+        tmp_path,
+        "datetime,close\n2021-01-01T00:00:00,100\n2021-01-01T00:00:00.0000000001,101\n"
+        "2021-01-01T00:00:00.9999999999,102\n",
+    )
+    assert df is None and [e["code"] for e in rep.errors] == ["bad_timestamp"]
+    (err,) = rep.errors
+    assert "past the nanosecond" in err["message"] and "2 timestamp(s)" in err["message"]
+    assert [x["csv_line"] for x in err["examples"]] == [3, 4]
+    df, rep = _run(
+        tmp_path,
+        "datetime,close\n2021-01-01T00:00:00.1234567890,100\n"
+        "2021-01-01T00:00:00.123456790000,101\n2021-01-01T00:00:01.5,102\n",
+    )
+    assert rep.ok and df is not None
+    assert list(df.index) == [
+        pd.Timestamp("2021-01-01T00:00:00.123456789"),
+        pd.Timestamp("2021-01-01T00:00:00.12345679"),
+        pd.Timestamp("2021-01-01T00:00:01.5"),
+    ]
 
 
 def test_unpadded_iso_ordering_accepted(tmp_path):
