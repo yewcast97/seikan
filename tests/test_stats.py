@@ -2554,6 +2554,32 @@ def test_cross_mean_pooled_mean_identical_rows_are_exactly_zero_whatever_closed(
     )
 
 
+def test_cross_mean_pooled_mean_partial_basket_cancels_exactly():
+    # A 22-member bar of 7 zeros, 7 twos and 8 ones has mean 1; its 15 firing members (the zeros,
+    # the twos, one of the ones) have excesses summing to exactly 0. The per-bar form rounded the
+    # membership fraction before the cancellation — 15 − fl(15/22)·22 = 1.8e-15 — and a pool of
+    # such bars read a positive mean_ret the support floor passed. The weighted legs sum exactly.
+    raw = np.array([[0.0] * 7 + [2.0] * 7 + [1.0] * 8] * 30)
+    closed = np.array([[True] * 15 + [False] * 7] * 30)
+    assert 15.0 - (15 / 22) * 22.0 != 0.0  # the defect's arithmetic
+    assert cross_mean_pooled_mean(raw, closed) == 0.0
+    for perm in (np.arange(22)[::-1], np.random.RandomState(3).permutation(22)):
+        assert cross_mean_pooled_mean(raw[:, perm], closed[:, perm]) == 0.0
+    # a dispersed partial pool: the exact weighted numerator, correctly rounded, over N·n
+    rng = np.random.RandomState(17)
+    raw = rng.normal(0.0, 0.02, (300, 9)) * 10.0 ** rng.randint(-3, 4, (300, 9))
+    closed = rng.rand(300, 9) < 0.35
+    k = closed.sum(axis=1, keepdims=True)
+    weights = (9 * closed - k).ravel().tolist()
+    exact = sum(
+        (w * Fraction(x) for w, x in zip(weights, raw.ravel().tolist(), strict=True) if w),
+        Fraction(0),
+    )
+    got = cross_mean_pooled_mean(raw, closed)
+    assert got == float(exact) / (9 * int(closed.sum()))
+    assert got == pytest.approx(float(np.mean((raw - raw.mean(axis=1, keepdims=True))[closed])))
+
+
 def test_cross_mean_pooled_mean_overflow_is_refusable_not_a_crash():
     # Finite legs whose exact pooled sum leaves the double range: the per-row route read inf
     # (refused by the gate as non-finite); the exact route must not raise out of the run.

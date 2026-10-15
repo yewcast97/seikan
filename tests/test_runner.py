@@ -3756,6 +3756,50 @@ def test_cross_mean_full_basket_pooled_mean_is_exactly_zero_in_every_order(tmp_p
         assert support.met is False and "mean_ret=0" in support.detail, order
 
 
+def test_cross_mean_partial_basket_whose_excesses_cancel_reads_zero_and_no_support(tmp_path):
+    # 22 members over 32 bars: 7 flat, 7 tripling and 8 doubling every bar, so the h = 1 raw
+    # legs are exactly 0, 2 and 1 and each bar's basket mean is exactly 1. Fifteen members fire
+    # on every bar — the flat ones, the tripling ones and ONE doubling member (the only one priced
+    # at or above 2**20) — and their excesses (−1, +1, 0) sum to exactly zero. The per-bar form
+    # rounded 15/22 before the cancellation: 450 closed rows read pooled mean_ret 1.18e-16, and
+    # the support floor passed a pool that made exactly nothing over its basket.
+    from seikan.gate import GateThresholds, evaluate_gate
+
+    n = 32
+    idx = pd.date_range("2021-01-01", periods=n, freq="1D")
+    t = np.arange(n, dtype=float)
+    paths = [np.full(n, 2.0**20)] * 7 + [3.0**t * 2.0**20] * 7 + [2.0**t * 2.0**20]
+    paths += [2.0**t * 2.0**-40] * 7
+    names = [f"M{g:02d}" for g in range(22)]
+    files = {
+        g: _write_bars(tmp_path / f"{g}.csv", px, idx) for g, px in zip(names, paths, strict=True)
+    }
+    thesis = Thesis.model_validate(
+        {
+            "name": "cm_partial",
+            "target_mode": "basket",
+            "data": {"targets": names},
+            "entry": {
+                "type": "threshold",
+                "left": {"type": "field", "column": "close"},
+                "op": ">=",
+                "right": {"type": "constant", "value": 2.0**20},
+            },
+            "params": {"horizon": 1, "benchmark": "cross_mean"},
+        }
+    )
+    res = run_backtest(thesis, load(thesis, files))
+    pooled = res.summary["cells"][0]["pooled"]
+    assert pooled["n"] == 450 and pooled["mean_ret_raw"] == pooled["mean_ret_bench"] == 1.0
+    assert pooled["mean_ret"] == 0.0
+    support = next(
+        c
+        for c in evaluate_gate(res.summary, GateThresholds()).cells[0].checks
+        if c.name == "support"
+    )
+    assert not support.met and "mean_ret=0.0" in support.detail
+
+
 def test_cross_mean_selective_pool_mean_is_its_tilt_and_order_free(tmp_path):
     # A SELECTIVE pool has no identity: its pooled mean is the firing subset's tilt, the same
     # number (to rounding) the closed rows average to — and, summed per bar in sorted member

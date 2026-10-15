@@ -361,50 +361,65 @@ def edge_ratio(mae_rows: np.ndarray, mfe_rows: np.ndarray) -> float:
     return _finite_ratio(float(np.mean(m_f)), denom)
 
 
+#: The low mantissa bits a leg's HIGH half clears (:func:`cross_mean_pooled_mean`): the high half
+#: keeps at most 27 significant bits and the low one at most 26, so each half's product with an
+#: integer weight under 2**26 — any basket size the engine can hold — is an exact double.
+_SPLIT_LOW_BITS = np.int64((1 << 26) - 1)
+
+
 def cross_mean_pooled_mean(raw: np.ndarray, closed: np.ndarray) -> float:
     """The pooled mean of a basket's ``cross_mean`` EXCESS returns, computed from the raw legs so
-    the full-basket identity holds EXACTLY.
+    that it is zero exactly where the exact excess sum is, and has its sign wherever it is not.
 
     ``raw`` is the (bars × members) signed raw leg of one horizon, ``closed`` the (bars ×
     members) mask of the pool's closed observations. Under ``cross_mean`` a bar's excess legs
-    are ``raw[t, g] − mean(raw[t, :])``, so the bar contributes ``Σ_{closed} raw − (k_t/N)·Σ_all
-    raw`` to the pooled sum — and a bar on which EVERY member closed contributes ``S − 1.0·S``,
-    exactly ``0.0``. So does a bar on which every member's leg is the SAME value (a shared outcome
-    feed broadcast to the basket), whatever closed: each excess there is exactly zero, which
-    ``fl(k/N)`` would not cancel. Summing the rounded per-row excesses instead left ~1e-19 of
-    residue whose SIGN depended on the members' declaration order, so a pool whose mean is zero by
-    construction could clear ``mean_ret > 0`` in one order and not in another. Each bar's members
-    are summed in SORTED order (the sum cannot depend on the order the targets were declared in)
-    and the bars with ``math.fsum``; NaN on an empty pool. A bar with any closed member has every
-    raw leg finite — a NaN leg voids the bar's whole cross-sectional mean, censoring every member
-    there — so no NaN reaches the sums. Legs so large that a bar's sum, or the exact total, leaves
-    the double range have no finite pooled mean: NaN, which the gate refuses as non-finite —
-    never an exception out of the run. The same all-closed rows of ``closed`` are the full bars
-    whose rows the pool's other bar-closed sums read at 0.0 (the runner's ``rets_pool``), so the
-    bootstrap, the eras, the episode means and the HAC keep this identity too, as do the CSCV
-    split means (a block holds whole bars — :func:`~seikan.analysis.stats.cscv_pbo`'s
-    ``full_bars``) and the conditional-bucket means wherever a full bar's rows all land in one
-    bucket (:func:`~seikan.analysis.stats.cell_conditional_buckets`' ``full_bars``) —
-    the rotation null only through its tie band."""
+    are ``raw[t, g] − mean(raw[t, :])``, so over the pool the excess sum is
+    ``Σ_t (Σ_{closed} raw − (k_t/N)·Σ_all raw) = Σ_{t,g} (N·[closed_tg] − k_t)·raw_tg / N`` —
+    an INTEGER-weighted sum of the legs, which is computed exactly: each leg is split into two
+    halves whose products with its weight are exact doubles, every product is summed by
+    ``math.fsum`` (the exact numerator, correctly rounded) and the total is divided by ``N·n``
+    once. A bar on which every member closed weighs every leg 0 (``S − 1.0·S``); a bar whose legs
+    are all the SAME value (a shared outcome feed broadcast to the basket) has weights that sum to
+    0 against it, whatever closed — each excess there is exactly zero. Rounding ``k_t/N`` first
+    did not cancel: a 22-member bar of 7 zeros, 7 twos and 8 ones whose 15 firing members (the
+    zeros, the twos, one of the ones) have excesses summing to exactly 0 read
+    ``15 − fl(15/22)·22 = 1.8e-15``, and the pool a positive ``mean_ret`` of 1.18e-16 that the
+    support floor passed. Summing the rounded per-row excesses instead left residue whose SIGN
+    depended on the members' declaration order; the exact sum depends on no order at all.
+
+    NaN on an empty pool. A bar with any closed member has every raw leg finite — a NaN leg voids
+    the bar's whole cross-sectional mean, censoring every member there — so no NaN reaches the
+    sum (a non-finite leg reads NaN regardless). Legs so large that a weighted product, or the
+    exact total, leaves the double range have no finite pooled mean: NaN, which the gate refuses
+    as non-finite — never an exception out of the run. The same all-closed rows of ``closed``
+    are the full bars whose rows the pool's other bar-closed sums read at 0.0 (the runner's
+    ``rets_pool``), so the bootstrap, the eras, the episode means and the HAC keep the full-bar
+    identity too, as do the CSCV split means (a block holds whole bars —
+    :func:`~seikan.analysis.stats.cscv_pbo`'s ``full_bars``) and the conditional-bucket means
+    wherever a full bar's rows all land in one bucket
+    (:func:`~seikan.analysis.stats.cell_conditional_buckets`' ``full_bars``) — the rotation
+    null only through its tie band."""
     c = np.asarray(closed, dtype=bool)
     n = int(c.sum())
     if n == 0:
         return _NAN
     rows = c.any(axis=1)
-    r = np.asarray(raw, dtype=float)[rows]
+    r = np.ascontiguousarray(np.asarray(raw, dtype=float)[rows])
     c = c[rows]
+    if not np.isfinite(r).all():
+        return _NAN
+    n_members = int(r.shape[1])
+    weight = (n_members * c - c.sum(axis=1, keepdims=True)).astype(float)
+    high = (r.view(np.int64) & ~_SPLIT_LOW_BITS).view(np.float64)
     with np.errstate(over="ignore", invalid="ignore"):
-        s_closed = np.sort(np.where(c, r, 0.0), axis=1).sum(axis=1)
-        s_all = np.sort(r, axis=1).sum(axis=1)
-        excess = s_closed - (c.sum(axis=1) / r.shape[1]) * s_all
-    excess = np.where(r.max(axis=1) == r.min(axis=1), 0.0, excess)  # identical legs: no excess
-    if not np.isfinite(excess).all():
+        parts = np.concatenate([(weight * high).ravel(), (weight * (r - high)).ravel()])
+    if not np.isfinite(parts).all():
         return _NAN
     try:
-        total = math.fsum(excess.tolist())
+        total = math.fsum(parts.tolist())
     except OverflowError:  # the exact total leaves the double range
         return _NAN
-    return total / n
+    return float(total / (n_members * n))
 
 
 @np.errstate(over="ignore", invalid="ignore")
