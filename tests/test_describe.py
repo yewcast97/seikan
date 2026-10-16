@@ -585,11 +585,12 @@ def test_exact_values_including_the_most_recent_tie_rule(tmp_path, capsys):
     assert blocks["missingness"]["n_missing"] == 0
 
 
-def test_ordinary_log_reads_are_the_direct_form_bit_for_bit(tmp_path, capsys):
-    # The scale-safe log reads ln(b) − ln(a) ONLY where the quotient left the normal double
-    # range: that form rounds differently from ln(b/a) on almost every ordinary pair, so on a
-    # random walk every changes[N].log and dispersion[N].log carries the direct form's exact
-    # bits — and the difference of logs must visibly disagree with them, or this pins nothing.
+def test_ordinary_log_reads_are_the_signed_direct_form_bit_for_bit(tmp_path, capsys):
+    # The scale-safe log reads ln(hi) − ln(lo) ONLY where the quotient left the double range:
+    # that form rounds differently from ln(hi/lo) on almost every ordinary pair, so on a random
+    # walk every changes[N].log and dispersion[N].log carries the exact bits of the larger level
+    # over the smaller, negated where the level fell — and the difference of logs must visibly
+    # disagree with them, or this pins nothing.
     rng = np.random.default_rng(11)
     walk = 100.0 * np.exp(np.cumsum(rng.normal(0.0, 0.02, 300)))
     y = _write_series(tmp_path / "y.csv", walk)
@@ -604,10 +605,11 @@ def test_ordinary_log_reads_are_the_direct_form_bit_for_bit(tmp_path, capsys):
     for w in windows:
         a, b, tail = float(x[-1 - w]), float(x[-1]), x[-(w + 1) :]
         log = blocks["changes"][str(w)]["log"]
-        assert log == math.log(b / a)
+        assert log == (math.log(b / a) if b >= a else -math.log(a / b))
         n_change_moves += log != math.log(b) - math.log(a)
         std = blocks["dispersion"][str(w)]["log"]
-        assert std == _offset_std(np.log(tail[1:] / tail[:-1]))
+        up, dn = tail[1:], tail[:-1]
+        assert std == _offset_std(np.where(up >= dn, np.log(up / dn), -np.log(dn / up)))
         n_dispersion_moves += std != _offset_std(np.log(tail[1:]) - np.log(tail[:-1]))
     assert n_change_moves > 0 and n_dispersion_moves > 0
 

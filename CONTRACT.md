@@ -782,11 +782,14 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   algebras: off a positive scale they invert silently, so a non-positive base censors as NaN
   instead of minting a sign-flipped number. Signed series belong to `diff`. The LOG ratio is
   scale-safe, one rule for `change(kind="log")`, the `log` outcome (benchmark leg, `pre_ret`,
-  excursions included) and `describe`'s `log` reads (`seikan.numeric`): `ln(b/a)` of two
-  positive finite levels is always representable even where the quotient `b/a` is not, so it
-  reads `ln b − ln a` exactly where the quotient overflowed, underflowed or went subnormal
-  (1e200 → 1e-200 is −921.03…, never `ln(0)`), and the direct form — bit for bit — everywhere
-  else. A `pct` (or `diff`) past the double range has no representable value: NaN (a `no_outcome`
+  excursions included) and `describe`'s `log` reads (`seikan.numeric`). It is SIGNED: `ln(hi/lo)`
+  of the larger level over the smaller, negated where the level fell, so `ln(a/b)` is `−ln(b/a)`
+  bit for bit and a closed cycle sums to exactly 0 — read in its own direction, each quotient
+  rounded on its own, and 100 → 110 → 100 summed to 2e-17, a positive `mean_ret` that met the
+  support floor. `ln(b/a)` of two positive finite levels is always representable even where the
+  quotient is not, so it reads `ln hi − ln lo` exactly where that quotient overflowed (1e200 →
+  1e-200 is −921.03…, never `ln(0)`), and the direct form — bit for bit — everywhere else. A
+  `pct` (or `diff`) past the double range has no representable value: NaN (a `no_outcome`
   observation, a NaN decision operand as above); a `describe` `pct` past the range (for a dispersion
   std, any one 1-bar ratio past it) is null with `ratio_reason: "not_representable"`, and a
   `describe` `diff` past it — levels of opposite sign ~1.8e308 apart — refuses its whole block as

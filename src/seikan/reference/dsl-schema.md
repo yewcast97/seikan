@@ -413,7 +413,8 @@ range reads that recurrence's value to its rounding.
   endpoints strictly positive and are NaN otherwise (ratio algebras invert silently on a signed
   scale — the same rule the forward outcome applies); signed series belong to `diff`. `log` is
   scale-safe — finite for every positive pair, even where the quotient leaves the double range
-  (1e200 → 1e-200 is −921.03…) — while a `pct` or `diff` past the range is NaN. A list
+  (1e200 → 1e-200 is −921.03…) — and signed: a move's reverse reads its exact negation, so the
+  log changes of 100 → 110 → 100 sum to exactly 0. A `pct` or `diff` past the range is NaN. A list
   `periods` sweeps as `change_periods`. Prefer `change(kind:"diff")` over composing
   `binary_op(x, shift(x), "-")`.
 - `shift` (periods=1) — the input `periods` bars ago (backward-only; leading bars NaN). Prefer
@@ -1012,8 +1013,10 @@ because `extra="forbid"` applies to every DSL model:
   a real move, not a domain error). OHLCV targets cannot reach this; series targets and feed
   outcomes can. `log` = ln(b/a) is scale-safe (the decision-side `change` and `describe` read the
   same rule): finite for every positive pair, even where `b/a` leaves the double range
-  (1e200 → 1e-200 measures −921.03…, never ln(0)); a `pct` or `diff` past the range has no
-  representable value and censors as `no_outcome`.
+  (1e200 → 1e-200 measures −921.03…, never ln(0)), and signed — ln(a/b) is −ln(b/a) bit for
+  bit, so a closed cycle (100 → 110 → 100) sums to exactly 0, never a rounding residue the
+  support floor could grade; a `pct` or `diff` past the range has no representable value and
+  censors as `no_outcome`.
 - The anchor is always the next bar (`t+1 → t+1+h`) — no same-bar look-ahead, whatever the outcome.
   `benchmark: "market"` works with `pct` and `log` (the benchmark leg is measured in the OUTCOME'S
   OWN algebra, so a `log` outcome yields the true log-excess `ln(tgt ratio) − ln(bench ratio)`) but

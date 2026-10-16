@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import itertools
 import math
-import sys
 from fractions import Fraction
 
 import numpy as np
@@ -370,14 +369,13 @@ def change(arr: np.ndarray, periods: int, kind: str = "pct") -> np.ndarray:
         elif kind == "log":
             if prev <= 0.0 or cur <= 0.0:
                 continue
-            # Scale-safe: ln of the quotient where it is a finite positive NORMAL double, the
-            # difference of logs where it overflowed/underflowed (1e200 → 1e-200 is −921.03…,
-            # never ln(0)). Python floats, so the quotient cannot warn.
-            q = float(cur) / float(prev)
-            if sys.float_info.min <= q < math.inf:
-                out[i] = math.log(q)
-            else:
-                out[i] = math.log(cur) - math.log(prev)
+            # Signed and scale-safe: ln of the larger level over the smaller, negated where the
+            # level fell, and the difference of logs where that quotient overflowed (1e200 →
+            # 1e-200 is −921.03…, never ln(0)). Python floats, so the quotient cannot warn.
+            hi, lo = max(float(cur), float(prev)), min(float(cur), float(prev))
+            q = hi / lo
+            r = math.log(q) if q < math.inf else math.log(hi) - math.log(lo)
+            out[i] = -r if cur < prev else r
         else:  # diff
             out[i] = cur - prev
     return out

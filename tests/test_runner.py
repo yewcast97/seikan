@@ -3238,11 +3238,12 @@ def test_log_outcome_past_the_double_range_closes_with_the_exact_log(tmp_path):
     assert math.isclose(row.ret, -737.9258420467627, rel_tol=1e-15)
 
 
-def test_log_outcome_keeps_the_direct_form_bit_for_bit_on_ordinary_levels(tmp_path):
+def test_log_outcome_keeps_the_signed_direct_form_bit_for_bit_on_ordinary_levels(tmp_path):
     """The difference of logs rounds differently from ln(b/a) on almost every ordinary pair, so
-    the scale-safe fallback may fire only where the quotient left the normal double range: on a
-    random walk every closed `ret` carries the direct form's exact bits over the very
-    `entry_px` / `exit_px` floats the window measured — and the fallback visibly disagrees."""
+    the scale-safe fallback may fire only where the quotient left the double range: on a random
+    walk every closed `ret` carries the exact bits of the larger level over the smaller, negated
+    where the level fell, over the very `entry_px` / `exit_px` floats the window measured — and
+    the fallback visibly disagrees."""
     rng = np.random.default_rng(5)
     walk = 100.0 * np.exp(np.cumsum(rng.normal(0.0, 0.02, 300)))
     trades = _measured(tmp_path, list(walk), "log")
@@ -3250,8 +3251,39 @@ def test_log_outcome_keeps_the_direct_form_bit_for_bit_on_ordinary_levels(tmp_pa
     assert len(closed) > 250
     ret = closed["ret"].to_numpy()
     num, den = closed["exit_px"].to_numpy(), closed["entry_px"].to_numpy()
-    np.testing.assert_array_equal(ret, np.log(num / den))
+    np.testing.assert_array_equal(ret, np.where(num >= den, np.log(num / den), -np.log(den / num)))
     assert (ret != np.log(num) - np.log(den)).mean() > 0.5
+
+
+def test_log_outcome_of_a_closed_price_cycle_reads_exactly_zero(tmp_path):
+    """The review's path: 100 bars alternating 100 and 110, an unconditional entry, h = 1, log
+    outcomes. Each fall is the exact negation of each rise, so the 98 closed returns sum to
+    exactly 0. Read in its own direction each quotient rounded on its own: mean_ret read 2.1e-17
+    and met the support floor, and a two-bar rolling mean of the one-bar log changes `> 0` fired
+    where the direct two-bar change — exactly 0 — fires nowhere."""
+    from seikan.gate import GateThresholds, evaluate_gate
+
+    path = _series_bars(tmp_path / "y.csv", [100.0, 110.0] * 50)
+
+    def run(entry):
+        thesis = Thesis.model_validate(
+            {
+                "name": "cycle",
+                "data": {"targets": ["target"]},
+                "entry": entry,
+                "params": {"horizon": 1, "outcome": {"kind": "log"}},
+            }
+        )
+        return run_backtest(thesis, load(thesis, {"target": path}))
+
+    res = run(_gt(-1e9))
+    panel = res.summary["cells"][0]["by_target"]["target"]
+    assert panel["n"] == 98 and panel["mean_ret"] == 0.0
+    checks = evaluate_gate(res.summary, GateThresholds()).cells[0].checks
+    assert next(c for c in checks if c.name == "support").met is False
+    change = {"type": "change", "input": {"type": "field", "column": "close"}, "kind": "log"}
+    smoothed = {"type": "rolling_agg", "input": change, "window": 2, "agg": "mean"}
+    assert run(_gt0(smoothed)).summary["cells"][0]["by_target"]["target"]["n"] == 0
 
 
 def test_pct_outcome_past_the_double_range_censors_silently(tmp_path):
@@ -4223,11 +4255,11 @@ def test_cross_mean_cancelling_partial_pool_reads_its_exact_zero_in_every_bar_cl
     tmp_path,
 ):
     # The review's basket: six members (p, q, r, p, q, r) of log outcomes, only the first three
-    # firing, three bars apart; on every other firing bar they move (0.95, 0.96, 1.03) and the
+    # firing, three bars apart; on every other firing bar they move (0.95, 0.96, 1.02) and the
     # last three mirror them, so each firing bar's three excesses cancel exactly — the pooled
     # mean_ret is exactly 0 — while their three rounded rows sum to residue (a mirrored PAIR's
-    # two rows cancel about the bar's offset; three rows need not, about its exact centre either:
-    # the review's (0.95, 0.96, 1.02) happen to). Read off those rows, the HAC
+    # two rows cancel exactly; three rows need not, though (0.95, 0.96, 1.03) happen to). Read
+    # off those rows, the HAC
     # divided the residue (t_hac 5.43, hac_se 1.6e-19 beside mean_ret 0.0), and every other
     # bar-closed sum minted evidence: a positive bootstrap interval, an episode hit rate of 1.0.
     # Every bar's exact excess sum is 0, so every one of them reads 0: no long-run variance, a
@@ -4240,7 +4272,7 @@ def test_cross_mean_cancelling_partial_pool_reads_its_exact_zero_in_every_bar_cl
     for k in range(30):
         fire[3 * k] = 1.0 if k % 2 == 0 else 0.6
         if k % 2 == 0:
-            for m, move in zip("ABC", (0.95, 0.96, 1.03), strict=True):
+            for m, move in zip("ABC", (0.95, 0.96, 1.02), strict=True):
                 levels[m][3 * k + 2] = move
     targets = ["A", "B", "C", "D", "E", "F"]
     files = {}

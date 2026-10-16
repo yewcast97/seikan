@@ -586,10 +586,12 @@ def change_apply_nb(
     change through zero or between negative levels returns a finite number with an INVERTED sign:
     −4 → −2 reads as −50% while the level rose) — the same rule the runner's forward-outcome
     measurement applies; signed levels belong to ``diff``, which only needs both bars finite
-    (0 is a valid level base). ``log`` is the scale-safe :func:`seikan.numeric.log_ratio_array`
-    — the runner's outcome rule too — so a quotient past the double range (1e200 → 1e-200) still
-    reads its finite log (−921.03…) instead of an undecidable NaN; a ``pct`` or ``diff`` past
-    the range has no representable value and stays NaN.
+    (0 is a valid level base). ``log`` is the scale-safe, signed
+    :func:`seikan.numeric.log_ratio_array` — the runner's outcome rule too — so a quotient past
+    the double range (1e200 → 1e-200) still reads its finite log (−921.03…) instead of an
+    undecidable NaN, and a move's reverse reads its exact negation (a two-bar mean of the log
+    changes of 100 → 110 → 100 is exactly 0); a ``pct`` or ``diff`` past the range has no
+    representable value and stays NaN.
     """
     a = np.asarray(arr, dtype=float)
     n = a.shape[0]

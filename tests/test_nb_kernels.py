@@ -230,7 +230,7 @@ def test_change_log_past_the_double_range_is_finite():
     arr = np.array([1e200, 1e-200, 1e200, 1.0])
     got = change_1d(arr, 1, "log")
     down = np.log(1e-200) - np.log(1e200)
-    np.testing.assert_array_equal(got, [np.nan, down, -down, np.log(1.0 / 1e200)])
+    np.testing.assert_array_equal(got, [np.nan, down, -down, -np.log(1e200)])
     _assert(got, ref.change(arr, 1, "log"))
     np.testing.assert_array_equal(change_1d(arr, 1, "pct"), [np.nan, -1.0, np.nan, -1.0])
     # A SUBNORMAL quotient (3e20 → 1e-300 is 3.3e-321) was finite but precision-lost — ln of the
@@ -244,57 +244,71 @@ def test_change_log_past_the_double_range_is_finite():
     np.testing.assert_array_equal(ref.change(sub, 1, "log"), [np.nan, math_exact])
 
 
-def test_log_ratio_is_the_direct_form_bit_for_bit_on_ordinary_levels():
+def test_log_ratio_is_the_signed_direct_form_bit_for_bit_on_ordinary_levels():
     # The difference of logs rounds differently from ln(b/a) on almost every ordinary pair, so
     # the fallback must never fire there: on a random walk both twins — and the change kernel
-    # reading through them — equal the direct form exactly, bit for bit.
+    # reading through them — equal the direct form of the larger level over the smaller, negated
+    # where the level fell, bit for bit.
     rng = np.random.RandomState(7)
     walk = 100.0 * np.exp(np.cumsum(rng.normal(0.0, 0.02, 5000)))
     num, den = walk[1:], walk[:-1]
-    direct = np.log(num / den)
+    direct = np.where(num >= den, np.log(num / den), -np.log(den / num))
     assert (direct != np.log(num) - np.log(den)).mean() > 0.5  # the fallback WOULD move bits
     np.testing.assert_array_equal(log_ratio_array(num, den), direct)
     scalar = [log_ratio(float(b), float(a)) for b, a in zip(num, den, strict=True)]
-    np.testing.assert_array_equal(scalar, [math.log(b / a) for b, a in zip(num, den, strict=True)])
+    np.testing.assert_array_equal(scalar, direct)
     np.testing.assert_array_equal(change_1d(walk, 1, "log")[1:], direct)
+    # ...so a move's reverse reads its exact negation: read in its own direction each quotient
+    # rounded on its own, and ln(fl(110/100)) + ln(fl(100/110)) was 4.2e-17
+    np.testing.assert_array_equal(log_ratio_array(den, num), -direct)
+    assert math.log(110.0 / 100.0) + math.log(100.0 / 110.0) != 0.0  # the premise
+    assert log_ratio(110.0, 100.0) + log_ratio(100.0, 110.0) == 0.0
 
 
 def test_log_ratio_twins_share_one_rule_at_the_range_edges():
     # The scalar (math.log) and array (np.log) twins take the SAME branch on every class of
-    # positive pair — the direct form for normal quotients, the difference of logs for
-    # overflowing, underflowing and subnormal ones, the direct form again at exactly the
-    # smallest normal — and each equals its own log's formula for that branch exactly. The two
-    # logs need not agree to the last bit across platforms (numpy's SIMD log is not libm's), so
-    # between the twins only an ulp is allowed; every value is finite.
+    # positive pair — the larger level over the smaller, its direct log where that quotient is
+    # finite and the difference of logs where it overflows, negated where the level fell — and
+    # each equals its own log's formula for that branch exactly. The quotient is at least 1, so
+    # it never underflows. The two logs need not agree to the last bit across platforms (numpy's
+    # SIMD log is not libm's), so between the twins only an ulp is allowed; every value is finite.
     tiny = np.finfo(np.float64).tiny  # the smallest positive NORMAL double
     pairs = [
         (3.0, 2.0, False),
+        (2.0, 3.0, False),  # the fall: −ln(3/2)
         (1e200, 1e-200, True),  # quotient 1e400: overflow
-        (1e-200, 1e200, True),  # quotient 1e-400: underflow to 0.0
-        (1e-300, 3e20, True),  # quotient 3.3e-321: subnormal, its relative precision lost
+        (1e-200, 1e200, True),  # the fall across it (read in its own direction, 1e-400 → 0.0)
+        (1e-300, 3e20, True),  # in its own direction a subnormal 3.3e-321, precision lost
         (5e-324, 1.0, True),  # the smallest subnormal as a level
-        (tiny, 1.0, False),  # quotient exactly the smallest normal: the direct form
+        (tiny, 1.0, False),  # the reciprocal of the smallest normal: the direct form
         (1.7976931348623157e308, 5e-324, True),
     ]
     num = np.array([p[0] for p in pairs])
     den = np.array([p[1] for p in pairs])
     fallback = np.array([p[2] for p in pairs])
-    q = np.array([a / b for a, b, _ in pairs])  # Python floats: overflow/underflow silently
-    np.testing.assert_array_equal(fallback, ~((q >= tiny) & (q < np.inf)))  # the rule's branch
+    hi, lo = np.maximum(num, den), np.minimum(num, den)
+    sign = np.where(num < den, -1.0, 1.0)
+    q = np.array([max(a, b) / min(a, b) for a, b, _ in pairs])  # Python floats: overflow silently
+    np.testing.assert_array_equal(fallback, q == np.inf)  # the rule's branch
     arr = log_ratio_array(num, den)
-    with np.errstate(divide="ignore"):  # the direct form's ln(0) on the underflowing pair
-        arr_want = np.where(fallback, np.log(num) - np.log(den), np.log(q))
-    np.testing.assert_array_equal(arr, arr_want)
+    np.testing.assert_array_equal(
+        arr, sign * np.where(fallback, np.log(hi) - np.log(lo), np.log(q))
+    )
     scalar = np.array([log_ratio(a, b) for a, b, _ in pairs])
-    scalar_want = [math.log(a) - math.log(b) if off else math.log(a / b) for a, b, off in pairs]
+    scalar_want = [
+        (-1.0 if a < b else 1.0)
+        * (math.log(max(a, b)) - math.log(min(a, b)) if off else math.log(max(a, b) / min(a, b)))
+        for a, b, off in pairs
+    ]
     np.testing.assert_array_equal(scalar, scalar_want)
     np.testing.assert_array_max_ulp(arr, scalar, maxulp=1)
     assert np.isfinite(arr).all() and np.isfinite(scalar).all()
-    assert arr[1] == -arr[2] and scalar[1] == -scalar[2]
-    # The subnormal branch is the RULE, not a tie: there the two forms disagree (ln of the
-    # rounded quotient is −737.92536) and both twins read the exact difference of logs.
-    assert arr[3] != np.log(1e-300 / 3e20)
-    assert scalar[3] == -737.9258420467627 != math.log(1e-300 / 3e20)
+    assert arr[0] == -arr[1] and scalar[0] == -scalar[1]
+    assert arr[2] == -arr[3] and scalar[2] == -scalar[3]
+    # Read in its own direction the subnormal quotient's ln was finite but wrong (−737.92536);
+    # its reciprocal overflows, and both twins read the exact difference of logs.
+    assert arr[4] != np.log(1e-300 / 3e20)
+    assert scalar[4] == -737.9258420467627 != math.log(1e-300 / 3e20)
     # 0-d operands broadcast like any others, the fallback included: always an array back.
     zero_d = log_ratio_array(np.float64(1e200), 1e-200)
     assert zero_d.shape == () and zero_d == np.log(1e200) - np.log(1e-200)
