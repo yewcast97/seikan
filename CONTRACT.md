@@ -993,9 +993,10 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   skipped. A lone OHLC-named column (a bare `close`) is an ordinary series file.
 - **Atomic outputs.** Every nominated output writes to a temp file in the target's own
   directory and lands via one `os.replace`, so a crash or ENOSPC mid-write can never leave a
-  truncated file wearing the nominated name; the report is still written LAST, after every
-  other nominated output, and serialization/contract-validation still precede any file side
-  effect.
+  truncated file wearing the nominated name; a symlinked nomination is written through — the
+  file it names takes the output (created where the link dangles) and the link stays; the
+  report is still written LAST, after every other nominated output, and
+  serialization/contract-validation still precede any file side effect.
 
 ### module map (`src/seikan/`)
 

@@ -33,19 +33,22 @@ if TYPE_CHECKING:
 def atomic_output(path: str) -> Iterator[str]:
     """Write-then-rename atomicity for every caller-nominated output file.
 
-    Yields a temporary path in the TARGET's own directory (``os.replace`` is atomic only within
-    one filesystem); on success the temp file replaces ``path`` in one step, on failure it is
-    removed and whatever ``path`` held before — possibly a previous run's good output — survives
+    The TARGET is ``path`` with its symlinks resolved, so a link is written through, never
+    replaced: the file it names takes the output (created where the link dangles) and the link
+    stays — the file the CLI preflight's collision checks, which follow links, compared. Yields a
+    temporary path in the target's own directory (``os.replace`` is atomic only within one
+    filesystem); on success the temp file replaces the target in one step, on failure it is
+    removed and whatever the target held before — possibly a previous run's good output — survives
     intact. A crash or ENOSPC mid-write can therefore never leave a truncated report or CSV
     wearing the nominated name. Deliberately no fsync: the guarantee bought here is
     no-torn-files, not power-loss durability.
     """
-    target = Path(path)
+    target = Path(path).resolve()
     fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=target.name + ".", suffix=".tmp")
     os.close(fd)
     try:
         yield tmp
-        os.replace(tmp, path)
+        os.replace(tmp, target)
     finally:
         if os.path.exists(tmp):
             os.unlink(tmp)

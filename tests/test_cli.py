@@ -3496,6 +3496,37 @@ def test_failed_report_write_leaves_previous_report_intact(tmp_path, capsys, mon
     assert not list(tmp_path.glob("*.tmp"))
 
 
+@pytest.mark.parametrize("dangling", [False, True], ids=["existing", "dangling"])
+def test_outputs_write_through_a_symlink(tmp_path, capsys, dangling):
+    # A nominated symlink is written THROUGH: the file it names takes the output (created where the
+    # link dangles) and the link stays. The temp file was renamed over the LINK, which turned the
+    # caller's link into a regular file and left the file it named stale, or never written.
+    px = _write_ohlcv(tmp_path / "px.csv")
+    thesis = _write_thesis(tmp_path / "t.json")
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    names = {
+        "--report-out": "report.json",
+        "--trades-out": "trades.csv",
+        "--root-series-out": "roots.csv",
+        "--entry-flags-out": "flags.csv",
+    }
+    argv = ["run", str(thesis), *_target(px)]
+    for flag, name in names.items():
+        if not dangling:
+            (runs / name).write_text("STALE", encoding="utf-8")
+        (tmp_path / name).symlink_to(runs / name)
+        argv += [flag, str(tmp_path / name)]
+    assert main(argv) == 0
+    assert capsys.readouterr().out == ""
+    for name in names.values():
+        assert (tmp_path / name).readlink() == runs / name
+        assert (runs / name).read_text(encoding="utf-8") != "STALE"
+    doc = json.loads((runs / "report.json").read_text(encoding="utf-8"))
+    assert doc["outputs"]["report"]["path"] == str(tmp_path / "report.json")
+    assert sorted(p.name for p in runs.iterdir()) == sorted(names.values())  # no temp residue
+
+
 # ---- shared sweep axes ---------------------------------------------------------------------
 
 
