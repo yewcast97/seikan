@@ -3,12 +3,15 @@ reports)."""
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 
+from seikan import dataio
+from seikan.compiler import vectorize
 from seikan.dataio import DataError
 from seikan.dsl.schema import Thesis
 
@@ -370,9 +373,12 @@ def test_case_insensitive_columns(tmp_path):
 
 
 def test_loaded_frames_are_read_only(tmp_path):
-    # the evaluation memos are keyed by node identity and trust the frames never to move; the
-    # loader now enforces it — a value write through a loaded frame raises instead of silently
-    # serving stale cached series afterwards.
+    # The evaluation memos are keyed by node identity and trust the frames never to move. The
+    # loader's read-only buffers are a tripwire for the in-place value write — the one mutation
+    # the engine itself could make by accident — which raises instead of silently serving stale
+    # cached series afterwards. They are no immutability, which pandas cannot give: a replaced
+    # column goes through, a caller's breach of the no-mutation contract, and the memo serves the
+    # old build until `clear_memo()` releases it.
     _ohlcv(tmp_path / "px.csv")
     thesis = _thesis()
     md = load(thesis, {"target": str(tmp_path / "px.csv")})
@@ -380,6 +386,49 @@ def test_loaded_frames_are_read_only(tmp_path):
         md.close.iloc[0, 0] = 1e9
     with pytest.raises(ValueError):
         md.open.iloc[-1, 0] = 0.0
+    close = thesis.entry.left
+    before = vectorize.build_series(close, md)[0].to_numpy().copy()
+    md.close["target"] = md.close["target"] * 2.0
+    np.testing.assert_array_equal(vectorize.build_series(close, md)[0].to_numpy(), before)
+    md.clear_memo()
+    np.testing.assert_array_equal(vectorize.build_series(close, md)[0].to_numpy(), 2.0 * before)
+
+
+def test_a_file_bound_under_several_keys_is_read_once(tmp_path, monkeypatch):
+    # One file can answer several keys. Read once per binding, a file rewritten between those
+    # reads was measured as two different files under one path, while the run's data identity
+    # (one digest per path) named only the last. The load reads each distinct path once and every
+    # binding parses that snapshot: here the bytes on disk change right after the first read, and
+    # both targets still measure — and digest — the bytes that read returned.
+    px = _ohlcv(tmp_path / "px.csv", n=8)
+    first = px.read_bytes()
+    other = _ohlcv(tmp_path / "other.csv", n=8, closes=np.linspace(50.0, 60.0, 8)).read_bytes()
+    reads: list[str] = []
+    real_read = dataio._read_blob
+
+    def rewritten_after_its_read(path, rep):
+        reads.append(path)
+        blob = real_read(path, rep)
+        if path == str(px):
+            px.write_bytes(other)
+        return blob
+
+    monkeypatch.setattr(dataio, "_read_blob", rewritten_after_its_read)
+    md = load(_thesis(["AAA", "BBB"]), {"AAA": str(px), "BBB": str(px)})
+    assert reads == [str(px)]
+    files = md.report["files"]
+    assert [f["role"] for f in files] == ["target:AAA", "target:BBB"]
+    assert files[0]["sha256"] == files[1]["sha256"] == hashlib.sha256(first).hexdigest()
+    np.testing.assert_array_equal(md.close["AAA"], np.linspace(100.0, 110.0, 8))
+    np.testing.assert_array_equal(md.close["BBB"], md.close["AAA"])
+    # a path that cannot be read fails every binding of it, each under its own role
+    gone = str(tmp_path / "gone.csv")
+    with pytest.raises(DataError) as err:
+        load(_thesis(["AAA", "BBB"]), {"AAA": gone, "BBB": gone})
+    assert [(f["role"], [e["code"] for e in f["errors"]]) for f in err.value.report["files"]] == [
+        ("target:AAA", ["file_missing"]),
+        ("target:BBB", ["file_missing"]),
+    ]
 
 
 def test_load_retains_native_prints_post_lag_shared_and_per_target(tmp_path):

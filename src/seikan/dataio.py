@@ -27,7 +27,8 @@ import hashlib
 import io
 import itertools
 import re
-from collections.abc import Iterator
+from collections import Counter
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from dataclasses import field as dc_field
 from fractions import Fraction
@@ -269,7 +270,9 @@ def read_strict_csv(
     The file is read ONCE and every stage (digest, header sniff, record-shape scan, parse and its
     cross-check) consumes that one buffer, so the digest describes exactly the bytes the engine
     measured: a rewrite between stages cannot split the reported identity from the evidence
-    actually parsed. The whole file is held in memory — pandas materialized it anyway.
+    actually parsed. The whole file is held in memory — pandas materialized it anyway. A load that
+    binds one file under several keys reads it through one :class:`StrictCsvReader`, which keeps
+    that single read for every binding of the path.
 
     The record scan reads under ``csv.field_size_limit()``, which is interpreter-global, so stages
     2 to 5 (the scans and the parse between them) run with it pinned to ``_CSV_FIELD_LIMIT`` — the
@@ -280,32 +283,81 @@ def read_strict_csv(
     it is NOT thread-safe: a thread using ``csv`` while a read is inside those stages reads under
     the pin, and a limit it sets meanwhile is overwritten by the restore.
     """
-    rep = FileReport(path=str(path), role=role)
-    blob = _read_blob(path, rep)
-    if blob is None:
-        return None, rep
-    rep.sha256 = hashlib.sha256(blob).hexdigest()
-    ambient = csv.field_size_limit(_CSV_FIELD_LIMIT)  # set, returning the limit it replaces
-    try:
-        cols = _header_columns(path, blob, rep)
-        if cols is None or not _record_shape(path, blob, len(cols), rep):
+    return StrictCsvReader().read(path, role=role, expected_shape=expected_shape)
+
+
+@dataclass(frozen=True)
+class _Snapshot:
+    """Stage 1's result for one path: its bytes and their sha256, or the failure to read them."""
+
+    blob: bytes | None
+    sha256: str | None
+    errors: tuple[DataIssue, ...]
+
+
+class StrictCsvReader:
+    """Strict reads (:func:`read_strict_csv`) that measure ONE snapshot of each distinct path.
+
+    A load can bind one file under several keys — two targets, a target and the benchmark, every
+    member of a per-target feed. Read once per binding, a file rewritten between two of those
+    reads was measured as two different files under one path, and the report's data identity
+    (one sha256 per path) named only the last: a digest of bytes the other binding never parsed.
+    A reader built with the paths a load will read (``paths``, one entry per binding) reads each
+    distinct path once — its bytes, or the failure to read them — and every binding of it parses
+    those same bytes under its own role and expected shape, so all of them carry the one digest
+    by construction. A snapshot is held only until its path's last planned read, so a load holds
+    no more file bytes than one read per binding did; a path read beyond its plan (or by a reader
+    built with none) is read afresh.
+    """
+
+    def __init__(self, paths: Iterable[str] = ()) -> None:
+        self._pending = Counter(str(p) for p in paths)  # planned reads still to come, per path
+        self._snapshots: dict[str, _Snapshot] = {}
+
+    def _snapshot(self, path: str) -> _Snapshot:
+        snap = self._snapshots.pop(path, None)
+        if snap is None:
+            scratch = FileReport(path=path)
+            blob = _read_blob(path, scratch)
+            digest = hashlib.sha256(blob).hexdigest() if blob is not None else None
+            snap = _Snapshot(blob, digest, tuple(scratch.errors))
+        self._pending[path] -= 1
+        if self._pending[path] > 0:
+            self._snapshots[path] = snap
+        return snap
+
+    def read(
+        self, path: str, *, role: str = "file", expected_shape: str | None = None
+    ) -> tuple[pd.DataFrame | None, FileReport]:
+        """:func:`read_strict_csv` over this reader's snapshot of ``path``."""
+        rep = FileReport(path=str(path), role=role)
+        snap = self._snapshot(rep.path)
+        rep.errors.extend(issue.copy() for issue in snap.errors)
+        blob = snap.blob
+        if blob is None:
             return None, rep
-        raw = _parse_frame(path, blob, rep)
-        if raw is None or not _tokenizer_parity(path, blob, raw, rep):
+        rep.sha256 = snap.sha256
+        ambient = csv.field_size_limit(_CSV_FIELD_LIMIT)  # set, returning the limit it replaces
+        try:
+            cols = _header_columns(path, blob, rep)
+            if cols is None or not _record_shape(path, blob, len(cols), rep):
+                return None, rep
+            raw = _parse_frame(path, blob, rep)
+            if raw is None or not _tokenizer_parity(path, blob, raw, rep):
+                return None, rep
+        finally:  # here, never in the _records generator, whose cleanup waits on garbage collection
+            csv.field_size_limit(ambient)
+        ts_col = "datetime" if "datetime" in raw.columns else raw.columns[0]
+        ts = _parse_timestamps(path, raw, ts_col, rep)
+        data = _parse_value_columns(path, raw, ts_col, rep)
+        if rep.errors or ts is None:  # rep.errors is the read `rep.ok` derives from
             return None, rep
-    finally:  # here, never in the _records generator, whose cleanup waits on garbage collection
-        csv.field_size_limit(ambient)
-    ts_col = "datetime" if "datetime" in raw.columns else raw.columns[0]
-    ts = _parse_timestamps(path, raw, ts_col, rep)
-    data = _parse_value_columns(path, raw, ts_col, rep)
-    if rep.errors or ts is None:  # rep.errors is the read `rep.ok` derives from
-        return None, rep
-    df = pd.DataFrame(data, index=pd.DatetimeIndex(ts, name="datetime"))
-    detected = _shape_and_integrity(path, df, expected_shape, rep)
-    if rep.errors:
-        return None, rep
-    _descriptive_warnings(path, df, detected, rep)
-    return df, rep
+        df = pd.DataFrame(data, index=pd.DatetimeIndex(ts, name="datetime"))
+        detected = _shape_and_integrity(path, df, expected_shape, rep)
+        if rep.errors:
+            return None, rep
+        _descriptive_warnings(path, df, detected, rep)
+        return df, rep
 
 
 def _read_blob(path: str, rep: FileReport) -> bytes | None:

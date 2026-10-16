@@ -238,7 +238,10 @@ none: a stamp that appears only sometimes reads as a different DOCUMENT rather t
 answer, and "nothing was bound, so the file named its own column" is a fact about the run worth
 saying out loud. The sha256, being a property of the FILE's bytes, is shared by two keys that one
 CSV happens to answer — each keeping its own column, which is precisely what the digest could not
-say while it was keyed by path. `outputs` is ONE block keyed in
+say while it was keyed by path. The load reads each distinct path ONCE and every key bound to it
+parses that one snapshot, so the shared digest names the bytes each of those keys measured (read
+once per key, a file rewritten between the reads was two files under one path, and the digest named
+the last). `outputs` is ONE block keyed in
 nomination order — `report` → `trades` → `root_series` → `entry_flags` — holding only the outputs
 this run actually nominated, each with its `path` plus, for each CSV, `rows_written`; a flat
 `trades_rows_written`/`trades_path` pair could only ever describe one of four
@@ -1075,8 +1078,10 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   Conditions).
   `compiler/` — data loading (`resolve_data_files` is where the invocation's `--data` /
   `--column` pairs meet the thesis's declared keys, and the only thing that checks the two
-  agree; the loader returns READ-ONLY frames, so a value write raises instead of serving stale
-  memo results, and retains each feed's native post-lag prints as `MarketData.externals_native`
+  agree; the loader reads each distinct path once, every key bound to it parsing that snapshot,
+  and returns frames over READ-ONLY buffers — a tripwire for the in-place value write, which raises
+  instead of serving stale memo results; pandas cannot freeze a frame against a replaced column, a
+  breach of the no-mutation contract that `MarketData.clear_memo()` resets — and retains each feed's native post-lag prints as `MarketData.externals_native`
   for the `native` node) + numpy/numba transform kernels (`nb.py`, `vectorize.py`,
   `transforms.py`) + the pure path/source leaves (`paths.py`, `sources.py`) + the runner, which
   measures every declared cell once over the whole index and builds the per-cell panel off the

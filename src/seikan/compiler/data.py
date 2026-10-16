@@ -16,11 +16,13 @@ is exposed as a ``Series`` broadcast to every target column at use, a per-target
 (rows × targets) ``DataFrame``; an optional publication lag shifts a feed's timestamps before the
 asof anchor so values aren't usable before their release.
 
-Every referenced file is read through :func:`seikan.dataio.read_strict_csv` — the strict contract
-for untrusted external data (ISO-8601 naive timestamps, forced-float columns, OHLC invariants; see
-that module). ALL files are read and checked before anything else happens, so a single
-:class:`~seikan.dataio.DataError` carries the complete per-file diagnosis; the loader never mutates
-input (there is deliberately no high/low clamping — inconsistent OHLC refuses instead).
+Every referenced file is read under :func:`seikan.dataio.read_strict_csv`'s strict contract for
+untrusted external data (ISO-8601 naive timestamps, forced-float columns, OHLC invariants; see that
+module), through one :class:`~seikan.dataio.StrictCsvReader` per load, so a file bound under
+several keys is read once and every key measures those bytes. ALL files are read and checked
+before anything else happens, so a single :class:`~seikan.dataio.DataError` carries the complete
+per-file diagnosis; the loader never mutates input (there is deliberately no high/low clamping —
+inconsistent OHLC refuses instead).
 """
 
 from __future__ import annotations
@@ -39,8 +41,8 @@ from seikan.dataio import (
     MAX_EXAMPLES,
     DataError,
     FileReport,
+    StrictCsvReader,
     build_data_report,
-    read_strict_csv,
     ticks_per_second,
 )
 from seikan.dsl.schema import BENCHMARK_KEY, DataSpec, Thesis
@@ -50,6 +52,11 @@ _REQUIRED = ("open", "high", "low", "close")
 
 #: An external feed covering less than this fraction of the joined bars draws a coverage warning.
 _FEED_COVERAGE_WARN = 0.9
+
+#: What one file binding of a load answers: ``(feed, member)`` for a feed (member None when it is
+#: shared), ``(None, target)`` for a target, ``(None, None)`` for the benchmark. Report roles are
+#: no key for it — a feed named ``f:A`` and the ``A`` member of a feed ``f`` share one.
+type _Answers = tuple[str | None, str | None]
 
 
 @dataclass
@@ -99,10 +106,13 @@ class MarketData:
     # under it past warmup — ``vectorize.fully_initialized``, the gate ``not``/``mask`` read).
     # Riding the materialized data scopes the memos to exactly the bars they derive from — ONE
     # memo per CLI run, populated by whichever compute path builds first (the backtest) and
-    # reused by the other (the listing). Cached frames are immutable by contract;
-    # in-place per-run state follows the same doctrine as ``report``. The memos live as long as
-    # this MarketData, so a long-lived instance reused across many theses accumulates entries —
-    # ``clear_memo()`` is the caller's release valve.
+    # reused by the other (the listing). Cached frames are immutable by contract, and so are the
+    # loaded frames they derive from — the loader's read-only buffers trip an in-place value
+    # write, but a replaced column or a write through a shallow copy goes through and leaves
+    # these memos stale (``_frozen_frame``). In-place per-run state follows the same doctrine as
+    # ``report``. The memos live as long as this MarketData, so a long-lived instance reused
+    # across many theses accumulates entries — ``clear_memo()`` is the caller's release valve,
+    # and the reset after any mutation.
     series_memo: dict[str, tuple[pd.DataFrame, pd.DataFrame]] = dataclasses.field(
         default_factory=dict, repr=False, compare=False
     )
@@ -338,13 +348,17 @@ def _feed_age_days(native: pd.Series, target_index: pd.DatetimeIndex) -> pd.Seri
 
 
 def _frozen_frame(df: pd.DataFrame) -> pd.DataFrame:
-    """Rebuild ``df`` over a READ-ONLY buffer, so a value write through the returned frame raises
-    instead of silently serving stale results out of the evaluation memos (which are keyed by
-    node identity and trust these frames never to move — previously a comment, enforced here where
-    the loader can enforce it). The freeze must happen BEFORE construction: under pandas
-    copy-on-write, flipping ``.values`` flags after the fact freezes a lazy copy, not the block
-    a later write goes through. Loader-only: a hand-built ``MarketData`` keeps whatever
-    mutability its caller gave it — the immutability promise there stays the caller's."""
+    """Rebuild ``df`` over a READ-ONLY buffer: a TRIPWIRE for the in-place value write
+    (``md.close.iloc[0, 0] = x``) — the one mutation the engine itself could make by accident —
+    which raises instead of silently serving stale results out of the evaluation memos (keyed by
+    node identity, trusting these frames never to move). It is no immutability, which pandas
+    cannot give: replacing a column (``md.close["A"] = …``) rebinds the frame's block, and under
+    copy-on-write a write beside a live shallow copy lands in a fresh one. Both succeed, and both
+    are a caller's breach of the contract that loaded frames are never mutated — the memos are
+    stale from there until ``MarketData.clear_memo()``. The freeze must happen BEFORE
+    construction: under pandas copy-on-write, flipping ``.values`` flags after the fact freezes a
+    lazy copy, not the block a later write goes through. Loader-only: a hand-built
+    ``MarketData`` keeps whatever mutability its caller gave it."""
     arr = df.to_numpy(dtype=float)
     arr.setflags(write=False)
     return pd.DataFrame(arr, index=df.index, columns=df.columns, copy=False)
@@ -493,32 +507,47 @@ def _per_target_feed_paths(paths: str | dict[str, str], fname: str) -> dict[str,
 
 def load_market_data(spec: DataSpec, files: DataFiles) -> MarketData:
     targets = files.targets  # {name -> path}; keys resolved against the spec by resolve_data_files
-    reports: list[FileReport] = []
-
-    def _read(path: str, role: str, expected_shape: str | None = None) -> pd.DataFrame | None:
-        df, rep = read_strict_csv(path, role=role, expected_shape=expected_shape)
-        reports.append(rep)
-        return df
-
-    # Read EVERY referenced file first, so one DataError carries the complete diagnosis.
-    raw_targets = {name: _read(path, f"target:{name}") for name, path in targets.items()}
     feed_specs = dict(spec.external)
     feed_paths: dict[str, str | dict[str, str]] = files.feeds
-    raw_feeds: dict[str, dict[str | None, pd.DataFrame | None]] = {}
+    # Every binding this load reads, in report order — each target, each feed (a per-target feed
+    # once per member, under its derived key: cover is by construction), then the benchmark — as
+    # (what it answers, path, report role, expected shape).
+    bindings: list[tuple[_Answers, str, str, str | None]] = [
+        ((None, name), path, f"target:{name}", None) for name, path in targets.items()
+    ]
     for fname, feed in feed_specs.items():
-        paths = feed_paths[fname]
-        if feed.per_target:  # one key per target, derived — cover is by construction
-            member_paths = _per_target_feed_paths(paths, fname)
-            raw_feeds[fname] = {
-                name: _read(member_paths[name], f"external:{fname}:{name}") for name in targets
-            }
+        if feed.per_target:
+            member_paths = _per_target_feed_paths(feed_paths[fname], fname)
+            bindings += [
+                ((fname, name), member_paths[name], f"external:{fname}:{name}", None)
+                for name in targets
+            ]
         else:
-            raw_feeds[fname] = {None: _read(_shared_feed_path(paths, fname), f"external:{fname}")}
-    raw_benchmark = (
-        _read(files.benchmark, "benchmark", expected_shape="ohlcv") if files.benchmark else None
-    )
+            path = _shared_feed_path(feed_paths[fname], fname)
+            bindings.append(((fname, None), path, f"external:{fname}", None))
+    if files.benchmark:
+        bindings.append(((None, None), files.benchmark, "benchmark", "ohlcv"))
+    # Read EVERY binding first, so one DataError carries the complete diagnosis — each distinct
+    # path ONCE, every binding of it parsing that one snapshot (``StrictCsvReader``), so the
+    # report's digest for a path is the digest of the bytes each of its keys measured.
+    reader = StrictCsvReader(path for _, path, _, _ in bindings)
+    reports: list[FileReport] = []
+    raw: dict[_Answers, pd.DataFrame | None] = {}
+    for answers, path, role, expected_shape in bindings:
+        raw[answers], rep = reader.read(path, role=role, expected_shape=expected_shape)
+        reports.append(rep)
     if any(not r.ok for r in reports):
         raise DataError(build_data_report(reports))
+    raw_targets = {name: raw[None, name] for name in targets}
+    raw_feeds: dict[str, dict[str | None, pd.DataFrame | None]] = {
+        fname: (
+            {name: raw[fname, name] for name in targets}
+            if feed.per_target
+            else {None: raw[fname, None]}
+        )
+        for fname, feed in feed_specs.items()
+    }
+    raw_benchmark = raw.get((None, None))
 
     def _fail(code: DataIssueCode, message: str) -> NoReturn:
         raise DataError(

@@ -1073,7 +1073,8 @@ opens with, `command` = `"run"`) → `identity` (`name`, `dsl_hash`, per-key `da
 `{path, column, sha256}`, keyed by the logical key the thesis declares, with `column` ALWAYS
 present and `null` where that key bound none, because "no column was bound, so the file named its
 own" is a fact about the run and not an absence to infer (two keys answered by ONE file share its
-`sha256` — a property of the bytes — while keeping their own column) — the `thresholds` snapshot
+`sha256` — a property of the bytes, read once for both — while keeping their own column) — the
+`thresholds` snapshot
 actually used, `thresholds_canonical`, per-knob `thresholds_provenance`
 — `default` | `env` | `cli`, the SOURCE, so a stricter-via-flag run is distinguishable from a
 stricter-via-env one — and `environment`, the python/numpy/pandas/scipy/numba versions the

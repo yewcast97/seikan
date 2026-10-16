@@ -1500,6 +1500,39 @@ def test_data_digests_are_keyed_by_the_logical_key(tmp_path, capsys):
     )
 
 
+def test_one_file_bound_to_two_keys_is_one_snapshot_under_one_digest(tmp_path, capsys, monkeypatch):
+    # A file rewritten between the reads of the two keys bound to it: read once per key, the
+    # target measured the first bytes and the benchmark the second, while the digest lookup by
+    # path kept the last — the target's digest named bytes it never parsed. Every key bound to one
+    # path now measures one snapshot, so every digest is the digest of the bytes its key read.
+    import hashlib
+
+    import seikan.dataio as dataio_mod
+
+    px = _write_ohlcv(tmp_path / "px.csv")
+    first = px.read_bytes()
+    other = _write_ohlcv(tmp_path / "other.csv", seed=7).read_bytes()
+    real_read = dataio_mod._read_blob
+
+    def rewritten_after_its_read(path, rep):
+        blob = real_read(path, rep)
+        if path == str(px):
+            px.write_bytes(other)
+        return blob
+
+    monkeypatch.setattr(dataio_mod, "_read_blob", rewritten_after_its_read)
+    thesis = tmp_path / "t.json"
+    dsl = json.loads(_write_thesis(thesis).read_text(encoding="utf-8"))
+    dsl["params"]["benchmark"] = "market"
+    thesis.write_text(json.dumps(dsl), encoding="utf-8")
+    _code, doc = _run_report(
+        capsys, tmp_path, ["run", str(thesis), *_data({"target": px, "benchmark": px})]
+    )
+    want = hashlib.sha256(first).hexdigest()
+    assert [f["sha256"] for f in doc["data_report"]["files"]] == [want, want]
+    assert {d["sha256"] for d in doc["identity"]["data_digests"].values()} == {want}
+
+
 def test_two_keys_answered_by_one_file_keep_their_own_columns(tmp_path, capsys):
     # The shape the sha256/column split exists for: one wide CSV answers TWO feed keys, each
     # reading a different column of it. The digests share a hash — it is a property of the file's
@@ -1964,25 +1997,25 @@ def test_run_loads_market_data_exactly_once_across_all_four_outputs(tmp_path, ca
     # ONE load per run: the CLI materializes MarketData once, after the exit-3 request validation,
     # and compile_thesis / list_entries consume it as a required parameter — neither loads. Counted
     # at BOTH seams: the cli-namespace binding proves the CLI called the loader exactly once, and
-    # the strict-CSV reader inside the loader proves nothing anywhere reloaded — an internal load
+    # the strict reader's byte read proves nothing anywhere re-read the file — an internal load
     # inside api.py would be invisible to the first counter alone.
     import seikan.cli as cli_mod
-    import seikan.compiler.data as data_mod
+    import seikan.dataio as dataio_mod
 
     loads: list = []
     reads: list = []
-    real_load, real_read = cli_mod.load_market_data, data_mod.read_strict_csv
+    real_load, real_read = cli_mod.load_market_data, dataio_mod._read_blob
 
     def counting_load(spec, files):
         loads.append(spec)
         return real_load(spec, files)
 
-    def counting_read(*args, **kwargs):
-        reads.append(args)
-        return real_read(*args, **kwargs)
+    def counting_read(path, rep):
+        reads.append(path)
+        return real_read(path, rep)
 
     monkeypatch.setattr(cli_mod, "load_market_data", counting_load)
-    monkeypatch.setattr(data_mod, "read_strict_csv", counting_read)
+    monkeypatch.setattr(dataio_mod, "_read_blob", counting_read)
 
     px = _write_ohlcv(tmp_path / "px.csv")
     thesis = _write_thesis(tmp_path / "t.json")

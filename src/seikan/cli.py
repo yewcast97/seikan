@@ -765,7 +765,9 @@ def _cmd_run(args: argparse.Namespace) -> int:
         # different document rather than as a different answer, and "no column was bound, so the
         # file named its own" is a fact about the run worth stating out loud. The sha256 is looked
         # up BY PATH on purpose — it is a property of the file's bytes, so two keys answered by one
-        # file correctly share one digest while keeping their own column.
+        # file correctly share one digest while keeping their own column — the loader reads each
+        # distinct path once (`dataio.StrictCsvReader`), so every key bound to it measured the
+        # bytes that digest names.
         digest_by_path = {f["path"]: f["sha256"] for f in result.data_report.get("files", [])}
         doc["identity"] = {
             "name": payload["name"],

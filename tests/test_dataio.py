@@ -235,6 +235,28 @@ def test_file_is_read_exactly_once(tmp_path, monkeypatch):
     )
 
 
+def test_a_reader_measures_one_snapshot_of_each_path(tmp_path):
+    # A load binding one file under several keys reads it through one StrictCsvReader: every
+    # planned read of the path parses the FIRST read's bytes — a rewrite in between changes
+    # nothing they measure or the digest they report — each under its own role and expected
+    # shape, so a series file bound as a target admits while the same bytes bound where an
+    # OHLCV file is expected refuse. Past its plan a path is read afresh: no snapshot outlives
+    # the reads it was kept for.
+    path = _write(tmp_path, "datetime,pe\n2021-01-01,12.5\n2021-01-02,13.0\n")
+    reader = dataio.StrictCsvReader([path, path, path])
+    df1, rep1 = reader.read(path, role="target:A")
+    _write(tmp_path, "datetime,pe\n2021-01-01,99.0\n2021-01-02,98.0\n")
+    df2, rep2 = reader.read(path, role="target:B")
+    _df, rep3 = reader.read(path, role="benchmark", expected_shape="ohlcv")
+    assert rep1.ok and rep2.ok and df1 is not None and df2 is not None
+    pd.testing.assert_frame_equal(df1, df2)
+    assert rep1.sha256 == rep2.sha256 == rep3.sha256
+    assert not rep3.ok and "shape_mismatch" in {e["code"] for e in rep3.errors}
+    assert (rep1.role, rep2.role, rep3.role) == ("target:A", "target:B", "benchmark")
+    df4, rep4 = reader.read(path)
+    assert rep4.sha256 != rep1.sha256 and df4 is not None and df4["pe"].iloc[0] == 99.0
+
+
 def test_sha256_equals_digest_of_the_parsed_bytes(tmp_path):
     import hashlib
 
