@@ -529,7 +529,11 @@ def _event_anchor(event: Condition, md: MarketData) -> npt.NDArray[np.int64]:
 
 
 def _derived_latch_at(
-    arr: np.ndarray, s_idx: npt.NDArray[np.int64], value: pd.DataFrame, init: pd.DataFrame
+    arr: np.ndarray,
+    s_idx: npt.NDArray[np.int64],
+    unknown: npt.NDArray[np.bool_],
+    value: pd.DataFrame,
+    init: pd.DataFrame,
 ) -> npt.NDArray[np.bool_]:
     """:func:`_derived_latch` for a node whose value at ``t`` reads its input FROM the event bar
     ``s(t)`` on — ``event_value``'s snapshot ``x[s]``, ``event_agg``'s run ``x[s .. t]``: the
@@ -544,13 +548,18 @@ def _derived_latch_at(
     late member from its first own bar off a value read before it — where the same predicate
     captured at the event, ``event_value(E, mask(cross_agg(X, mean) > 0))``, never fires. For an
     input whose init is its own finiteness latch this IS :func:`_derived_latch` (a finite value
-    read at ``s`` means the input was initialized there)."""
+    read at ``s`` means the input was initialized there).
+
+    Where ``unknown`` (E initialized, its anchor unknowable after a hole) there is no event bar
+    to read, so the input's init is read at ``t``: initialized there, some reading of the hole
+    found it initialized at the hidden event, and the bar is a hole; still warming, it is warming
+    under every reading, and the member stays in warmup."""
     at = s_idx >= 0
     s = np.maximum(s_idx, 0)
     i = init.to_numpy(dtype=bool)
     init_s = np.take_along_axis(i, s, axis=0) & at
     pending_s = np.take_along_axis(i & ~_latch(value.to_numpy(dtype=float)), s, axis=0) & at
-    return _latch_mask(np.isfinite(arr) & init_s) | _latch_mask(pending_s)
+    return _latch_mask(np.isfinite(arr) & init_s) | _latch_mask(pending_s | (unknown & i))
 
 
 def _init_at_lag(init: pd.DataFrame, periods: int) -> pd.DataFrame:
@@ -839,8 +848,9 @@ def _build_series(node: Series, md: MarketData) -> tuple[pd.DataFrame, pd.DataFr
         #                    init = full(C) — warmup until then, a hole after (ledger)
         # bars_since_event:  warmup / no event yet → NaN, not init | hole in E → NaN, init, until
         #                    the next event | 0 on the event bar | t − s after
-        # event_value:       as above; x[t] on the event bar (NaN input there → NaN until the next
-        #                    event) | x[s] held after (later holes in x irrelevant)
+        # event_value:       as above, a hole in E init only where x is; x[t] on the event bar (NaN
+        #                    input there → NaN until the next event) | x[s] held after (later
+        #                    holes in x irrelevant)
         # event_agg:         as above; x[t] on the event bar | agg over [s, t] after; any NaN in
         #                    the window poisons until the next event; overflow → NaN
         case Mask(condition=c):
@@ -865,9 +875,15 @@ def _build_series(node: Series, md: MarketData) -> tuple[pd.DataFrame, pd.DataFr
             cv, ci, cd_ = condition_arrays(ev, md)
             sig = cv & ci & cd_
             s_idx, known = _event_anchor_known(ev, md)
+            # The standard latch OR'd with "the anchor became unknowable after warmup": a hole in
+            # E BEFORE the first event (a domain NaN no raw-leaf panel sees) reads as a hole, never
+            # as silent warmup — here and in every series computed from the node, whose
+            # ``_derived_latch`` initializes on an input initialized with no value yet. A snapshot
+            # takes the arm only where its input is initialized (``_derived_latch_at``).
+            unknown = ci & ~known
             if isinstance(node, BarsSinceEvent):
                 arr = nb.bars_since_event_apply_nb(s_idx)
-                latch = _latch(arr)
+                init = _latch(arr) | _latch_mask(unknown)
             else:
                 xv, xi = build_series(node.input, md)
                 x = xv.to_numpy(dtype=float)
@@ -875,13 +891,7 @@ def _build_series(node: Series, md: MarketData) -> tuple[pd.DataFrame, pd.DataFr
                     arr = nb.event_value_apply_nb(x, s_idx)
                 else:
                     arr = nb.event_agg_apply_nb(sig, ci, cd_, x, node.agg)
-                latch = _derived_latch_at(arr, s_idx, xv, xi)
-            # The standard latch OR'd with "the anchor became unknowable after warmup": a hole in
-            # E BEFORE the first event (a domain NaN no raw-leaf panel sees) reads as a hole, never
-            # as silent warmup — here and in every series computed from the node, whose
-            # ``_derived_latch`` initializes on an input initialized with no value yet. Strictly
-            # more refusals than the plain latch, never fewer.
-            init = latch | _latch_mask(ci & ~known)
+                init = _derived_latch_at(arr, s_idx, unknown, xv, xi)
             return _df(arr, md), _df(init, md)
         case Native(name=name, expr=expr):
             # Evaluate on the feed's own prints, THEN anchor — a shared feed's result broadcasts

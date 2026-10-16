@@ -228,9 +228,10 @@ def _ref_init(node, df) -> np.ndarray:
     turns finite on a bar where every Series it is computed from is initialized. ``mask`` carries
     its condition's FULLY-initialized mask; an event node additionally latches where its anchor
     became unknowable after warmup (a post-warmup hole in the event condition before the first
-    event is a hole, not warmup). A Series computed from others also initializes where every
-    input is initialized and one of them has never had a value yet — that stretch is the input's
-    hole, ledgered by its readers rather than absorbed as their warmup."""
+    event is a hole, not warmup), a snapshot only where its input is initialized too. A Series
+    computed from others also initializes where every input is initialized and one of them has
+    never had a value yet — that stretch is the input's hole, ledgered by its readers rather than
+    absorbed as their warmup."""
     if node.type in _LEAF_ALWAYS_INIT:
         return np.ones(len(df), dtype=bool)
     if node.type == "mask":
@@ -261,7 +262,7 @@ def _ref_init(node, df) -> np.ndarray:
     if node.type in _EVENT_NODES:
         v, i, d = _ref_cond_channels(node.event, df)
         _s, known = ref.event_anchor(v & i & d, i, d)
-        latch |= np.maximum.accumulate((i & ~known).astype(np.int8)).astype(bool)
+        latch |= ever(i & ~known & all_init)
     return latch
 
 
@@ -2376,6 +2377,48 @@ def test_an_event_snapshot_of_a_broadcast_initializes_where_its_event_bar_was():
     np.testing.assert_array_equal(i2[:, 2], np.arange(n) >= 50)
 
 
+@pytest.mark.parametrize("snapshot", [EventValue, EventAgg])
+def test_an_unknown_anchor_cannot_initialize_a_snapshot_whose_input_has_not_started(snapshot):
+    # E = log(e) > 0.4 fires on bar 10, and a domain NaN on bar 5 (log(-1)) leaves its anchor
+    # unknowable over 5..9. T2/T3's own input starts at bar 40, so the bar-10 snapshot of the
+    # breadth broadcast into them was taken during their warmup. The unknown-anchor arm
+    # initialized them from bar 5 anyway, and that snapshot fired them on 70 bars each where the
+    # hole-free run never fires them. Under every reading of the hole their input still warmed,
+    # so they stay in warmup; T0/T1, whose input was live, ledger the stretch.
+    n = 80
+    bars = np.arange(n)
+    late = np.r_[np.full(40, np.nan), np.full(40, 3.0)]
+    e = np.ones(n)
+    e[10] = 2.0
+    holed = e.copy()
+    holed[5] = -1.0
+    event = ThresholdCondition(
+        left=UnaryOp(input=External(name="e"), op="log"), op=">", right=Constant(value=0.4)
+    )
+    kw = {"agg": "max"} if snapshot is EventAgg else {}
+    node = snapshot(event=event, input=CrossAgg(input=_X, agg="mean"), **kw)
+    cond = ThresholdCondition(left=node, op=">", right=Constant(value=0.0))
+
+    def run(feed):
+        md = _mdk(n, x=[1.0, 3.0, late, late], e=[feed] * 4)
+        init = vz.build_series(node, md)[1].to_numpy()
+        return init, vz.signal(cond, md).to_numpy(), vz.undefined_mask(cond, md)
+
+    init, sig, undefined = run(holed)
+    np.testing.assert_array_equal(sig[:, 2:], run(e)[1][:, 2:])
+    assert not (sig[:, 2:].any() or init[:, 2:].any() or undefined[:, 2:].any())
+    for t in (0, 1):
+        np.testing.assert_array_equal(init[:, t], bars >= 5)
+        np.testing.assert_array_equal(undefined[:, t], (bars >= 5) & (bars < 10))
+        np.testing.assert_array_equal(sig[:, t], bars >= 10)
+    # an event after their input started initializes them there
+    holed[50] = 2.0
+    init, sig, undefined = run(holed)
+    np.testing.assert_array_equal(init[:, 2], bars >= 50)
+    np.testing.assert_array_equal(sig[:, 2], bars >= 50)
+    assert not undefined[:, 2].any()
+
+
 def test_a_lagged_read_of_a_broadcast_waits_for_the_bar_it_reads():
     # `_init_at_lag`: T3's own `x` starts at bar 6 and T3 is decided ineligible at bar 5, so the
     # breadth broadcast into T3 is 2.0 on bars 0..4 and NaN on bar 5 — all before T3's init. A
@@ -2655,8 +2698,9 @@ def test_event_agg_parity(agg):
 
 
 def test_event_node_init_channel_parity():
-    # The reference init (the standard latch OR "anchor became unknowable post-warmup", and the
-    # condition's full init for mask) must match the builder's init frame, hole cases included.
+    # The reference init (the standard latch OR "anchor became unknowable post-warmup", for a
+    # snapshot where its input is initialized, and the condition's full init for mask) must match
+    # the builder's init frame, hole cases included.
     df = _ev_fixture(hole_at=(3, 4, 60))
     md = _md(df, externals=("z",))
     for node in (

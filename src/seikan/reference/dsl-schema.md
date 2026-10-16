@@ -571,7 +571,8 @@ Definitions shared by every node:
 - After a post-warmup **hole** in `E` (a bar `E` could not decide — a missing decision input) the
   anchor is UNKNOWN until the next defined event: the node reads NaN while initialized, a threshold
   over it is undefined, and the bars land in the cell's `signal_coverage` ledger (which the
-  checklist refuses) — never a silent False.
+  checklist refuses) — never a silent False. A snapshot (`event_value`, `event_agg`) whose input
+  is still in warmup stays in warmup: under every reading of the hole its input had not started.
 - Every node is a deterministic, causal function of `E`'s history and the input through `t` —
   the same class of signal-side state `first_true`, `ema` and the expanding extrema carry. No
   fill, no P&L, no position, no future bar: observer purity is untouched.

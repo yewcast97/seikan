@@ -745,8 +745,9 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   (`rolling`, `first_true`, the event nodes) still see the live branch's firings. A Series
   computed from other Series initializes only at a finite value on a bar where every input is
   initialized (for a lagged read — `shift`, `change` — where the bar it reads back to was; for an
-  event snapshot — `event_value`, `event_agg` — where its event bar was, so a value an input
-  carried during its own warmup never becomes usable without a new event), or
+  event snapshot — `event_value`, `event_agg` — where its event bar was, or the current bar while
+  a hole leaves that bar unknown, so a value an input carried during its own warmup never becomes
+  usable without a new event), or
   where every input is initialized and one has no value yet (an event node whose anchor became
   unknowable before its first event, a mask undecided on its first live bar — a hole it then
   ledgers, as the input's direct readers do, never its own warmup): identical to its own
