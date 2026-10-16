@@ -758,6 +758,8 @@ def test_external_feed_string_lag_reads_exactly(lag, ns):
         ("1M", "is not a duration"),
         ("-1h", ">= 0"),
         ("106752 days", "past the clock's range"),
+        # a fraction past the double range: its message's float() raised OverflowError (exit 4)
+        ("9" * 400 + ".5ns", "past the clock's range"),
     ],
 )
 def test_external_feed_string_lag_refuses_what_it_cannot_read_exactly(lag, match):

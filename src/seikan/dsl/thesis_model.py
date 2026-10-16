@@ -126,16 +126,18 @@ def _string_lag_ns(lag: str) -> int:
         pos = term.end()
         if pos == len(text):
             break
+    # The range first: the fraction's message below formats ``float(total)``, which raises
+    # OverflowError past the double range (a 400-digit lag escaped as an internal error).
+    if total > _MAX_LAG_NS:
+        raise ValueError(
+            f"external feed lag {lag!r} is past the clock's range (at most {_MAX_LAG_NS} ns, "
+            "~292 years)"
+        )
     if total.denominator != 1:
         raise ValueError(
             f"external feed lag {lag!r} is not a whole number of nanoseconds "
             f"({float(total)!r} ns): the clock is nanosecond resolution, and the rest would be "
             f"truncated into another lag ({int(total)} ns) — round it"
-        )
-    if total > _MAX_LAG_NS:
-        raise ValueError(
-            f"external feed lag {lag!r} is past the clock's range (at most {_MAX_LAG_NS} ns, "
-            "~292 years)"
         )
     return int(total)
 
