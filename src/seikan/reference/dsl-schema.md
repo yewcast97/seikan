@@ -279,7 +279,8 @@ Leaves:
 - `{"type": "constant", "value": 1.23}` — `value` may also be a **list** to sweep the threshold as
   its own axis (like a transform-window sweep); then `name` is **required** to label it, e.g.
   `{"type": "constant", "value": [-0.20, -0.30, -0.40], "name": "dd_thresh"}`. The `name` must be
-  unique and not `target`/`horizon`/a trade-or-feature column. Or `{"axis": "<name>"}` to read a
+  unique and not `target`/`horizon`/`timestamps` (the engine's own names — `timestamps` is the
+  firing list of each `list_entries` row)/a trade-or-feature column. Or `{"axis": "<name>"}` to read a
   shared axis (no `name` then — the axis is already labelled). A SCALAR or axis-referencing
   `value` refuses a `name`: execution never reads it, so it would move the hash without moving
   the measurement.
@@ -759,7 +760,7 @@ thesis never meant — where the thesis has ONE parameter `N` and two hypotheses
   `rolling_corr`'s ≥ 3 window, a `rolling(count)` window below its `min_count` — every value is
   re-validated against every referencing param — or that the param cannot hold exactly: an int
   read by a float param past 2**53 can round, and `[2**63 − 1, 2**63]` into `constant.value` would
-  run one threshold under two labels); an axis named `target`/`horizon`, a trade or
+  run one threshold under two labels); an axis named `target`/`horizon`/`timestamps`, a trade or
   feature column, an auto-named axis present in the tree (`ema_window`), or a swept constant's
   `name`; a reference inside `params.features` (features are scalar); and `params.horizon`
   never reads a shared axis (it is its own axis by construction). An axis of length one is

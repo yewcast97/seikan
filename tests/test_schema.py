@@ -3168,10 +3168,26 @@ def test_axes_key_hygiene(name):
         Thesis.model_validate(_axes_doc(_beta_entry({"axis": name}), {name: [20, 60]}))
 
 
-@pytest.mark.parametrize("name", ["target", "horizon"])
+@pytest.mark.parametrize("name", ["target", "horizon", "timestamps"])
 def test_axis_name_reserved_refused(name):
     with pytest.raises(ValidationError, match=f"sweep axis name '{name}' is reserved"):
         Thesis.model_validate(_axes_doc(_beta_entry({"axis": name}), {name: [20, 60]}))
+
+
+def test_swept_constant_named_timestamps_is_refused_at_parse():
+    # The review's sweep: list_entries writes each row as {**combo, "target", "timestamps"}, so a
+    # swept constant named `timestamps` had its cutoff overwritten by the firing list — two rows
+    # left with no cutoff to tell them apart. The name is reserved, refused at parse (exit 3).
+    entry = _SIMPLE_ENTRY | {
+        "right": {"type": "constant", "name": "timestamps", "value": [90.0, 105.0]}
+    }
+    with pytest.raises(ValidationError, match="sweep axis name 'timestamps' is reserved"):
+        Thesis.model_validate(_th(entry))
+    # a feature of that name writes no list_entries row: it stays a legal name
+    Thesis.model_validate(
+        _th(_SIMPLE_ENTRY)
+        | {"params": {"features": {"timestamps": {"type": "field", "column": "close"}}}}
+    )
 
 
 @pytest.mark.parametrize("name", ["ret", "vol_14", "is_open"])

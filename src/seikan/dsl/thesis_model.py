@@ -659,11 +659,12 @@ class Thesis(_Strict):
 
     @model_validator(mode="after")
     def _check_sweep_axis_names(self) -> Thesis:
-        # The runner's vectorize.collect_sweeps rejects reserved (target/horizon) and duplicate
-        # sweep-axis names, and the runner rejects trade/feature-column collisions — but both fire
-        # only AFTER a data load, surfacing as exit 4 (internal). Reproduce the SAME refusals here,
-        # at parse time (exit 3), off the exact axis names the engine will assign. The runtime
-        # checks stay as library-boundary backstops for a model_construct-built thesis.
+        # The runner's vectorize.collect_sweeps rejects reserved (target/horizon/timestamps) and
+        # duplicate sweep-axis names, and the runner rejects trade/feature-column collisions — but
+        # both fire only AFTER a data load, surfacing as exit 4 (internal). Reproduce the SAME
+        # refusals here, at parse time (exit 3), off the exact axis names the engine will assign.
+        # The runtime checks stay as library-boundary backstops for a model_construct-built
+        # thesis.
         # Shared axes are in the folded list under their declared names (once each), so the
         # reserved / duplicate / column scans below cover them with no new logic.
         names = _iter_sweep_axis_names(self.entry, self.axes)
@@ -672,7 +673,8 @@ class Thesis(_Strict):
             if lvl in RESERVED_SWEEP_LEVELS:
                 raise ValueError(
                     f"sweep axis name {lvl!r} is reserved (the engine names the target and horizon "
-                    f"axes itself); rename the swept constant's 'name' or the shared axis"
+                    f"axes itself, and list_entries the firing list 'timestamps' of each row); "
+                    f"rename the swept constant's 'name' or the shared axis"
                 )
             if lvl in seen:
                 raise ValueError(

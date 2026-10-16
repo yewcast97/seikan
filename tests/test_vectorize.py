@@ -1062,7 +1062,7 @@ def test_collect_sweeps_rejects_duplicate_axis_name():
         vz.collect_sweeps(entry)
 
 
-@pytest.mark.parametrize("reserved", ["target", "horizon"])
+@pytest.mark.parametrize("reserved", ["target", "horizon", "timestamps"])
 def test_collect_sweeps_rejects_reserved_axis_name(reserved):
     entry = ThresholdCondition(
         left=Field(column="close"), op=">", right=Constant(value=[1, 2], name=reserved)
@@ -3549,7 +3549,7 @@ def test_collect_sweeps_shared_axis_colliding_with_auto_axis_refused():
         vz.collect_sweeps(entry, {"ema_window": [5, 6]})
 
 
-@pytest.mark.parametrize("reserved", ["target", "horizon"])
+@pytest.mark.parametrize("reserved", ["target", "horizon", "timestamps"])
 def test_collect_sweeps_shared_axis_reserved_name_refused(reserved):
     with pytest.raises(ValueError, match=f"sweep axis name '{reserved}' is reserved"):
         vz.collect_sweeps(_beta_tree(reserved), {reserved: [20, 60]})

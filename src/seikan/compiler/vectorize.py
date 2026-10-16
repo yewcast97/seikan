@@ -328,12 +328,12 @@ def _make_resolver(on_sweep: _SweepCallback, axes: Axes | None = None) -> _Param
     return cast("_ParamResolver", resolve)
 
 
-# Level names a swept constant must not take: structural names the runner adds/uses downstream
+# Level names a swept constant must not take: structural names the engine adds/uses downstream
 # (``"target"`` is the trades-frame target column; ``"horizon"`` is appended when the measurement
-# horizon is swept). Collisions among sweep axes (constant↔constant or constant↔transform) corrupt
-# the per-combo counting silently, so they are rejected here — the single point where every entry
-# level name is known. (Trade-column / feature-name collisions are caught in the runner, which owns
-# those names.)
+# horizon is swept; ``"timestamps"`` is each ``list_entries`` row's firing list). Collisions among
+# sweep axes (constant↔constant or constant↔transform) corrupt the per-combo counting silently, so
+# they are rejected here — the single point where every entry level name is known. (Trade-column /
+# feature-name collisions are caught in the runner, which owns those names.)
 _RESERVED_LEVELS = RESERVED_SWEEP_LEVELS
 
 

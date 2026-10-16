@@ -31,15 +31,17 @@ TRADE_COLUMNS: tuple[str, ...] = (
     "is_open",
 )
 
-#: The sweep-axis levels the engine names itself (``target`` is the regime column, ``horizon`` the
-#: measurement axis). A swept constant may not claim either.
-RESERVED_SWEEP_LEVELS: frozenset[str] = frozenset({"target", "horizon"})
+#: The names the engine writes beside a combo's sweep levels: ``target`` (the regime column) and
+#: ``horizon`` (the measurement axis) in the trades frame and the cell params, and ``timestamps``
+#: (the firing list) in each ``list_entries`` row ``{**combo, target, timestamps}``. A swept
+#: constant or shared axis may not claim one — the row would overwrite its value.
+RESERVED_SWEEP_LEVELS: frozenset[str] = frozenset({"target", "horizon", "timestamps"})
 
-#: Names a ``params.features`` key may not take: the reserved sweep levels plus every trade
-#: column. Features are written into the trades frame beside the engine's own columns, so a
-#: collision either overwrites evidence or duplicates a column name (a duplicate makes
-#: ``trades["ret"]`` a DataFrame and the statistics read a 2-D array).
-RESERVED_FEATURE_NAMES: frozenset[str] = RESERVED_SWEEP_LEVELS | frozenset(TRADE_COLUMNS)
+#: Names a ``params.features`` key may not take: ``target``, ``horizon`` and every trade column.
+#: Features are written into the trades frame beside the engine's own columns, so a collision
+#: either overwrites evidence or duplicates a column name (a duplicate makes ``trades["ret"]`` a
+#: DataFrame and the statistics read a 2-D array).
+RESERVED_FEATURE_NAMES: frozenset[str] = frozenset({"target", "horizon", *TRADE_COLUMNS})
 
 #: The default entry-time feature snapshot names ``compiler.runner._FEATURE_NODES`` builds when
 #: ``params.features`` is unset (short/medium momentum + realized vol). Declared here so
