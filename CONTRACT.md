@@ -282,12 +282,15 @@ recurrence and pool read that divides by it, a `native` feed's prints are their 
 leaf, the rotation null judges ties within the FFT's rounding, the `cross_mean` pooled mean and
 the bootstrap, era, episode and HAC reads beside it keep its zero-excess identities exactly, and
 `cross_breadth`'s `k` counts the members a kernel actually reduced over; later review rounds
-corrected more — among them correctly rounded CSV values, exactly rounded graded means, a HAC
-summed per bar, exact `cross_mean` and `event_agg` sums (every `cross_mean` bar-closed sum the
-bar's exact excess sum), window, pool and `cross_mean` excess moments about their own offset,
-warmup that follows the bars a lagged or snapshot operand reads, cross-sections that enter only
-initialized inputs and labels, a rotation transform run in a unit frame, an overflow-safe
-median, and clock arithmetic in exact ticks)
+corrected more — among them correctly rounded CSV values, exactly rounded graded means and the
+decision-side means beside them (`rolling_agg` / `cross_agg` `mean` and the cross-section
+centre), a HAC summed per bar about the pool's offset, exact `cross_mean` and `event_agg` sums
+(every `cross_mean` bar-closed sum the bar's exact excess sum), window, pool and `cross_mean`
+excess moments about their own offset, the regression's alpha on the exact leg means, an EW
+z-score on a compensated mean, correlations clipped to their range, warmup that follows the
+bars a lagged or snapshot operand reads, cross-sections that enter only initialized inputs and
+labels, a rotation transform run in a unit frame, an overflow-safe median, and clock arithmetic
+in exact ticks)
 names the engine's estimator revision the same way.
 
 The summary is a GRID, not a headline. Run-level keys are geometry and provenance only —
