@@ -3,9 +3,9 @@
 The root condition's ``defined`` channel answers "was the condition DECIDED?", which is strictly
 weaker than "did the observer have its inputs?" — a hole is absorbed wherever every completion of
 it decides the node the same way (a decisive sibling settles the root, Kleene F∧U = F; a
-``first_true`` hole whose completions re-converge before they disagree on any fire), and a
-NaN-skipping recursive kernel carries state across a hole and emits a finite value after it.
-These functions read the raw leaves DIRECTLY, so no operator sits between a hole and the count;
+``first_true`` hole whose completions re-converge before they disagree on any fire), and one
+inside a windowed transform's warmup only delays its first value. These functions read the raw
+leaves DIRECTLY, so no operator sits between a hole and the count;
 the runner mounts the result as the run-level ``summary["sources"]`` panel.
 """
 
@@ -47,8 +47,8 @@ def _print_ledger(prints: pd.Series, index: pd.DatetimeIndex) -> tuple[np.ndarra
     that print arrives at (a print stamped ``s`` arrives at the first bar stamped at-or-after
     ``s``) — leading non-finite prints are the feed's warmup, never holes. From there, ``hole``
     marks every bar whose interval ``(previous bar, bar]`` absorbed a non-finite print: the prints
-    the bar-clock asof read collapses away (only an interval's LAST print reaches a bar) and a
-    NaN-skipping kernel bridges. The first bar's interval is the whole history before it: a native
+    the bar-clock asof read collapses away (only an interval's LAST print reaches a bar). The first
+    bar's interval is the whole history before it: a native
     read consumes every print — feeds are not sliced by ``data.start`` — so a NaN print stamped
     before the evaluated interval is one the evaluation consumed, like one inside it. The ledger
     does not model how far back the expression reaches (a windowed expression may never read an
@@ -89,9 +89,8 @@ def source_availability(thesis: Thesis, md: MarketData) -> dict[str, LeafMasks]:
     root condition: the root's three-valued ``defined`` channel is masked wherever every completion
     of a hole decides the node the same way — an operand settled by a decisive sibling (Kleene
     ``F∧U = F``), a ``first_true`` hole whose completions re-converge before they disagree on any
-    fire — and a NaN-skipping recursive kernel (EMA, expanding max/min, ``bars_since_extremum``)
-    silently carries state across a hole and emits a FINITE value afterwards, so a hole can alter
-    later decisions while leaving the root fully decided.
+    fire — and a hole inside a windowed transform's warmup only delays its first value: either way
+    the root reads no undecided bar while an input is missing.
 
     "Available" is the finiteness of the JOINED per-bar value, which is what the decision
     actually reads. For an external feed that is the post-asof-ffill value, so ordinary sparse

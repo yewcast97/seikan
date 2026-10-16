@@ -218,10 +218,11 @@ def _check_source_coverage(s: Mapping[str, object], t: GateThresholds) -> GateCh
       missing is the input itself, which "was the condition decided?" cannot record. A NaN computed
       INSIDE the expression (``log`` of a non-positive value, ``x/0``) is no raw leaf's: absorbed,
       it moves no decision and is ledgered nowhere.
-    - **Recursive kernels launder state.** ``ema``/``zscore_ema``/expanding aggregates/
-      ``bars_since_extremum`` SKIP NaNs and carry their running state across a hole, then emit a
-      finite value on the next bar. Definedness is minted at the threshold comparison from
-      operand finiteness, so the contaminated value reads as perfectly decided.
+    - **A warmup steps over it.** A hole inside a windowed transform's warmup leaves its windows
+      NaN a while longer, so the series initializes later and the bars between read as warmup,
+      never undecided. (A transform that carries state across bars — ``ema``, ``zscore_ema``, the
+      expanding extrema — has no value from a hole in its input on, so the root reads that hole
+      undecided and ``signal_coverage`` refuses it as well.)
 
     Counting availability at the source puts no operator between the hole and the count. A source
     that merely STARTS LATE is warmup, not a hole (its ``first_available`` is reported as
@@ -359,7 +360,7 @@ def _check_source_coverage(s: Mapping[str, object], t: GateThresholds) -> GateCh
                 unmet.append(
                     f"{tgt}: decision input {label} is missing on {n_miss} of {s_bars} bar(s) "
                     "of the evaluated interval — a hole under the decision inputs suppresses "
-                    "firings (and can survive a decisive sibling or a NaN-skipping transform), "
+                    "firings (and can survive a decisive sibling or a transform's warmup), "
                     f"so adverse firings may have been deleted; {remedy}"
                 )
         if by_source is not None and s_missing > per_source_total:

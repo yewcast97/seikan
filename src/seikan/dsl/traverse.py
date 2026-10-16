@@ -506,9 +506,9 @@ def iter_source_leaves(node: Condition) -> Iterator[tuple[str, str]]:
     three-valued ``defined`` channel reports whether the ROOT condition was decidable, which
     absorption can mask (every completion of a hole decides the node the same way: a decisive
     sibling, Kleene ``F∧U = F``; a ``first_true`` hole whose completions re-converge before they
-    disagree on any fire) and which a NaN-skipping recursive kernel (EMA, expanding aggregates)
-    can launder into a finite value on a later bar. Availability is read at the SOURCE instead,
-    where no operator can absorb it.
+    disagree on any fire) and which a windowed transform's warmup can step over (a hole there
+    only delays its first value). Availability is read at the SOURCE instead, where no operator
+    can absorb it.
 
     ``Constant`` and ``Calendar`` are excluded — both are total by construction (a constant is
     finite by validation, a calendar attribute is a property of the index itself)."""

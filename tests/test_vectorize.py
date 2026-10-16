@@ -114,7 +114,9 @@ def _c(df, name):
 # ``build_condition`` computes it. Two warmup rules hold at EVERY condition node: a warming node
 # has no truth value (``_ref_cond`` is gated by ``_ref_cond_init``), and whatever negates a
 # condition — ``not``, ``mask`` — is initialized only where every condition under it is
-# (``_ref_full``), since ``or`` initializes on ANY branch.
+# (``_ref_full``), since ``or`` initializes on ANY branch. A transform carrying state across
+# bars has no value past a hole in its input (``_ref_dead``), whatever its NaN-skipping kernel
+# would carry on.
 
 
 def _ref_unary(arr: np.ndarray, op: str) -> np.ndarray:
@@ -136,6 +138,30 @@ def _ref_unary(arr: np.ndarray, op: str) -> np.ndarray:
 
 
 def _ref_series(node, df) -> np.ndarray:
+    out = _ref_series_raw(node, df)
+    if _ref_stateful(node):
+        out = np.where(_ref_dead(node, df), np.nan, out)
+    return out
+
+
+def _ref_stateful(node) -> bool:
+    """The transforms whose value reads every input bar since the input's init: the EW
+    recursions and the expanding extrema (``window`` omitted)."""
+    if node.type == "ema":
+        return True
+    if node.type == "zscore":
+        return node.mean_type == "ema"
+    expanding = ("rolling_agg", "drawdown", "runup", "bars_since_extremum")
+    return node.type in expanding and node.window is None
+
+
+def _ref_dead(node, df) -> np.ndarray:
+    """A stateful node's bars from its input's first post-init hole on."""
+    hole = _ref_init(node.input, df) & np.isnan(_ref_series(node.input, df))
+    return np.maximum.accumulate(hole.astype(np.int8)).astype(bool)
+
+
+def _ref_series_raw(node, df) -> np.ndarray:
     t = node.type
     if t == "field":
         return _c(df, node.column)
@@ -231,7 +257,8 @@ def _ref_init(node, df) -> np.ndarray:
     event is a hole, not warmup), a snapshot only where its input is initialized too. A Series
     computed from others also initializes where every input is initialized and one of them has
     had no value since its init — that stretch is the input's hole, ledgered by its readers
-    rather than absorbed as their warmup."""
+    rather than absorbed as their warmup. A stateful node (:func:`_ref_stateful`) is NaN and
+    initialized from its input's first post-init hole on (:func:`_ref_dead`)."""
     if node.type in _LEAF_ALWAYS_INIT:
         return np.ones(len(df), dtype=bool)
     if node.type == "mask":
@@ -259,6 +286,8 @@ def _ref_init(node, df) -> np.ndarray:
             all_init = all_init & child_init
             pending = pending | (child_init & ~child_seen)
     latch = ever(live & all_init) | ever(all_init & pending)
+    if _ref_stateful(node):
+        latch |= _ref_dead(node, df)
     if node.type in _EVENT_NODES:
         v, i, d = _ref_cond_channels(node.event, df)
         _s, known = ref.event_anchor(v & i & d, i, d)
@@ -1768,6 +1797,116 @@ def test_threshold_with_inf_operand_is_undefined():
     np.testing.assert_array_equal(init2, [False, True, True])
 
 
+# ---- a stateful transform has no value past a hole in its input ----------------------------
+
+
+_EXPANDING_MAX_OF_MASK = ThresholdCondition(
+    left=RollingAgg(
+        input=Mask(
+            condition=ThresholdCondition(
+                left=UnaryOp(input=External(name="x"), op="log"), op=">", right=Constant(value=0.0)
+            )
+        ),
+        window=None,
+        agg="max",
+    ),
+    op="<",
+    right=Constant(value=0.5),
+)
+
+
+def test_a_domain_hole_under_an_expanding_max_is_undecided_from_there_on():
+    # The review's case: `expanding_max(mask(log(x) > 0)) < 0.5` over x = 1 but on bar 100. A 1
+    # reads mask 0 there and fires on all 160 bars; a 2 lifts the running max to 1 and stops it.
+    # A −1 is log's domain NaN — no raw leaf's hole — and the expanding max carried its 0.0 across
+    # it: 160 firings, nothing undefined, every check met. The completions disagree from bar 100
+    # on, so those bars are undecided, never a firing.
+    bars = np.arange(160)
+
+    def run(z):
+        x = np.ones(160)
+        x[100] = z
+        md = _hole_md(x)
+        return (
+            vz.signal(_EXPANDING_MAX_OF_MASK, md).to_numpy().ravel(),
+            vz.undefined_mask(_EXPANDING_MAX_OF_MASK, md).ravel(),
+        )
+
+    fired, undefined = run(1.0)
+    assert fired.all() and not undefined.any()
+    fired, undefined = run(2.0)
+    np.testing.assert_array_equal(fired, bars < 100)
+    assert not undefined.any()
+    fired, undefined = run(-1.0)
+    np.testing.assert_array_equal(fired, bars < 100)
+    np.testing.assert_array_equal(undefined, bars >= 100)
+
+
+def test_stateful_transforms_parity_with_reference_over_holes(ohlcv):
+    # The oracle's hole rule (`_ref_dead`) against the builder for every stateful kind, and a
+    # windowed reader of one: a feed that starts late (warmup, no hole) and holes on bars 60 and
+    # 140 — each kernel skips them and reads finite after.
+    df = ohlcv.copy()
+    px = 100.0 + np.random.RandomState(5).randn(len(df)).cumsum()
+    px[:4] = np.nan
+    px[[60, 140]] = np.nan
+    df["_ext_px"] = px
+    x = External(name="px")
+    md = _md(df, externals={"px"})
+    for node in (
+        EMA(input=x, window=10),
+        EMA(input=x, alpha=0.3),
+        ZScore(input=x, window=8, mean_type="ema"),
+        RollingAgg(input=x, window=None, agg="max"),
+        Drawdown(input=x, window=None),
+        Runup(input=x, window=None),
+        BarsSinceExtremum(input=x, window=None, extremum="min"),
+        RollingAgg(input=EMA(input=x, window=5), window=3, agg="mean"),
+    ):
+        v, i = (f["t"].to_numpy() for f in vz.build_series(node, md))
+        np.testing.assert_allclose(v, _ref_series(node, df), rtol=1e-9, atol=1e-9, equal_nan=True)
+        np.testing.assert_array_equal(i, _ref_init(node, df), err_msg=node.type)
+        assert np.isnan(v[60:]).all() and i[60:].all()
+        _assert_cond(
+            ThresholdCondition(left=node, op=">", right=Constant(value=0.0)), df, externals={"px"}
+        )
+
+
+def test_a_hole_in_a_stateful_transforms_warmup_is_ledgered_not_warmup():
+    # `ema(x, 20)` over a hole on bar 5: the kernel skipped it and warmed on to bar 20 — the hole
+    # stretched its warmup unseen, and the value it then emitted carried its state across the
+    # hole. The node is initialized with no value from the hole on: a threshold over it is
+    # undecided there, and so is one over a series computed from it (an input with no value since
+    # its init).
+    x = np.arange(1.0, 41.0)
+    x[5] = np.nan
+    md = _hole_md(x)
+    bars = np.arange(40)
+    node = EMA(input=External(name="x"), window=20)
+    v, i = (f.to_numpy().ravel() for f in vz.build_series(node, md))
+    assert np.isnan(v).all()
+    np.testing.assert_array_equal(i, bars >= 5)
+    for series in (node, RollingAgg(input=node, window=3, agg="max")):
+        cond = ThresholdCondition(left=series, op=">", right=Constant(value=0.0))
+        np.testing.assert_array_equal(vz.undefined_mask(cond, md).ravel(), bars >= 5)
+
+
+def test_a_windowed_or_lagged_transform_is_decided_again_past_a_hole():
+    # A trailing window or a lag reads a bounded stretch of its input: only the bars that read the
+    # hole are undecided.
+    x = np.arange(1.0, 13.0)
+    x[5] = np.nan
+    md = _hole_md(x)
+    bars = np.arange(12)
+    for series, holed in (
+        (RollingAgg(input=External(name="x"), window=3, agg="max"), [5, 6, 7]),
+        (BarsSinceExtremum(input=External(name="x"), window=3, extremum="max"), [5, 6, 7]),
+        (Change(input=External(name="x"), periods=2, kind="diff"), [5, 7]),
+    ):
+        cond = ThresholdCondition(left=series, op=">", right=Constant(value=-1.0))
+        np.testing.assert_array_equal(vz.undefined_mask(cond, md).ravel(), np.isin(bars, holed))
+
+
 # ---- warmup has no truth value; negation waits for its whole operand -----------------------
 
 
@@ -3117,6 +3256,20 @@ def test_native_init_latches_on_the_print_clock(ohlcv, per_target):
     cond = ThresholdCondition(left=node, op=">", right=Constant(value=0.0))
     np.testing.assert_array_equal(vz.undefined_mask(cond, md)[:, 0], (bars >= 1) & (bars < 10))
     np.testing.assert_array_equal(vz.signal(cond, md)["t"].to_numpy(), bars >= 10)
+
+
+def test_native_stateful_transform_has_no_value_past_a_domain_hole(ohlcv):
+    # `ema(log(eps), 3)` on the print clock over one negative print: the kernel skipped log's NaN
+    # and read finite after it. The node has no value from that print on, initialized, so the
+    # bars it anchors to are holes; the bars before it are unchanged.
+    values = np.arange(1.0, 21.0)
+    values[10] = -1.0
+    md = _md(ohlcv, natives={"eps": _native_prints(ohlcv.index[:20], values)})
+    expr = EMA(input=UnaryOp(input=External(name="eps"), op="log"), window=3)
+    v, i = (f["t"].to_numpy() for f in vz.build_series(Native(name="eps", expr=expr), md))
+    np.testing.assert_allclose(v[:10], ref.ema(np.log(values[:10]), 3), rtol=1e-9, equal_nan=True)
+    assert np.isnan(v[10:]).all()
+    np.testing.assert_array_equal(i, np.arange(len(ohlcv)) >= 2)
 
 
 # ---- the cross-sectional population model: where / group ---------------------------------

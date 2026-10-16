@@ -40,9 +40,9 @@ The checks read the engine summary directly (the dict ``compile_thesis`` produce
   counts post-warmup UNDECIDABLE decision bars and any of them refuses. The run-level
   ``source_coverage`` closes what the root three-valued channel structurally cannot see (a hole
   every completion of which decides the node the same way — Kleene absorption, a ``first_true`` hole
-  whose completions re-converge before they disagree on any fire — and a NaN-skipping recursive
-  kernel laundering contaminated state into a finite value) by counting availability of the RAW
-  decision leaves. Together: deleting data can only ever REFUSE.
+  whose completions re-converge before they disagree on any fire — and a hole a windowed
+  transform's warmup steps over) by counting availability of the RAW decision leaves. Together:
+  deleting data can only ever REFUSE.
 - **Right-censoring at the data end is structural and ALLOWED.** With no holdout there is no
   embargo and no tail, so a trailing window running past the last bar is geometry, not a hole:
   ``open`` firings are legitimate everywhere. In-bounds NaN legs remain

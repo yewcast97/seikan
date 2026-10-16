@@ -222,7 +222,8 @@ class DaysSince(_Strict):
 
 
 class EMA(_Strict):
-    # Exponentially weighted mean of ``input``, seeded at the first finite value, NaN-skipping.
+    # Exponentially weighted mean of ``input``, seeded at the first finite value; no value from a
+    # hole in its input on (``vectorize._transform``).
     # EXACTLY ONE of ``window`` / ``alpha``: ``window`` sets ``alpha = 2/(window+1)`` with a
     # ``window``-observation warmup (the classic span form); ``alpha`` states the decay directly
     # (``2**-30 <= alpha <= 1`` — RiskMetrics 0.06; Wilder's 1/N smoother is ``alpha = 1/N`` with

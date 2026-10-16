@@ -730,7 +730,7 @@ def test_source_coverage_refuses_a_missing_decision_input():
     # The hole classes the per-cell three-valued ledger structurally cannot see: a hole every
     # completion of which decides the node the same way (an operand absorbed by a decisive sibling,
     # Kleene F∧U = F; a first_true hole whose completions re-converge before they disagree on any
-    # fire) or a value laundered through a NaN-skipping recursive kernel. Either shows up here as an
+    # fire) or one a windowed transform's warmup stepped over. Either shows up here as an
     # unavailable SOURCE, with every pooled read perfectly clean.
     report = evaluate_gate(
         _summary(

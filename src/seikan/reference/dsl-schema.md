@@ -306,6 +306,16 @@ There is **no Indicator family** (no RSI/ADX/ATR/OBV/VWAP/ROC); compose what you
 primitives. Classic technical indicators are deliberately absent — too widely used to be
 informative once everyone already trades them.
 
+A HOLE — a NaN after the input has initialized: a missing value, a domain NaN like `log` of a
+non-positive value, an overflow — reaches each transform through what it reads. A trailing window
+or a lag is NaN only while it reads the hole and decided again after (a hole inside its warmup
+only delays its first value). A transform that carries state across bars — `ema`, `zscore` with
+`mean_type: "ema"`, and `rolling_agg` / `drawdown` / `runup` / `bars_since_extremum` with `window`
+omitted — has NO value from its input's first hole on: its state after the hole depends on what
+the hole hid (a peak it may have set, a mean it would have moved), so it is NaN and initialized
+from there, and every decision over it is undecidable (`signal_coverage`), a hole before its first
+value included. A leading NaN, the input still warming, is warmup as everywhere.
+
 Zero dispersion is EXACT in every windowed, cross-sectional and since-event transform: a window
 (a bar's cross-section, an `event_agg` run) whose values are all equal has its mean equal to that
 value, a `std` / `mad` / `cross_demean` of exactly `0.0`, and an undefined (NaN) `zscore` /
@@ -359,8 +369,9 @@ warmup before it. A series initializes no earlier than its first finite value, s
 every window overflows, its first included (`zscore` of levels near 1e160), never initializes: it
 never fires, an `or` holding it decides on its other branches alone, and no ledger counts it. The
 exception is a series initialized before any value — an event node whose anchor a hole in `E` made
-unknown before its first event (see "Event algebra"), a `mask` undecided on its first live bar, and
-a series computed from such an input (a value it carried before its init, a broadcast snapshotted in
+unknown before its first event (see "Event algebra"), a `mask` undecided on its first live bar, a
+stateful transform whose input holes before its first value (see "Transforms"), and a series
+computed from such an input (a value it carried before its init, a broadcast snapshotted in
 warmup, counts for nothing): it initializes there, finite or not, and every overflowed bar after it
 is undecidable. A `cross_agg` is never one: its broadcast waits for its own first finite
 value as well as for the member's own first value, so one that overflows on every bar is warmup
@@ -389,7 +400,8 @@ bits (the two-pass form about its offset), and every EW z-score whose recurrence
 range reads that recurrence's value to its rounding.
 
 - `ema` (input, exactly one of `window` / `alpha`) — exponentially weighted mean of any Series,
-  seeded at the first finite value, NaN-skipping. `window` sets `alpha = 2/(window+1)` with a
+  seeded at the first finite value, with no value from a hole in its input on (above). `window`
+  sets `alpha = 2/(window+1)` with a
   `window`-observation warmup (the classic span form); `alpha` states the decay directly
   (`2^-30 ≤ alpha ≤ 1`, e.g. RiskMetrics `0.06`) with warmup `ceil(2/alpha − 1)` observations, so
   the two forms agree bit-exactly where `alpha = 2/(window+1)` for every window below 5,935,198
@@ -722,7 +734,7 @@ with a shared axis, see below).
   own `native:<feed>` leaf at the bar it arrives at (and on every later bar it stays the feed's
   latest print, like the `external` leaf) — including a NaN print absorbed BETWEEN two
   bars, which the asof-anchored `external:<feed>` leaf never sees (a bar keeps only its interval's
-  last print) while a NaN-skipping `ema` carries its state across it. The leaf starts at the bar
+  last print) while the native evaluation reads every print. The leaf starts at the bar
   the feed's first finite print arrives at (its `first_available`; leading NaN prints are
   warmup), and since a native read consumes the WHOLE print history, a NaN print stamped before
   the first bar (after the feed's first finite one) counts on the first bar: `data.start` slices
@@ -731,8 +743,9 @@ with a shared axis, see below).
   The ledger counts every print the read consumes without modelling how far back the expression
   reaches, as every leaf is counted whichever parameters read it. A NaN produced INSIDE the
   expression (`log` of a non-positive print, `x/0`) is a domain NaN, not a missing print: like any
-  NaN-skipping kernel's domain NaN it is no `sources` hole, and past the node's init it is
-  undecidable like any series' NaN. That init is the expression's first finite value on the PRINT
+  domain NaN it is no `sources` hole, and past the node's init it is undecidable like any series'
+  NaN (under an `ema` or an expanding extremum, from that print on). That init is the expression's
+  first finite value on the PRINT
   clock, carried onto the bars beside the value: a finite print that a later print supersedes
   inside one bar interval initializes the node all the same, so a domain NaN on the bars after it
   is a hole, never warmup.
@@ -1347,10 +1360,11 @@ complete statistics are still in `summary.cells[i]` — a checklist result never
   decides the node the same way — an `and`/`or` operand hole settled by a decisive sibling
   (`F ∧ U = F` leaves the root DEFINED), or a `first_true` hole whose completions re-converge before
   they disagree on any fire (e.g. one on a cooldown bar other than the cooldown's last) — and a hole
-  a NaN-skipping recursive transform (`ema`, expanding `rolling_agg`, `bars_since_extremum`) carried
-  its state across before emitting a finite value. A NaN computed INSIDE the expression (`log` of a
-  non-positive value, `x/0`) is no raw leaf's: absorbed, it moves no decision and is ledgered
-  nowhere. **A feed that merely starts late is WARMUP, not a hole** — its `first_available` is
+  inside a windowed transform's warmup, which only delays its first value (a hole under an `ema` or
+  an expanding extremum reaches `signal_coverage` too: see "Transforms"). A NaN computed INSIDE the
+  expression (`log` of a non-positive value, `x/0`) is no raw leaf's: absorbed, it moves no
+  decision; inside a warmup, it only delays the first value — ledgered nowhere either way. **A feed
+  that merely starts late is WARMUP, not a hole** — its `first_available` is
   reported as evidence and never refuses; ordinary sparse stamping (a weekly feed on daily bars) is
   available throughout after its first stamp.
 - `search_cap` — `n_hypotheses_attempted` (the DECLARED grid; non-firing combos cannot shrink it)

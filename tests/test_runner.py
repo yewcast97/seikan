@@ -6317,16 +6317,17 @@ def _native_sources(tmp_path, stamps, values, **kw):
 
 
 def test_native_print_hole_between_bars_enters_the_sources_panel(tmp_path):
-    # The native EMA skipped the 06:00 NaN print and emitted finite values after it; the root
-    # read perfectly DEFINED and the raw leaf perfectly available — both ledgers blind. The
-    # native leaf counts the hole at the bar it arrived at, and source_coverage refuses.
+    # The 06:00 NaN print falls between two bars, so the raw leaf — each interval's last print —
+    # never reads it. The native EMA skipped it and read finite after it, every ledger blind; it
+    # now has no value from that print on, so the root is undefined from the bar the print
+    # arrives at, and the native leaf counts the hole there: source_coverage refuses as well.
     from seikan.gate import GateThresholds, evaluate_gate
 
     summary, by_source = _native_sources(tmp_path, _HOLED_STAMPS, _holed_values(_HOLED_STAMPS))
     assert by_source["external:eps"] == {"n_missing": 0, "first_available": "2024-01-01T00:00:00"}
     assert by_source["native:eps"] == {"n_missing": 1, "first_available": "2024-01-01T00:00:00"}
     assert summary["sources"]["target"]["n_missing"] == 1
-    assert summary["cells"][0]["signal_coverage"]["target"]["n_undefined"] == 0
+    assert summary["cells"][0]["signal_coverage"]["target"]["n_undefined"] == 5  # bars 6..10
     report = evaluate_gate(summary, GateThresholds())
     check = next(c for c in report.run_checks if c.name == "source_coverage")
     assert check.met is False and "native:eps" in check.detail
@@ -6377,8 +6378,8 @@ def _source_check(summary):
 
 def test_native_hole_before_the_evaluated_interval_counts_on_the_first_bar(tmp_path):
     # A native read consumes the feed's WHOLE print history (feeds are not sliced by data.start),
-    # so a NaN print after the feed's first finite print but before the first bar reaches the
-    # decisions a NaN-skipping kernel carries it into: the native leaf is missing on bar 0.
+    # so a NaN print after the feed's first finite print but before the first bar is one the
+    # evaluation consumed, like one inside it: the native leaf is missing on bar 0.
     stamps = ["2023-12-28", "2023-12-29", "2023-12-30", *_DAILY]
     values = _holed_values(stamps, ("2023-12-29",))
     _summary, by_source = _native_sources(tmp_path, stamps, values)
@@ -6511,15 +6512,15 @@ def test_shared_native_feed_is_ledgered_on_every_target(tmp_path):
 
 def test_native_nan_print_ending_the_first_started_interval_is_a_hole(tmp_path):
     # The first finite prints and a NaN print that ENDS their interval all arrive at 01-04: the
-    # asof value there is the NaN, but the native EMA was seeded by the 06:00 print and carries it
-    # across the 18:00 NaN. The leaf starts where the first finite print arrives, so the NaN is a
+    # asof value there is the NaN, and the native EMA, seeded by the 06:00 print, has no value
+    # from that NaN on. The leaf starts where the first finite print arrives, so the NaN is a
     # hole on that bar, not warmup (deleting the finite 12:00 print can no longer clean it). The
-    # node's init latches on the print clock (finite from 12:00), so the root reads that bar
-    # undecidable too — latched on the anchored values it had read the bar as warmup.
+    # node's init latches on the print clock (finite from 12:00), so the root reads every bar
+    # from 01-04 undecidable — latched on the anchored values it had read 01-04 as warmup.
     stamps = ["2024-01-03T06:00", "2024-01-03T12:00", "2024-01-03T18:00", *_DAILY[4:]]
     values = _holed_values(stamps, ("2024-01-03T18:00",))
     summary, by_source = _native_sources(tmp_path, stamps, values)
-    assert summary["cells"][0]["signal_coverage"]["target"]["n_undefined"] == 1
+    assert summary["cells"][0]["signal_coverage"]["target"]["n_undefined"] == 7  # 01-04..01-10
     assert by_source["native:eps"] == {"n_missing": 1, "first_available": "2024-01-04T00:00:00"}
     assert by_source["external:eps"] == {"n_missing": 0, "first_available": "2024-01-05T00:00:00"}
     assert _source_check(summary).met is False

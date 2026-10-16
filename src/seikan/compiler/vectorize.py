@@ -37,7 +37,10 @@ Two responsibilities:
    decided Trues would hand every NaN-skipping reader (an ``ema``, an expanding aggregate, a
    cross-section) a value-selected history. A Series computed from other Series initializes
    only where its inputs are (:func:`_derived_latch`), so nothing latches on a value an input
-   carries before its own init (a ``cross_agg`` broadcast into a member not yet started).
+   carries before its own init (a ``cross_agg`` broadcast into a member not yet started). One
+   that carries state across bars (an ``ema``, an expanding extremum) has no value past a hole in
+   its input (:func:`_transform`): its kernel skips the NaN, and the state it carried on would
+   read as decided.
 
    A condition's tradable signal is ``value & init & defined`` (see ``signal``).
 """
@@ -481,17 +484,17 @@ def _latch_mask(flags: npt.NDArray[np.bool_]) -> npt.NDArray[np.bool_]:
     return np.maximum.accumulate(flags.astype(np.int8), axis=0).astype(bool)
 
 
-def _pending(value: pd.DataFrame, init: pd.DataFrame) -> npt.NDArray[np.bool_]:
+def _pending(value: npt.ArrayLike, init: npt.ArrayLike) -> npt.NDArray[np.bool_]:
     """Where an input is initialized and has produced no finite value SINCE its init — the
     pending arm of the derived latches. A value carried before the init counts for nothing: it
     is no value of the input's own (a ``cross_agg`` broadcast into a warming member, snapshotted
     by an ``event_value`` whose anchor later turns unknowable)."""
-    i: npt.NDArray[np.bool_] = init.to_numpy(dtype=bool)
-    return i & ~_latch_mask(np.isfinite(value.to_numpy(dtype=float)) & i)
+    i = np.asarray(init, dtype=bool)
+    return i & ~_latch_mask(np.isfinite(np.asarray(value, dtype=float)) & i)
 
 
 def _derived_latch(
-    arr: np.ndarray, *inputs: tuple[pd.DataFrame, pd.DataFrame]
+    arr: np.ndarray, *inputs: tuple[npt.ArrayLike, npt.ArrayLike]
 ) -> npt.NDArray[np.bool_]:
     """The warmup latch of a Series computed FROM other Series (each input a ``(value, init)``
     pair): it initializes at its first finite value on a bar where every input is itself
@@ -512,7 +515,7 @@ def _derived_latch(
     all_init = np.ones(np.shape(arr), dtype=bool)
     pending = np.zeros(np.shape(arr), dtype=bool)
     for value, init in inputs:
-        all_init = all_init & init.to_numpy(dtype=bool)
+        all_init = all_init & np.asarray(init, dtype=bool)
         pending = pending | _pending(value, init)
     return _latch_mask(np.isfinite(arr) & all_init) | _latch_mask(all_init & pending)
 
@@ -570,15 +573,68 @@ def _derived_latch_at(
     return _latch_mask(np.isfinite(arr) & init_s) | _latch_mask(pending_s | (unknown & i))
 
 
-def _init_at_lag(init: pd.DataFrame, periods: int) -> pd.DataFrame:
+def _init_at_lag(init: npt.NDArray[np.bool_], periods: int) -> npt.NDArray[np.bool_]:
     """An input's init read ``periods`` bars back — for a transform whose value at ``t`` reads the
     input at ``t − periods`` (``shift``, ``change``): it is initialized only once THAT bar was.
     Gating on the current bar alone would latch on a still-warming input's value read through the
     lag and turn the input's next warmup bar into a ledgered hole."""
     lagged = np.zeros(init.shape, dtype=bool)
     if periods < init.shape[0]:
-        lagged[periods:] = init.to_numpy(dtype=bool)[: init.shape[0] - periods]
-    return pd.DataFrame(lagged, index=init.index, columns=init.columns)
+        lagged[periods:] = init[: init.shape[0] - periods]
+    return lagged
+
+
+def _carries_state(node: Series) -> bool:
+    """Whether a single-input transform's value reads EVERY input bar since the input's init — a
+    recursion (``ema``, the EW ``zscore``) or an expanding extremum (``rolling_agg``,
+    ``drawdown``, ``runup``, ``bars_since_extremum`` with ``window`` omitted) — rather than a
+    trailing window or a lag."""
+    match node:
+        case EMA():
+            return True
+        case ZScore(mean_type=mean_type):
+            return mean_type == "ema"
+        case (
+            RollingAgg(window=w)
+            | Drawdown(window=w)
+            | Runup(window=w)
+            | BarsSinceExtremum(window=w)
+        ):
+            return w is None
+        case _:
+            return False
+
+
+def _transform(
+    node: Series, value: npt.NDArray[np.float64], init: npt.NDArray[np.bool_]
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.bool_]]:
+    """``(value, init)`` of a single-input time transform from its input's channels — the one
+    rule the bar clock and a feed's native print clock (:func:`_eval_native`) share.
+
+    A trailing window only reads bars at or after the one it latches on (:func:`_derived_latch`);
+    a LAGGED read (``shift``, ``change``) reaches back past it, so it is initialized once the bar
+    it reads was (:func:`_init_at_lag`). A transform that carries state (:func:`_carries_state`)
+    has no value from its input's first post-init hole on. Its kernel skips a NaN bar — that is
+    its warmup rule — and carried across a hole its state (a peak the hidden bar may have
+    exceeded, a mean it would have moved) read as decided on every later bar, while a domain NaN
+    is no raw leaf's hole for ``sources`` to count: ``expanding_max(mask(log(z) > 0)) < 0.5``
+    fired on every bar after a ``z`` of −1, as after a 1, where a 2 stops it. So from that bar on
+    it is NaN and initialized: undefined to a threshold (``signal_coverage``), a hole to a series
+    computed from it — or, where the hole came before its first value, an input with no value
+    since its init (:func:`_pending`). Two readings stay as they are: a reader still in its own
+    warmup when its input dies warms on, a windowed reader's warmup over a hole made permanent
+    (``rolling_agg(ema(log(z), 5), 20, "max")`` never initializes over a hole after the ``ema``'s
+    first value and before its own), and a ``cross_agg`` broadcast still reaches a member it no
+    longer reduces over (``cross_breadth``'s ``k`` records it)."""
+    arr = xf.transform_values(node, value)
+    if isinstance(node, (Shift, Change)):
+        lag = _scalarized(node.periods)
+        return arr, _derived_latch(arr, (nb.shift_apply_nb(value, lag), _init_at_lag(init, lag)))
+    if not _carries_state(node):
+        return arr, _derived_latch(arr, (value, init))
+    dead = _latch_mask(init & ~np.isfinite(value))
+    arr = np.where(dead, np.nan, arr)
+    return arr, _derived_latch(arr, (value, init)) | dead
 
 
 def _all_true(md: MarketData) -> npt.NDArray[np.bool_]:
@@ -618,16 +674,21 @@ def _calendar_values(md: MarketData, field: str) -> npt.NDArray[np.float64]:
     return np.repeat(np.asarray(col, dtype=float).reshape(-1, 1), len(md.targets), axis=1)
 
 
-def _eval_native(expr: Series, prints: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
-    """Evaluate a ``native`` node's ``expr`` over ONE feed's native print sequence (1-D, in print
-    order) — the same kernels the bar-clock path dispatches, applied to prints instead of bars.
+def _eval_native(
+    expr: Series, prints: npt.NDArray[np.float64]
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.bool_]]:
+    """``(value, init)`` of a ``native`` node's ``expr`` over ONE feed's native print sequence
+    (1-D, in print order) — the same kernels and latches the bar-clock path applies, to prints
+    instead of bars: the feed leaf latches on its first finite print, a constant is always
+    initialized, and every node computed from others initializes as it does on the bar clock.
     ``Native`` validation already confined ``expr`` to the feed leaf, constants, the single-input
     time transforms, ``binary_op`` and ``rolling_corr``; the wildcard is the backstop."""
     match expr:
         case External():
-            return prints
+            return prints, _latch(prints)
         case Constant(value=val):
-            return np.full(prints.shape[0], float(cast("float", val)))
+            n = prints.shape[0]
+            return np.full(n, float(cast("float", val))), np.ones(n, dtype=bool)
         case (
             EMA()
             | ZScore()
@@ -640,18 +701,19 @@ def _eval_native(expr: Series, prints: npt.NDArray[np.float64]) -> npt.NDArray[n
             | Shift()
             | UnaryOp()
         ):
-            out: npt.NDArray[np.float64] = xf.transform_values(
-                expr, _eval_native(expr.input, prints)
-            )
-            return out
+            return _transform(expr, *_eval_native(expr.input, prints))
         case RollingCorr(left=lhs, right=rhs, window=w):
-            a = _eval_native(lhs, prints).reshape(-1, 1)
-            b = _eval_native(rhs, prints).reshape(-1, 1)
-            return nb.rolling_corr_apply_nb(a, b, cast("int", w)).reshape(-1)
+            a, ai = _eval_native(lhs, prints)
+            b, bi = _eval_native(rhs, prints)
+            corr = nb.rolling_corr_apply_nb(a[:, None], b[:, None], cast("int", w))[:, 0]
+            return corr, _derived_latch(corr, (a, ai), (b, bi))
         case BinaryOp(left=lhs, right=rhs, op=op):
+            a, ai = _eval_native(lhs, prints)
+            b, bi = _eval_native(rhs, prints)
             with np.errstate(all="ignore"):
-                arr = _ARITH[op](_eval_native(lhs, prints), _eval_native(rhs, prints))
-            return np.where(np.isfinite(arr), arr, np.nan)
+                arr = _ARITH[op](a, b)
+            arr = np.where(np.isfinite(arr), arr, np.nan)
+            return arr, _derived_latch(arr, (a, ai), (b, bi))
         case _:
             raise TypeError(f"not evaluable on a feed's native clock: {expr!r}")
 
@@ -661,10 +723,10 @@ def _native_column(
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.bool_]]:
     """``(value, init)`` of a ``native`` node over ONE feed's prints, anchored onto the bars with
     the ONE asof rule raw feeds use: usable at the first bar stamped at-or-after the print's
-    (post-lag) availability time. The init is the print clock's own finiteness latch, anchored
-    beside the value: a finite print that a later NaN print supersedes before any bar reads it
-    still initialized the node, so the bars after it read a hole, never warmup."""
-    out = _eval_native(expr, native.to_numpy(dtype=float))
+    (post-lag) availability time. The init is the print clock's own (:func:`_eval_native`),
+    anchored beside the value: a finite print that a later NaN print supersedes before any bar
+    reads it still initialized the node, so the bars after it read a hole, never warmup."""
+    out, init = _eval_native(expr, native.to_numpy(dtype=float))
     out = np.where(np.isfinite(out), out, np.nan)
 
     def anchor(a: np.ndarray) -> npt.NDArray[np.float64]:
@@ -673,7 +735,7 @@ def _native_column(
         ).to_numpy(dtype=float)
         return anchored
 
-    return anchor(out), anchor(_latch(out).astype(float)) == 1.0
+    return anchor(out), anchor(init.astype(float)) == 1.0
 
 
 def cross_population(
@@ -835,14 +897,8 @@ def _build_series(node: Series, md: MarketData) -> tuple[pd.DataFrame, pd.DataFr
             | UnaryOp()
         ):
             cv, ci = build_series(node.input, md)
-            arr = xf.transform_values(node, cv.to_numpy(dtype=float))
-            # Trailing windows and NaN-skipping recursions only ever read bars at or after the
-            # one they latch on; a LAGGED read (shift / change) reaches back past it.
-            if isinstance(node, (Shift, Change)):
-                lag = _scalarized(node.periods)
-                ci = _init_at_lag(ci, lag)
-                cv = _df(nb.shift_apply_nb(cv.to_numpy(dtype=float), lag), md)
-            return _df(arr, md), _df(_derived_latch(arr, (cv, ci)), md)
+            arr, init = _transform(node, cv.to_numpy(dtype=float), ci.to_numpy(dtype=bool))
+            return _df(arr, md), _df(init, md)
         case RollingCorr(left=lhs, right=rhs, window=w):
             av, ai = build_series(lhs, md)
             bv, bi = build_series(rhs, md)

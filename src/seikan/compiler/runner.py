@@ -489,9 +489,9 @@ def _run_summary(
     # `signal_coverage`: the root condition's `defined` channel answers "was the condition
     # DECIDED?", which absorption can settle (every completion of a hole decides the node the same
     # way: a decisive sibling, Kleene F∧U = F; a `first_true` hole whose completions re-converge
-    # before they disagree on any fire) and a NaN-skipping recursive kernel can launder (state
-    # carried across a hole, finite output afterwards) — reading the raw inputs directly puts no
-    # operator between the hole and the count. It is combo-independent (the leaf SET is a property
+    # before they disagree on any fire) and a windowed transform's warmup can step over (a hole
+    # there only delays its first value) — reading the raw inputs directly puts no operator
+    # between the hole and the count. It is combo-independent (the leaf SET is a property
     # of the entry tree, not of any parameter assignment), so it is a run-level panel rather than a
     # per-cell one, and it is built whether or not anything fired — a run whose sources are holed
     # must say so even when the holes suppressed every firing.

@@ -534,12 +534,14 @@ run-level, by `source_coverage`, which catches the two hole classes this channel
 cannot see: absorption — every completion of a hole decides the node the same way, so the root
 reads DEFINED while an input is holed (Kleene `F∧U = F`; a `first_true` hole whose completions
 re-converge before they disagree on any fire, e.g. one on a cooldown bar other than the
-cooldown's last) — and a NaN-skipping recursive kernel (EMA, expanding aggregates) carrying
-contaminated state across a hole and emitting a finite value. A NaN computed INSIDE the
-expression (`log` of a non-positive value, `x/0`) is no raw leaf's: absorbed, it moves no
-decision and is ledgered nowhere. No knob. BOTH coverage checks — and `source_coverage` — stay
-PER-TARGET in BOTH modes: a hole in one basket member corrupts every member's cross-sectional
-reads, so per-member fail-closed is structurally required even in a basket); `support` (the same
+cooldown's last) — and a hole inside a windowed transform's warmup, which only delays its first
+value (the bars between read as warmup). A transform carrying state across bars has no value
+from a hole in its input on, so that hole reaches this ledger ("Warmup is no evidence"). A NaN
+computed INSIDE the expression (`log` of a non-positive value, `x/0`) is no raw leaf's: absorbed,
+it moves no decision; inside a warmup, it only delays the first value — ledgered nowhere either
+way. No knob. BOTH coverage checks — and `source_coverage` — stay PER-TARGET in BOTH modes: a
+hole in one basket member corrupts every member's cross-sectional reads, so per-member
+fail-closed is structurally required even in a basket); `support` (the same
 three sealed floors — `n ≥ 30`, `n_nonoverlap ≥ 8`, `mean_ret > 0` — read from the panel the
 `target_mode` stamp selects: under conjunction per target, over the cell's OWN full-sample rows,
 the weakest target deciding, since the targets are then the thesis's regime; under basket on
@@ -756,7 +758,16 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   the input carried before its init is not its own and settles nothing): identical to its own
   finiteness latch for plain data, and what keeps a reader of a `cross_agg` broadcast into a
   member whose own input has not started from latching early (the broadcast itself waits for the
-  member's own first value). A cross node enters a member only with an initialized input, and
+  member's own first value). A transform that carries state across bars — `ema`, `zscore` over an
+  EW mean, and the expanding (`window`-less) `rolling_agg` / `drawdown` / `runup` /
+  `bars_since_extremum` — has no value from its input's first post-init hole on: its kernel skips
+  a NaN, and the state it carried across one (a peak the hidden bar may have set, a mean it would
+  have moved) read as decided on every later bar, a domain NaN (`log` of a non-positive value)
+  ledgered nowhere — `expanding_max(mask(log(z) > 0)) < 0.5` fired on every bar after a `z` of −1,
+  as after a 1, where a 2 stops it. So it is NaN and initialized from there: undecidable to a
+  threshold over it, a hole to a series computed from it (a reader still warming when it dies
+  warms on), while a trailing window or a lag is decided again once it reads past the hole. A
+  cross node enters a member only with an initialized input, and
   groups it only by an initialized label: a value either carries before its own init enters no
   cross-section, so a member whose input reads a broadcast its own data has not joined is neither
   ranked, demeaned nor averaged against its siblings (nor counted in their `cross_breadth` `k`),
@@ -784,8 +795,9 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   overflows on every bar (a `zscore` of levels near 1e160) is warmup throughout: its threshold never
   fires, and no coverage ledger counts it. The exception is a series the latch initializes before
   any value — an event node whose anchor became unknowable before its first event, a mask undecided
-  on its first live bar, and a series computed from such an input: it initializes there, finite or
-  not, and every overflowed bar after it is undecidable. A `cross_agg` is never one — its broadcast
+  on its first live bar, a stateful transform whose input holes before its first value, and a
+  series computed from such an input: it initializes there, finite or not, and every overflowed bar
+  after it is undecidable. A `cross_agg` is never one — its broadcast
   waits for its own first finite value as well as for the member's own first value — so one that
   overflows on every bar is warmup throughout, whatever its input. The ratio transforms
   (`change(kind="pct")`, `drawdown`, `runup`) are POSITIVE-domain like the pct/log outcome

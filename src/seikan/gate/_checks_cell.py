@@ -490,8 +490,8 @@ def _check_cell_signal_coverage(
     cannot see: absorption (every completion of a hole decides the node the same way — a decisive
     sibling settles the root while an operand is holed, or a ``first_true`` hole's completions
     re-converge before they disagree on any fire, e.g. one on a cooldown bar other than the
-    cooldown's last) and a NaN-skipping recursive kernel laundering state carried across a hole into
-    a finite value.
+    cooldown's last) and a hole inside a windowed transform's warmup, which only delays its first
+    value.
 
     ``n_bars`` is pure geometry (the joined index length), so ``n_undefined <= n_bars`` is
     verifiable arithmetic no property of the data can bend. Unconditional: there is no threshold

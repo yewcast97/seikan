@@ -56,8 +56,10 @@ from seikan.numeric import MIN_NORMAL, log_ratio_array
 # undecidable ledger; before, it is the series' warmup exactly as a leading ``x / 0`` is, and no
 # ledger records it. A latch initializes a series no earlier than its first finite value, save one
 # arm that initializes it with no value yet: an event node whose anchor became unknowable before its
-# first event, a ``mask`` undecided on its first live bar, and (``_derived_latch``) a series on a
-# bar every input is initialized and one has none since its init. A ``cross_agg`` never takes it —
+# first event, a ``mask`` undecided on its first live bar, a transform carrying state across bars
+# from its input's first post-init hole (``_transform`` — these kernels skip a NaN, so the builder
+# gives the series no value from there), and (``_derived_latch``) a series on a bar every input is
+# initialized and one has none since its init. A ``cross_agg`` never takes it —
 # its broadcast waits for its own first finite value as well as for the member's own first value. So
 # a series NaN on every bar — a ``zscore`` of plain levels near 1e160, any ``cross_agg`` — never
 # initializes, never fires and is counted by no coverage ledger, while one that arm initialized
@@ -361,7 +363,9 @@ def expanding_agg_apply_nb(arr: npt.NDArray[np.float64], agg: str) -> npt.NDArra
     """Expanding (all-time) max/min along the time axis; NaN-skipping via ``np.fmax``/``fmin``.
 
     Leading NaNs stay NaN until the first finite bar; thereafter NaN inputs hold the running peak
-    (``fmax(peak, nan) == peak``). Only ``max``/``min`` — expanding mean/std are rejected upstream.
+    (``fmax(peak, nan) == peak``) — past the input's init the builder reads such a NaN as a hole
+    the series has no value after (``vectorize._transform``). Only ``max``/``min`` — expanding
+    mean/std are rejected upstream.
     """
     a = np.asarray(arr, dtype=float)
     if agg == "max":
@@ -423,8 +427,10 @@ def _bars_since_extremum_1d(
 ) -> npt.NDArray[np.float64]:
     """Bar count since the most recent attainment of the trailing/expanding max|min.
 
-    ``window <= 0`` means expanding. Ties reset to the MOST RECENT attaining bar. Trailing form
-    returns NaN until the window is full AND every bar in it is finite.
+    ``window <= 0`` means expanding: NaN bars are skipped, and past the input's init the builder
+    reads one as a hole the series has no value after (``vectorize._transform``). Ties reset to
+    the MOST RECENT attaining bar. Trailing form returns NaN until the window is full AND every
+    bar in it is finite.
     """
     n = arr.shape[0]
     out = np.full(n, np.nan)
@@ -1067,9 +1073,10 @@ def zscore_ema_1d(
 
 @njit(cache=True)
 def ema_1d(arr: npt.NDArray[np.float64], alpha: float, warmup: int) -> npt.NDArray[np.float64]:
-    """EMA with decay ``alpha`` (``ema_params``): seeded at the first finite value, NaN-skipping,
-    NaN until ``warmup`` observations — the same warmup convention as the EMA inside
-    ``zscore_ema``.
+    """EMA with decay ``alpha`` (``ema_params``): seeded at the first finite value, NaN-skipping
+    (past the input's init the builder reads a NaN as a hole the series has no value after —
+    ``vectorize._transform``), NaN until ``warmup`` observations — the same warmup convention as
+    the EMA inside ``zscore_ema``.
 
     The update is a convex combination, so its exact value lies between ``e`` and ``x`` —
     strictly, for ``alpha < 1``: it never reaches ``x``. The rounded one is held there, one ulp

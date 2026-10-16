@@ -1175,10 +1175,10 @@ def test_interior_hole_leaves_source_coverage_unmet(tmp_path):
     assert report.cells[0].met is False
 
 
-def test_nan_skipping_transform_hole_leaves_source_coverage_unmet(tmp_path):
-    """``ema`` SKIPS NaNs and carries its running state across a hole, emitting a finite value
-    on the next bar — so the contaminated output reads as perfectly decided downstream. The
-    source read sits under the transform, where no kernel can launder it."""
+def test_a_raw_hole_under_an_ema_leaves_both_coverage_checks_unmet(tmp_path):
+    """``ema`` skips a NaN: it carried its running state across a raw hole and read every later
+    bar as decided, the source read under the transform the one ledger to see it. It has no value
+    from the hole on, so the root is undecided from there too and both ledgers refuse."""
     px = _planted_dip_px(1000, 5, 9)
     entry = {
         "type": "threshold",
@@ -1189,9 +1189,46 @@ def test_nan_skipping_transform_hole_leaves_source_coverage_unmet(tmp_path):
     holed = _hole_field(tmp_path / "px.csv", px, "close", 400)
     summary = _run_entry(holed, entry)
     assert summary["sources"]["target"]["n_missing"] == 1
+    assert summary["cells"][0]["signal_coverage"]["target"]["n_undefined"] == 600
     report = evaluate_gate(summary, GateThresholds())
     check = _run_check(report, "source_coverage")
     assert not check.met and "field:close" in check.detail
+    assert "signal_coverage" in _unmet_cell(report.cells[0])
+
+
+def test_a_domain_hole_under_an_ema_is_undecided_from_there_on(tmp_path):
+    """A NaN computed inside the expression is no raw leaf's hole: ``log`` of a negative print
+    leaves the source panel clean. ``ema`` skipped it and carried its state across, so the root
+    read decided on every later bar and every check was met; the node has no value from the hole
+    on now, and ``signal_coverage`` refuses those bars."""
+    n_bars = 1000
+    px = _planted_dip_px(n_bars, 5, 9)
+    path, feed = tmp_path / "px.csv", tmp_path / "feed.csv"
+    _write_px(path, px)
+    _write_feed(feed, px, n_bars)
+    log_px = {"type": "unary_op", "op": "log", "input": _FEED}
+    thesis = _feed_thesis(
+        "domain_hole_under_an_ema",
+        {
+            "type": "threshold",
+            "left": {"type": "ema", "window": 3, "input": log_px},
+            "op": "<",
+            "right": {"type": "constant", "value": float(np.log(97.0))},
+        },
+    )
+    files = {"target": path, "px": feed}
+    control = run_backtest(thesis, load(thesis, files)).summary
+    assert evaluate_gate(control, GateThresholds()).cells[0].met is True
+
+    holed = px.copy()
+    holed[900] = -1.0
+    _write_feed(feed, holed, n_bars)
+    summary = run_backtest(thesis, load(thesis, files)).summary
+    assert summary["sources"]["target"]["n_missing"] == 0
+    assert summary["cells"][0]["signal_coverage"]["target"]["n_undefined"] == n_bars - 900
+    report = evaluate_gate(summary, GateThresholds())
+    assert _unmet_run(report) == []
+    assert _unmet_cell(report.cells[0]) == ["signal_coverage"]
 
 
 def test_sparse_and_late_feeds_stay_legitimate(tmp_path):
