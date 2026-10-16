@@ -3098,6 +3098,27 @@ def test_native_explicit_nan_print_is_a_hole_on_the_native_clock(ohlcv):
     )[1]["t"].to_numpy()[6]
 
 
+@pytest.mark.parametrize("per_target", [False, True])
+def test_native_init_latches_on_the_print_clock(ohlcv, per_target):
+    # Day 0 prints -1, 1 and -1 at 00:00, 01:00 and 02:00: log's one finite print (0.0 at 01:00)
+    # is superseded before any bar reads it. Days 1..9 print -1, days 10..19 print 2. Latched on
+    # the ANCHORED values, the node initialized only at bar 10, so the domain NaNs on bars 1..9
+    # read as warmup, unledgered, though the feed's own clock had produced a value. Latched on the
+    # print clock, it is initialized from bar 1 and those bars are holes; the firings are the same.
+    bars = np.arange(len(ohlcv))
+    t0 = ohlcv.index[0]
+    stamps = [t0, t0 + pd.Timedelta(hours=1), t0 + pd.Timedelta(hours=2), *ohlcv.index[1:20]]
+    prints = _native_prints(stamps, [-1.0, 1.0, -1.0, *[-1.0] * 9, *[2.0] * 10])
+    md = _md(ohlcv, natives={"x": {"t": prints} if per_target else prints})
+    node = Native(name="x", expr=UnaryOp(input=External(name="x"), op="log"))
+    v, i = (f["t"].to_numpy() for f in vz.build_series(node, md))
+    assert np.isnan(v[:10]).all() and (v[10:] == np.log(2.0)).all()
+    np.testing.assert_array_equal(i, bars >= 1)
+    cond = ThresholdCondition(left=node, op=">", right=Constant(value=0.0))
+    np.testing.assert_array_equal(vz.undefined_mask(cond, md)[:, 0], (bars >= 1) & (bars < 10))
+    np.testing.assert_array_equal(vz.signal(cond, md)["t"].to_numpy(), bars >= 10)
+
+
 # ---- the cross-sectional population model: where / group ---------------------------------
 
 

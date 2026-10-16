@@ -656,15 +656,24 @@ def _eval_native(expr: Series, prints: npt.NDArray[np.float64]) -> npt.NDArray[n
             raise TypeError(f"not evaluable on a feed's native clock: {expr!r}")
 
 
-def _anchor_native(
-    out: npt.NDArray[np.float64], native: pd.Series, index: pd.DatetimeIndex
-) -> np.ndarray:
-    """Anchor a native-clock result onto the bars with the ONE asof rule raw feeds use: usable at
-    the first bar stamped at-or-after the print's (post-lag) availability time."""
-    anchored: np.ndarray = _anchor_feed(pd.Series(out, index=native.index), index).to_numpy(
-        dtype=float
-    )
-    return anchored
+def _native_column(
+    expr: Series, native: pd.Series, index: pd.DatetimeIndex
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.bool_]]:
+    """``(value, init)`` of a ``native`` node over ONE feed's prints, anchored onto the bars with
+    the ONE asof rule raw feeds use: usable at the first bar stamped at-or-after the print's
+    (post-lag) availability time. The init is the print clock's own finiteness latch, anchored
+    beside the value: a finite print that a later NaN print supersedes before any bar reads it
+    still initialized the node, so the bars after it read a hole, never warmup."""
+    out = _eval_native(expr, native.to_numpy(dtype=float))
+    out = np.where(np.isfinite(out), out, np.nan)
+
+    def anchor(a: np.ndarray) -> npt.NDArray[np.float64]:
+        anchored: npt.NDArray[np.float64] = _anchor_feed(
+            pd.Series(a, index=native.index), index
+        ).to_numpy(dtype=float)
+        return anchored
+
+    return anchor(out), anchor(_latch(out).astype(float)) == 1.0
 
 
 def cross_population(
@@ -906,21 +915,11 @@ def _build_series(node: Series, md: MarketData) -> tuple[pd.DataFrame, pd.DataFr
             # to every target, a per-target feed evaluates each member on its own print history.
             native = md.external_native(name)
             if isinstance(native, dict):
-                arr = np.column_stack(
-                    [
-                        _anchor_native(
-                            _eval_native(expr, native[t].to_numpy(dtype=float)), native[t], md.index
-                        )
-                        for t in md.targets
-                    ]
-                )
+                columns = [_native_column(expr, native[t], md.index) for t in md.targets]
             else:
-                anchored = _anchor_native(
-                    _eval_native(expr, native.to_numpy(dtype=float)), native, md.index
-                )
-                arr = np.repeat(anchored.reshape(-1, 1), len(md.targets), axis=1)
-            arr = np.where(np.isfinite(arr), arr, np.nan)
-            return _df(arr, md), _df(_latch(arr), md)
+                columns = [_native_column(expr, native, md.index)] * len(md.targets)
+            arr = np.column_stack([value for value, _ in columns])
+            return _df(arr, md), _df(np.column_stack([init for _, init in columns]), md)
         case _:
             raise TypeError(f"unknown series node: {node!r}")
 

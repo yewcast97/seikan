@@ -6465,11 +6465,13 @@ def test_native_nan_print_ending_the_first_started_interval_is_a_hole(tmp_path):
     # The first finite prints and a NaN print that ENDS their interval all arrive at 01-04: the
     # asof value there is the NaN, but the native EMA was seeded by the 06:00 print and carries it
     # across the 18:00 NaN. The leaf starts where the first finite print arrives, so the NaN is a
-    # hole on that bar, not warmup (deleting the finite 12:00 print can no longer clean it).
+    # hole on that bar, not warmup (deleting the finite 12:00 print can no longer clean it). The
+    # node's init latches on the print clock (finite from 12:00), so the root reads that bar
+    # undecidable too — latched on the anchored values it had read the bar as warmup.
     stamps = ["2024-01-03T06:00", "2024-01-03T12:00", "2024-01-03T18:00", *_DAILY[4:]]
     values = _holed_values(stamps, ("2024-01-03T18:00",))
     summary, by_source = _native_sources(tmp_path, stamps, values)
-    assert summary["cells"][0]["signal_coverage"]["target"]["n_undefined"] == 0
+    assert summary["cells"][0]["signal_coverage"]["target"]["n_undefined"] == 1
     assert by_source["native:eps"] == {"n_missing": 1, "first_available": "2024-01-04T00:00:00"}
     assert by_source["external:eps"] == {"n_missing": 0, "first_available": "2024-01-05T00:00:00"}
     assert _source_check(summary).met is False

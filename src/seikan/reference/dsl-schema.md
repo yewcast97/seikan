@@ -730,9 +730,12 @@ with a shared axis, see below).
   before the hole — while `data.end` can end the interval before a hole that arrives inside it.
   The ledger counts every print the read consumes without modelling how far back the expression
   reaches, as every leaf is counted whichever parameters read it. A NaN produced INSIDE the
-  expression (`log` of a
-  non-positive print, `x/0`) is a domain NaN, not a missing print, and like any NaN-skipping
-  kernel's domain NaN it is not ledgered.
+  expression (`log` of a non-positive print, `x/0`) is a domain NaN, not a missing print: like any
+  NaN-skipping kernel's domain NaN it is no `sources` hole, and past the node's init it is
+  undecidable like any series' NaN. That init is the expression's first finite value on the PRINT
+  clock, carried onto the bars beside the value: a finite print that a later print supersedes
+  inside one bar interval initializes the node all the same, so a domain NaN on the bars after it
+  is a hole, never warmup.
 - Recipes: **SUE** (standardized unexpected earnings over eight releases) =
   `native(eps, change(eps, 4, diff) / rolling_agg(change(eps, 4, diff), 8, std))`; a true
   **10-week EMA** = a caller-consolidated weekly close stamped at week completion +
