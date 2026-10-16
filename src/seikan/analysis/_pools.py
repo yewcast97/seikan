@@ -58,7 +58,7 @@ def _near_constant(rets: np.ndarray, mean: float) -> bool:
     the two moment estimators, not a policy on thin pools: ``std_ret`` and the order-statistic
     reads stay as computed (a near-constant pool's dispersion IS tiny) — save the exactly
     constant pool, whose ``std_ret`` is exactly 0.0 (:func:`_ddof1_std`). The event-time HAC
-    and the benchmark regression's degeneracy tests read it too."""
+    and the benchmark regression's bench-leg test read it too."""
     spread = float(np.max(np.abs(rets - mean))) if rets.size else 0.0
     return spread == 0.0 or bool(spread < _NEAR_CONSTANT_ULPS * _EPS * abs(mean))
 
@@ -564,14 +564,17 @@ def benchmark_regression(raw: np.ndarray, bench: np.ndarray) -> BenchmarkRegress
     leg's variance is not a normal double (:func:`_normal` — an overflowed one read ``beta = cov
     / inf = 0.0``, a fit that never happened; an underflowed one divided by its lost bits, or
     read as no variation at 0.0) or beta or alpha leaves the double range. ``r2`` alone is NaN
-    → null when the raw leg has zero variance (likewise near-constant): nothing to explain, while
-    beta = 0 (exactly) and alpha = mean(raw) are still real numbers — and when the raw variance
-    is not a normal double. The variance PRODUCT under ``r2`` of two normal variances is taken
-    in an unbounded exponent range (:func:`_r2`): past the ceiling it read ``inf / inf`` (a
-    representable r2 lost), in the subnormal range it shed precision, and underflowed to 0.0 it
-    raised ZeroDivisionError out of the run. On overlapping pools the fit is inflated exactly as
-    every row-level read is — the caveat, not a correction, covers it. Evidence only, read by no
-    check; a one-regressor attribution, not a factor model."""
+    → null when the raw leg is constant — nothing to explain, while beta = 0 (exactly: every
+    deviation about the leg's offset is 0) and alpha = mean(raw) are still real numbers — and
+    when the raw variance is not a normal double. A VARYING raw leg is fitted however small its
+    spread, its deviations about its offset being exact: the near-constant gate guards the
+    divisor, the bench leg, and on the raw leg it read ``raw = 1 + bench`` over ``bench =
+    eps·[−4, −2, 0, 2, 4]`` as beta 0 for an exact slope of 1. The variance PRODUCT under ``r2``
+    of two normal variances is taken in an unbounded exponent range (:func:`_r2`): past the
+    ceiling it read ``inf / inf`` (a representable r2 lost), in the subnormal range it shed
+    precision, and underflowed to 0.0 it raised ZeroDivisionError out of the run. On overlapping
+    pools the fit is inflated exactly as every row-level read is — the caveat, not a correction,
+    covers it. Evidence only, read by no check; a one-regressor attribution, not a factor model."""
     r = np.asarray(raw, dtype=float)
     b = np.asarray(bench, dtype=float)
     keep = np.isfinite(r) & np.isfinite(b)
@@ -598,12 +601,9 @@ def benchmark_regression(raw: np.ndarray, bench: np.ndarray) -> BenchmarkRegress
         # a VARYING leg (a constant one is near-constant, above) whose variance left the range:
         # no zero variation, and no divisor either
         return _declined("not_representable")
-    mean_r = exact_mean(r)
-    if _near_constant(r, mean_r):
-        return {"n": n, "beta": 0.0, "alpha": mean_r, "r2": _NAN, "reason": None}
     cv = float(np.cov(rc, bc, ddof=1)[0, 1])
     beta = cv / var_b
-    alpha = mean_r - beta * mean_b
+    alpha = exact_mean(r) - beta * mean_b
     if not (math.isfinite(beta) and math.isfinite(alpha)):
         return _declined("not_representable")
     var_r = float(np.var(rc, ddof=1))

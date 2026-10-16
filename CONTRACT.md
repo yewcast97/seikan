@@ -820,8 +820,9 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   gate, or every BAR's mean deviation within them: a pooled pool whose bars all sit at its mean,
   every row on one bar among them), the skewness/kurtosis null too wherever scipy's own
   cancellation test (about its pairwise mean, in its arithmetic) reads one, the benchmark
-  regression declines a (near-)constant bench leg and fits `beta` exactly 0 on a (near-)constant
-  raw leg, and a CSCV split scores NaN when its pool is exactly constant (the
+  regression declines a (near-)constant bench leg (and fits `beta` exactly 0 on a constant raw
+  leg, while a raw leg that varies is fitted however small its spread — its deviations about
+  its offset are exact), and a CSCV split scores NaN when its pool is exactly constant (the
   per-block extrema), within the HAC's ~10 ulps, or has a centered sum of squares within its own
   accumulation error. The pool MEANS the checklist grades, and their direct twins — the legs,
   the eras, the baseline, the HAC's `t` numerator — are the exactly rounded sum over `n` (`math.fsum`):

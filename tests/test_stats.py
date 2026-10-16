@@ -3245,17 +3245,29 @@ def test_benchmark_regression_r2_never_exceeds_one():
     assert on_bound > 0
 
 
-def test_benchmark_regression_near_constant_legs_are_degenerate():
-    # Not exactly constant, but spread within a few ulps of the mean: no resolvable variation —
-    # an arbitrary beta (1.9e16 before) on the bench side, a false r2 on the raw side.
+def test_benchmark_regression_near_constant_bench_declines_a_varying_raw_leg_is_fitted():
+    # Spread within a few ulps of the mean: the bench leg has no resolvable variation to divide
+    # by — an arbitrary beta (1.9e16 before) — and the fit declines. The raw leg is no divisor,
+    # and its deviations about its offset are exact however small: it is fitted. Its
+    # near-constant shortcut read the review's exact line raw = 1 + bench over
+    # bench = eps·[−4, −2, 0, 2, 4] as beta 0 and r2 null beside reason None, for a slope of 1.
     near = 0.007 + np.array([0.0, 1.0, 0.0, 2.0, 1.0]) * np.spacing(0.007)
     assert np.ptp(near) > 0.0
     other = np.array([0.01, 0.03, 0.02, 0.05, 0.04])
     flat_bench = benchmark_regression(other, near)
     assert flat_bench["reason"] == "no_benchmark_variation" and flat_bench["beta"] is None
-    flat_raw = benchmark_regression(near, other)
-    assert flat_raw["reason"] is None and flat_raw["beta"] == 0.0 and np.isnan(flat_raw["r2"])
-    assert flat_raw["alpha"] == exact_mean(near)
+    bench = np.finfo(float).eps * np.array([-4.0, -2.0, 0.0, 2.0, 4.0])
+    line = benchmark_regression(1.0 + bench, bench)
+    assert line == {"n": 5, "beta": 1.0, "alpha": 1.0, "r2": 1.0, "reason": None}
+    # the near-constant raw leg reads the exact-rational fit
+    r, b = [Fraction(x) for x in near], [Fraction(x) for x in other]
+    mr, mb = sum(r) / 5, sum(b) / 5
+    cov = sum((x - mr) * (y - mb) for x, y in zip(r, b, strict=True))
+    var_r, var_b = sum((x - mr) ** 2 for x in r), sum((y - mb) ** 2 for y in b)
+    fit = benchmark_regression(near, other)
+    assert fit["reason"] is None
+    assert fit["beta"] == pytest.approx(float(cov / var_b), rel=1e-14)
+    assert fit["r2"] == pytest.approx(float(cov * cov / (var_r * var_b)), rel=1e-14)
 
 
 @pytest.mark.parametrize("c", [0.1, 0.007, 0.3])

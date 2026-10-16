@@ -994,9 +994,10 @@ METRIC_ROLES_DOC: dict[str, JsonValue] = {
             "descriptions of this pool, never factor loadings; null fields with n and a reason "
             "when unbenchmarked, below three pairs, over a (near-)constant bench leg, or when "
             "the bench variance is not a normal double or beta or alpha leaves the double range "
-            "(not_representable); over a (near-)constant raw leg beta is exactly 0.0, alpha the "
-            "raw leg's mean and r2 null (nothing to explain), and r2 alone is null off a raw "
-            "variance that is not a normal double."
+            "(not_representable); over a constant raw leg beta is exactly 0.0, alpha the raw "
+            "leg's mean and r2 null (nothing to explain), and r2 alone is null off a raw "
+            "variance that is not a normal double. A raw leg that varies is fitted however "
+            "small its spread."
         ),
         "episode_profile": (
             "The episode-deduplicated TWIN of the row-level statistics: the same frozen "
@@ -1218,8 +1219,7 @@ REPORT_FIELDS: dict[str, JsonValue] = {
             "alpha in outcome units per h-bar window, never annualized; null fields + reason "
             "when unbenchmarked (no_paired_observations), below 3 pairs, over a "
             "(near-)constant bench leg, or past the double range (not_representable); beta 0.0 "
-            "and r2 null over a (near-)constant raw leg "
-            "(evidence-only)"
+            "and r2 null over a constant raw leg (evidence-only)"
         ),
         "by_target.win_loss_ratio / std_ret / skewness / kurtosis / tail_ratio / cvar_5": (
             "the summarize shape/dispersion reads over the SAME closed pool, mounted per cell: "
