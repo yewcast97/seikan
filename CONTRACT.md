@@ -818,13 +818,13 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   every draw), and the reads that divide by dispersion stand down where the spread is within
   rounding — the HAC nulls (largest deviation within ~10 ulps of the mean, the skewness/kurtosis
   gate, or every BAR's mean deviation within them: a pooled pool whose bars all sit at its mean,
-  every row on one bar among them), the skewness/kurtosis null too wherever scipy's own
-  cancellation test (about its pairwise mean, in its arithmetic) reads one, the benchmark
-  regression declines a (near-)constant bench leg (and fits `beta` exactly 0 on a constant raw
-  leg, while a raw leg that varies is fitted however small its spread — its deviations about
-  its offset are exact), and a CSCV split scores NaN when its pool is exactly constant (the
-  per-block extrema), within the HAC's ~10 ulps, or has a centered sum of squares within its own
-  accumulation error. The pool MEANS the checklist grades, and their direct twins — the legs,
+  every row on one bar among them; skewness/kurtosis are otherwise taken about the pool's
+  offset, translation-invariant — about scipy's own rounded mean the symmetric `1 + k·eps`,
+  k = 0..21, read skewness 0.666 for 0), the benchmark regression declines a (near-)constant
+  bench leg (and fits `beta` exactly 0 on a constant raw leg, while a raw leg that varies is
+  fitted however small its spread — its deviations about its offset are exact), and a CSCV
+  split scores NaN when its pool is exactly constant (the per-block extrema), within the HAC's
+  ~10 ulps, or has a centered sum of squares within its own accumulation error. The pool MEANS the checklist grades, and their direct twins — the legs,
   the eras, the baseline, the HAC's `t` numerator — are the exactly rounded sum over `n` (`math.fsum`):
   the exact sum's sign, exactly 0.0 where it is 0 (a pairwise float sum lost a term a larger one
   swallowed before its cancelling partner arrived — an exact zero read as a positive mean), and a

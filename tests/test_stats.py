@@ -3166,26 +3166,28 @@ def test_pool_moments_near_constant_pool_moments_are_null_and_silent():
     assert np.isfinite(honest["skewness"]) and np.isfinite(honest["kurtosis"])
 
 
-@pytest.mark.parametrize("ulps", [[0, 17, 14], [0, 0, 3, 15]])
-def test_pool_moments_null_where_scipy_reads_cancellation_in_its_own_arithmetic(ulps):
-    # The zero-dispersion gate centres on the exactly rounded mean in product form; scipy's
-    # cancellation test centres on np.mean in quotient form. These pools pass the first and
-    # trip the second: scipy warned "Precision loss" (an exception under -W error, which this
-    # suite runs). Asking scipy's own question first nulls the moments, silently.
-    import warnings
-
-    rets = 1.0 + np.array(ulps) * np.finfo(float).eps
-    assert not _near_constant(rets, exact_mean(rets))  # the premise
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        s = pool_moments(rets)
-    assert np.isnan(s["skewness"]) and np.isnan(s["kurtosis"])
-    assert s["std_ret"] > 0.0
-    # an ordinary pool still reads scipy's own moments
-    v = np.random.RandomState(4).normal(0.001, 0.02, 50)
-    ordinary = pool_moments(v)
-    assert ordinary["skewness"] == float(sps.skew(v))
-    assert ordinary["kurtosis"] == float(sps.kurtosis(v, fisher=False))
+def test_pool_moments_shape_is_taken_about_the_pools_own_offset():
+    # The review's pool: 1 + k·eps, k = 0..21, is symmetric — its third central moment is
+    # exactly 0 — but about scipy's own rounded mean the deviations carried that mean's
+    # rounding, and skewness read 0.666 (kurtosis 1.9136) where its translate by −1 reads 0
+    # (1.7950). About the pool's range midpoint the deviations are exact: the moments are the
+    # translate's.
+    eps = np.finfo(float).eps
+    pool = 1.0 + np.arange(22) * eps
+    s, translate = pool_moments(pool), pool_moments(pool - 1.0)
+    assert s["skewness"] == translate["skewness"] == 0.0
+    assert s["kurtosis"] == translate["kurtosis"] == pytest.approx(1.7950310559, rel=1e-10)
+    # pools within 17 ulps of 1 tripped scipy's "Precision loss" warning (an exception under
+    # -W error, which this suite runs): about the offset they read their exact-rational moments
+    for ulps in ([0, 17, 14], [0, 0, 3, 15]):
+        rets = 1.0 + np.array(ulps) * eps
+        assert not _near_constant(rets, exact_mean(rets))  # the premise
+        f = [Fraction(x) for x in rets]
+        m = sum(f) / len(f)
+        m2, m3 = (sum((x - m) ** p for x in f) / len(f) for p in (2, 3))
+        assert pool_moments(rets)["skewness"] == pytest.approx(
+            float(m3) / float(m2) ** 1.5, rel=1e-14
+        )
 
 
 def test_pool_std_is_taken_about_the_pools_own_offset():
