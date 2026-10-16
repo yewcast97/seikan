@@ -7,7 +7,8 @@ Two implementation styles, **no vectorbt**:
   Pearson correlation of two series, and the cross-sectional rank/demean/aggregate (axis=1,
   across the target columns at each bar — the only kernels with no 1-D form). Windowed kernels
   use ``numpy.lib.stride_tricks.sliding_window_view`` (a window requires every bar finite, else
-  NaN); elementwise ones use plain lag slicing. No Python time-loop.
+  NaN), reduced in bounded row batches (``_window_batches``); elementwise ones use plain lag
+  slicing. No Python time-loop.
 * **Numba** ``@njit`` for the genuinely sequential kernels — the EMA / EMA-z-score recurrences
   (``(alpha, warmup)`` from ``ema_params``: the span form ``alpha = 2/(window+1)`` or an explicit
   decay), ``bars_since_extremum``, the ``first_true`` episode-entry latch,
@@ -29,7 +30,7 @@ their own single-column helpers.
 from __future__ import annotations
 
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import Literal
 
 import numpy as np
@@ -47,6 +48,16 @@ from seikan.numeric import MIN_NORMAL, log_ratio_array
 # pin each column against the frozen reference). A windowed output is
 # NaN unless every bar in the trailing window is finite (``sliding_window_view(...).any``), matching
 # the frozen reference's ``cnt == window`` gate.
+#
+# BOUNDED window stacks: the trailing windows are a ``(rows − window + 1, cols, window)`` view, and
+# every reduction over it — a moment, a sort, a comparison, even the ``isnan(...).any`` gate —
+# materializes temporaries of that whole size: a peak of 162 MiB for 2,000 bars × 16 targets at
+# window 252 (a 0.24 MiB input; 270 MiB for a correlation), ~13–22 GiB at 5,000 × 500. The
+# kernels reduce the view in row batches of at most ``_WINDOW_STACK`` values
+# (``_window_batches``). A batch is a basic slice of the view, with its strides, so numpy reduces
+# each window in the same order and every output keeps its bits; what reads the whole input (the
+# constant windows, the exact sums, the lifted values) is computed once per call. The path side's
+# first extremum (``paths._first_extremum_1d``) never stacks its windows either.
 #
 # FINITE-OR-NaN invariant: every kernel's output is finite or NaN. Kernels whose arithmetic can
 # overflow from finite inputs (sums, ratios with denormal denominators, squared deviations)
@@ -137,6 +148,19 @@ from seikan.numeric import MIN_NORMAL, log_ratio_array
 # values — arithmetic on decimal levels (a spread ``y1 − y2`` moving in lockstep) leaves residue
 # at the operands' scale, which is variation as far as any kernel can tell.
 # =============================================================================
+
+
+#: The most values a windowed kernel materializes at once (512 KiB a temporary): see the bounded
+#: window stacks note above.
+_WINDOW_STACK = 2**16
+
+
+def _window_batches(shape: tuple[int, ...]) -> Iterator[slice]:
+    """Row slices of a ``(rows, cols, window)`` window stack holding at most ``_WINDOW_STACK``
+    values each (one row at the least)."""
+    step = max(1, _WINDOW_STACK // math.prod(shape[1:]))
+    for start in range(0, shape[0], step):
+        yield slice(start, min(start + step, shape[0]))
 
 
 def _constant_windows(a: npt.NDArray[np.float64], window: int) -> npt.NDArray[np.bool_]:
@@ -263,27 +287,33 @@ def zscore_sma_apply_nb(arr: npt.NDArray[np.float64], window: int) -> npt.NDArra
     if window < 2 or window > n:
         return out
     win = sliding_window_view(a, window, axis=0)  # (n-window+1, cols, window)
-    finite_all = ~np.isnan(win).any(axis=-1)
     # A constant window has no dispersion to standardize by — undefined, whatever residual the
     # mean's rounding leaves (see the zero-dispersion note above).
     varies = ~_constant_windows(a, window)
-    with np.errstate(all="ignore"):
-        # Two-pass centered population moments about the window's own offset (the ``rolling_agg``
-        # std pattern): the current bar's deviation over the window std.
-        var, dev = _window_moments(win)
-        z = dev / np.sqrt(var)
-        # A VARYING window whose variance fell below the normal range (deviations under
-        # ~1.5e-154: a subnormal variance read |z| past its bound √(w−1), one of 0.0 read NaN) is
-        # recomputed lifted — the same z, every rounding scaled (the out-of-range note above).
-        lost = finite_all & varies & (var < MIN_NORMAL)
-        if lost.any():
-            lifted_var, lifted_dev = _window_moments(_lifted_windows(a, window))
-            z = np.where(lost, lifted_dev / np.sqrt(lifted_var), z)
-            var = np.where(lost, lifted_var, var)
-    # `_normal(var)`: squared deviations past ~1.3e154 overflow the variance to inf, and the
-    # z-score `(x − mean) / inf` is a FINITE 0.0 that `isfinite(z)` cannot catch.
-    ok = finite_all & varies & _normal(var) & np.isfinite(z)
-    out[window - 1 :] = np.where(ok, z, np.nan)
+    lifted: npt.NDArray[np.float64] | None = None  # built on the first batch that needs it
+    for rows in _window_batches(win.shape):
+        w = win[rows]
+        finite_all = ~np.isnan(w).any(axis=-1)
+        with np.errstate(all="ignore"):
+            # Two-pass centered population moments about the window's own offset (the
+            # ``rolling_agg`` std pattern): the current bar's deviation over the window std.
+            var, dev = _window_moments(w)
+            z = dev / np.sqrt(var)
+            # A VARYING window whose variance fell below the normal range (deviations under
+            # ~1.5e-154: a subnormal variance read |z| past its bound √(w−1), one of 0.0 read
+            # NaN) is recomputed lifted — the same z, every rounding scaled (the out-of-range
+            # note above).
+            lost = finite_all & varies[rows] & (var < MIN_NORMAL)
+            if lost.any():
+                if lifted is None:
+                    lifted = _lifted_windows(a, window)
+                lifted_var, lifted_dev = _window_moments(lifted[rows])
+                z = np.where(lost, lifted_dev / np.sqrt(lifted_var), z)
+                var = np.where(lost, lifted_var, var)
+        # `_normal(var)`: squared deviations past ~1.3e154 overflow the variance to inf, and the
+        # z-score `(x − mean) / inf` is a FINITE 0.0 that `isfinite(z)` cannot catch.
+        ok = finite_all & varies[rows] & _normal(var) & np.isfinite(z)
+        out[window - 1 :][rows] = np.where(ok, z, np.nan)
     return out
 
 
@@ -295,10 +325,12 @@ def percentile_apply_nb(arr: npt.NDArray[np.float64], window: int) -> npt.NDArra
     if window < 1 or window > n:
         return out
     win = sliding_window_view(a, window, axis=0)
-    finite_all = ~np.isnan(win).any(axis=-1)
     x = a[window - 1 :]
-    count = (win < x[..., None]).sum(axis=-1)  # NaN < x is False, so NaNs never count
-    out[window - 1 :] = np.where(finite_all, count / float(window), np.nan)
+    for rows in _window_batches(win.shape):
+        w = win[rows]
+        finite_all = ~np.isnan(w).any(axis=-1)
+        count = (w < x[rows][..., None]).sum(axis=-1)  # NaN < x is False, so NaNs never count
+        out[window - 1 :][rows] = np.where(finite_all, count / float(window), np.nan)
     return out
 
 
@@ -319,43 +351,53 @@ def rolling_agg_apply_nb(
     if window < 1 or window > n:
         return out
     win = sliding_window_view(a, window, axis=0)
-    finite_all = ~np.isnan(win).any(axis=-1)
-    with np.errstate(all="ignore"):
-        if agg == "max":
-            v = win.max(axis=-1)
-        elif agg == "min":
-            v = win.min(axis=-1)
-        elif agg == "mean":
-            # The window's exactly rounded sum over its length (the exact-means note above); a
-            # constant window's mean IS its value (the zero-dispersion note).
-            sums = _rolling_exact_sums(np.ascontiguousarray(a), window)[window - 1 :]
-            v = np.where(_constant_windows(a, window), win[..., -1], sums / window)
-        elif agg == "std":
-            var, _ = _window_moments(win)
-            constant = _constant_windows(a, window)
-            v = np.sqrt(var)
-            # 0.0 only for a CONSTANT window. A VARYING one whose variance fell below the normal
-            # range (squared deviations under ~1.5e-154 — to 0.0 itself under ~1e-162) is
-            # recomputed lifted: its std exactly, rounded once to the window's scale and floored
-            # at the smallest subnormal — never the 0.0 an all-equal window owns.
-            lost = finite_all & ~constant & (var < MIN_NORMAL)
-            if lost.any():
-                lifted_var, _ = _window_moments(_lifted_windows(a, window))
-                lifted_std = np.ldexp(np.sqrt(lifted_var), -_LIFT)
-                v = np.where(lost, np.maximum(lifted_std, 5e-324), v)
-            v = np.where(constant, 0.0, v)
-        elif agg in ("median", "mad"):
-            # The sorted window's middle, an even window's pair met at its overflow-safe
-            # midpoint (bit for bit ``np.median`` wherever that is finite): a constant window
-            # reads its value and a MAD of exactly 0.0, at any level.
-            v = _sorted_median(np.sort(win, axis=-1), window)
-            if agg == "mad":
-                # Median absolute deviation about the SAME window's median, unscaled.
-                v = _sorted_median(np.sort(np.abs(win - v[..., None]), axis=-1), window)
-        else:
-            raise ValueError(f"unknown rolling_agg agg: {agg!r}")
-    # `isfinite(v)`: a finite window can still overflow its sum/squared deviations to ±inf.
-    out[window - 1 :] = np.where(finite_all & np.isfinite(v), v, np.nan)
+    # What `mean` and `std` read off the whole input, once per call: the windows of one value,
+    # and `mean`'s exact sums — the window's exactly rounded sum over its length (the
+    # exact-means note above).
+    if agg in ("mean", "std"):
+        constant = _constant_windows(a, window)
+    if agg == "mean":
+        sums = _rolling_exact_sums(np.ascontiguousarray(a), window)[window - 1 :]
+    lifted: npt.NDArray[np.float64] | None = None  # built on the first batch that needs it
+    for rows in _window_batches(win.shape):
+        w = win[rows]
+        finite_all = ~np.isnan(w).any(axis=-1)
+        with np.errstate(all="ignore"):
+            if agg == "max":
+                v = w.max(axis=-1)
+            elif agg == "min":
+                v = w.min(axis=-1)
+            elif agg == "mean":
+                # a constant window's mean IS its value (the zero-dispersion note)
+                v = np.where(constant[rows], w[..., -1], sums[rows] / window)
+            elif agg == "std":
+                var, _ = _window_moments(w)
+                v = np.sqrt(var)
+                # 0.0 only for a CONSTANT window. A VARYING one whose variance fell below the
+                # normal range (squared deviations under ~1.5e-154 — to 0.0 itself under
+                # ~1e-162) is recomputed lifted: its std exactly, rounded once to the window's
+                # scale and floored at the smallest subnormal — never the 0.0 an all-equal
+                # window owns.
+                lost = finite_all & ~constant[rows] & (var < MIN_NORMAL)
+                if lost.any():
+                    if lifted is None:
+                        lifted = _lifted_windows(a, window)
+                    lifted_var, _ = _window_moments(lifted[rows])
+                    lifted_std = np.ldexp(np.sqrt(lifted_var), -_LIFT)
+                    v = np.where(lost, np.maximum(lifted_std, 5e-324), v)
+                v = np.where(constant[rows], 0.0, v)
+            elif agg in ("median", "mad"):
+                # The sorted window's middle, an even window's pair met at its overflow-safe
+                # midpoint (bit for bit ``np.median`` wherever that is finite): a constant window
+                # reads its value and a MAD of exactly 0.0, at any level.
+                v = _sorted_median(np.sort(w, axis=-1), window)
+                if agg == "mad":
+                    # Median absolute deviation about the SAME window's median, unscaled.
+                    v = _sorted_median(np.sort(np.abs(w - v[..., None]), axis=-1), window)
+            else:
+                raise ValueError(f"unknown rolling_agg agg: {agg!r}")
+        # `isfinite(v)`: a finite window can still overflow its sum/squared deviations to ±inf.
+        out[window - 1 :][rows] = np.where(finite_all & np.isfinite(v), v, np.nan)
     return out
 
 
@@ -554,32 +596,38 @@ def rolling_corr_apply_nb(
         return out
     wa = sliding_window_view(a, window, axis=0)
     wb = sliding_window_view(b, window, axis=0)
-    finite_all = ~(np.isnan(wa) | np.isnan(wb)).any(axis=-1)
     varies = ~_constant_windows(a, window) & ~_constant_windows(b, window)
-    with np.errstate(all="ignore"):
-        va, vb, cov = _pair_moments(wa, wb)
-        # Each leg is lifted only on the windows where IT lost its variance: lifting a leg whose
-        # variance is normal could overflow its squares (an ordinary leg beside a decayed one).
-        lost_a = finite_all & varies & (va < MIN_NORMAL)
-        lost_b = finite_all & varies & (vb < MIN_NORMAL)
-        if lost_a.any() or lost_b.any():
-            la = _lifted_windows(a, window)
-            lb = _lifted_windows(b, window)
-            for lost, xa, xb in (
-                (lost_a & ~lost_b, la, wb),
-                (~lost_a & lost_b, wa, lb),
-                (lost_a & lost_b, la, lb),
-            ):
-                if lost.any():
-                    lva, lvb, lcov = _pair_moments(xa, xb)
-                    va = np.where(lost, lva, va)
-                    vb = np.where(lost, lvb, vb)
-                    cov = np.where(lost, lcov, cov)
-        corr = np.clip(cov / _sqrt_product(va, vb), -1.0, 1.0)
-    # `_normal(va)` / `_normal(vb)`: an overflowed variance divides `cov` by inf — a FINITE ±0.0
-    # that `isfinite(corr)` cannot catch (it still catches a covariance at the float ceiling).
-    ok = finite_all & varies & _normal(va) & _normal(vb) & np.isfinite(corr)
-    out[window - 1 :] = np.where(ok, corr, np.nan)
+    # both legs' lifted windows, built on the first batch that needs them
+    lifted: tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]] | None = None
+    for rows in _window_batches(wa.shape):
+        xa, xb = wa[rows], wb[rows]
+        finite_all = ~(np.isnan(xa) | np.isnan(xb)).any(axis=-1)
+        with np.errstate(all="ignore"):
+            va, vb, cov = _pair_moments(xa, xb)
+            # Each leg is lifted only on the windows where IT lost its variance: lifting a leg
+            # whose variance is normal could overflow its squares (an ordinary leg beside a
+            # decayed one).
+            lost_a = finite_all & varies[rows] & (va < MIN_NORMAL)
+            lost_b = finite_all & varies[rows] & (vb < MIN_NORMAL)
+            if lost_a.any() or lost_b.any():
+                if lifted is None:
+                    lifted = _lifted_windows(a, window), _lifted_windows(b, window)
+                la, lb = lifted[0][rows], lifted[1][rows]
+                for lost, ya, yb in (
+                    (lost_a & ~lost_b, la, xb),
+                    (~lost_a & lost_b, xa, lb),
+                    (lost_a & lost_b, la, lb),
+                ):
+                    if lost.any():
+                        lva, lvb, lcov = _pair_moments(ya, yb)
+                        va = np.where(lost, lva, va)
+                        vb = np.where(lost, lvb, vb)
+                        cov = np.where(lost, lcov, cov)
+            corr = np.clip(cov / _sqrt_product(va, vb), -1.0, 1.0)
+        # `_normal(va)` / `_normal(vb)`: an overflowed variance divides `cov` by inf — a FINITE
+        # ±0.0 that `isfinite(corr)` cannot catch (it still catches a covariance at the ceiling).
+        ok = finite_all & varies[rows] & _normal(va) & _normal(vb) & np.isfinite(corr)
+        out[window - 1 :][rows] = np.where(ok, corr, np.nan)
     return out
 
 

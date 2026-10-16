@@ -4,9 +4,11 @@ reference series (``tests/_reference_nb.py``) exactly.
 
 from __future__ import annotations
 
+import functools
 import itertools
 import math
 import time
+import tracemalloc
 from fractions import Fraction
 
 import numpy as np
@@ -358,6 +360,70 @@ def test_numpy_apply_nb_is_columnwise():
             _assert(nb.change_apply_nb(a, 5, kind)[:, j], ref.change(a[:, j], 5, kind))
         _assert(nb.ema_apply_nb(a, *nb.ema_params(10, None))[:, j], ref.ema(a[:, j], 10))
         _assert(nb.shift_apply_nb(a, 3)[:, j], ref.shift_ref(a[:, j], 3))
+
+
+# ---- window stacks are reduced in bounded batches ------------------------------------------
+
+
+def _windowed_kernels(a, b, window):
+    """Every kernel that reduces a ``sliding_window_view`` stack, as a call over one input (two
+    for the correlation, which needs ``window >= 3``)."""
+    kernels = {
+        "zscore_sma": functools.partial(nb.zscore_sma_apply_nb, a, window),
+        "percentile": functools.partial(nb.percentile_apply_nb, a, window),
+    }
+    for agg in ("max", "min", "mean", "std", "median", "mad"):
+        kernels[agg] = functools.partial(nb.rolling_agg_apply_nb, a, window, agg)
+    if window >= 3:
+        kernels["rolling_corr"] = functools.partial(nb.rolling_corr_apply_nb, a, b, window)
+    return kernels
+
+
+@pytest.mark.parametrize("order", ["C", "F"])
+def test_window_kernels_are_bit_identical_in_any_batch(monkeypatch, order):
+    # A batch is a basic slice of the window view, so numpy reduces each window in the same order:
+    # every batch size reads the one-batch kernel's bits — holes, constant windows and a region
+    # under 2**-500 (the lifted recompute) included, in either memory order of the input.
+    rng = np.random.default_rng(4)
+
+    def feed(cols):
+        x = rng.standard_normal((200, cols)) * 50.0 + 1e3
+        x[rng.random(x.shape) < 0.03] = np.nan
+        x[60:140] = rng.standard_normal((80, cols)) * 2.0**-520
+        x[150:170] = 7.25
+        return np.asarray(x, order=order)
+
+    for cols, window in itertools.product((1, 3, 16), (2, 3, 9, 64)):
+        a, b = feed(cols), feed(cols)
+        kernels = _windowed_kernels(a, b, window)
+        monkeypatch.setattr(nb, "_WINDOW_STACK", 2**40)
+        whole = {name: kernel() for name, kernel in kernels.items()}
+        for stack in (1, 7, 100):
+            monkeypatch.setattr(nb, "_WINDOW_STACK", stack)
+            for name, kernel in kernels.items():
+                np.testing.assert_array_equal(
+                    kernel().view(np.uint64), whole[name].view(np.uint64), err_msg=f"{name} {stack}"
+                )
+
+
+def test_window_kernels_run_in_memory_linear_in_the_input():
+    # Each reduction over the (bars − w + 1) × targets × w window view — the moments, the sorts,
+    # the comparison, the `isnan(...).any` gate — materialized the whole stack: 162 MiB for a
+    # 0.24 MiB input of 2,000 bars × 16 targets at window 252, 270 MiB for its correlation (~22 GiB
+    # at 5,000 × 500). In batches the kernels keep the input's own scale.
+    rng = np.random.default_rng(0)
+    a = rng.standard_normal((3000, 32))
+    b = rng.standard_normal((3000, 32))
+    for kernel in _windowed_kernels(a[:300], b[:300], 252).values():
+        kernel()  # compile outside the measurement
+    for name, kernel in _windowed_kernels(a, b, 252).items():
+        tracemalloc.start()
+        try:
+            kernel()
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        assert peak < 8 * a.nbytes, name
 
 
 # ---- rolling_corr vs scipy/pandas reference --------------------------------
