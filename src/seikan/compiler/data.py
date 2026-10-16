@@ -96,8 +96,13 @@ class MarketData:
     # self-describes what was measured.
     target_shape: TargetShape = "ohlcv"
     # The structured data_report for everything this load read and checked (per-file results +
-    # join info + coverage warnings) — surfaced verbatim in the CLI report.
+    # join info + coverage warnings). It describes the load and is never written after it: a
+    # result's own report is a copy carrying that thesis's horizon warning (``api``).
     report: DataReport | None = None
+    # The data declaration this load answered (``load_market_data``'s ``spec``): the feeds are
+    # aligned under its lags and window, so ``api.compile_thesis`` / ``list_entries`` refuse a
+    # thesis declaring other data. None on a hand-built instance — its builder's own claim.
+    spec: DataSpec | None = None
     # The evaluation memos for ``vectorize.build_series`` / ``build_condition`` /
     # ``condition_arrays``, each keyed by the node's canonical JSON — one typed dict per channel
     # shape, so a hit needs no cast: ``series_memo`` holds a Series node's (value, init) frames,
@@ -109,10 +114,9 @@ class MarketData:
     # reused by the other (the listing). Cached frames are immutable by contract, and so are the
     # loaded frames they derive from — the loader's read-only buffers trip an in-place value
     # write, but a replaced column or a write through a shallow copy goes through and leaves
-    # these memos stale (``_frozen_frame``). In-place per-run state follows the same doctrine as
-    # ``report``. The memos live as long as this MarketData, so a long-lived instance reused
-    # across many theses accumulates entries — ``clear_memo()`` is the caller's release valve,
-    # and the reset after any mutation.
+    # these memos stale (``_frozen_frame``). The memos live as long as this MarketData, so a
+    # long-lived instance reused across many theses accumulates entries — ``clear_memo()`` is the
+    # caller's release valve, and the reset after any mutation.
     series_memo: dict[str, tuple[pd.DataFrame, pd.DataFrame]] = dataclasses.field(
         default_factory=dict, repr=False, compare=False
     )
@@ -731,4 +735,7 @@ def load_market_data(spec: DataSpec, files: DataFiles) -> MarketData:
         externals_native=externals_native,
         target_shape=target_shape,
         report=build_data_report(reports, join=join),
+        # a private copy: the models are frozen only shallowly, so the caller's nested dicts
+        # stay mutable, and an aliased spec would follow a mutation the load never saw
+        spec=spec.model_copy(deep=True),
     )

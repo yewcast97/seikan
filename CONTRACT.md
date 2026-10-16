@@ -1067,9 +1067,12 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   `load_market_data(thesis.data, files)` (both re-exported here — this module is the public API's
   one home and the loader its front door; `canonical_dsl_hash` is re-exported here too, so a host
   computing a thesis's identity imports it from the public home, never from `gate`) and hands the
-  materialized `MarketData` to
-  `compile_thesis(thesis, md)`
-  (sufficiency → `run_backtest`, attaches `data_report`; never loads) and/or
+  materialized `MarketData` — a load of the thesis's own data declaration: both entry points
+  refuse (`ValueError`) one loaded under another `thesis.data`, its feeds aligned under other lags
+  and window — to `compile_thesis(thesis, md)`
+  (sufficiency → `run_backtest`; never loads; the result's `data_report` is its own — the load's
+  report, or a copy carrying this horizon's `barely_sufficient` warning, `md.report` never
+  written) and/or
   `list_entries(thesis, md)` (every firing timestamp of the full entry mask, bit-identical to the backtest's,
   plus TWO per-bar frames instead of one wide one, because they answer two different questions and
   the CLI nominates them one flag each: `root_series` — the deduplicated root-series value columns,

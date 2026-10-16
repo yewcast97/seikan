@@ -107,8 +107,8 @@ class FileReportEntry(TypedDict):
 
 class JoinInfo(TypedDict):
     """The cross-file join — built by ``compiler.data.load_market_data``, read by the CLI report
-    and appended to by ``api._ensure_sufficient`` (a barely-sufficient index lands here as a
-    warning rather than refusing the run).
+    and copied by ``api._sufficient_report`` into a result's own report, where a
+    barely-sufficient index lands as a warning rather than refusing the run.
 
     ``n_common`` is the joined index length every geometry stamp derives from; the warnings are
     coverage facts (a sparse external feed, an incompletely covering benchmark), never refusals.

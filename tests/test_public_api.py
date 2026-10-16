@@ -5,6 +5,8 @@ than in someone else's code."""
 from __future__ import annotations
 
 import numpy as np
+import pandas as pd
+import pytest
 
 import seikan
 from tests._helpers import bars
@@ -78,3 +80,44 @@ def test_list_entries_expands_shared_axes(tmp_path):
         "ema(close,60)",
         "rolling_agg(close,60,mean)",
     ]
+
+
+def test_a_load_answers_one_data_declaration(tmp_path):
+    # A MarketData holds feeds ALIGNED under the declaration it was loaded with. The review's
+    # misuse: a lag-0 load handed to a thesis declaring a 1-day lag read the feed a bar early —
+    # +100% where the declared lag measures 0%. Both entry points refuse a load of another
+    # declaration; a thesis declaring the same data shares the load, whatever else it asks.
+    px = bars(tmp_path / "px.csv", [100.0 + i for i in range(40)])
+    feed = tmp_path / "f.csv"
+    idx = pd.date_range("2021-01-01", periods=40, freq="1D", name="datetime")
+    pd.DataFrame({"f": np.arange(40.0)}, index=idx).to_csv(feed)
+
+    def thesis(lag, cut):
+        return seikan.Thesis.model_validate(
+            {
+                "name": "lagged",
+                "data": {"targets": ["px"], "external": {"f": {"lag": lag}}},
+                "entry": {
+                    "type": "threshold",
+                    "left": {"type": "external", "name": "f"},
+                    "op": ">",
+                    "right": {"type": "constant", "value": cut},
+                },
+            }
+        )
+
+    loaded = thesis(0, 10.0)
+    files = seikan.resolve_data_files(loaded, {"px": str(px), "f": str(feed)})
+    md = seikan.load_market_data(loaded.data, files)
+    late = thesis("1D", 10.0)
+    for call in (seikan.compile_thesis, seikan.list_entries):
+        with pytest.raises(ValueError, match="another data declaration"):
+            call(late, md)
+    same = thesis(0, 20.0)
+    assert seikan.compile_thesis(same, md).summary["cells"]
+    assert any(row["timestamps"] for row in seikan.list_entries(same, md).entries)
+    # the load keeps its own copy of the declaration: a mutation of the thesis after the load
+    # (its models are frozen only shallowly) cannot make the two agree
+    loaded.data.external["f"] = late.data.external["f"]
+    with pytest.raises(ValueError, match="another data declaration"):
+        seikan.compile_thesis(loaded, md)

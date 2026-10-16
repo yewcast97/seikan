@@ -715,16 +715,23 @@ def test_api_boundary_revalidates_a_mutated_thesis(tmp_path):
         list_entries(thesis, md)
 
 
-def test_repeat_compile_records_barely_sufficient_warning_once(tmp_path):
-    # The warning amends md.report IN PLACE (shared, describing the same load); repeat compiles
-    # over one md must record it once, not once per call.
-    path = _bars(tmp_path / "px.csv", [float(100 + i) for i in range(8)])
-    thesis = _thesis(_lt(1000.0), horizon=3)  # 8 bars, h=3: sufficient but under the comfort floor
-    md = load(thesis, {"target": path})
-    compile_thesis(thesis, md)
-    compile_thesis(thesis, md)
-    warnings = [w for w in md.report["join"]["warnings"] if w["code"] == "barely_sufficient"]
-    assert len(warnings) == 1
+def test_each_result_carries_its_own_horizon_warning(tmp_path):
+    # The barely_sufficient warning describes one thesis's horizon, so it rides the RESULT's own
+    # data_report and never md.report, which describes the load. Written into the shared report,
+    # a horizon-13 compile's warning surfaced in an earlier horizon-1 result, and in every later
+    # one over that md.
+    path = _bars(tmp_path / "px.csv", [float(100 + i) for i in range(20)])
+    short = _thesis(_lt(1000.0), horizon=1)
+    long = _thesis(_lt(1000.0), horizon=13)  # 20 bars, h=13: sufficient, under the comfort floor
+    md = load(short, {"target": path})
+    first, warned, again = (compile_thesis(t, md) for t in (short, long, short))
+
+    def barely(report):
+        return [w for w in report["join"]["warnings"] if w["code"] == "barely_sufficient"]
+
+    assert len(barely(warned.data_report)) == 1
+    assert barely(md.report) == barely(first.data_report) == barely(again.data_report) == []
+    assert first.data_report is md.report  # no warning to add: the load's own report
 
 
 def test_render_series_event_nodes_and_render_condition_rule_table():

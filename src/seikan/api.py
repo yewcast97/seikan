@@ -66,26 +66,39 @@ def _refuse(md: MarketData, issues: list[DataIssue], message: str) -> NoReturn:
     raise dataio.DataError(cast("DataReport", refused), message)
 
 
-def _ensure_sufficient(md: MarketData, thesis: Thesis) -> None:
-    """Refuse up front when the joined index cannot close a single observation at the longest
-    horizon (raises :class:`~seikan.dataio.DataError` carrying the full data_report); a
-    barely-sufficient index lands as a join warning in the report instead."""
+def _ensure_loaded_for(md: MarketData, thesis: Thesis) -> None:
+    """Refuse a ``MarketData`` loaded under another data declaration than ``thesis.data``: its
+    feeds are aligned under THAT declaration's lags, window and targets, and so are the memos
+    riding it, so a thesis declaring a 1-day lag measured on a lag-0 load reads every feed a bar
+    early — evidence under a declaration it was never read under. A hand-built ``MarketData``
+    (no ``spec``) is its builder's own claim."""
+    if md.spec is not None and md.spec != thesis.data:
+        raise ValueError(
+            "the MarketData was loaded under another data declaration than this thesis's "
+            "(thesis.data: targets, feeds, lags, window) — load it for this thesis with "
+            "load_market_data(thesis.data, files)"
+        )
+
+
+def _sufficient_report(md: MarketData, thesis: Thesis) -> DataReport | None:
+    """The data_report a compiled result carries — ``md.report`` itself, or a copy with this
+    thesis's ``barely_sufficient`` join warning — refusing up front when the joined index cannot
+    close a single observation at the longest horizon (:class:`~seikan.dataio.DataError`
+    carrying the full data_report).
+
+    ``md.report`` describes the load and is never written: the warning describes one thesis's
+    horizon, and appended to the shared report it surfaced in every result over that ``md`` —
+    a horizon-95 compile wrote "only 4 bars can anchor … (95)" into an earlier horizon-1
+    result."""
     errors, warnings = dataio.sufficiency_check(len(md.index), thesis.params.horizon)
-    # A hand-built ``MarketData`` may carry no report at all (the loader always attaches one), so
-    # every read below is guarded — the refusal still has to name what failed.
-    report = md.report
-    join = report.get("join") if report is not None else None
-    if join is not None and warnings:
-        # Membership-deduped, so repeat compiles over one shared ``md`` record the warning ONCE:
-        # `sufficiency_check`'s message is a pure function of (index length, max horizon), so an
-        # identical entry is the same fact restated, while a different thesis (longer horizon)
-        # still records its own distinct warning.
-        existing = join.setdefault("warnings", [])
-        for w in warnings:
-            if w not in existing:
-                existing.append(w)
     if errors:
         _refuse(md, errors, errors[0]["message"])
+    # A hand-built ``MarketData`` may carry no report (the loader always attaches one).
+    report = md.report
+    if report is None or report["join"] is None or not warnings:
+        return report
+    join = report["join"]
+    return {**report, "join": {**join, "warnings": [*join["warnings"], *warnings]}}
 
 
 def _ensure_volume_available(md: MarketData, thesis: Thesis, *, include_features: bool) -> None:
@@ -118,11 +131,13 @@ def compile_thesis(thesis: Thesis, md: MarketData) -> EventStudyResult:
     ``load_market_data(thesis.data, files)`` (the strict-CSV front door, which raises
     :class:`~seikan.dataio.DataError` with a complete per-file report on any violation) — one load
     can serve both this function and
-    :func:`list_entries`. The measurement-side guards live HERE: an index too short to close one
-    observation at the longest horizon refuses, as does a ``volume`` read against volume-less data
-    (``params.features`` included). A barely-sufficient index is recorded as a join warning into
-    ``md.report`` IN PLACE — visible to anything else sharing that ``md`` (harmless, the warning
-    describes the same load) and recorded ONCE: a repeat call over the same ``md`` dedupes it.
+    :func:`list_entries`, and it must be a load of THIS thesis's data declaration (``ValueError``
+    otherwise: its feeds are aligned under the lags and window it was loaded with). The
+    measurement-side guards live HERE: an index too short to close one observation at the
+    longest horizon refuses, as does a ``volume`` read against volume-less data
+    (``params.features`` included). A barely-sufficient index is recorded as a join warning in
+    the RESULT's ``data_report`` — a copy of ``md.report``, which describes the load alone and is
+    never written, so a returned result never changes under a later call over the same ``md``.
 
     The measurement: builds the entry firing mask for every target and parameter combination,
     records an overlapping raw forward-return observation at each firing bar over every measurement
@@ -140,7 +155,8 @@ def compile_thesis(thesis: Thesis, md: MarketData) -> EventStudyResult:
     validate_summary`) — a few milliseconds against an O(grid × length) run.
     """
     thesis = Thesis.model_validate(thesis.model_dump(mode="json"))
-    _ensure_sufficient(md, thesis)
+    _ensure_loaded_for(md, thesis)
+    data_report = _sufficient_report(md, thesis)
     _ensure_volume_available(md, thesis, include_features=True)
     result = run_backtest(thesis, md)
     # The engine verifies its own output at the public seam: the summary is validated against
@@ -148,7 +164,7 @@ def compile_thesis(thesis: Thesis, md: MarketData) -> EventStudyResult:
     # document at emission — a shape the engine does not declare is a seikan bug, never a
     # result to hand a caller.
     validate_summary(result.summary)
-    result.data_report = md.report
+    result.data_report = data_report
     return result
 
 
@@ -189,9 +205,11 @@ def list_entries(thesis: Thesis, md: MarketData) -> EntryListReport:
     shape rather than as a per-bar matrix comes through here.
 
     Like :func:`compile_thesis`, the thesis is revalidated as a private copy at this boundary —
-    frozen models are shallow, and a mutated nested list/dict must refuse here, not run.
+    frozen models are shallow, and a mutated nested list/dict must refuse here, not run — and
+    ``md`` must be a load of its data declaration.
     """
     thesis = Thesis.model_validate(thesis.model_dump(mode="json"))
+    _ensure_loaded_for(md, thesis)
     _ensure_volume_available(md, thesis, include_features=False)
     rows: list[EntryRow] = []
     value_cols: dict[str, tuple[str, pd.DataFrame]] = {}  # node canonical JSON -> (label, values)
