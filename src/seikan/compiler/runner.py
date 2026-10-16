@@ -770,6 +770,12 @@ def _cells_panel(
     index = cfg.index
     n_bars = cfg.n_bars
     targets = cfg.targets
+    # A `diff` outcome measures each target in its OWN level units (bp beside index points), so
+    # the reads that pool several targets' values — episode means and |return|-mass shares,
+    # excursion extremes, buckets aggregated by ordinal — have no unit there: null, as basket
+    # refuses `diff` outright and the gate refuses the concentration read. Counts, timing and
+    # every per-target panel stand.
+    commensurable = cfg.outcome_kind != "diff"
     # The cell axes: the swept entry axes with the horizon LAST and ALWAYS present — the
     # trades frame carries every one of them as a column, in the rendered label's order.
     cell_axes = [*cfg.sweep_levels, "horizon"]
@@ -960,24 +966,30 @@ def _cells_panel(
         # a bucket holding only some of them holds no bar-closed sum. It reads each bar that
         # lands whole in ONE ordinal (a basket-wide feature on bars the members fire together)
         # at its exact sum, every other row at its `ret`.
-        buckets = cell_conditional_buckets(rows_closed, feature_names, rets_pool=rets_pool)
+        buckets = cell_conditional_buckets(
+            rows_closed, feature_names, rets_pool=rets_pool, commensurable=commensurable
+        )
         cell: SummaryCell = {
             **head,
             # Episode clustering over the cell's CLOSED rows, merged ACROSS targets: one
             # cluster is one market episode, so an edge that is a single crisis seen through
             # three targets cannot read as three episodes.
-            "episode_stats": episode_stats(rows_closed),
+            "episode_stats": episode_stats(rows_closed, commensurable=commensurable),
             # The time-ordered episode LEDGER (evidence-only): the narrative companion to the
             # shares above — earliest first, never ranked, truncation explicit and
             # mass-conserving. In basket mode the same cross-target merge makes it the pooled
             # ledger for free — and its episode means sum the pool values (`rets_pool`).
-            "episodes": episode_ledger(rows_closed, rets_pool=rets_pool),
+            "episodes": episode_ledger(
+                rows_closed, rets_pool=rets_pool, commensurable=commensurable
+            ),
             # The episode-deduplicated TWIN of the row-level statistics (evidence-only): the
             # same frozen cross-target merge, one aggregate per episode, the same statistic
             # family over the episodes — so one crisis smeared across ~h overlapping rows reads
             # as ONE episode here, and row-vs-episode divergence is the visible cluster
             # diagnostic. Reported, never a correction.
-            "episode_profile": episode_profile(rows_closed, rets_pool=rets_pool),
+            "episode_profile": episode_profile(
+                rows_closed, rets_pool=rets_pool, commensurable=commensurable
+            ),
             "outcome_coverage": cov,
             "signal_coverage": sig,
             # Per-cell conditional buckets: there is no run-level pooled version — a pooled

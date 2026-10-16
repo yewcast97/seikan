@@ -179,6 +179,8 @@ def _aggregate_bucket_ordinals(
     q: int,
     bar_k: np.ndarray | None = None,
     pools: list[np.ndarray] | None = None,
+    *,
+    commensurable: bool = True,
 ) -> list[BucketRecord]:
     """Per-target qcut codes aggregated by bucket ORDINAL — the multi-target arm of
     :func:`cell_conditional_buckets`.
@@ -197,7 +199,9 @@ def _aggregate_bucket_ordinals(
     values — see :func:`cell_conditional_buckets`) put the rows of every bar wholly inside one
     record (:func:`_whole_bars`) into that record's ``mean_ret`` through their bar values, the
     bar's exact excess sum their rounded excesses miss by residue; ``n`` and ``hit_rate`` stay on
-    each row's own return."""
+    each row's own return. ``commensurable=False`` (a ``diff`` outcome: each target in its own
+    level units) leaves every record's ``mean_ret`` NaN — a sum across the targets' units has
+    none — while ``n`` and ``hit_rate``, a count and a share of signs, stand."""
     parts: list[tuple[np.ndarray, np.ndarray]] = []
     bar_parts: list[np.ndarray] = []
     bucket_counts: set[int] = set()
@@ -240,7 +244,7 @@ def _aggregate_bucket_ordinals(
         in_bucket = ordinals == i
         pool = rets[in_bucket]
         with np.errstate(over="ignore", invalid="ignore"):  # a sum past the range: NaN below
-            mean = float(np.mean(sums[in_bucket])) if pool.size else _NAN
+            mean = float(np.mean(sums[in_bucket])) if pool.size and commensurable else _NAN
         records.append(
             {
                 "bucket": f"q{i + 1}",
@@ -259,6 +263,7 @@ def cell_conditional_buckets(
     min_n: int = BUCKET_MIN_N,
     *,
     rets_pool: np.ndarray | None = None,
+    commensurable: bool = True,
 ) -> CellBucketPanels:
     """ONE cell's conditional-bucket view over its CLOSED rows — bucket EDGES per TARGET,
     records aggregated across the cell's targets by bucket ordinal.
@@ -305,6 +310,11 @@ def cell_conditional_buckets(
     declaration order — where the rounded rows ranked their residue. Only the multi-target arm
     reads it: with one participating target the frozen kernel's records pass through, and they
     hold no whole multi-row bar (a basket's other members' rows sit unbucketed there).
+
+    ``commensurable=False`` (a ``diff`` outcome, each target in its own level units) nulls the
+    multi-target arm's ``mean_ret`` (:func:`_aggregate_bucket_ordinals`) — its records pool
+    several targets' returns — so no ``bucket_monotonicity`` ranks them; one participating
+    target's records keep theirs.
     """
     buckets_out: dict[str, FeatureBucketPanel] = {}
     mono_out: dict[str, BucketMonotonicity] = {}
@@ -354,7 +364,9 @@ def cell_conditional_buckets(
                 if pool_all is None
                 else [pool_all[is_valid][g.index.to_numpy()] for g in groups]
             )
-            records = _aggregate_bucket_ordinals(groups, name, q, bar_k, pools)
+            records = _aggregate_bucket_ordinals(
+                groups, name, q, bar_k, pools, commensurable=commensurable
+            )
         if len(records) < 2:
             buckets_out[name] = {"buckets": [], "reason": "insufficient_distinct_values"}
             continue

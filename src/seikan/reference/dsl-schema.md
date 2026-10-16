@@ -1393,8 +1393,10 @@ complete statistics are still in `summary.cells[i]` — a checklist result never
   ceiling stays, and `pooled.member_share.max_member_share_abs` joins them ("one member carries
   the basket's mass; the basket claim is mostly one name"). A `diff`-outcome multi-target run
   refuses the cross-target mass read as incommensurable (level units from different series are
-  not mass-comparable), as does a missing, null, or unreadable outcome stamp — retained in
-  basket as defense-in-depth even though `evidence_complete` already refuses basket+diff.
+  not mass-comparable — the report nulls those reads there too: every episode mean, |return|-mass
+  share and excursion extreme, and an ordinal bucket's `mean_ret`), as does a missing, null, or
+  unreadable outcome stamp — retained in basket as defense-in-depth even though
+  `evidence_complete` already refuses basket+diff.
 
 **The canonical checklist is the floor**: every threshold constructs only at its default or
 stricter (`--min-trades 40` is fine, a loosened value is exit 3, `thresholds_invalid`), and an

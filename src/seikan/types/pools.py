@@ -186,7 +186,8 @@ class EpisodeStatsBlock(TypedDict):
     ``effective_n_clusters`` (1/hhi ∈ [1, n_clusters]) are the ceiling's SMOOTH companions —
     two episodes at 50% each clear a 0.60 ceiling while reading as exactly two effective
     episodes — and the gate reads neither. An empty or zero-mass pool reports zero counts with
-    NaN → null shares, hhi pair included, and a null start.
+    NaN → null shares, hhi pair included, and a null start; a ``diff`` outcome's rows of several
+    targets, each in its own level units, report their counts with null shares.
     """
 
     n: int
@@ -209,7 +210,8 @@ class EpisodeLedgerEntry(TypedDict):
     cancel, so a zero-mean episode is no win — and NaN → null where those rows, finite returns,
     sum past the double range: the true mean is finite there, the computed one is not, and not
     even its sign is known (the same unknown mean that nulls every ``episode_profile`` read
-    over the episode means).
+    over the episode means). Over a ``diff`` outcome's rows of several targets, whose level
+    units do not add, ``mean_ret`` and ``share_abs`` are null on every entry.
     """
 
     start: str
@@ -263,8 +265,9 @@ class EpisodeProfileBlock(TypedDict):
     not emitted): the longest run of consecutive episodes, in time order, whose ``ret_mean`` is
     strictly positive / strictly negative — a zero-mean episode breaks both runs, and so does one
     whose mean overflowed (its rows' sum left the double range), which also nulls every read
-    over the episode means. In basket the cross-target merge makes this the pooled episode read
-    for free.
+    over the episode means — as over a ``diff`` outcome's rows of several targets, whose level
+    units do not add (excursion blocks empty, ``edge_ratio`` null). In basket the cross-target
+    merge makes this the pooled episode read for free.
     """
 
     n_episodes: int
@@ -292,7 +295,9 @@ class BucketRecord(TypedDict):
     double range — ``_qcut_buckets``; a feature spanning more than the double range, whose bins
     are read exactly off its halved values, is one — ``_qcut_index``). ``mean_ret`` is NaN →
     null where the bucket's returns sum past the double range — no known value or rank, which
-    is also why ``bucket_monotonicity`` then carries no entry for the feature. Under a
+    is also why ``bucket_monotonicity`` then carries no entry for the feature — and where the
+    ordinal record pools a ``diff`` outcome's rows of several targets (level units that do not
+    add). Under a
     ``cross_mean`` basket the rows of a FULL bar (every member closed) that land wholly in the
     bucket enter ``mean_ret`` at 0.0, their sum's exact value; ``n`` and ``hit_rate`` are always
     the rows' own."""

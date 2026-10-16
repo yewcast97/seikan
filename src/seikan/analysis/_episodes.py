@@ -104,6 +104,14 @@ def _episode_view(trades: pd.DataFrame, rets_pool: np.ndarray | None = None) -> 
     return _EpisodeView(df, entry, exit_, rets, pool, overlap_clusters(entry, exit_))
 
 
+def _mixes_units(df: pd.DataFrame, commensurable: bool) -> bool:
+    """The rows pool several targets' values in units that differ — ``commensurable=False``
+    (a ``diff`` outcome: each target in its own level units, bp beside index points) over rows
+    of more than one target. A read summing or comparing their values across targets has no
+    unit, so it is NaN; the counts and the timing stay."""
+    return not commensurable and "target" in df.columns and df["target"].nunique() > 1
+
+
 def _episode_means(pool: np.ndarray, clusters: list[list[int]]) -> np.ndarray:
     """Each episode's MEAN of its rows' pool values — the per-episode read the ledger lists and
     the profile aggregates — as the exactly rounded sum over the row count (:func:`exact_mean`):
@@ -121,7 +129,7 @@ def _episode_means(pool: np.ndarray, clusters: list[list[int]]) -> np.ndarray:
 # NaN → null emission of a statistic that is not finite), so the arithmetic runs under
 # ``errstate(over, invalid)``: an overflow is an expected input, never a warning.
 @np.errstate(over="ignore", invalid="ignore")
-def episode_stats(trades: pd.DataFrame) -> EpisodeStatsBlock:
+def episode_stats(trades: pd.DataFrame, *, commensurable: bool = True) -> EpisodeStatsBlock:
     """Cluster one cell's CLOSED observations by overlapping ``[entry, exit)`` windows.
 
     Diagnostic for sparse episodic pools: firings often cluster in shared regimes (crises,
@@ -141,7 +149,8 @@ def episode_stats(trades: pd.DataFrame) -> EpisodeStatsBlock:
     An empty or all-NaN pool — a declared cell that never fired, which is reported and never
     dropped — returns the zero panel with NaN shares; a pool whose total |return| mass leaves the
     double range has NaN shares too (every share would read ``x / inf = 0.0``, which the
-    one-episode ceiling passes).
+    one-episode ceiling passes), and so does one that mixes targets' units
+    (:func:`_mixes_units` — the gate refuses that concentration read by name).
     """
     empty: EpisodeStatsBlock = {
         "n": 0,
@@ -160,7 +169,8 @@ def episode_stats(trades: pd.DataFrame) -> EpisodeStatsBlock:
 
     mag = np.abs(rets)
     total = float(mag.sum())
-    shareable = 0.0 < total < math.inf  # a zero mass has no shares, an overflowed one neither
+    # a zero mass has no shares, an overflowed one neither, nor one summed across units
+    shareable = 0.0 < total < math.inf and not _mixes_units(df, commensurable)
     cluster_mass = [float(mag[c].sum()) for c in clusters]
     largest = max(clusters, key=len)
     share = float(mag[largest].sum() / total) if shareable else _NAN
@@ -203,6 +213,7 @@ def episode_ledger(
     cap: int = EPISODE_LIST_MAX,
     *,
     rets_pool: np.ndarray | None = None,
+    commensurable: bool = True,
 ) -> EpisodeLedgerBlock:
     """TIME-ORDERED per-episode ledger of one cell's CLOSED rows — the narrative companion to
     :func:`episode_stats`, which reports only the extremes.
@@ -234,6 +245,8 @@ def episode_ledger(
     (:func:`_episode_means`). It is NaN → null where that sum leaves the double range (the same
     unknown mean ``episode_profile`` nulls its reads over), never an ``inf`` whose sign the
     overflow picked. The |return| shares stay on ``ret``: a row's mass is its own, not its bar's.
+    Over rows that mix targets' units (:func:`_mixes_units`) every ``mean_ret``, ``share_abs``
+    and ``omitted_share_abs`` is NaN → null; the episodes' extents and counts stay.
     """
     empty: EpisodeLedgerBlock = {
         "entries": [],
@@ -247,16 +260,18 @@ def episode_ledger(
         return empty
     entry, exit_, rets, clusters = view.entry, view.exit_, view.rets, view.clusters
     pool = view.rets_pool
+    mixed = _mixes_units(view.df, commensurable)
     mag = np.abs(rets)
     total = float(mag.sum())
+    shareable = 0.0 < total < math.inf and not mixed
 
     def _share(rows: list[int]) -> float:
-        # the episode_stats domain rule: no share of a zero or an overflowed total mass
-        return float(mag[rows].sum() / total) if 0.0 < total < math.inf else _NAN
+        # the episode_stats domain rule: no share of a zero, an overflowed or a unitless mass
+        return float(mag[rows].sum() / total) if shareable else _NAN
 
     kept = clusters[: max(int(cap), 0)]
     omitted = clusters[len(kept) :]
-    means = _episode_means(pool, kept)
+    means = np.full(len(kept), _NAN) if mixed else _episode_means(pool, kept)
     return {
         "entries": [
             {
@@ -279,7 +294,7 @@ def episode_ledger(
 
 @np.errstate(over="ignore", invalid="ignore")
 def episode_profile(
-    trades: pd.DataFrame, *, rets_pool: np.ndarray | None = None
+    trades: pd.DataFrame, *, rets_pool: np.ndarray | None = None, commensurable: bool = True
 ) -> EpisodeProfileBlock:
     """The episode-deduplicated TWIN of the row-level pool statistics — same family, EPISODE units.
 
@@ -315,8 +330,11 @@ def episode_profile(
     floor is a resampling impossibility, not a noise threshold; quantiles over two episodes rest
     on two episodes, which ``n_episodes`` says out loud). An empty pool is the zero block: zero
     counts and streaks, NaN statistics. ``n_episodes == episode_stats.n_clusters`` on the same
-    rows by construction — a reader-checkable reconciliation, deliberately not gated. Evidence
-    only; no check reads any field here."""
+    rows by construction — a reader-checkable reconciliation, deliberately not gated. Over rows
+    that mix targets' units (:func:`_mixes_units`) no episode has a mean or an excursion extreme
+    with a unit: every statistic reads as over unknown means, NaN with zero streaks and empty
+    excursion blocks, beside the real ``n_episodes``. Evidence only; no check reads any field
+    here."""
     view = _episode_view(trades, rets_pool)
     if view is None:
         return {
@@ -343,19 +361,20 @@ def episode_profile(
 
     # Clusters arrive in time order (the greedy chain opens them at strictly increasing starts),
     # so the streak walk below IS the calendar walk.
-    ret_means = _episode_means(pool, clusters)
+    mixed = _mixes_units(df, commensurable)
+    ret_means = np.full(len(clusters), _NAN) if mixed else _episode_means(pool, clusters)
     # EPISODE-ALIGNED excursion aggregates — one slot per cluster, NaN where the cluster carries
-    # no finite value in that leg. The quantile blocks below read each leg's own finite subset
-    # (as ever), while `edge_ratio` reads the ALIGNED pair, so an episode censored on one side
-    # feeds its surviving leg's block but never the ratio.
+    # no finite value in that leg (or no unit to compare them in). The quantile blocks below read
+    # each leg's own finite subset (as ever), while `edge_ratio` reads the ALIGNED pair, so an
+    # episode censored on one side feeds its surviving leg's block but never the ratio.
     mae_by_episode = np.full(len(clusters), _NAN)
     mfe_by_episode = np.full(len(clusters), _NAN)
     for i, c in enumerate(clusters):
         finite_mae = mae[c][np.isfinite(mae[c])]
-        if finite_mae.size:
+        if finite_mae.size and not mixed:
             mae_by_episode[i] = float(finite_mae.min())
         finite_mfe = mfe[c][np.isfinite(mfe[c])]
-        if finite_mfe.size:
+        if finite_mfe.size and not mixed:
             mfe_by_episode[i] = float(finite_mfe.max())
     mae_mins = mae_by_episode[np.isfinite(mae_by_episode)]
     mfe_maxes = mfe_by_episode[np.isfinite(mfe_by_episode)]

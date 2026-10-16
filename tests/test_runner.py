@@ -3286,6 +3286,58 @@ def test_log_outcome_of_a_closed_price_cycle_reads_exactly_zero(tmp_path):
     assert run(_gt0(smoothed)).summary["cells"][0]["by_target"]["target"]["n"] == 0
 
 
+def test_diff_conjunction_withholds_the_cross_target_value_reads(tmp_path):
+    """The review's pair under conjunction: a rate rising 1/1024 a bar beside an index falling
+    1/64, one-bar `diff` outcomes, an unconditional entry. Each target's own panel is in its own
+    level units, but the episode means and |return|-mass shares, the excursion extremes and the
+    buckets pooled by ordinal summed a rate change with index points — quoting the rate in bp
+    flipped the episode mean (−0.0073 → 4.875), its hit rate (0 → 1) and every bucket mean.
+    Those reads are null; the counts and the per-target panels stand, and so does every value
+    under `pct` or over one target."""
+    n = 100
+    t = np.arange(n, dtype=float)
+    levels = {"rate": 1.0 + t / 1024.0, "index": 100.0 - t / 64.0}
+    files = {k: _series_bars(tmp_path / f"{k}.csv", list(v)) for k, v in levels.items()}
+
+    def cell(kind, targets):
+        thesis = Thesis.model_validate(
+            {
+                "name": "units",
+                "data": {"targets": targets},
+                "entry": _gt(-1e9),
+                "params": {"horizon": 1, "outcome": {"kind": kind}},
+            }
+        )
+        res = run_backtest(thesis, load(thesis, {k: files[k] for k in targets}))
+        return res.summary["cells"][0]
+
+    mixed = cell("diff", ["rate", "index"])
+    assert mixed["by_target"]["rate"]["mean_ret"] == 1.0 / 1024.0
+    assert mixed["by_target"]["index"]["mean_ret"] == -1.0 / 64.0
+    stats = mixed["episode_stats"]
+    assert stats["n"] == 196 and stats["n_clusters"] > 0
+    for key in ("largest_cluster_share_abs", "max_cluster_share_abs", "mass_hhi"):
+        assert math.isnan(stats[key]), key
+    entries = mixed["episodes"]["entries"]
+    assert entries and all(
+        math.isnan(e["mean_ret"]) and math.isnan(e["share_abs"]) for e in entries
+    )
+    prof = mixed["episode_profile"]
+    assert prof["n_episodes"] == stats["n_clusters"]
+    assert math.isnan(prof["mean_ret"]) and math.isnan(prof["hit_rate"])
+    assert prof["max_win_streak"] == prof["max_loss_streak"] == 0
+    assert prof["mae_quantiles"]["n"] == prof["mfe_quantiles"]["n"] == 0
+    panels = [p for p in mixed["conditional_buckets"].values() if p["reason"] is None]
+    assert panels and all(
+        math.isnan(b["mean_ret"]) and b["n"] > 0 for p in panels for b in p["buckets"]
+    )
+    assert mixed["bucket_monotonicity"] == {}
+    # one unit per read: every value stands under pct, and over the rate alone under diff
+    for commensurate in (cell("pct", ["rate", "index"]), cell("diff", ["rate"])):
+        assert math.isfinite(commensurate["episode_profile"]["mean_ret"])
+        assert math.isfinite(commensurate["episode_stats"]["max_cluster_share_abs"])
+
+
 def test_pct_outcome_past_the_double_range_censors_silently(tmp_path):
     """A pct return whose ratio overflows (1e-200 → 1e200) has no double to be: it censors as
     `no_outcome` like any unmeasurable window — without the RuntimeWarning the overflow raised —

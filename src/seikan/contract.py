@@ -1296,7 +1296,9 @@ REPORT_FIELDS: dict[str, JsonValue] = {
             "cross-target merged episode clusters over the cell's closed rows: {n, n_clusters, "
             "largest_cluster_n, largest_cluster_share_abs, largest_cluster_start, "
             "max_cluster_share_abs, mass_hhi, effective_n_clusters} — the checklist reads only "
-            "n and max_cluster_share_abs; the hhi pair is the smooth evidence-only companion"
+            "n and max_cluster_share_abs; the hhi pair is the smooth evidence-only companion; "
+            "every share is null over a diff outcome's rows of several targets, each in its own "
+            "level units"
         ),
         "episodes": (
             "the time-ordered episode LEDGER under episode_stats: {entries: [{start, end, n, "
@@ -1305,8 +1307,9 @@ REPORT_FIELDS: dict[str, JsonValue] = {
             "episode_stats.n_clusters; an entry's mean_ret is the exactly rounded sum of its rows "
             "over their count, and in a cross_mean basket it reads each bar's rows at their EXACT "
             "excess sum (0 on a full bar, every member closed), while share_abs stays each row's "
-            "own |ret|; an entry's mean_ret is null where its rows' sum left the double range "
-            "(evidence-only)"
+            "own |ret|; an entry's mean_ret is null where its rows' sum left the double range, "
+            "and every mean_ret / share_abs / omitted_share_abs is null over a diff outcome's "
+            "rows of several targets (level units that do not add) (evidence-only)"
         ),
         "episode_profile": (
             "the episode-deduplicated TWIN of the row-level pool statistics: {n_episodes, "
@@ -1316,7 +1319,9 @@ REPORT_FIELDS: dict[str, JsonValue] = {
             "merge as episode_stats — n_episodes == episode_stats.n_clusters by construction; "
             "row-vs-episode divergence is the cluster diagnostic, reported never corrected; "
             "emits always; in basket it doubles as the pooled episode read, its episode means "
-            "summed like the episodes ledger's (evidence-only)"
+            "summed like the episodes ledger's; over a diff outcome's rows of several targets "
+            "no episode mean or excursion extreme has a unit, so every statistic is null, the "
+            "streaks 0 and the excursion blocks empty beside the real n_episodes (evidence-only)"
         ),
         "conditional_buckets / bucket_monotonicity": (
             "PER-CELL feature conditioning over the cell's own closed rows, pooled across its "
@@ -1325,8 +1330,9 @@ REPORT_FIELDS: dict[str, JsonValue] = {
             "run-level pooled pair; in a cross_mean basket a bucket's mean_ret reads the rows "
             "of a bar that land wholly in it at their EXACT excess sum (0 on a full bar, every "
             "member closed), while n and hit_rate stay each row's own; a "
-            "bucket's mean_ret is null where its returns' sum left the double range, and that "
-            "feature then carries no {rho, sign} (evidence-only)"
+            "bucket's mean_ret is null where its returns' sum left the double range, or where "
+            "it pools a diff outcome's rows of several targets (level units that do not add), "
+            "and that feature then carries no {rho, sign} (evidence-only)"
         ),
         "feature_association": (
             "per feature × target {rho, n, reason} — Spearman between the entry-time feature "

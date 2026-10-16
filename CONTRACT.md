@@ -375,7 +375,10 @@ episode_stats.n_clusters` by construction, it emits ALWAYS — descriptive stati
 refuse on thinness — and row-vs-episode divergence is the visible cluster diagnostic, reported
 never corrected), `conditional_buckets`/`bucket_monotonicity` (per-cell, pooled across
 the cell's own targets with explicit refusal reasons) and `feature_association` (per-target
-Spearman, no p-value) — plus, on BASKET cells only (absent, not null, on conjunction cells),
+Spearman, no p-value) — where a `diff` outcome's rows span several targets, each in its own level
+units, every value these blocks pool ACROSS targets is null (the episode means, |return|-mass
+shares and excursion extremes, an ordinal bucket's `mean_ret` and with it the monotonicity read;
+the counts, the timing and every per-target panel stand) — plus, on BASKET cells only (absent, not null, on conjunction cells),
 `pooled`: the cell's one cross-target evidence pool over the concatenated (bar × member) closed
 rows (n / n_nonoverlap / mean_ret / mean_ret_raw / mean_ret_bench / benchmark_regression / hit_rate /
 win_loss_ratio / profit_factor / std_ret / skewness / kurtosis / tail_ratio / cvar_5 / t_hac /

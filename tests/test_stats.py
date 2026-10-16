@@ -562,6 +562,74 @@ def test_cell_conditional_buckets_aggregates_ordinals_across_targets():
     assert [b["hit_rate"] for b in block["buckets"]] == pytest.approx([1.0, 1.0, 1.0, 0.5])
 
 
+def test_cell_conditional_buckets_withhold_means_across_incommensurable_targets():
+    # Under a `diff` outcome each target is in its own level units: a record pooling both
+    # members' rows by ordinal has no unit for its mean — null, and so no monotonicity ranks the
+    # records — while its n and hit_rate (a count, a share of signs) stand. One participating
+    # target's records keep their means.
+    feat = np.repeat([1.0, 2.0, 3.0, 4.0], 3)
+    frame = pd.DataFrame(
+        {
+            "target": ["A"] * 12 + ["B"] * 12,
+            "feat": np.concatenate([feat, 100.0 + feat]),
+            "ret": np.concatenate(
+                [np.repeat([0.04, 0.03, 0.02, 0.01], 3), np.repeat([0.08, 0.06, 0.04, -0.02], 3)]
+            ),
+        }
+    )
+    plain = cell_conditional_buckets(frame, ["feat"])
+    held = cell_conditional_buckets(frame, ["feat"], commensurable=False)
+    pairs = zip(
+        plain["conditional_buckets"]["feat"]["buckets"],
+        held["conditional_buckets"]["feat"]["buckets"],
+        strict=True,
+    )
+    for p, h in pairs:
+        assert math.isnan(h["mean_ret"]) and (h["n"], h["hit_rate"]) == (p["n"], p["hit_rate"])
+    assert plain["bucket_monotonicity"] and held["bucket_monotonicity"] == {}
+    one = frame[frame["target"] == "A"]
+    assert cell_conditional_buckets(one, ["feat"], min_n=10, commensurable=False) == (
+        cell_conditional_buckets(one, ["feat"], min_n=10)
+    )
+
+
+def test_episode_panels_withhold_value_reads_across_incommensurable_targets():
+    # The same rule over the cross-target episode merge: over two targets' rows every mean,
+    # |return|-mass share and excursion extreme is NaN — the profile reads as over unknown
+    # means, zero streaks and empty excursion blocks — beside the real counts and extents; one
+    # target's rows keep every value.
+    day = pd.Timedelta(days=1)
+    base = pd.Timestamp("2022-01-03")
+    starts = (0, 0, 10, 10, 20)
+    rows = pd.DataFrame(
+        {
+            "entry_time": [base + d * day for d in starts],
+            "exit_time": [base + (d + 3) * day for d in starts],
+            "ret": [0.25, -2.0, 0.5, -1.0, 0.125],
+            "target": ["rate", "index", "rate", "index", "rate"],
+            "mae": [-0.5, -3.0, -0.25, -2.0, -0.125],
+            "mfe": [0.5, 1.0, 0.75, 0.5, 0.25],
+        }
+    )
+    stats = episode_stats(rows, commensurable=False)
+    assert (stats["n"], stats["n_clusters"], stats["largest_cluster_n"]) == (5, 3, 2)
+    assert math.isnan(stats["max_cluster_share_abs"]) and math.isnan(stats["mass_hhi"])
+    ledger = episode_ledger(rows, cap=2, commensurable=False)
+    assert [e["n"] for e in ledger["entries"]] == [2, 2] and ledger["n_omitted"] == 1
+    assert all(math.isnan(e["mean_ret"]) and math.isnan(e["share_abs"]) for e in ledger["entries"])
+    assert math.isnan(ledger["omitted_share_abs"])
+    prof = episode_profile(rows, commensurable=False)
+    assert prof["n_episodes"] == 3 and math.isnan(prof["mean_ret"]) and math.isnan(prof["hit_rate"])
+    assert prof["max_win_streak"] == prof["max_loss_streak"] == 0
+    assert prof["mae_quantiles"]["n"] == prof["mfe_quantiles"]["n"] == 0
+    assert math.isnan(prof["edge_ratio"])
+    rate = rows[rows["target"] == "rate"]
+    assert episode_profile(rate, commensurable=False)["mean_ret"] == exact_mean(
+        np.array([0.25, 0.5, 0.125])
+    )
+    assert episode_stats(rate, commensurable=False)["max_cluster_share_abs"] == 0.5 / 0.875
+
+
 def test_cell_conditional_buckets_single_target_column_is_identical():
     # A constant `target` column routes through the same verbatim kernel path as no column at
     # all: single-target cells are bit-identical to the pre-v3 pooled read, interval labels
