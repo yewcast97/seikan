@@ -474,7 +474,8 @@ def _preflight_outputs(
     paths are one file when the filesystem reports one (device, inode) for both
     (``os.path.samestat``) — no spelling heuristic, the volume's own answer.
 
-    Non-destructive: every file the probe had to create is removed again, on every exit. A
+    Non-destructive: every file the probe had to create is removed again, on every exit — for a
+    dangling symlink that is the file created at its target, the link itself left in place. A
     MID-run write failure still surfaces as exit 4 — this only preflights the obvious cases
     (missing directory, unwritable path, a path that is itself a directory)."""
     created: list[Path] = []
@@ -490,7 +491,7 @@ def _preflight_outputs(
             except OSError as exc:
                 raise _UsageError(f"output path {raw!r} is not writable: {exc}", "run") from exc
             if not existed:
-                created.append(p)
+                created.append(p.resolve())  # a dangling link's TARGET, never the link itself
             for other_flag, other_raw, other_st in probed:
                 if os.path.samestat(st, other_st):
                     raise _UsageError(

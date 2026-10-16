@@ -3368,6 +3368,22 @@ def test_trades_out_preflight_leaves_existing_file_untouched(tmp_path, capsys):
     assert out.read_text(encoding="utf-8") == "PRECIOUS"
 
 
+def test_preflight_leaves_a_dangling_output_symlink_and_its_target_alone(tmp_path, capsys):
+    # A dangling symlink reads as absent, so the probe's append open creates the link's TARGET.
+    # The cleanup unlinked the nominated path — the LINK — so a run that then failed on the data
+    # deleted the caller's symlink and left an empty file where it pointed.
+    bad = tmp_path / "bad.csv"
+    bad.write_text("datetime,close\nnot-a-date,1\n", encoding="utf-8")
+    thesis = _write_thesis(tmp_path / "t.json")
+    target = tmp_path / "runs" / "latest.json"
+    target.parent.mkdir()
+    link = tmp_path / "report.json"
+    link.symlink_to(target)
+    code, _doc = _run(capsys, ["run", str(thesis), *_target(bad), "--report-out", str(link)])
+    assert code == 2  # data error, after the preflight passed
+    assert link.is_symlink() and not target.exists()
+
+
 def test_thresholds_provenance_records_default_env_cli(tmp_path, capsys, monkeypatch):
     px = _write_ohlcv(tmp_path / "px.csv")
     thesis = _write_thesis(tmp_path / "t.json")
