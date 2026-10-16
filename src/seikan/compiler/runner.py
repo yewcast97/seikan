@@ -59,6 +59,7 @@ from seikan.analysis.stats import (
     episode_profile,
     episode_stats,
     exact_mean,
+    exact_sum,
     feature_outcome_association,
     mae_block,
     mfe_block,
@@ -899,8 +900,7 @@ def _cells_panel(
                 "n_bars": int(n_bars),
                 "n_undefined": int(undef[:, g].sum()),
             }
-            with np.errstate(over="ignore"):  # an overflowed mass has no shares (see below)
-                mass_by_target[tgt] = float(np.abs(rets_t).sum())
+            mass_by_target[tgt] = exact_sum(np.abs(rets_t))  # NaN past the range (see below)
             for fname in feature_names:
                 vals = closed_t[fname].to_numpy(dtype=float) if not closed_t.empty else np.empty(0)
                 fa.setdefault(fname, {})[tgt] = feature_outcome_association(vals, rets_t)
@@ -922,11 +922,11 @@ def _cells_panel(
             # carried the pool is exactly what an industry report needs, and is never a
             # per-member verdict.
             prc = pooled_per_cell.get(combo_key, _MISSING_RELIABILITY)
-            # An OVERFLOWED total has no shares either: every member's would read x / inf = 0.0 —
-            # a perfectly spread basket the ceiling passes. NaN joins the zero-mass rule below.
-            total_mass = sum(mass_by_target.values())
-            if not np.isfinite(total_mass):
-                total_mass = _NAN
+            # The pooled rows' exactly rounded |return| mass: no member's exact mass exceeds it,
+            # so no share passes 1. An OVERFLOWED total is NaN and has no shares either — every
+            # member's would read x / inf = 0.0, a perfectly spread basket the ceiling passes —
+            # by the zero-mass rule below.
+            total_mass = exact_sum(np.abs(rows_closed["ret"].to_numpy(dtype=float)))
             # A full decomposition over every declared member, NEVER ranked — the raw material
             # of the "not one name" ceiling. Zero total mass → NaN shares, which the checklist
             # refuses rather than waves through (the empty-pool concentration precedent).

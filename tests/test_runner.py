@@ -4392,7 +4392,8 @@ def test_cross_mean_ledger_rebuilds_from_the_trades_csv_past_its_cap(tmp_path):
     # The `trades_csv.derived_views` recipe, followed on the written file: the cell's CLOSED rows
     # in (entry_time, target) order, the greedy half-open merge across targets, each entry's
     # mean over its rows' ret with every FULL bar's rows (every member closed) at 0.0, share_abs
-    # over each row's own |ret|. Past the cap, where the CSV is the only source and every
+    # over each row's own |ret| (exact sums; the omitted share is that of the omitted rows' mass).
+    # Past the cap, where the CSV is the only source and every
     # episode is one full bar, it reproduces the report exactly — 0.0, never the residue their
     # rounded rows average to. A partial bar's exact sum needs every member's leg, which the CSV
     # does not hold; there the recipe's rows agree with the report to rounding.
@@ -4420,20 +4421,22 @@ def test_cross_mean_ledger_rebuilds_from_the_trades_csv_past_its_cap(tmp_path):
             clusters[-1].append(i)
             end = max(end, exit_[i])
     mass = np.abs(ret)
+    total = math.fsum(mass)
     rebuilt = [
         {
             "start": pd.Timestamp(entry[c[0]]).isoformat(),
             "end": pd.Timestamp(exit_[c].max()).isoformat(),
             "n": len(c),
             "mean_ret": float(np.mean(pool[c])),
-            "share_abs": float(mass[c].sum() / mass.sum()),
+            "share_abs": math.fsum(mass[c]) / total,
         }
         for c in clusters
     ]
     led = res.summary["cells"][0]["episodes"]
     cap = led["cap"]
     assert led["n_total"] == len(rebuilt) == 52 and led["n_omitted"] == 52 - cap
-    assert led["omitted_share_abs"] == sum(e["share_abs"] for e in rebuilt[cap:])
+    omitted = [i for c in clusters[cap:] for i in c]
+    assert led["omitted_share_abs"] == math.fsum(mass[omitted]) / total
     for got, want in zip(led["entries"], rebuilt[:cap], strict=True):  # bars 6..20 partial
         assert {**got, "mean_ret": None} == {**want, "mean_ret": None}
         assert got["mean_ret"] == pytest.approx(want["mean_ret"], rel=1e-15)

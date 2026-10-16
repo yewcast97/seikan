@@ -867,7 +867,11 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   block moments are exactly rounded sums (a column's returns about its exactly rounded mean, and
   their squares), the same doubles in any row order: two candidates holding the same returns in
   every block, in other orders, ranked apart by row-order rounding (`pbo` 0.571 for a grid of
-  full ties); a split's sum over its blocks stays ordinary arithmetic.
+  full ties); a split's sum over its blocks stays ordinary arithmetic. The |return|-mass shares
+  (`top_share_abs`, the episode shares, `member_share`) divide exactly rounded masses, so no
+  share passes 1 — summed in floating point, five masses among 95 zeros read a top share of
+  1.0000000000000002 — and `mass_hhi` / `effective_n_clusters` are the correctly rounded values
+  of exact arithmetic over the cluster masses, the latter within `[1, n_clusters]`.
   The means a DECISION reads are exactly rounded the same way: `rolling_agg` and `cross_agg` `mean`,
   and the `cross_mean` bench leg (`nb.cross_means`), are the window's or the bar's exactly rounded
   sum over its count, in any bar or member order (summed pairwise, `[1, −2**-54, −1, 2**-54, 0]`

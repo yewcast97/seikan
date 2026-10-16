@@ -245,7 +245,9 @@ def concentration(rets: np.ndarray, top_frac: float = 0.05) -> ConcentrationBloc
     (``n_nonoverlap`` shows overlap inflation, this shows MASS concentration). The per-cell
     concentration checklist reads ``top_share_abs`` against a ceiling; an empty pool yields NaN,
     which that checklist refuses rather than waves through — and so does a pool whose total
-    |return| mass leaves the double range (:func:`_finite_ratio`)."""
+    |return| mass leaves the double range (:func:`_finite_ratio`). Both masses are exactly
+    rounded sums, so the top's never exceeds the total's and the share never exceeds 1: summed
+    in floating point, five masses among 95 zeros read 1.0000000000000002."""
     rets = np.asarray(rets, dtype=float)
     rets = rets[~np.isnan(rets)]
     n = rets.shape[0]
@@ -253,9 +255,9 @@ def concentration(rets: np.ndarray, top_frac: float = 0.05) -> ConcentrationBloc
         return {"top_share_abs": _NAN, "n_top": 0, "top_frac": float(top_frac)}
     k = max(1, math.ceil(top_frac * n))
     mag = np.sort(np.abs(rets))[::-1]
-    total = float(mag.sum())
+    total = exact_sum(mag)
     # an OVERFLOWED total mass read top/inf = 0.0 — "no concentration", which the ceiling passes
-    share = _finite_ratio(float(mag[:k].sum()), total) if total > 0 else _NAN
+    share = _finite_ratio(exact_sum(mag[:k]), total) if total > 0 else _NAN
     return {"top_share_abs": share, "n_top": int(k), "top_frac": float(top_frac)}
 
 

@@ -2295,6 +2295,15 @@ def test_concentration_of_an_overflowed_mass_is_nan_never_a_passing_zero():
     assert out["n_top"] == 5 and np.isnan(out["top_share_abs"])
 
 
+def test_concentration_share_never_passes_one():
+    # The review's case: five masses among 95 zeros. Summed pairwise, the total's eight-way
+    # accumulation rounded the five otherwise than their own sum, and the top 5% held
+    # 1.0000000000000002 of it. A subset's exact sum never exceeds the whole's.
+    top = [0.8605673135181114, 0.6019700926291229, 0.43127194749784414, 0.29344776720559157]
+    out = concentration(np.r_[top, 0.2448757820521963, np.zeros(95)])
+    assert out["n_top"] == 5 and out["top_share_abs"] == 1.0
+
+
 def test_episode_stats_overlapping_vs_disjoint():
     day = pd.Timedelta(days=1)
     base = pd.Timestamp("2021-01-01")
@@ -2365,6 +2374,40 @@ def test_episode_stats_mass_hhi_hand_computed():
     assert out["effective_n_clusters"] == pytest.approx(2.0)
     zero = episode_stats(frame.assign(ret=[0.0, 0.0]))
     assert np.isnan(zero["mass_hhi"]) and np.isnan(zero["effective_n_clusters"])
+
+
+def test_episode_shares_and_the_hhi_pair_hold_their_bounds():
+    # A zero-mass episode (three rows of 0.0) before one of [0.1, 0.1, 0.1, 0.1, 0.2]: summed
+    # pairwise, the pool's mass rounded below the episode's own, and the share read
+    # 1.0000000000000002, the hhi 1.0000000000000004, the effective count 0.9999999999999996 and
+    # the ledger's omitted share past a cap of one 1.0000000000000002. Five equal episodes of 0.3
+    # read an effective count of 5.000000000000001, past n_clusters. Exact masses and the exact
+    # hhi pair hold every bound.
+    day = pd.Timedelta(days=1)
+    base = pd.Timestamp("2021-01-01")
+    days = [0, 1, 2, 200, 201, 202, 203, 204]
+    frame = pd.DataFrame(
+        {
+            "entry_time": [base + d * day for d in days],
+            "exit_time": [base + (d + 5) * day for d in days],
+            "ret": [0.0, 0.0, 0.0, 0.1, 0.1, 0.1, 0.1, 0.2],
+        }
+    )
+    out = episode_stats(frame)
+    assert out["n_clusters"] == 2
+    assert out["max_cluster_share_abs"] == out["largest_cluster_share_abs"] == 1.0
+    assert out["mass_hhi"] == 1.0 and out["effective_n_clusters"] == 1.0
+    assert [e["share_abs"] for e in episode_ledger(frame)["entries"]] == [0.0, 1.0]
+    assert episode_ledger(frame, cap=1)["omitted_share_abs"] == 1.0
+    equal = pd.DataFrame(
+        {
+            "entry_time": [base + 10 * i * day for i in range(5)],
+            "exit_time": [base + (10 * i + 2) * day for i in range(5)],
+            "ret": [0.3] * 5,
+        }
+    )
+    eq = episode_stats(equal)
+    assert eq["n_clusters"] == 5 and eq["mass_hhi"] == 0.2 and eq["effective_n_clusters"] == 5.0
 
 
 def test_episode_shares_of_an_overflowed_mass_are_nan_never_a_passing_zero():

@@ -1141,8 +1141,8 @@ at its cap, while this CSV never truncates, so rebuild past-the-cap entries from
 every FULL bar — an `entry_bar` on which every member has a closed row in the cell — before
 averaging an entry's `mean_ret` (their excesses sum to exactly 0, which their rounded `ret` values
 miss by residue); any other bar's exact sum needs the legs of members with no row here, so its
-rows' `ret` match the report to rounding (`share_abs` stays on each row's own `|ret|`). The
-columns:
+rows' `ret` match the report to rounding (`share_abs` stays on each row's own `|ret|`: the
+episode's mass over the cell's, each an exactly rounded sum). The columns:
 
 | column | meaning |
 |---|---|
@@ -1258,8 +1258,9 @@ and int64 nanosecond counts silently round in IEEE-754 consumers.)
     `largest_cluster_share_abs` and `largest_cluster_start` describe the largest cluster BY
     ROW COUNT (its size, its mass share, its earliest entry) — a different "largest", so the
     two shares need not agree — and `mass_hhi` / `effective_n_clusters` are the ceiling's
-    smooth companions. (In basket mode the same cross-target merge makes it the pooled episode
-    read for free.)
+    smooth companions. Every mass is an exactly rounded sum, so no share passes 1, and the hhi
+    pair is exact (`effective_n_clusters` within `[1, n_clusters]`). (In basket mode the same
+    cross-target merge makes it the pooled episode read for free.)
   - `episodes` — the TIME-ORDERED episode ledger: the narrative companion to
     `episode_stats`, same frozen overlap merge, entries earliest first — never ranked by share —
     each `{start, end, n, mean_ret, share_abs}`, capped at 32 with mass-conserving truncation
