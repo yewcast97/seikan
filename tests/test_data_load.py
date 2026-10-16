@@ -431,6 +431,32 @@ def test_a_file_bound_under_several_keys_is_read_once(tmp_path, monkeypatch):
     ]
 
 
+@pytest.mark.parametrize(
+    ("last", "lag", "carried"),
+    [
+        # a nanosecond clock at its last instant: no lag fits (pandas raised OverflowError — an
+        # exit 4 out of the load)
+        ("2262-04-11T23:47:16.854775807", "1ns", None),
+        # a microsecond stamp past 2262: a nanosecond lag promotes it out of the nanosecond range
+        # (OutOfBoundsDatetime), while a lag at the stamp's own resolution carries it
+        ("2300-01-01T00:00:00.000001", "1ns", 1),
+    ],
+)
+def test_a_lag_past_the_representable_clock_refuses(tmp_path, last, lag, carried):
+    px = _ohlcv(tmp_path / "px.csv")
+    feed = tmp_path / "f.csv"
+    pd.DataFrame({"datetime": ["2021-01-02", last], "f": [1.0, 2.0]}).to_csv(feed, index=False)
+    files = {"target": str(px), "f": str(feed)}
+    with pytest.raises(DataError) as err:
+        load(_thesis(external={"f": {"lag": lag}}), files)
+    assert _codes(err.value) == {"spec_data_mismatch"}
+    message = err.value.report["errors"][0]["message"]
+    assert "publication lag" in message and "'f'" in message and last[:10] in message
+    if carried is not None:
+        md = load(_thesis(external={"f": {"lag": carried}}), files)
+        assert md.externals_native["f"].index[-1] == pd.Timestamp(last) + pd.Timedelta(days=1)
+
+
 def test_load_retains_native_prints_post_lag_shared_and_per_target(tmp_path):
     # The loader keeps each feed's NATIVE prints (post-lag stamps, values untouched, read-only,
     # NOT sliced by data.start/end) beside the anchored values — what a `native` node reads.

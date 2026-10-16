@@ -108,7 +108,10 @@ column of each to read.
   `"1.0000000001s"` — the clock is nanosecond resolution, and truncating would shift by another
   lag), and so do clock (`"01:30:00"`), ISO-8601 (`"PT1H"`), bare-number (`"5"`) and negative
   forms, and `"nan"`/`"NaT"` (a lag that parsed to NaT silently behaved as zero, the look-ahead
-  direction). Macro prints publish with a delay — model it, e.g. CPI `"lag": 14`.
+  direction). A lag that moves a feed's stamps past the datetime range its clock represents (a
+  nanosecond stamp at `2262-04-11T23:47:16.854775807`, or a coarser stamp past 2262 under a
+  sub-microsecond lag) refuses at load (exit 2, `spec_data_mismatch`). Macro prints publish with a
+  delay — model it, e.g. CPI `"lag": 14`.
 
 **Every feed name referenced by the entry condition must be a key of `data.external`** — validation
 fails upfront (naming the missing feeds) otherwise. The CONVERSE holds too: a declared feed that

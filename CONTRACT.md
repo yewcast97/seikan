@@ -129,7 +129,10 @@ particular bytes is a question only the bytes can answer, so it refuses one tier
 (exit 2, `spec_data_mismatch`): a binding aimed at an OHLCV target, which measures its
 open-anchored prices and had no column to choose in the first place; a name no column carries, the
 refusal listing the ones the file does hold; or a multi-column file with no binding at all, told to
-bind one and which names are available. COL is lowercased at parse and matched case-insensitively
+bind one and which names are available. The same code refuses a feed whose declared `lag` moves
+its stamps past the datetime range its clock represents — the thesis's lag and the file's stamps
+cannot be combined (pandas' overflow there escaped the load as exit 4). COL is lowercased at parse
+and matched case-insensitively
 — the strict reader lowercases every header it admits — so the ONE spelling that reaches the loader
 is also the one the report stamps. Binding per KEY is also WIDER than one document field could be:
 the members of a single per-target feed may bind DIFFERENT columns, which a single DSL field could

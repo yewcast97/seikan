@@ -307,10 +307,20 @@ def _prepare_feed(
         ),
     )
     # Publication lag: shift timestamps to availability time before anchoring, so a value is not
-    # usable on bars before its real release.
+    # usable on bars before its real release. A shift past the clock's range has no instant to
+    # land on — pandas raised OverflowError for a nanosecond stamp near its last instant (an exit
+    # 4 out of the load) and OutOfBoundsDatetime for a coarser stamp past 2262 that a sub-
+    # microsecond lag promotes to nanoseconds — so it refuses, naming the feed, stamp and lag.
     if lag is not None and lag > pd.Timedelta(0):
         s = s.copy()
-        s.index = s.index + lag
+        try:
+            s.index = s.index + lag
+        except (OverflowError, pd.errors.OutOfBoundsDatetime) as exc:
+            raise ValueError(
+                f"external feed {path!r} (key {key!r}): its publication lag {lag} moves its last "
+                f"stamp {s.index[-1].isoformat()} past the datetime range the clock represents "
+                f"({exc}); shorten the lag or end the feed earlier"
+            ) from exc
     return s
 
 

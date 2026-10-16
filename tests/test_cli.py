@@ -2916,6 +2916,29 @@ def test_check_data_pass_and_fail(tmp_path, capsys):
     assert not by_path[str(bad)]["ok"]
 
 
+def test_a_feed_lag_past_the_clock_is_a_data_refusal_never_an_internal_error(tmp_path, capsys):
+    # A feed stamped at the nanosecond clock's last instant, declared with a publication lag:
+    # the shift has no instant to land on, and pandas' OverflowError escaped the load as exit 4.
+    # The file itself is clean (check-data admits it); the thesis's lag and its stamps cannot be
+    # combined — a data refusal, exit 2, under spec_data_mismatch.
+    px = _write_ohlcv(tmp_path / "px.csv")
+    feed = tmp_path / "rate.csv"
+    pd.DataFrame(
+        {"datetime": ["2018-01-02", "2262-04-11T23:47:16.854775807"], "rate": [1.0, 2.0]}
+    ).to_csv(feed, index=False)
+    code, doc = _run(capsys, ["check-data", str(feed)])
+    assert code == 0 and doc["data_report"]["ok"] is True
+    thesis = tmp_path / "t.json"
+    dsl = json.loads(_write_feed_thesis(thesis, ["rate"]).read_text(encoding="utf-8"))
+    dsl["data"]["external"]["rate"]["lag"] = "1ns"
+    thesis.write_text(json.dumps(dsl), encoding="utf-8")
+    out = tmp_path / "r.json"
+    argv = ["run", str(thesis), *_data({"target": px, "rate": feed}), "--report-out", str(out)]
+    code, doc = _run(capsys, argv)
+    assert code == 2 and not out.exists()
+    assert [e["code"] for e in doc["data_report"]["errors"]] == ["spec_data_mismatch"]
+
+
 def test_every_strict_reader_refuses_a_shifted_record_shape(tmp_path, capsys):
     # Every record one field longer than the header: pandas read the first field as an implicit
     # index, so this file passed check-data CLEAN (exit 0) with its first dates silently
