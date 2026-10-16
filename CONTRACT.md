@@ -831,13 +831,18 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   / `mad` / demeaned value of 0.0 and an undefined (NaN) z-score / correlation, and the EW
   recurrences never leave the interval their exact update lies in (a constant input stays exactly
   itself; a held input is approached strictly from its own side — one ulp short of the value at
-  the closest, never on it, so `x > ema(x)` keeps exact arithmetic's answer through a hold — and
-  its EW z-score decays, keeping the sign exact arithmetic gives it, instead of locking: its mean
-  is compensated — carried as two doubles, each update taken with TwoSum — so a deviation at the
-  level's ulp keeps its bits, a step whose update rounds the mean onto the new value keeps its
-  gap, a hold onto the exact mean reads a decided 0.0, and the z never passes its bound
-  `√((1−α)/α)` — a plain mean read `[1, 1, 1 + 2**-52]` at α 0.5 as z 2, off a mean rounded
-  back onto 1, where the exact z is 1).
+  the closest, never on it, so `x > ema(x)` keeps one answer through a hold — and its EW z-score
+  decays instead of locking, keeping one sign: its mean is compensated — carried as two doubles,
+  each update taken with TwoSum — so a deviation at the level's ulp keeps its bits, a step whose
+  update rounds the mean onto the new value keeps its gap, a hold onto the COMPUTED mean reads a
+  decided 0.0, and the z never passes its bound `√((1−α)/α)` — a plain mean read `[1, 1,
+  1 + 2**-52]` at α 0.5 as z 2, off a mean rounded back onto 1, where the exact z is 1). That
+  answer and that sign are exact arithmetic's wherever the exact mean sits off the held value by
+  more than the rounding of its steps. Within it they are the rounding's: `[0.1, 0.3,
+  −0.09999999999999999]` then 0.05 held has, at window 3, an exact mean of exactly 0.05 from bar 2
+  on — neither side of the hold — while the `ema` sits one ulp above it (bar 1's update rounded up
+  at a tie), so `x < ema(x)` holds on all 157 held bars, and the z-score reads 5.9e-17, so
+  `z > 0` does. Closing that needs the exact mean, a rational that grows with every step.
   In the statistics: a constant pool has `std_ret` 0.0, no bucket-monotonicity rank and a degenerate
   bootstrap (`boot_se` 0.0, `ci_lo == ci_hi` on the pool's own arithmetic mean — the value itself
   where that mean's sum overflowed — as for any pool whose resampled means are bit-identical on

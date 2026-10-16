@@ -1024,10 +1024,14 @@ def zscore_ema_1d(
     held value and the deviation decays in ``lo``, so ``z > 0`` reads the same on every bar of a
     hold, however long (a plain mean stuck a few ulps off the value, its deviation froze at that
     residue and the z locked at ``±1/√(1−α)``). A step of a few ulps whose update rounds ``mu``
-    ONTO the new value keeps its gap in ``lo``, and an input that moves exactly onto the mean reads
-    a decided 0.0 for as long as it holds — exact arithmetic's z, to the mean's rounding. The z is
-    clipped to ``±√((1−α)/α)``: the exact z never exceeds that bound, and a step off a flat
-    stretch sits ON it, where the ratio's last rounding could carry it past.
+    ONTO the new value keeps its gap in ``lo``, and an input that moves exactly onto the computed
+    mean ``mu + lo`` reads a decided 0.0 for as long as it holds. The sign through a hold is exact
+    arithmetic's wherever the exact mean sits off the held value by more than its steps' rounding
+    (``t = lo + α·d`` rounds once a step); a held value the exact mean lands on within that
+    rounding reads the sign the rounding left: ``[0.1, 0.3, −0.09999999999999999]`` then 0.05 at
+    α 0.5 has exact z 0 on every held bar, and reads 5.9e-17. The z is clipped to
+    ``±√((1−α)/α)``: the exact z never exceeds that bound, and a step off a flat stretch sits ON
+    it, where the ratio's last rounding could carry it past.
 
     Out of range: the squares of deviations under ~1.5e-154 lose their bits, and an input that
     DECAYS geometrically — an ``ema`` of a change over a held stretch, from ordinary levels — gets
@@ -1132,7 +1136,11 @@ def ema_1d(arr: npt.NDArray[np.float64], alpha: float, warmup: int) -> npt.NDArr
     drifted a few ulps off itself (``x > ema(x)`` then read a sign on a flat feed), and a held
     stretch could settle on the wrong side of the held value or ON it (``x <= ema(x)`` then fired
     on held bars exact arithmetic keeps above the mean). The guard binds only where the rounded
-    update left the open interval — every other step is bit-identical."""
+    update left the open interval — every other step is bit-identical. The side of a held value
+    the EMA keeps is the one its rounded updates left it on: exact arithmetic's wherever the exact
+    mean sits off the value by more than that rounding, the rounding's within it
+    (``[0.1, 0.3, −0.09999999999999999]`` then 0.05 at α 0.5: exactly 0.05 from bar 2, computed one
+    ulp above, so ``x < ema(x)`` on every held bar)."""
     n = arr.shape[0]
     out = np.full(n, np.nan)
     if warmup < 1 or not (0.0 < alpha <= 1.0):

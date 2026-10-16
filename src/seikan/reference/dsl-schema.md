@@ -323,13 +323,19 @@ value, a `std` / `mad` / `cross_demean` of exactly `0.0`, and an undefined (NaN)
 (`(0.1 + 0.1 + 0.1) / 3 != 0.1`). The EW pair holds the same line: `ema` of a constant is exactly
 the constant and approaches a held value strictly from its own side (one ulp short at the
 closest, never on it, so `x > ema(x)` reads "above its EW mean" through the whole hold), and
-`zscore` with `mean_type: "ema"` decays on a held stretch — keeping the sign exact arithmetic
-gives it, so `z > 0` reads the same through the whole hold, however long — instead of locking at
+`zscore` with `mean_type: "ema"` decays on a held stretch — keeping its sign, so `z > 0` reads
+the same through the whole hold, however long — instead of locking at
 `±1/√(1−α)`. Its mean is COMPENSATED (carried as two doubles, each update taken with TwoSum), so a
 deviation at the level's ulp keeps its bits: a step whose update rounds the mean onto the new
-value keeps its gap, an input that moves exactly onto the mean reads a decided 0.0 for as long as
-it holds, and the z never passes its bound `√((1−α)/α)` (a plain mean read `[1, 1, 1 + 2**-52]`
-at α 0.5 as z 2 for the exact 1). So a feed stuck at a constant never reads as a z-score of ±1, a
+value keeps its gap, an input that moves exactly onto the computed mean reads a decided 0.0 for as
+long as it holds, and the z never passes its bound `√((1−α)/α)` (a plain mean read `[1, 1, 1 +
+2**-52]` at α 0.5 as z 2 for the exact 1). Both read exact arithmetic's side of a held value
+wherever their exact mean sits off it by more than the rounding of its steps; a mean landing on the
+held value within that rounding reads the side the rounding left it on — `[0.1, 0.3,
+−0.09999999999999999]` then 0.05 held, at window 3, has an exact mean of exactly 0.05 from bar 2
+on, yet the `ema` sits one ulp above (`x < ema(x)` on every held bar) and the z-score at 5.9e-17
+(`z > 0`), where exact arithmetic reads neither side.
+So a feed stuck at a constant never reads as a z-score of ±1, a
 correlation of 1 or a sign against its own average, and the zero-dispersion recipes below divide by an exact zero
 (→ NaN, never fires). A zero-dispersion bar after the series has initialized is UNDECIDABLE, like
 `x / 0`: it lands in `signal_coverage` and leaves the cell unmet — guard a z-score of a series that
