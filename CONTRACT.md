@@ -852,18 +852,17 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   arithmetic mean, save that each bootstrap episode's sum is exactly rounded too — summed in
   floating point, eight episodes of `[1, −2**54, −1, 2**54]` read a zero-width interval at 0.25
   beside a `mean_ret` of 0; a draw's sum over its episodes' sums stays ordinary arithmetic.
-  The means a DECISION reads are exactly rounded the same way: `rolling_agg` and `cross_agg`
-  `mean`, and the cross-section centre that `cross_agg`'s `std` and the `cross_mean` bench leg
-  take (`nb.cross_centre`), are the window's or the bar's exactly rounded sum over its count, in
-  any bar or member order (summed pairwise, `[1, −2**-54, −1, 2**-54, 0]` read a mean of 1.1e-17
-  in one member order and 0 in another, so `cross_agg(x, mean) > 0` fired on the order the
-  targets were declared in); a deviation from a cross-section's mean that is READ — `cross_demean`
-  and the `cross_mean` excess — is the member's exact deviation, its numerator `k·x − S` summed
-  exactly and rounded once over `k` (`nb.cross_deviations`), so a member AT the mean reads exactly
-  0.0 (about the rounded centre, `[0, 1, 1, −1 − 2**-52, −1 + 2**-52]`'s first member read 2.2e-17
-  and `x == 0 AND cross_demean(x) > 0` fired); a window's variance is still taken about its direct
-  two-pass centre (below), so a z-score within the rounding of its window's spread of 0 can read
-  0 or the other sign.
+  The means a DECISION reads are exactly rounded the same way: `rolling_agg` and `cross_agg` `mean`,
+  and the `cross_mean` bench leg (`nb.cross_means`), are the window's or the bar's exactly rounded
+  sum over its count, in any bar or member order (summed pairwise, `[1, −2**-54, −1, 2**-54, 0]`
+  read a mean of 1.1e-17 in one member order and 0 in another, so `cross_agg(x, mean) > 0` fired on
+  the order the targets were declared in); a deviation from a cross-section's mean that is READ —
+  `cross_demean` and the `cross_mean` excess — is the member's exact deviation, its numerator
+  `k·x − S` summed exactly and rounded once over `k` (`nb.cross_deviations`), so a member AT the
+  mean reads exactly 0.0 (about the rounded centre, `[0, 1, 1, −1 − 2**-52, −1 + 2**-52]`'s first
+  member read 2.2e-17 and `x == 0 AND cross_demean(x) > 0` fired); a window's variance is still
+  taken about its direct two-pass centre (below), so a z-score within the rounding of its window's
+  spread of 0 can read 0 or the other sign.
   A post-warmup zero-dispersion bar
   is UNDECIDABLE like `x / 0`: its NaN lands in `signal_coverage`, never fires — guard a z-score
   of a series that can sit flat with `rolling_agg(x, N, std) > 0`. "Equal" means bit-identical: a
@@ -883,14 +882,15 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   sum, and `alpha` stays `mean_raw − beta·mean_bench` on them. A `cross_mean` excess is the
   member's exact deviation, `cross_demean`'s (above): legs `[2**52, 2**52 + 1, 2**52 + 1]` read
   excesses `[0, 1, 1]` for `[−2/3, 1/3, 1/3]` about their rounded mean, two selected rows
-  "beating the basket" by 1 beside an exact pooled mean of 1/3; its bench leg is the bar's mean
-  about its offset (`nb.cross_centre`), rounded once, so `ret == ret_raw − ret_bench` holds to that
-  rounding (exactly under `market`), and a bar whose legs' plain sum overflows still has its mean
-  (only a centred sum past the range voids the bar). `ema` differs from its plain recurrence
-  only on the steps where a rounded update left its exact interval — rounding-scale steps a
-  varying series with repeated values (tick data) can take too; the EW z-score reads the plain
-  West recurrence's value to its rounding (the compensated mean), lifted where that recurrence
-  leaves the normal range (the next bullet).
+  "beating the basket" by 1 beside an exact pooled mean of 1/3; its bench leg is the bar's exactly
+  rounded mean (above), so `ret == ret_raw − ret_bench` holds to that rounding (exactly under
+  `market`) — about the bar's offset, `[0, .5, .5, −.5 − 2**-53, −.5 + 2**-53]` read a bench leg
+  of −1.1e-17 for an exact 0, and a member's regression on it beta 4 for 5 — and a bar of finite
+  legs always has its mean (legs whose plain sum overflows are summed in a scaled frame). `ema`
+  differs from its plain recurrence only on the steps where a rounded update left its exact
+  interval — rounding-scale steps a varying series with repeated values (tick data) can take too;
+  the EW z-score reads the plain West recurrence's value to its rounding (the compensated mean),
+  lifted where that recurrence leaves the normal range (the next bullet).
 - **Out-of-range dispersion is no dispersion, nor a lost one.** The finite-or-NaN line holds for
   INTERMEDIATES too, not only results: `x / inf` is a finite 0.0, so no check on a result can see a
   quotient whose divisor overflowed. A window variance that OVERFLOWED (deviations past ~1.3e154)

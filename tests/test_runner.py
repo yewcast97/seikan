@@ -3858,8 +3858,8 @@ def test_cross_mean_excess_is_antisymmetric_for_two_targets(tmp_path):
     assert res.summary["benchmark_source"] is None
     # the legs attribute the demeaning like the market case: each closed row's bench leg is its
     # bar's basket mean of the signed raw legs, rounded once, so ret == ret_raw − ret_bench to
-    # that rounding (ret is the deviation taken about the bar's offset — exact where the mean's
-    # own rounding is the level's ulp), and the pooled mean_ret_bench is the pooled raw mean —
+    # that rounding (ret is the member's exact deviation from the bar's mean), and the pooled
+    # mean_ret_bench is the pooled raw mean —
     # THIS fixture fires basket-wide (_lt(1e9): every member, every bar), where the pooled excess
     # mean is exactly 0 by construction (as over identical legs — a shared outcome feed); a
     # SELECTIVE signal's pooled mean over distinct legs is the firing subset's tilt, not 0
@@ -4788,12 +4788,10 @@ def _ceiling_basket(tmp_path, tops, *, n=40):
     return run_backtest(thesis, load(thesis, files))
 
 
-def test_cross_mean_bar_mean_is_taken_about_the_bars_offset_and_censors_only_past_the_range(
-    tmp_path,
-):
+def test_cross_mean_bar_mean_survives_legs_whose_sum_leaves_the_double_range(tmp_path):
     # Two members whose pct legs of 1e308 and 1.5e308 sum past the double range: the plain row
     # mean overflowed and every member censored as `no_benchmark` — though the bar's mean,
-    # 1.25e308, is a double. About the bar's offset it is computed: both members close, their
+    # 1.25e308, is a double. Summed in a scaled frame it is computed: both members close, their
     # excesses are ∓(1.5e308 − 1e308)/2, the bench leg is the mean, and every bar being full the
     # pooled mean is exactly 0.
     res = _ceiling_basket(tmp_path, {"A": 1e8, "B": 1.5e8})
@@ -4807,16 +4805,66 @@ def test_cross_mean_bar_mean_is_taken_about_the_bars_offset_and_censors_only_pas
     assert rows["B"]["ret"].iloc[0] == pytest.approx((leg_b - leg_a) / 2.0, rel=1e-15)
     assert rows["A"]["ret_bench"].iloc[0] == pytest.approx(leg_a / 2.0 + leg_b / 2.0, rel=1e-15)
     assert res.summary["cells"][0]["pooled"]["mean_ret"] == 0.0
-    # A bar whose CENTRED sum leaves the range — four members at 1.7e308 beside a flat one, a
-    # centred sum of 2.55e308 — has no computed mean: every member censors as `no_benchmark`
-    # (fail-closed: the gate refuses the censoring), silently, where an overflow warning would
-    # escape the run (an exception under -W error). The flat member's even bars close.
+    # Four members at 1.7e308 beside a flat one: about the bar's offset the centred sum, 2.55e308,
+    # left the range and every member censored as `no_benchmark`, though the bar's mean, 1.36e308,
+    # is a double. Every member closes: the four 3.4e307 above the mean, the flat one 1.36e308
+    # below it.
     res = _ceiling_basket(tmp_path, {"A": 1.7e8, "B": 1.7e8, "C": 1.7e8, "D": 1.7e8, "E": None})
     cov = res.summary["cells"][0]["outcome_coverage"]
     for t in "ABCD":
-        assert cov[t]["n_attempted"] == 19 and cov[t]["n_closed"] == 0
-        assert cov[t]["exit_reasons"]["no_benchmark"] == 19
-    assert cov["E"]["n_closed"] == 19 and cov["E"]["exit_reasons"]["no_benchmark"] == 19
+        assert cov[t]["n_attempted"] == cov[t]["n_closed"] == 19
+    assert cov["E"]["n_closed"] == 38 and cov["E"]["exit_reasons"]["no_benchmark"] == 0
+    closed = res.trades[~res.trades["is_open"]]
+    top = closed[closed["entry_bar"] % 2 == 1]
+    assert len(top) == 5 * 19
+    assert top["ret_bench"].to_numpy() == pytest.approx(1.36e308, rel=1e-15)
+    excess = np.where(top["target"] == "E", -1.36e308, 3.4e307)
+    assert top["ret"].to_numpy() == pytest.approx(excess, rel=1e-15)
+
+
+def test_cross_mean_bench_leg_is_the_bars_exactly_rounded_mean(tmp_path):
+    # The review's case: five members whose pct legs alternate between the bars
+    # [0, .5, .5, −.5 − 2**-53, −.5 + 2**-53], which cancel exactly, and [2**-52, .5, .5, −.5, −.5].
+    # About the first bar's offset three of its five subtractions rounded and the bench leg read
+    # −1.1e-17 for an exact 0, so member A — raw legs [0, 2**-52], exactly five times its bench
+    # legs [0, 2**-52/5] — fitted beta 4 and alpha 4.4e-17. Summed exactly: beta 5, alpha 0.
+    e = 2.0**-53
+    legs = ([0.0, 0.5, 0.5, -0.5 - e, -0.5 + e], [2.0**-52, 0.5, 0.5, -0.5, -0.5])
+    n = 82  # forty firings on the even bars 0..78, each filled at the next open (1) for one bar
+    idx = pd.date_range("2021-01-01", periods=n, freq="1D")
+    bars = np.arange(n)
+    files = {}
+    for g, t in enumerate("ABCDE"):
+        px = np.ones(n)
+        px[2::2] = [1.0 + legs[j % 2][g] for j in range(40)]
+        vol = np.where((bars % 2 == 0) & (bars <= 78), 2.0, 1.0)
+        df = pd.DataFrame(
+            {"open": px, "high": px, "low": px, "close": px, "volume": vol}, index=idx
+        )
+        df.index.name = "datetime"
+        df.to_csv(tmp_path / f"{t}.csv")
+        files[t] = str(tmp_path / f"{t}.csv")
+    thesis = Thesis.model_validate(
+        {
+            "name": "cm_exact_bench",
+            "target_mode": "basket",
+            "data": {"targets": list("ABCDE")},
+            "entry": {
+                "type": "threshold",
+                "left": {"type": "field", "column": "volume"},
+                "op": ">",
+                "right": {"type": "constant", "value": 1.5},
+            },
+            "params": {"horizon": 1, "benchmark": "cross_mean"},
+        }
+    )
+    res = run_backtest(thesis, load(thesis, files))
+    rows = res.trades[~res.trades["is_open"] & (res.trades["target"] == "A")]
+    rows = rows.sort_values("entry_time")
+    np.testing.assert_array_equal(rows["ret_raw"], np.resize([0.0, 2.0**-52], 40))
+    np.testing.assert_array_equal(rows["ret_bench"], np.resize([0.0, 2.0**-52 / 5.0], 40))
+    blk = res.summary["cells"][0]["by_target"]["A"]["benchmark_regression"]
+    assert blk["n"] == 40 and blk["beta"] == 5.0 and blk["alpha"] == 0.0
 
 
 def _ceiling_episode_files(tmp_path, targets):

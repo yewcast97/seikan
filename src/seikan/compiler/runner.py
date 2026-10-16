@@ -1208,7 +1208,7 @@ def _measure_grid(
                 # The excess return's own legs (evidence-only attribution:
                 # ret = ret_raw − ret_bench, exactly under `market` — the subtraction in
                 # `_forward` is per-observation — and to the bench leg's one rounding under
-                # `cross_mean`, whose excess is taken about the bar's offset). Masked to CLOSED
+                # `cross_mean`, whose excess is the member's exact deviation). Masked to CLOSED
                 # rows like `mae`/`mfe`, never like `pre_ret`:
                 # the legs attribute `ret`, so they must cover exactly the pool `ret`'s statistics
                 # describe — an unmasked raw leg on a `no_benchmark` row would hand a consumer a
@@ -1381,18 +1381,20 @@ def run_backtest(thesis: Thesis, md: MarketData) -> EventStudyResult:
             # reads exactly 0 — about a rounded centre the first leg of `[0, 1, 1, −1 − 2**-52,
             # −1 + 2**-52]` read 2.2e-17, a row-level hit — and about the rounded raw mean
             # `[2**52, 2**52 + 1, 2**52 + 1]` read excesses `[0, 1, 1]` for `[−2/3, 1/3, 1/3]`,
-            # three selected rows "all beating the basket". The bench leg is the basket mean
-            # about the bar's offset (`nb.cross_centre`: `c + mean(leg − c)`), rounded once, so
-            # `ret == ret_raw − ret_bench` holds to that one rounding. A bar whose legs are all
+            # three selected rows "all beating the basket". The bench leg is the bar's exactly
+            # rounded sum over its count (`nb.cross_means`, `cross_agg`'s mean), so it has the
+            # exact mean's sign and `ret == ret_raw − ret_bench` holds to its rounding: about
+            # the bar's offset, `c + mean(leg − c)`, the legs `[0, .5, .5, −.5 − 2**-53,
+            # −.5 + 2**-53]` read a bench leg of −1.1e-17 for an exact 0 (three subtractions
+            # rounded), and a member's regression on it beta 4 for 5. A bar whose legs are all
             # EQUAL (a shared outcome feed broadcast to the basket) reads every excess exactly 0
-            # and its bench leg the value. A member whose own deviation leaves the double range
-            # is NaN alone (as in the kernel), and a bar whose centred sum does voids every member
-            # — silently, as `_measure`'s own overflow does.
+            # and its bench leg the value. Legs whose sum leaves the double range are summed in
+            # a scaled frame, so every bar of finite legs has its mean; a member whose own
+            # deviation leaves the range is NaN alone (as in the kernel) — silently, as
+            # `_measure`'s own overflow is.
             finite = np.isfinite(fwd)
             whole = finite.all(axis=1, keepdims=True)
-            with np.errstate(over="ignore", invalid="ignore"):
-                offset, mean = nb.cross_centre(fwd, finite)
-                mu = offset + mean
+            mu = nb.cross_means(np.ascontiguousarray(fwd), finite)[:, None]
             bench = np.where(whole & np.isfinite(mu), mu, np.nan)
             excess = nb.cross_deviations(np.ascontiguousarray(fwd), finite)
             fwd = np.where(np.isfinite(bench) & np.isfinite(excess), excess, np.nan)

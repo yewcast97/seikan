@@ -69,10 +69,11 @@ from seikan.numeric import MIN_NORMAL, log_ratio_array
 # mean of the raw values: that mean's rounding is the size of the level's ulp, and a spread at that
 # scale (``[2**52, 2**52 + 1]``) read a std of 0.707 for 0.5 and a z-score past its bound.
 #
-# EXACT means: every mean a decision reads — ``rolling_agg``'s and ``cross_agg``'s ``mean``, and the
-# cross-section centre ``cross_agg``'s std and the runner's ``cross_mean`` bench leg take
-# (``cross_centre``) — is its window's or row's EXACTLY ROUNDED sum over its count, the read
-# ``analysis._pools.exact_mean`` gives the graded pools; a deviation from a cross-section's mean
+# EXACT means: every mean a decision reads — ``rolling_agg``'s and ``cross_agg``'s ``mean`` — and
+# the runner's ``cross_mean`` bench leg (``cross_means``) is its window's or row's EXACTLY ROUNDED
+# sum over its count, the read ``analysis._pools.exact_mean`` gives the graded pools (the centre
+# ``cross_agg``'s std reduces about is the row's offset plus its differences' exactly rounded mean,
+# ``cross_centre``, whose subtractions round); a deviation from a cross-section's mean
 # that is read (``cross_demean``, the ``cross_mean`` excess) has its numerator ``k·x − S`` summed
 # exactly (``cross_deviations``), so a member AT the mean reads exactly 0.0 — about the rounded
 # centre ``[0, 1, 1, −1 − 2**-52, −1 + 2**-52]``'s first member read 2.2e-17, and ``x == 0 AND
@@ -680,11 +681,13 @@ def cross_centre(
     mean of its finite members' differences from it — their exactly rounded sum
     (:func:`_row_exact_sums`) over their count, so it has the exact sum's sign and is 0.0
     exactly where the differences cancel, in any member order — the centre ``cross_agg``'s std
-    reduces about, and the runner's ``cross_mean`` bench leg, ``offset + mean`` rounded once. A
-    member's deviation about it, ``(x − offset) − mean``, rounds twice, which the std's squares
-    absorb; a deviation that is READ — ``cross_demean``, the ``cross_mean`` excess — is
-    :func:`cross_deviations`' exact one instead. NaN mean on an empty row and where an
-    intermediate sum leaves the double range (callers silence the 0/0 and test finiteness)."""
+    reduces about. The differences themselves round (members far from the offset), so
+    ``offset + mean`` is no exact mean: a mean that is READ — the ``cross_mean`` bench leg — is
+    :func:`cross_means`' instead. A member's deviation about it, ``(x − offset) − mean``, rounds
+    twice, which the std's squares absorb; a deviation that is READ — ``cross_demean``, the
+    ``cross_mean`` excess — is :func:`cross_deviations`' exact one instead. NaN mean on an empty
+    row and where an intermediate sum leaves the double range (callers silence the 0/0 and test
+    finiteness)."""
     k = finite.sum(axis=1, keepdims=True).astype(float)
     offset = _row_offset(a, finite)
     sums = _row_exact_sums(np.ascontiguousarray(a - offset), np.ascontiguousarray(finite))
@@ -1483,6 +1486,47 @@ def cross_deviations(
                 q, n, over = _expansion_add(q, n, k * (x - hi))
             if not over:
                 out[r, c] = _expansion_value(q, n) / k / scale
+    return out
+
+
+@njit(cache=True)
+def cross_means(
+    a: npt.NDArray[np.float64], finite: npt.NDArray[np.bool_]
+) -> npt.NDArray[np.float64]:
+    """``(rows,)``: each row's mean over its ``finite`` members — the runner's ``cross_mean``
+    bench leg, by ``cross_agg``'s ``mean`` rule: the exactly rounded sum over the count (0.0
+    exactly where the members cancel, the exact sum's sign otherwise, in any member order), and
+    a row whose members all share one value reads that value. A row whose largest member reaches
+    ``2**996`` is summed in :func:`cross_deviations`' frame scaled by ``2**-28`` and scaled back,
+    so a row of finite members never loses its mean to a sum past the double range. NaN on an
+    empty row."""
+    rows, cols = a.shape
+    out = np.full(rows, np.nan)
+    p = np.empty(8)
+    for r in range(rows):
+        k = 0
+        lo = np.inf
+        hi = -np.inf
+        for c in range(cols):
+            if finite[r, c]:
+                k += 1
+                lo = min(lo, a[r, c])
+                hi = max(hi, a[r, c])
+        if k == 0:
+            continue
+        if lo == hi:
+            out[r] = hi
+            continue
+        scale = _SPLIT_DOWN if max(hi, -lo) >= _SPLIT_MAX else 1.0
+        m = 0
+        over = False
+        for c in range(cols):
+            if finite[r, c]:
+                p, m, over = _expansion_add(p, m, a[r, c] * scale)
+                if over:
+                    break
+        if not over:
+            out[r] = _expansion_value(p, m) / k / scale
     return out
 
 

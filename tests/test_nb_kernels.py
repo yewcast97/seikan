@@ -645,6 +645,46 @@ def test_decision_side_means_are_exactly_rounded_sums():
     )
 
 
+def test_cross_means_are_exactly_rounded_sums_over_the_count():
+    # The cross_mean bench leg. The review's row cancels exactly, but about its offset
+    # (`cross_centre`: offset + mean of the differences) three of the five subtractions rounded
+    # and the leg read −1.1e-17. Summed exactly it is 0.0 in every member order.
+    e = 2.0**-53
+    row = np.array([[0.0, 0.5, 0.5, -0.5 - e, -0.5 + e]])
+    for perm in itertools.permutations(range(5)):
+        r = row[:, list(perm)]
+        assert nb.cross_means(r, np.isfinite(r))[0] == 0.0
+    # the decision-side rule (`cross_agg`'s mean): a row of one shared value reads that value —
+    # fsum over the count reads 0.1 thrice as 0.10000000000000002 — and every other row its
+    # exact sum, correctly rounded, over its count
+    shared = np.full((1, 3), 0.1)
+    assert nb.cross_means(shared, np.isfinite(shared))[0] == 0.1
+    rng = np.random.RandomState(17)
+    rows = rng.randn(200, 6) * 10.0 ** rng.randint(-20, 20, (200, 6))
+    rows[:, 1:][rng.rand(200, 5) < 0.2] = np.nan
+    want = [math.fsum(r[np.isfinite(r)].tolist()) / np.isfinite(r).sum() for r in rows]
+    np.testing.assert_array_equal(nb.cross_means(rows, np.isfinite(rows)), want)
+    # a member the mask leaves out is ignored, an empty row has no mean
+    a = np.array([[1.0, 100.0, 2.0], [np.nan, np.nan, np.nan]])
+    np.testing.assert_array_equal(
+        nb.cross_means(a, np.array([[True, False, True], [False, False, False]])), [1.5, np.nan]
+    )
+
+    # legs whose plain sum leaves the double range are summed in a scaled frame: each row reads
+    # its exact sum, rounded, over its count, as in an unbounded exponent range
+    def unbounded(row):
+        return float(sum(map(Fraction, row)) / 2**28) / len(row) * 2.0**28
+
+    wide = np.array(
+        [[1e308, 1.5e308, 1e308, 1e308, 1.5e308], [1.7e308, 0.0, 1.7e308, 1.7e308, 0.0]]
+    )
+    np.testing.assert_array_equal(
+        nb.cross_means(wide, np.isfinite(wide)), list(map(unbounded, wide))
+    )
+    huge = np.full((1, 5), 1.7e308)
+    assert nb.cross_means(huge, np.isfinite(huge))[0] == 1.7e308
+
+
 def test_cross_demean_is_each_members_exact_deviation():
     # The review's row sums to exactly 0, so its first member sits AT the mean — but the offset
     # subtraction rounded two members and the first demeaned to 2.2e-17: `x == 0 AND

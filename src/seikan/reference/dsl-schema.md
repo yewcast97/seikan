@@ -339,11 +339,11 @@ update left its exact interval; the EW z-score reads the plain West recurrence's
 rounding (the compensated mean), lifted where that recurrence leaves the normal range (below).
 
 Every MEAN a decision reads is exactly rounded too: `rolling_agg`'s and `cross_agg`'s `mean`, and
-the cross-sectional centre that `cross_agg`'s `std` and the `cross_mean` bench leg take, are the
-window's or the bar's exactly rounded sum over its count — the exact sum's sign, and exactly 0.0
-where that sum is 0, whatever order the bars or the targets come in. Summed pairwise in floating
-point, the cross-section `[1, −2**-54, −1, 2**-54, 0]` read a mean of 1.1e-17 that
-`cross_agg(x, mean) > 0` fired on in one declaration order of the targets and not in another.
+the `cross_mean` bench leg, are the window's or the bar's exactly rounded sum over its count — the
+exact sum's sign, and exactly 0.0 where that sum is 0, whatever order the bars or the targets come
+in. Summed pairwise in floating point, the cross-section `[1, −2**-54, −1, 2**-54, 0]` read a mean
+of 1.1e-17 that `cross_agg(x, mean) > 0` fired on in one declaration order of the targets and not
+in another.
 `cross_demean` (and the `cross_mean` excess) is each member's EXACT deviation from that mean —
 its numerator `k·x − S` summed exactly, rounded once over `k` — so a member at the mean reads
 exactly 0.0: about a rounded centre the first member of `[0, 1, 1, −1 − 2**-52, −1 + 2**-52]`
@@ -1044,10 +1044,10 @@ whether the MARKET went up, not the thesis; long-horizon theses should set `benc
   refuses `diff` outright). Each excess is the member's EXACT deviation from the bar's mean (the
   `cross_demean` rule — a member at the mean reads exactly 0.0; about the rounded raw mean a
   spread at the level's ulp was lost, legs `[2**52, 2**52 + 1, 2**52 + 1]` reading excesses
-  `[0, 1, 1]` for `[−2/3, 1/3, 1/3]`), and the bench leg is the bar's mean about its legs' range
-  midpoint, rounded once; legs whose plain sum
-  overflows still have a mean taken this way (only a bar whose centred sum leaves the double
-  range has none). Its missingness is FAIL-CLOSED at whole-bar granularity: any member's
+  `[0, 1, 1]` for `[−2/3, 1/3, 1/3]`), and the bench leg is the bar's exactly rounded mean
+  (`[0, .5, .5, −.5 − 2**-53, −.5 + 2**-53]` reads exactly 0, where its mean about the legs' range
+  midpoint read −1.1e-17); legs whose plain sum overflows are summed in a scaled frame, so a bar of
+  finite legs has its mean. Its missingness is FAIL-CLOSED at whole-bar granularity: any member's
   leg non-finite at a bar censors the WHOLE bar's benchmark leg, so every member's firing there
   exits as `no_benchmark` — never a partial-basket mean, which would quietly demean the surviving
   members by a DIFFERENT basket while their rows escape the censoring ledger. Note the identity
@@ -1141,7 +1141,7 @@ columns:
 | `horizon` | the cell's declared measurement horizon `h` — ALWAYS present, right after the swept axes and before `target`, so a row names its window whether or not the horizon was swept; with the swept axes it is the row's cell identity |
 | `entry_px` / `exit_px` | the measured value at anchor / exit (`exit_px` empty when censored) |
 | `ret` | the signed forward outcome, denominated per `summary.outcome` (excess when benchmarked); empty on censored rows |
-| `ret_raw` | the signed RAW outcome leg — equals `ret` when unbenchmarked; `ret == ret_raw − ret_bench` per row under `market`, and to the bench leg's one rounding under `cross_mean` (`ret` is taken about the bar's offset); empty on censored rows |
+| `ret_raw` | the signed RAW outcome leg — equals `ret` when unbenchmarked; `ret == ret_raw − ret_bench` per row under `market`, and to the bench leg's one rounding under `cross_mean` (`ret` is the member's exact deviation from the bar's mean); empty on censored rows |
 | `ret_bench` | the signed benchmark leg the excess subtraction consumed (the market series' same-window return, or the bar's basket mean under `cross_mean`); empty when unbenchmarked or censored |
 | `pre_ret` | RAW drift INTO entry over the same `h`-bar window, sign-aligned — the leakage canary |
 | `mae` | worst interim adverse mark, RAW path, ≤ 0; empty when censored |
