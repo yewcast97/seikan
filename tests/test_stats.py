@@ -126,13 +126,28 @@ def test_pool_moments_shape_metrics_known_answers():
     s = pool_moments(rets)
     p5, p95 = np.percentile(rets, [5, 95])
     assert s["tail_ratio"] == pytest.approx(abs(p95 / p5))
-    assert s["cvar_5"] == pytest.approx(np.mean([r for r in rets if r <= p5]))
+    assert s["cvar_5"] == pytest.approx(np.mean(np.sort(rets)[:5]))
     # the moments are scipy's POPULATION estimators (bias=True), which pandas' unbiased G1/G2
     # would not reproduce — the convention the caveat states
     pool = np.random.RandomState(9).normal(0.0, 0.01, 50)
     s = pool_moments(pool)
     assert s["skewness"] == pytest.approx(sps.skew(pool, bias=True))
     assert s["kurtosis"] == pytest.approx(sps.kurtosis(pool, fisher=False, bias=True))
+
+
+def test_pool_moments_cvar_5_is_the_mean_of_the_worst_twentieth():
+    # The realized 5% expected shortfall is a COUNT, ⌈n/20⌉ — `concentration`'s — never the
+    # observations at or below p05: a tie AT p05 joined that tail whole, and 99 zeros beside one
+    # −0.5 read −0.005 for a worst 5% of −0.1.
+    assert pool_moments(np.array([-0.5] + [0.0] * 99))["cvar_5"] == -0.1
+    # one observation through n = 20, two from n = 21
+    assert pool_moments(np.arange(20.0))["cvar_5"] == 0.0
+    assert pool_moments(np.arange(21.0))["cvar_5"] == 0.5
+    # p05 is never read: across a gap past the double range it interpolated to +inf, and
+    # `v <= inf` took the WHOLE pool's mean, +2.3e307, for a worst observation of −1e308
+    assert pool_moments(np.array([-1e308, 8e307, 9e307]))["cvar_5"] == -1e308
+    # ...and a worst twentieth whose sum leaves the range has no mean: NaN → null
+    assert np.isnan(pool_moments(np.array([-1.7e308, -1e308] + [0.0] * 19))["cvar_5"])
 
 
 def test_profit_factor_arithmetic_and_refusals():
@@ -183,12 +198,6 @@ def test_ratio_reads_refuse_an_overflowed_operand():
     with np.errstate(over="ignore"):
         assert np.isinf(np.percentile(tail, 5.0))  # the premise
     assert np.isnan(pool_moments(tail)["tail_ratio"])
-    # cvar_5 tails off the same p05: `v <= inf` took the WHOLE pool's mean, +2.3e307 — a
-    # positive "lower tail" where the true one is −1e308
-    gap = np.array([-1e308, 8e307, 9e307])
-    with np.errstate(over="ignore"):
-        assert np.isinf(np.percentile(gap, 5.0))  # the premise
-    assert np.isnan(pool_moments(gap)["cvar_5"])
 
 
 def test_empty_pool_moments_are_complete():

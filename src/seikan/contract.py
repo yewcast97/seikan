@@ -121,7 +121,8 @@ METRIC_ROLES: dict[str, JsonValue] = {
         "descriptive era visibility; nothing selects on it)",
         "per-cell by_target ret_quantiles {p05,p10,p25,p50,p75,p90,p95} + worst_ret / best_ret "
         "(closed-return order statistics — the typical-observation read mean_ret cannot give; "
-        "p05 doubles as the historical VaR(5%) cvar_5 tails off; see caveats.ret_quantiles)",
+        "p05 doubles as the historical VaR(5%) beside cvar_5's shortfall; see "
+        "caveats.ret_quantiles)",
         "per-cell by_target mae_quantiles / mfe_quantiles ({n, mean, p05..p95, worst | best} — "
         "RAW post-entry excursion statistics over the full H/L of [fill, fill+h-1] plus the "
         "exit open, each block over its own finite subset; see caveats)",
@@ -381,9 +382,10 @@ METRIC_ROLES: dict[str, JsonValue] = {
             "tails rest on one or two rows"
         ),
         "cvar_5": (
-            "mean of the observations at or below ret_quantiles.p05 (its historical-VaR "
-            "partner); at n <= 20 the 'tail' is a single observation, and overlap makes tail "
-            "rows the same market move"
+            "mean of the worst ⌈n/20⌉ observations (the expected shortfall beside its "
+            "historical-VaR partner ret_quantiles.p05, never diluted by ties at p05); at "
+            "n <= 20 the 'tail' is a single observation, and overlap makes tail rows the same "
+            "market move"
         ),
         "benchmark_regression": (
             "per-window OLS attribution of the raw leg on the bench leg — beta unitless, alpha "
@@ -561,10 +563,10 @@ METRIC_ROLES_DOC: dict[str, JsonValue] = {
         "per-cell by_target hit_rate, win_loss_ratio, std_ret, skewness, kurtosis, tail_ratio, "
         "cvar_5 — distribution shape and effect size, descriptive: the pool_moments reads over "
         "the cell's own closed pool, on the by_target and pooled panels alike (tail_ratio ≡ "
-        "|p95/p05| of ret_quantiles, derivable like profit_factor; cvar_5 is the mean at or "
-        "below ret_quantiles.p05, its historical-VaR partner; a per-observation Sharpe is "
-        "mean_ret / std_ret, a firing rate is outcome_coverage.n_attempted / n_bars — both "
-        "derivable, neither emitted)",
+        "|p95/p05| of ret_quantiles, derivable like profit_factor; cvar_5 is the mean of the "
+        "worst ⌈n/20⌉ observations, the expected shortfall beside ret_quantiles.p05; a "
+        "per-observation Sharpe is mean_ret / std_ret, a firing rate is "
+        "outcome_coverage.n_attempted / n_bars — both derivable, neither emitted)",
         "per-cell profit_factor (gross win mass over gross loss mass, Σwins/|Σlosses| — the "
         "hit-weighted asymmetry partnering win_loss_ratio and derivable from it; zero rows "
         "join neither side, and either side empty yields null, never an infinity)",
@@ -604,7 +606,7 @@ METRIC_ROLES_DOC: dict[str, JsonValue] = {
         "{p05,p10,p25,p50,p75,p90,p95} and its single worst and best observations: the SHAPE "
         "read a mean cannot give, so a reader can state what a typical observation looked like "
         "instead of describing the pool by its average alone — p05 doubling as the historical "
-        "VaR(5%) whose lower tail cvar_5 averages, p95 its favorable mirror; no count of its "
+        "VaR(5%) beside cvar_5's shortfall, p95 its favorable mirror; no count of its "
         "own, because its pool is the cell's own n)",
         "per-cell by_target mae_quantiles / mfe_quantiles (the same seven points "
         "plus the subset's mean and extreme over the RAW post-entry excursion columns, each "
@@ -799,7 +801,7 @@ METRIC_ROLES_DOC: dict[str, JsonValue] = {
         ),
         "ret_quantiles": (
             "Order statistics of the cell's own closed returns under numpy's default linear "
-            "interpolation (so p05 agrees with the VaR(5%) read cvar_5 tails off, on the same "
+            "interpolation (so p05 is the VaR(5%) beside cvar_5's shortfall, on the same "
             "pool). Two limits. Below n≈20 the outer points are "
             "interpolations between the extreme observations — p05 and p95 then describe one "
             "or two rows, not a tail — and even at the support floor of 30 an outer 5% point "
@@ -970,11 +972,14 @@ METRIC_ROLES_DOC: dict[str, JsonValue] = {
             "rows the overlap made siblings of one move."
         ),
         "cvar_5": (
-            "The mean of the observations at or below ret_quantiles.p05 — historical expected "
-            "shortfall beside its VaR partner, adding what the quantile alone cannot say: how "
-            "bad the tail is INSIDE the 5% cut. In-sample, gross of costs, and below n=20 the "
-            "'tail' is a single observation; overlap makes tail rows the same market move, so "
-            "this describes the realized worst stretch, never a loss distribution."
+            "The mean of the worst ⌈n/20⌉ observations — historical expected shortfall beside "
+            "its VaR partner ret_quantiles.p05, adding what the quantile alone cannot say: how "
+            "bad the tail is INSIDE the 5% cut. A count, never a threshold, so ties at p05 "
+            "never dilute it: 99 zeros beside one −0.5 read −0.1, where the mean of every "
+            "observation at or below p05 read −0.005. In-sample, gross of costs, and at "
+            "n <= 20 the 'tail' is a single observation; overlap makes tail rows the same "
+            "market move, so this describes the realized worst stretch, never a loss "
+            "distribution."
         ),
         "benchmark_regression": (
             "Per-window OLS of the raw leg on the bench leg over PAIRED closed rows — the "
@@ -1220,8 +1225,8 @@ REPORT_FIELDS: dict[str, JsonValue] = {
             "the summarize shape/dispersion reads over the SAME closed pool, mounted per cell: "
             "payoff asymmetry (null when a side is empty), ddof=1 dispersion, the two shape "
             "moments (kurtosis is Pearson, normal = 3), tail_ratio ≡ |p95/p05| of "
-            "ret_quantiles (derivable), and the mean at or below p05 — its historical-VaR "
-            "partner (all evidence-only)"
+            "ret_quantiles (derivable), and the mean of the worst ⌈n/20⌉ observations — the "
+            "expected shortfall beside p05 (all evidence-only)"
         ),
         "by_target.profit_factor": (
             "gross win mass / gross loss mass (Σwins/|Σlosses|) over the closed pool — the "
@@ -1260,7 +1265,7 @@ REPORT_FIELDS: dict[str, JsonValue] = {
             "{p05, p10, p25, p50, p75, p90, p95} of this pool's closed returns, "
             "linear-interpolated order statistics in summary.outcome units (EXCESS when "
             "benchmarked) — the typical-observation read, p05 doubling as the historical "
-            "VaR(5%) cvar_5 tails off (evidence-only). No n of its own: the pool is "
+            "VaR(5%) beside cvar_5's shortfall (evidence-only). No n of its own: the pool is "
             "by_target.n. Null at every point on an empty pool"
         ),
         "by_target.worst_ret / best_ret": (

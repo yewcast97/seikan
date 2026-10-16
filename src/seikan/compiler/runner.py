@@ -693,7 +693,7 @@ def _pool_panel(
         "profit_factor": profit_factor(rets),
         # Distribution shape and tail reads (evidence-only): dispersion, the two moments that
         # say when the mean is a poor description, tail_ratio ≡ |p95/p05|, and cvar_5 — the
-        # mean of the observations at or below ret_quantiles.p05, its historical-VaR partner.
+        # mean of the worst ⌈n/20⌉ observations, ret_quantiles.p05's expected shortfall.
         "std_ret": moments["std_ret"],
         "skewness": moments["skewness"],
         "kurtosis": moments["kurtosis"],

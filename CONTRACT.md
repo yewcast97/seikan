@@ -346,10 +346,11 @@ beta·mean_ret_bench == mean_ret_raw` to the rounding of one product and one dif
 reads the exactly rounded leg means), alpha per h-bar window and never annualized, null
 fields + reason when unbenchmarked/thin/degenerate/out of range — hit_rate / win_loss_ratio /
 profit_factor (Σwins/|Σlosses|, null never infinity when a side is empty) / std_ret / skewness /
-kurtosis (Pearson, normal = 3) / tail_ratio (≡ |p95/p05|, derivable) / cvar_5 (the mean at or below
-`ret_quantiles.p05`, its historical-VaR partner) — the `pool_moments` shape reads over the
-pool's own closed rows — t_hac / hac_se / rot_p / rot_n_null (the defined-shift count the
-cell's null was formed over; its own p floor is `1/(1 + rot_n_null)`) / concentration, plus the
+kurtosis (Pearson, normal = 3) / tail_ratio (≡ |p95/p05|, derivable) / cvar_5 (the mean of the
+worst ⌈n/20⌉ observations, the expected shortfall beside `ret_quantiles.p05`) — the
+`pool_moments` shape reads over the pool's own closed rows — t_hac / hac_se / rot_p /
+rot_n_null (the defined-shift count the cell's null was formed over; its own p floor is
+`1/(1 + rot_n_null)`) / concentration, plus the
 evidence blocks `boot` — the per-target
 episode-bootstrap percentile CI — and `subperiods` — the pool's n / mean over three equal-bar
 eras — and `ret_quantiles` {p05,p10,p25,p50,p75,p90,p95} + `worst_ret` / `best_ret` over

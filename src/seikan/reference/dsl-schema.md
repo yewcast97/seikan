@@ -1504,8 +1504,8 @@ open to quote a statistic honestly.
   holdout: it shows whether an edge lived in one era, and nothing selects on it.
 - `by_target[t].ret_quantiles` + `worst_ret` / `best_ret` — the closed pool's
   `{p05, p10, p25, p50, p75, p90, p95}` (linear interpolation; `p05` doubles as the historical
-  VaR(5%) that `cvar_5` tails off) and its single worst and best observations. Read `p50` AGAINST `mean_ret`: a positive mean sitting over
-  a negative
+  VaR(5%) beside `cvar_5`, the mean of the worst ⌈n/20⌉ observations) and its single worst and
+  best observations. Read `p50` AGAINST `mean_ret`: a positive mean sitting over a negative
   median is a pool a few spikes carried, not a typical outcome — and `concentration` does not catch
   it, because that check reads |return| MASS in one EPISODE while a mild right skew spreads its
   mass thinly and still drags the mean off the median. KNOWN CAVEAT: below n ≈ 20 the outer points

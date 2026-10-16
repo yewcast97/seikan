@@ -18,9 +18,9 @@ class PoolQuantiles(TypedDict):
     Mounted as ``ret_quantiles`` (and inside the excursion blocks and the baseline rows) by
     ``compiler.runner``; read by no check — evidence only. NaN → null at every point on an empty
     pool ("no evidence", never zero). ``p05`` doubles as the historical VaR(5%) read — the
-    quantile whose lower tail ``cvar_5`` averages — and ``p95`` as its favorable mirror; on a
-    thin pool the outer points rest on one or two observations, so they ride beside the ``n``
-    that scopes them, exactly like every other order statistic here.
+    quantile beside ``cvar_5``'s shortfall, the worst 5% — and ``p95`` as its favorable mirror;
+    on a thin pool the outer points rest on one or two observations, so they ride beside the
+    ``n`` that scopes them, exactly like every other order statistic here.
     """
 
     p05: float | None

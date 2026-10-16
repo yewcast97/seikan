@@ -180,8 +180,10 @@ def pool_moments(rets: np.ndarray) -> PoolMoments:
     range (:func:`_normal`); ``tail_ratio`` is ``|p95/p05|`` of the same
     linear-interpolated percentiles :func:`pool_quantiles` reports (NaN when ``p05`` is zero,
     and a spread ratio rather than a tail read when both tails share a sign); ``cvar_5`` is the
-    mean of the observations at or below ``p05``, its historical-VaR partner (NaN where ``p05``
-    itself left the double range).
+    mean of the worst ``⌈n/20⌉`` observations (:func:`exact_mean`), the realized 5% expected
+    shortfall beside its historical-VaR partner ``p05`` — the count :func:`concentration` takes,
+    so a tie at ``p05`` never dilutes it: the mean of every observation at or below ``p05`` read
+    99 zeros beside one −0.5 as −0.005 for −0.1.
 
     Overlap caveat, shared with every row-level read: one market move enters ~h rows, so
     these describe the realized pool, never an estimated distribution. Evidence-only; the
@@ -237,11 +239,7 @@ def pool_moments(rets: np.ndarray) -> PoolMoments:
     if n > 1:
         p5, p95 = (float(q) for q in np.percentile(v, [5.0, 95.0]))
         out["tail_ratio"] = abs(_finite_ratio(p95, p5)) if p5 != 0 else _NAN
-        tail = v[v <= p5]
-        # p05's interpolation overflows to +inf across a gap past the double range, and
-        # `v <= inf` is the WHOLE pool: a mean of every return (positive, even) read as the
-        # lower tail — null, as p05 itself is
-        out["cvar_5"] = float(np.mean(tail)) if tail.size and math.isfinite(p5) else _NAN
+        out["cvar_5"] = exact_mean(np.sort(v)[: math.ceil(n / 20)])
     return out
 
 
@@ -269,8 +267,8 @@ def concentration(rets: np.ndarray, top_frac: float = 0.05) -> ConcentrationBloc
 
 #: The percentiles every per-cell distribution block reports. Seven points, not a histogram:
 #: a typical outcome, both shoulders, and the two 5% tails — ``p05`` doubling as the historical
-#: VaR(5%) whose lower tail ``cvar_5`` averages — without inviting a reader to treat the tails
-#: as estimated quantities.
+#: VaR(5%) beside ``cvar_5``'s shortfall — without inviting a reader to treat the tails as
+#: estimated quantities.
 _QUANTILE_PS: tuple[float, ...] = (5.0, 10.0, 25.0, 50.0, 75.0, 90.0, 95.0)
 
 
@@ -286,10 +284,9 @@ def pool_quantiles(vals: np.ndarray) -> PoolQuantiles:
     poisoning the whole block); an EMPTY pool yields NaN at every point, which serializes to null
     — "no evidence", never zero. Percentiles use ``np.percentile``'s default linear interpolation,
     the same method :func:`pool_moments` uses for its own p5/p95 and the episode bootstrap uses
-    for its CI, so ``p05`` agrees with the VaR(5%) read ``cvar_5`` tails off, and
-    ``tail_ratio`` is exactly ``|p95/p05|`` — all on the same pool. Each requested
-    percentile is computed independently by ``np.percentile``, so widening this tuple can never
-    move an existing point.
+    for its CI, so ``tail_ratio`` is exactly ``|p95/p05|`` and ``p05`` is the VaR(5%) beside
+    ``cvar_5``'s shortfall — all on the same pool. Each requested percentile is computed
+    independently by ``np.percentile``, so widening this tuple can never move an existing point.
     """
     v = np.asarray(vals, dtype=float)
     v = v[np.isfinite(v)]
