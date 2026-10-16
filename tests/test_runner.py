@@ -3149,6 +3149,23 @@ def test_benchmark_mode_interior_target_hole_is_no_outcome(tmp_path):
     assert reasons.get("no_benchmark", 0) == 0  # the benchmark is complete; the target is not
 
 
+def test_a_window_past_the_data_end_is_open_whatever_its_fill_print_holds(tmp_path):
+    # Geometry first, in both ledgers: a window running past the last bar never had a measurable
+    # outcome, so a NaN print inside it deleted none — the bar-58 firing fills ON the NaN last
+    # print and is still "open". The window that CLOSES on that print (bar 56's) is its
+    # "no_outcome".
+    opens = 100 + np.arange(60, dtype=float)
+    opens[-1] = np.nan
+    res = _bench_run(tmp_path, opens, horizon=2)
+    trades = res.trades.set_index("entry_bar")
+    reasons = trades["exit_reason"].value_counts().to_dict()
+    assert reasons == {"horizon": 56, "open": 2, "no_outcome": 1}
+    assert trades.loc[56, "exit_reason"] == "no_outcome"
+    assert trades.loc[58, "exit_reason"] == "open" and np.isnan(trades.loc[58, "entry_px"])
+    excl = res.summary["baseline"][0]["by_target"]["target"]["exclusions"]
+    assert excl == {"open": 2, "no_outcome": 1, "no_benchmark": 0}
+
+
 # ---- outcome generalization (params.outcome) + series targets ----------------
 
 

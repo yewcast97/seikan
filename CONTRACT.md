@@ -522,8 +522,10 @@ OUTCOME side: per target
 results, and missing-at-random is never assumed. **`open` is ALLOWED at any count**: with no
 holdout there is no embargo and no tail, so a forward window running past the last bar is
 structural end-of-data right-censoring every cell near the index end must exhibit, and refusing it
-would refuse the calendar rather than a data defect. An in-bounds NaN leg is never `open` — it
-classifies as `no_outcome`/`no_benchmark` upstream and refuses here); `signal_coverage` (the
+would refuse the calendar rather than a data defect. A window that closes within the data and
+reads a NaN leg is never `open` — it classifies as `no_outcome`/`no_benchmark` upstream and
+refuses here; one running past the last bar is `open` even on a NaN fill print, as no outcome of
+it was ever measurable for a hole to delete); `signal_coverage` (the
 fail-closed DECISION-side twin, pooled layer: per target `n_undefined == 0` and `n_undefined ≤
 n_bars`. The outcome ledger can only account for bars that FIRED, so a missing decision input
 suppresses the firing itself and leaves no trace there — without this check, deleting the inputs
@@ -791,10 +793,11 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   scale-safe, one rule for `change(kind="log")`, the `log` outcome (benchmark leg, `pre_ret`,
   excursions included) and `describe`'s `log` reads (`seikan.numeric`). It is SIGNED: `ln(hi/lo)`
   of the larger level over the smaller, negated where the level fell, so `ln(a/b)` is `−ln(b/a)`
-  bit for bit and a closed cycle sums to exactly 0 — read in its own direction, each quotient
-  rounded on its own, and 100 → 110 → 100 summed to 2e-17, a positive `mean_ret` that met the
-  support floor. `ln(b/a)` of two positive finite levels is always representable even where the
-  quotient is not, so it reads `ln hi − ln lo` exactly where that quotient overflowed (1e200 →
+  bit for bit and a move and its reverse cancel exactly (a cycle through three or more levels only
+  to rounding, as any floating-point sum) — read in its own direction, each quotient rounded on
+  its own, and 100 → 110 → 100 summed to 2e-17, a positive `mean_ret` that met the support floor.
+  `ln(b/a)` of two positive finite levels is always representable even where the quotient is not,
+  so it reads `ln hi − ln lo` exactly where that quotient overflowed (1e200 →
   1e-200 is −921.03…, never `ln(0)`), and the direct form — bit for bit — everywhere else. A
   `pct` (or `diff`) past the double range has no representable value: NaN (a `no_outcome`
   observation, a NaN decision operand as above); a `describe` `pct` past the range (for a dispersion

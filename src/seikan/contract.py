@@ -1567,8 +1567,10 @@ GATE_CONTRACT_DOC: dict[str, JsonValue] = {
             "results, and missing-at-random is never assumed. exit_reasons.open is ALLOWED at "
             "any count: with no holdout there is no embargo and no tail, so a forward window "
             "running past the last bar is structural end-of-data right-censoring, not a data "
-            "hole. An in-bounds NaN leg is never 'open' — it classifies as "
-            "no_outcome/no_benchmark upstream and refuses here"
+            "hole. A window that closes within the data and reads a NaN leg is never 'open' — it "
+            "classifies as no_outcome/no_benchmark upstream and refuses here; one running past "
+            "the last bar is 'open' even on a NaN fill print, as no outcome of it was ever "
+            "measurable for a hole to delete"
         ),
         "signal_coverage": (
             "fail-closed DECISION-side contract, the twin of outcome_coverage: per target "

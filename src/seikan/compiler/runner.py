@@ -1311,8 +1311,8 @@ def run_backtest(thesis: Thesis, md: MarketData) -> EventStudyResult:
     # overflow is expected, hence `over="ignore"`). `log` reads through the scale-safe, signed
     # `numeric.log_ratio_array`: finite for every positive pair (1e200 → 1e-200 is −921.03…,
     # not ln(0) = −inf censoring a perfectly measurable window), and a move's reverse reads its
-    # exact negation, so a closed cycle sums to exactly 0 — read in its own direction, 100 → 110
-    # → 100 summed to 2e-17, a positive mean the support floor graded.
+    # exact negation, so the two sum to exactly 0 — read in its own direction, 100 → 110 → 100
+    # summed to 2e-17, a positive mean the support floor graded.
     #
     # pct and log additionally require both endpoints STRICTLY POSITIVE. Both
     # are ratio algebras and are meaningless off a positive scale, but neither fails loudly:

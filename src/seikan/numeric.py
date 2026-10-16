@@ -17,13 +17,14 @@ the larger level over the smaller, negated where ``num < den``, so ``ln(a/b)`` i
 bit for bit. Read in its own direction each quotient rounded on its own: ``ln(fl(110/100))`` is
 0.09531017980432493 and ``ln(fl(100/110))`` −0.09531017980432490, so a price cycle 100 → 110 →
 100, a move that went nowhere, summed to 2e-17 — a positive mean log return the support floor
-graded, and a rolling-mean sign predicate firing. The quotient of the larger level by the smaller
-is at least 1, so it never underflows; past the double range it overflows to ``inf`` (``1e200 /
-1e-200``), where the direct form read ``ln(inf)`` — NaN after the finite-or-NaN sanitation, a
-censored outcome, where the true value is the finite ``921.034…`` — and there the difference of
-logs ``ln(hi) − ln(lo)``, which never leaves the range, stands in. Everywhere else the direct
-form and its exact bits stand: the difference of logs rounds differently on almost every
-ordinary pair. Each twin keeps its callers' log implementation (``math.log`` for the scalar
+graded, and a rolling-mean sign predicate firing. A longer cycle (100 → 110 → 120 → 100) cancels
+only to rounding, as any sum of rounded terms does. The quotient of the larger level by the
+smaller is at least 1, so it never underflows; past the double range it overflows to ``inf``
+(``1e200 / 1e-200``), where the direct form read ``ln(inf)`` — NaN after the finite-or-NaN
+sanitation, a censored outcome, where the true value is the finite ``921.034…`` — and there the
+difference of logs ``ln(hi) − ln(lo)``, which never leaves the range, stands in. Everywhere else
+the direct form and its exact bits stand: the difference of logs rounds differently on almost
+every ordinary pair. Each twin keeps its callers' log implementation (``math.log`` for the scalar
 reads, ``np.log`` for the array reads). A test pins the twins to the same rule.
 
 Positive finite levels are the CALLERS' gate (both ratio algebras are positive-domain, and each

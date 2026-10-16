@@ -1016,9 +1016,10 @@ because `extra="forbid"` applies to every DSL model:
   outcomes can. `log` = ln(b/a) is scale-safe (the decision-side `change` and `describe` read the
   same rule): finite for every positive pair, even where `b/a` leaves the double range
   (1e200 → 1e-200 measures −921.03…, never ln(0)), and signed — ln(a/b) is −ln(b/a) bit for
-  bit, so a closed cycle (100 → 110 → 100) sums to exactly 0, never a rounding residue the
-  support floor could grade; a `pct` or `diff` past the range has no representable value and
-  censors as `no_outcome`.
+  bit, so a move and its reverse (100 → 110 → 100) cancel exactly, never a rounding residue the
+  support floor could grade (a cycle through three or more levels only to rounding, as any
+  floating-point sum); a `pct` or `diff` past the range has no representable value and censors
+  as `no_outcome`.
 - The anchor is always the next bar (`t+1 → t+1+h`) — no same-bar look-ahead, whatever the outcome.
   `benchmark: "market"` works with `pct` and `log` (the benchmark leg is measured in the OUTCOME'S
   OWN algebra, so a `log` outcome yields the true log-excess `ln(tgt ratio) − ln(bench ratio)`) but
@@ -1371,8 +1372,9 @@ complete statistics are still in `summary.cells[i]` — a checklist result never
   outcomes can hide adverse results, and missing-at-random is never assumed. **`open` is ALLOWED at
   any count**: with no holdout there is no embargo and no tail, so a forward window running past
   the last bar is structural end-of-data right-censoring that every cell near the index end must
-  exhibit. An in-bounds NaN leg is never `open` — it classifies as `no_outcome`/`no_benchmark` and
-  refuses.
+  exhibit. A window that closes within the data and reads a NaN leg is never `open` — it
+  classifies as `no_outcome`/`no_benchmark` and refuses; one running past the last bar is `open`
+  even on a NaN fill print, as no outcome of it was ever measurable for a hole to delete.
 - `signal_coverage` — per target `n_undefined == 0`. A missing entry-condition input does not
   censor an outcome, it suppresses the FIRING, which the outcome ledger structurally cannot see;
   without this check, deleting the inputs under adverse firings would improve a cell unseen.
