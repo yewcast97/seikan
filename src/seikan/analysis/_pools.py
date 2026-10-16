@@ -224,10 +224,9 @@ def pool_moments(rets: np.ndarray) -> PoolMoments:
     # cubes to inf beside a variance its many small rows keep in range): ±inf, never a value.
     out["skewness"] = skew if math.isfinite(skew) else _NAN
     out["kurtosis"] = kurt if math.isfinite(kurt) else _NAN
-    if n > 1:
-        p5, p95 = (float(q) for q in np.percentile(v, [5.0, 95.0]))
-        out["tail_ratio"] = abs(_finite_ratio(p95, p5)) if p5 != 0 else _NAN
-        out["cvar_5"] = exact_mean(np.sort(v)[: math.ceil(n / 20)])
+    p5, p95 = (float(q) for q in np.percentile(v, [5.0, 95.0]))
+    out["tail_ratio"] = abs(_finite_ratio(p95, p5)) if p5 != 0 else _NAN
+    out["cvar_5"] = exact_mean(np.sort(v)[: math.ceil(n / 20)])
     return out
 
 

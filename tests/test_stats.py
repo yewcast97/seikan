@@ -150,6 +150,16 @@ def test_pool_moments_cvar_5_is_the_mean_of_the_worst_twentieth():
     assert np.isnan(pool_moments(np.array([-1.7e308, -1e308] + [0.0] * 19))["cvar_5"])
 
 
+def test_pool_moments_tail_reads_describe_a_one_observation_pool():
+    # Both tail reads are defined at n = 1 — p05 = p95 = the observation, as pool_quantiles
+    # reports them, and the worst twentieth is the observation itself — but sat behind the std's
+    # n > 1 guard: a one-row pool read null beside its own p05 and p95.
+    s = pool_moments(np.array([-0.1]))
+    assert s["tail_ratio"] == 1.0 and s["cvar_5"] == -0.1
+    assert pool_quantiles(np.array([-0.1]))["p05"] == -0.1
+    assert np.isnan(pool_moments(np.array([0.0]))["tail_ratio"])  # p05 = 0: no ratio
+
+
 def test_profit_factor_arithmetic_and_refusals():
     # Σwins/|Σlosses|: zero-return rows join NEITHER side, and either side empty is NaN — the
     # win_loss_ratio no-ratio-to-form rule, and this engine never emits an infinity.
