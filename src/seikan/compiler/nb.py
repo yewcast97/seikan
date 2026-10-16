@@ -14,7 +14,8 @@ Two implementation styles, **no vectorbt**:
   the event-anchor family (``event_anchor`` — the latest-event index ``s(t)`` a Condition's
   tradable signal defines — and ``event_agg``, the resettable running aggregate since it; the
   ``bars_since_event`` / ``event_value`` / ``mask`` reads off those are plain numpy), and the
-  exact sums the decision-side means read (``_rolling_exact_sums``, ``_row_exact_sums``).
+  exact sums the decision-side means and deviations read (``_rolling_exact_sums``,
+  ``_row_exact_sums``, ``cross_deviations``).
   These are scalar recurrences that don't vectorize; numba compiles the loop to machine code.
 
 The production surface is the 2D ``*_apply_nb`` form (rows × columns → rows × columns), applied per
@@ -69,17 +70,21 @@ from seikan.numeric import MIN_NORMAL, log_ratio_array
 # scale (``[2**52, 2**52 + 1]``) read a std of 0.707 for 0.5 and a z-score past its bound.
 #
 # EXACT means: every mean a decision reads — ``rolling_agg``'s and ``cross_agg``'s ``mean``, and the
-# cross-section centre ``cross_demean``, ``cross_agg``'s std and the runner's ``cross_mean`` legs
-# take (``cross_centre``) — is its window's or row's EXACTLY ROUNDED sum over its count, the read
-# ``analysis._pools.exact_mean`` gives the graded pools. The sums are Shewchuk expansions
-# (``_expansion_add``, the ``math.fsum`` algorithm ``event_agg``'s running sum keeps): sliding along
-# a column (``_rolling_exact_sums``, O(rows) whatever the window) or one per row
-# (``_row_exact_sums``). numpy sums pairwise, and a large term swallowed a small one before its
-# cancelling partner arrived: ``[1, −2**-54, −1, 2**-54, 0]`` sums to exactly 0 and its mean read
-# 1.1e-17, so ``cross_agg(x, mean) > 0`` fired on it — and read 0 after a permutation of the
-# members, the decision hanging on the order the targets were declared in. The mean has the exact
-# sum's sign and is 0.0 exactly where the sum is, in any member order; it is NaN where an
-# intermediate sum leaves the double range (members near it), as the direct form's overflow was.
+# cross-section centre ``cross_agg``'s std and the runner's ``cross_mean`` bench leg take
+# (``cross_centre``) — is its window's or row's EXACTLY ROUNDED sum over its count, the read
+# ``analysis._pools.exact_mean`` gives the graded pools; a deviation from a cross-section's mean
+# that is read (``cross_demean``, the ``cross_mean`` excess) has its numerator ``k·x − S`` summed
+# exactly (``cross_deviations``), so a member AT the mean reads exactly 0.0 — about the rounded
+# centre ``[0, 1, 1, −1 − 2**-52, −1 + 2**-52]``'s first member read 2.2e-17, and ``x == 0 AND
+# cross_demean(x) > 0`` fired. The sums are Shewchuk expansions (``_expansion_add``, the
+# ``math.fsum`` algorithm ``event_agg``'s running sum keeps): sliding along a column
+# (``_rolling_exact_sums``, O(rows) whatever the window) or one per row (``_row_exact_sums``).
+# numpy sums pairwise, and a large term swallowed a small one before its cancelling partner
+# arrived: ``[1, −2**-54, −1, 2**-54, 0]`` sums to exactly 0 and its mean read 1.1e-17, so
+# ``cross_agg(x, mean) > 0`` fired on it — and read 0 after a permutation of the members, the
+# decision hanging on the order the targets were declared in. The mean has the exact sum's sign and
+# is 0.0 exactly where the sum is, in any member order; it is NaN where an intermediate sum leaves
+# the double range (members near it), as the direct form's overflow was.
 # The centre a window's variance is reduced about (``_window_moments``, ``_pair_moments``) stays the
 # direct two-pass form about the window's offset: no threshold compares against it, and the
 # moments, the correlation and the z-score read off it are known to the rounding of the window's
@@ -643,7 +648,7 @@ def unary_op_apply_nb(arr: npt.NDArray[np.float64], op: str) -> npt.NDArray[np.f
     return np.where(np.isfinite(out), out, np.nan)
 
 
-def constant_rows(a: npt.NDArray[np.float64], finite: npt.NDArray[np.bool_]) -> np.ndarray:
+def _constant_rows(a: npt.NDArray[np.float64], finite: npt.NDArray[np.bool_]) -> np.ndarray:
     """(rows, 1): the bars whose FINITE members all share one value (False on an empty row)."""
     hi = np.where(finite, a, -np.inf).max(axis=1, keepdims=True)
     lo = np.where(finite, a, np.inf).min(axis=1, keepdims=True)
@@ -652,12 +657,12 @@ def constant_rows(a: npt.NDArray[np.float64], finite: npt.NDArray[np.bool_]) -> 
 
 
 def _row_offset(a: npt.NDArray[np.float64], finite: npt.NDArray[np.bool_]) -> np.ndarray:
-    """(rows, 1): the offset a cross-section's moments are computed around — the midpoint of its
-    finite members' range, each end halved before the sum so that no member's difference from it
-    overflows (0.0 on an empty row). A row's deviations are an OUTPUT (``cross_demean``), and
-    members farther apart than the double range still have representable deviations from their
-    mean, which an offset AT a member would overflow. Differences from it are exact wherever the
-    row lies within a factor of two of it (:func:`_window_moments` says why that matters)."""
+    """(rows, 1): the offset a cross-section's centre and variance are computed around — the
+    midpoint of its finite members' range, each end halved before the sum so that no member's
+    difference from it overflows (0.0 on an empty row): members farther apart than the double
+    range still have a representable mean and spread, which an offset AT a member would
+    overflow. Differences from it are exact wherever the row lies within a factor of two of it
+    (:func:`_window_moments` says why that matters)."""
     hi = np.where(finite, a, -np.inf).max(axis=1, keepdims=True)
     lo = np.where(finite, a, np.inf).min(axis=1, keepdims=True)
     with np.errstate(invalid="ignore"):
@@ -672,12 +677,12 @@ def cross_centre(
     """``(offset, mean)``, each (rows, 1): a cross-section's offset (:func:`_row_offset`) and the
     mean of its finite members' differences from it — their exactly rounded sum
     (:func:`_row_exact_sums`) over their count, so it has the exact sum's sign and is 0.0
-    exactly where the differences cancel, in any member order — the centre ``cross_demean`` and
-    ``cross_agg``'s std reduce about, and the runner's ``cross_mean`` benchmark. A member's
-    deviation from the cross-section's mean is ``(x − offset) − mean`` (exact differences from
-    the offset wherever the row lies within a factor of two of it), and the mean itself is
-    ``offset + mean`` rounded once. NaN mean on an empty row and where an intermediate sum
-    leaves the double range (callers silence the 0/0 and test finiteness)."""
+    exactly where the differences cancel, in any member order — the centre ``cross_agg``'s std
+    reduces about, and the runner's ``cross_mean`` bench leg, ``offset + mean`` rounded once. A
+    member's deviation about it, ``(x − offset) − mean``, rounds twice, which the std's squares
+    absorb; a deviation that is READ — ``cross_demean``, the ``cross_mean`` excess — is
+    :func:`cross_deviations`' exact one instead. NaN mean on an empty row and where an
+    intermediate sum leaves the double range (callers silence the 0/0 and test finiteness)."""
     k = finite.sum(axis=1, keepdims=True).astype(float)
     offset = _row_offset(a, finite)
     sums = _row_exact_sums(np.ascontiguousarray(a - offset), np.ascontiguousarray(finite))
@@ -713,25 +718,25 @@ def cross_rank_apply_nb(arr: npt.NDArray[np.float64], min_valid: int) -> npt.NDA
 def cross_demean_apply_nb(arr: npt.NDArray[np.float64], min_valid: int) -> npt.NDArray[np.float64]:
     """Cross-sectional demean ACROSS targets at each bar (axis=1, no time window).
 
-    Column g gets x_g - mean(finite values at bar t), self included, computed about the row's
-    offset (:func:`_row_offset`): ``y = x − c``, then ``y − mean(y)`` — ``[2**52, 2**52 + 1,
-    2**52 + 1]`` demeans to ``[−2/3, 1/3, 1/3]`` (to rounding), where the raw sum and mean
-    rounded onto the lowest member and read ``[0, 1, 1]``.
-    NaN where x_g is NaN or fewer than max(min_valid, 2) targets are finite. A cross-section whose
-    members all share one value demeans to exactly 0.0 (the zero-dispersion note above).
-    Inherently 2-D — no 1-D form.
+    Column g gets x_g - mean(finite values at bar t), self included: each member's EXACT
+    deviation, rounded once over the count (:func:`cross_deviations`), so a member at the
+    cross-section's mean demeans to exactly 0.0 and every other one has its deviation's sign.
+    About a rounded centre it did not: ``[0, 1, 1, −1 − 2**-52, −1 + 2**-52]`` sums to exactly
+    0, but its offset subtraction rounded two members and the first demeaned to 2.2e-17, so
+    ``x == 0 AND cross_demean(x) > 0`` fired; about the raw rounded mean ``[2**52, 2**52 + 1,
+    2**52 + 1]`` read ``[0, 1, 1]`` for ``[−2/3, 1/3, 1/3]``. A cross-section whose members all
+    share one value demeans to exactly 0.0. NaN where x_g is NaN, where its deviation leaves the
+    double range, or fewer than max(min_valid, 2) targets are finite. Inherently 2-D — no 1-D
+    form.
     """
     a = np.asarray(arr, dtype=float)
     out = np.full(a.shape, np.nan)
     if a.ndim != 2 or a.shape[1] < 2:
         return out
     finite = np.isfinite(a)
-    k = finite.sum(axis=1, keepdims=True).astype(float)
-    with np.errstate(all="ignore"):
-        offset, mean = cross_centre(a, finite)
-        dev = np.where(constant_rows(a, finite), 0.0, (a - offset) - mean)
-    # `isfinite(dev)`: the row sum (or the subtraction at the float ceiling) can overflow.
-    ok = finite & (k >= float(max(min_valid, 2))) & np.isfinite(dev)
+    k = finite.sum(axis=1, keepdims=True)
+    dev = cross_deviations(np.ascontiguousarray(a), np.ascontiguousarray(finite))
+    ok = finite & (k >= max(min_valid, 2)) & np.isfinite(dev)
     return np.where(ok, dev, np.nan)
 
 
@@ -766,7 +771,7 @@ def cross_agg_apply_nb(
     k = finite.sum(axis=1, keepdims=True).astype(float)
     # A cross-section whose members all share one value: its mean IS that value and its std is
     # 0.0 (the zero-dispersion note above).
-    constant = constant_rows(a, finite)
+    constant = _constant_rows(a, finite)
     with np.errstate(all="ignore"):
         if agg == "mean":
             sums = _row_exact_sums(np.ascontiguousarray(a), np.ascontiguousarray(finite))
@@ -1413,6 +1418,69 @@ def _row_exact_sums(
                     break
         if not over:
             out[r] = _expansion_value(p, m)
+    return out
+
+
+#: Veltkamp's splitter for a double's 53 bits, ``2**27 + 1``: ``x = hi + lo`` with each half at
+#: most 26 significant bits, so its product with a member count below ``2**26`` is exact.
+_SPLITTER = 134217729.0
+#: From this magnitude a member's split, or its product with the count, can overflow — such a row
+#: is computed in a frame scaled by :data:`_SPLIT_DOWN` (:func:`cross_deviations`).
+_SPLIT_MAX = 2.0**996
+_SPLIT_DOWN = 2.0**-28
+
+
+@njit(cache=True)
+def cross_deviations(
+    a: npt.NDArray[np.float64], finite: npt.NDArray[np.bool_]
+) -> npt.NDArray[np.float64]:
+    """``(rows × members)``: each ``finite`` member's deviation from its row's mean, ``x − S/k``
+    for the exact sum ``S`` of the row's ``k`` finite members — the numerator ``k·x − S`` summed
+    EXACTLY (:func:`_expansion_add`, with ``k·x`` the products of ``x``'s two Veltkamp halves,
+    each an exact double), rounded once and divided by ``k`` once: ``cross_demean``'s values and
+    the runner's ``cross_mean`` excesses. A member AT the mean deviates by exactly 0.0, and every
+    deviation has the exact one's sign, whatever the members' order or magnitudes. A row whose
+    largest member reaches ``2**996`` (where the split or ``k·x`` can overflow) is computed in a
+    frame scaled by ``2**-28`` — exact save its members and deviations below ``2**-994``, whose
+    scaled bits round — and scaled back: a deviation past the double range is ``±inf`` there, for
+    the caller to test. NaN off the finite members, and on a row whose exact numerator leaves the
+    double range (none can at fewer than ``2**26`` members)."""
+    rows, cols = a.shape
+    out = np.full((rows, cols), np.nan)
+    p = np.empty(8)
+    q = np.empty(8)
+    for r in range(rows):
+        k = 0
+        big = 0.0
+        for c in range(cols):
+            if finite[r, c]:
+                k += 1
+                big = max(big, abs(a[r, c]))
+        scale = _SPLIT_DOWN if big >= _SPLIT_MAX else 1.0
+        m = 0
+        over = False
+        for c in range(cols):
+            if finite[r, c]:
+                p, m, over = _expansion_add(p, m, a[r, c] * scale)
+                if over:
+                    break
+        if over:
+            continue
+        if q.shape[0] < p.shape[0]:
+            q = np.empty(p.shape[0])
+        for c in range(cols):
+            if not finite[r, c]:
+                continue
+            for i in range(m):
+                q[i] = -p[i]
+            x = a[r, c] * scale
+            t = x * _SPLITTER
+            hi = t - (t - x)
+            q, n, over = _expansion_add(q, m, k * hi)
+            if not over:
+                q, n, over = _expansion_add(q, n, k * (x - hi))
+            if not over:
+                out[r, c] = _expansion_value(q, n) / k / scale
     return out
 
 

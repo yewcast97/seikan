@@ -809,6 +809,30 @@ def test_cross_demean_matches_row_mean_reference():
     pd.testing.assert_frame_equal(val, want, check_names=False)
 
 
+def test_cross_demean_member_at_the_mean_never_reads_above_it():
+    # The review's signal: five per-target feeds whose every bar is [0, 1, 1, −1 − 2**-52,
+    # −1 + 2**-52] — the cross-section sums to exactly 0, so the member at 0 sits AT its mean.
+    # Demeaned about a rounded centre it read 2.2e-17, and `x == 0 AND cross_demean(x) > 0` fired
+    # on every bar; its exact deviation is 0.0, and the conjunction fires nowhere.
+    e = 2.0**-52
+    idx = pd.date_range("2020-01-01", periods=40, freq="1D")
+    members = dict(zip("ABCDE", [0.0, 1.0, 1.0, -1.0 - e, -1.0 + e], strict=True))
+    feed = pd.DataFrame({t: np.full(40, v) for t, v in members.items()}, index=idx)
+    px = pd.DataFrame({t: np.full(40, 100.0) for t in members}, index=idx)
+    md = MarketData(
+        close=px, open=px, high=px, low=px, volume=None, externals={"x": feed}, targets=[*members]
+    )
+    x = External(name="x")
+    assert (vz.build_series(CrossDemean(input=x), md)[0]["A"] == 0.0).all()
+    entry = AndCondition(
+        conditions=[
+            ThresholdCondition(left=x, op="==", right=Constant(value=0.0)),
+            ThresholdCondition(left=CrossDemean(input=x), op=">", right=Constant(value=0.0)),
+        ]
+    )
+    assert not vz.signal(entry, md).to_numpy().any()
+
+
 def test_cross_rank_of_warming_input_stays_gated():
     # zscore needs `window` bars per column; before that the cross-section has k < min_valid=3
     # finite columns, so the cross value is NaN and init stays unlatched — the signal cannot fire.

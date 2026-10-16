@@ -839,11 +839,15 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   floating point, eight episodes of `[1, −2**54, −1, 2**54]` read a zero-width interval at 0.25
   beside a `mean_ret` of 0; a draw's sum over its episodes' sums stays ordinary arithmetic.
   The means a DECISION reads are exactly rounded the same way: `rolling_agg` and `cross_agg`
-  `mean`, and the cross-section centre that `cross_demean`, `cross_agg`'s `std` and the
-  `cross_mean` legs take (`nb.cross_centre`), are the window's or the bar's exactly rounded sum
-  over its count, in any bar or member order (summed pairwise, `[1, −2**-54, −1, 2**-54, 0]` read
-  a mean of 1.1e-17 in one member order and 0 in another, so `cross_agg(x, mean) > 0` fired on the
-  order the targets were declared in); a window's variance is still taken about its direct
+  `mean`, and the cross-section centre that `cross_agg`'s `std` and the `cross_mean` bench leg
+  take (`nb.cross_centre`), are the window's or the bar's exactly rounded sum over its count, in
+  any bar or member order (summed pairwise, `[1, −2**-54, −1, 2**-54, 0]` read a mean of 1.1e-17
+  in one member order and 0 in another, so `cross_agg(x, mean) > 0` fired on the order the
+  targets were declared in); a deviation from a cross-section's mean that is READ — `cross_demean`
+  and the `cross_mean` excess — is the member's exact deviation, its numerator `k·x − S` summed
+  exactly and rounded once over `k` (`nb.cross_deviations`), so a member AT the mean reads exactly
+  0.0 (about the rounded centre, `[0, 1, 1, −1 − 2**-52, −1 + 2**-52]`'s first member read 2.2e-17
+  and `x == 0 AND cross_demean(x) > 0` fired); a window's variance is still taken about its direct
   two-pass centre (below), so a z-score within the rounding of its window's spread of 0 can read
   0 or the other sign.
   A post-warmup zero-dispersion bar
@@ -862,11 +866,11 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   rounding (`[2**52, 2**52 + 1]` read a window std of 0.707 for 0.5, a two-point z-score of
   1.414, past its bound of 1, and a ddof=1 `std_ret` of 1.0 for 0.707; legs clustered 31 and 62
   ulps apart read a regression beta of 1.9984 for 2). The pool means stay the exactly rounded
-  sum, and `alpha` stays `mean_raw − beta·mean_bench` on them. A `cross_mean` excess is the same
-  deviation about its bar's offset (`nb.cross_centre`, the `cross_demean` kernel's own centre):
-  legs `[2**52, 2**52 + 1, 2**52 + 1]` read excesses `[0, 1, 1]` for `[−2/3, 1/3, 1/3]` about
-  their rounded mean, two selected rows "beating the basket" by 1 beside an exact pooled mean of
-  1/3; its bench leg is the bar's mean rounded once, so `ret == ret_raw − ret_bench` holds to that
+  sum, and `alpha` stays `mean_raw − beta·mean_bench` on them. A `cross_mean` excess is the
+  member's exact deviation, `cross_demean`'s (above): legs `[2**52, 2**52 + 1, 2**52 + 1]` read
+  excesses `[0, 1, 1]` for `[−2/3, 1/3, 1/3]` about their rounded mean, two selected rows
+  "beating the basket" by 1 beside an exact pooled mean of 1/3; its bench leg is the bar's mean
+  about its offset (`nb.cross_centre`), rounded once, so `ret == ret_raw − ret_bench` holds to that
   rounding (exactly under `market`), and a bar whose legs' plain sum overflows still has its mean
   (only a centred sum past the range voids the bar). `ema` differs from its plain recurrence
   only on the steps where a rounded update left its exact interval — rounding-scale steps a

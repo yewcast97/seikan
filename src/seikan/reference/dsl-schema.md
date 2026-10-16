@@ -338,11 +338,15 @@ update left its exact interval; the EW z-score reads the plain West recurrence's
 rounding (the compensated mean), lifted where that recurrence leaves the normal range (below).
 
 Every MEAN a decision reads is exactly rounded too: `rolling_agg`'s and `cross_agg`'s `mean`, and
-the cross-sectional centre that `cross_demean`, `cross_agg`'s `std` and the `cross_mean` benchmark
-take, are the window's or the bar's exactly rounded sum over its count — the exact sum's sign, and
-exactly 0.0 where that sum is 0, whatever order the bars or the targets come in. Summed pairwise in
-floating point, the cross-section `[1, −2**-54, −1, 2**-54, 0]` read a mean of 1.1e-17 that
-`cross_agg(x, mean) > 0` fired on in one declaration order of the targets and not in another. A
+the cross-sectional centre that `cross_agg`'s `std` and the `cross_mean` bench leg take, are the
+window's or the bar's exactly rounded sum over its count — the exact sum's sign, and exactly 0.0
+where that sum is 0, whatever order the bars or the targets come in. Summed pairwise in floating
+point, the cross-section `[1, −2**-54, −1, 2**-54, 0]` read a mean of 1.1e-17 that
+`cross_agg(x, mean) > 0` fired on in one declaration order of the targets and not in another.
+`cross_demean` (and the `cross_mean` excess) is each member's EXACT deviation from that mean —
+its numerator `k·x − S` summed exactly, rounded once over `k` — so a member at the mean reads
+exactly 0.0: about a rounded centre the first member of `[0, 1, 1, −1 − 2**-52, −1 + 2**-52]`
+demeaned to 2.2e-17, and `x == 0 AND cross_demean(x) > 0` fired. A
 mean whose running sum leaves the double range is NaN (undecidable, like an overflowed variance
 below). The centre a window's VARIANCE is taken about stays the direct two-pass form above, so a
 `zscore` within the rounding of its window's spread of 0 can read 0 or the other sign.
@@ -477,7 +481,8 @@ floor sweeps the SAMPLE, not the hypothesis. Each node counts as one operator le
   `cross_rank(x) >= 0.8` IS top-quintile membership — the quantile primitive; there is no
   separate quantile node.
 - `cross_demean` (input, min_valid=2) — the target's value minus the cross-target mean of the
-  finite values at the bar (self included); same NaN gating. The cross-sectional ZSCORE recipe:
+  finite values at the bar (self included), its exact deviation rounded once — a member at the
+  mean reads exactly 0.0; same NaN gating. The cross-sectional ZSCORE recipe:
   `binary_op(cross_demean(x), "/", cross_agg(x, "std"))` — the same nesting cost as either node
   alone, and a zero-dispersion bar divides by zero → NaN via the `binary_op` `/` contract (never
   fires).
@@ -1026,10 +1031,11 @@ whether the MARKET went up, not the thesis; long-horizon theses should set `benc
   declared members, self included, measured in the outcome's own algebra — the relative-value
   read "did this member beat the basket?". It takes no `benchmark` key (supplying one
   beside it is an error), and it works under `pct` and `log` (`diff` never reaches it — basket
-  refuses `diff` outright). Each excess is the member's deviation about the bar's OWN offset (its
-  legs' range midpoint, the `cross_demean` rule): about the rounded raw mean a spread at the
-  level's ulp was lost — legs `[2**52, 2**52 + 1, 2**52 + 1]` read excesses `[0, 1, 1]` for
-  `[−2/3, 1/3, 1/3]` — and the bench leg is the bar's mean rounded once; legs whose plain sum
+  refuses `diff` outright). Each excess is the member's EXACT deviation from the bar's mean (the
+  `cross_demean` rule — a member at the mean reads exactly 0.0; about the rounded raw mean a
+  spread at the level's ulp was lost, legs `[2**52, 2**52 + 1, 2**52 + 1]` reading excesses
+  `[0, 1, 1]` for `[−2/3, 1/3, 1/3]`), and the bench leg is the bar's mean about its legs' range
+  midpoint, rounded once; legs whose plain sum
   overflows still have a mean taken this way (only a bar whose centred sum leaves the double
   range has none). Its missingness is FAIL-CLOSED at whole-bar granularity: any member's
   leg non-finite at a bar censors the WHOLE bar's benchmark leg, so every member's firing there

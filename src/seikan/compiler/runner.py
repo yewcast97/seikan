@@ -1363,15 +1363,16 @@ def run_backtest(thesis: Thesis, md: MarketData) -> EventStudyResult:
             # the censoring ledger. `fwd` is already signed, and sign·(tgt − mean(tgt)) ≡
             # signed − mean(signed), so demeaning after the sign is exact for shortonly too —
             # which is also why the bar's mean IS the signed benchmark leg, needing no further
-            # sign. Each excess is the member's deviation about the bar's OFFSET, as the
-            # `cross_demean` kernel takes it (`nb.cross_centre`): `(leg − c) − mean(leg − c)`.
-            # About the rounded raw mean instead, a spread at the level's ulp lost its bits —
+            # sign. Each excess is the member's EXACT deviation from the bar's mean, as the
+            # `cross_demean` kernel takes it (`nb.cross_deviations`): a member at the basket mean
+            # reads exactly 0 — about a rounded centre the first leg of `[0, 1, 1, −1 − 2**-52,
+            # −1 + 2**-52]` read 2.2e-17, a row-level hit — and about the rounded raw mean
             # `[2**52, 2**52 + 1, 2**52 + 1]` read excesses `[0, 1, 1]` for `[−2/3, 1/3, 1/3]`,
-            # three selected rows "all beating the basket". The bench leg is `c + mean`, the
-            # basket mean rounded once, so `ret == ret_raw − ret_bench` holds to that one
-            # rounding. A bar whose legs are all EQUAL (a shared outcome feed broadcast to the
-            # basket) reads every excess exactly 0 and its bench leg the value — exact zero
-            # dispersion, as in the kernels. A member whose own deviation leaves the double range
+            # three selected rows "all beating the basket". The bench leg is the basket mean
+            # about the bar's offset (`nb.cross_centre`: `c + mean(leg − c)`), rounded once, so
+            # `ret == ret_raw − ret_bench` holds to that one rounding. A bar whose legs are all
+            # EQUAL (a shared outcome feed broadcast to the basket) reads every excess exactly 0
+            # and its bench leg the value. A member whose own deviation leaves the double range
             # is NaN alone (as in the kernel), and a bar whose centred sum does voids every member
             # — silently, as `_measure`'s own overflow does.
             finite = np.isfinite(fwd)
@@ -1379,8 +1380,8 @@ def run_backtest(thesis: Thesis, md: MarketData) -> EventStudyResult:
             with np.errstate(over="ignore", invalid="ignore"):
                 offset, mean = nb.cross_centre(fwd, finite)
                 mu = offset + mean
-                bench = np.where(whole & np.isfinite(mu), mu, np.nan)
-                excess = np.where(nb.constant_rows(fwd, finite), 0.0, (fwd - offset) - mean)
+            bench = np.where(whole & np.isfinite(mu), mu, np.nan)
+            excess = nb.cross_deviations(np.ascontiguousarray(fwd), finite)
             fwd = np.where(np.isfinite(bench) & np.isfinite(excess), excess, np.nan)
         return fwd, tgt_finite, raw, bench
 

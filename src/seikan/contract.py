@@ -1092,15 +1092,15 @@ REPORT_FIELDS: dict[str, JsonValue] = {
             "every return-valued field (mean_ret, ret, mae, mfe, pre_ret, ci_lo/ci_hi, cvar_5, "
             "ret_quantiles, ...) is denominated per summary.outcome.units — 'fraction' (pct), "
             "'log', or 'level_diff' (the measured series' own level units); benchmarked runs are "
-            "EXCESS returns in the same algebra, and direction signs every measurement. "
-            "ret_raw / ret_bench (and mean_ret_raw / mean_ret_bench) are the excess return's "
-            "own direction-signed legs in that same algebra — ret == ret_raw − ret_bench per "
-            "observation (under cross_mean to the bench leg's one rounding: ret is the deviation "
-            "about the bar's offset). ONE exemption: the RAW-path fields (mae, mfe, pre_ret, the "
-            "mae_quantiles / mfe_quantiles blocks incl. their means) "
-            "are never benchmark-adjusted, so under a benchmark they are not commensurable with "
-            "ret and no difference between them means anything — edge_ratio divides the two RAW "
-            "excursion means by each other, which is why it alone is sanctioned"
+            "EXCESS returns in the same algebra, and direction signs every measurement. ret_raw / "
+            "ret_bench (and mean_ret_raw / mean_ret_bench) are the excess return's own "
+            "direction-signed legs in that same algebra — ret == ret_raw − ret_bench per "
+            "observation (under cross_mean to the bench leg's one rounding: ret is the member's "
+            "exact deviation from the bar's mean, rounded once). ONE exemption: the RAW-path "
+            "fields (mae, mfe, pre_ret, the mae_quantiles / mfe_quantiles blocks incl. their "
+            "means) are never benchmark-adjusted, so under a benchmark they are not commensurable "
+            "with ret and no difference between them means anything — edge_ratio divides the two "
+            "RAW excursion means by each other, which is why it alone is sanctioned"
         ),
         "grid": (
             "the summary is a GRID: it carries no rollup, no breakdown table and no pooled "
@@ -1686,8 +1686,8 @@ TRADES_CSV: dict[str, JsonValue] = {
         "ret_raw": (
             "the signed RAW outcome leg over the same window — equals ret when no benchmark is "
             "declared; ret == ret_raw - ret_bench per row under market, and to the bench leg's "
-            "one rounding under cross_mean (ret is the deviation about the bar's offset); empty "
-            "on censored rows"
+            "one rounding under cross_mean (ret is the member's exact deviation from the bar's "
+            "mean); empty on censored rows"
         ),
         "ret_bench": (
             "the signed benchmark leg the excess subtraction consumed (the market series' "

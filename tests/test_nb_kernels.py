@@ -542,7 +542,9 @@ def test_ordinary_windows_are_bit_identical_to_the_shifted_direct_forms():
         dev = y - np.array([[math.fsum(r)] for r in y.tolist()]) / 6.0
         cross = np.sqrt((dev * dev).sum(axis=1, keepdims=True) / 6.0)
         np.testing.assert_array_equal(nb.cross_agg_apply_nb(rows, "std", 2), np.repeat(cross, 6, 1))
-        np.testing.assert_array_equal(nb.cross_demean_apply_nb(rows, 2), dev)
+        np.testing.assert_array_equal(
+            nb.cross_demean_apply_nb(rows, 2), ref.cross_demean_grouped_ref(rows, np.zeros((50, 6)))
+        )
 
 
 def test_moments_about_the_window_offset_keep_an_ulp_scale_spread():
@@ -562,7 +564,7 @@ def test_moments_about_the_window_offset_keep_an_ulp_scale_spread():
     three = np.array([big, big + 1.0, big + 1.0])
     assert rolling_corr_1d(three, np.array([0.0, 1.0, 1.0]), 3)[2] == 1.0
     row = three[None, :]
-    np.testing.assert_allclose(nb.cross_demean_apply_nb(row, 2), [[-2 / 3, 1 / 3, 1 / 3]], 1e-15)
+    np.testing.assert_array_equal(nb.cross_demean_apply_nb(row, 2), [[-2 / 3, 1 / 3, 1 / 3]])
     np.testing.assert_array_equal(row - row.mean(axis=1, keepdims=True), [[0.0, 1.0, 1.0]])
     assert nb.cross_agg_apply_nb(row, "std", 2)[0, 0] == pytest.approx(math.sqrt(2.0) / 3.0)
     # the references agree, and the power-of-two lift still commutes with the offset
@@ -627,6 +629,38 @@ def test_decision_side_means_are_exactly_rounded_sums():
         rolling_agg_1d(x, 3, "mean"),
         [np.nan, np.nan, 1e308, 1e308, np.nan, third, -1e308, -1e308, np.nan, third, 1.0, 1.0],
     )
+
+
+def test_cross_demean_is_each_members_exact_deviation():
+    # The review's row sums to exactly 0, so its first member sits AT the mean — but the offset
+    # subtraction rounded two members and the first demeaned to 2.2e-17: `x == 0 AND
+    # cross_demean(x) > 0` fired. Each member's numerator k·x − S is summed exactly and rounded
+    # once over k: the member at the mean reads exactly 0.0, every other one its exact
+    # deviation's sign, in any member order.
+    e = 2.0**-52
+    row = np.array([[0.0, 1.0, 1.0, -1.0 - e, -1.0 + e]])
+    for perm in itertools.permutations(range(5)):
+        r = row[:, list(perm)]
+        got = nb.cross_demean_apply_nb(r, 2)
+        assert got[0, perm.index(0)] == 0.0
+        np.testing.assert_array_equal(got, ref.cross_demean_grouped_ref(r, np.zeros(r.shape)))
+    # against exact rationals: magnitudes forty decades apart, cancelling giants beside sub-ulp
+    # terms, members past 2**996 (computed in a frame scaled by 2**-28) and holes
+    rng = np.random.RandomState(23)
+    for kind in range(4):
+        shape = (40, int(rng.randint(2, 9)))
+        if kind == 0:
+            a = rng.randn(*shape) * 10.0 ** rng.randint(-20, 20, shape)
+        elif kind == 1:
+            a = rng.choice([2.0**54, -(2.0**54), 1.0, -1.0, 2.0**-54, 0.0], shape)
+        elif kind == 2:
+            a = rng.randn(*shape) * 10.0 ** rng.randint(295, 308, shape)
+        else:
+            a = rng.randn(*shape)
+            a[rng.rand(*shape) < 0.2] = np.nan
+        np.testing.assert_array_equal(
+            nb.cross_demean_apply_nb(a, 2), ref.cross_demean_grouped_ref(a, np.zeros(shape))
+        )
 
 
 # ---- Phase-1 kernels: shift / unary_op --------------------------------------
@@ -1278,7 +1312,7 @@ def test_kernel_overflow_yields_nan_never_inf():
         # only the member whose deviation overflows is NaN
         (
             nb.cross_demean_apply_nb(np.array([[1.7e308, -1.7e308, -1.7e308]]), 2).ravel(),
-            [nan, -1.7e308 - (-1.7e308 / 3.0), -1.7e308 - (-1.7e308 / 3.0)],
+            [nan, float(Fraction(-1.7e308) * 2 / 3), float(Fraction(-1.7e308) * 2 / 3)],
         ),
         (
             nb.cross_agg_apply_nb(np.array([[1.6e308, 1.6e308, 1.6e308]]), "mean", 2).ravel(),

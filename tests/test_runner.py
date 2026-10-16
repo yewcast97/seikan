@@ -3825,6 +3825,39 @@ def test_cross_mean_excess_is_taken_about_the_bars_offset(tmp_path):
         assert pooled[key] == pytest.approx(1.0 / 3.0, rel=1e-15), key
 
 
+def test_cross_mean_member_at_the_basket_mean_reads_exactly_zero(tmp_path):
+    # The cross_demean defect on the outcome side: pct legs [0.25, 0.75, 0.75, −0.25 − 2**-53,
+    # −0.25 + 2**-53] average exactly 0.25, member A's leg. About the bar's rounded centre A's
+    # excess read 1.1e-17 — every A row a hit. Its exact deviation is 0.0: no hit, no loss.
+    n = 40
+    idx = pd.date_range("2021-01-01", periods=n, freq="1D")
+    odd = np.arange(n) % 2 == 1
+    e = 2.0**-53
+    tops = {"A": 1.25, "B": 1.75, "C": 1.75, "D": 0.75 - e, "E": 0.75 + e}
+    files = {
+        t: _write_bars(tmp_path / f"{t}.csv", np.where(odd, top, 1.0), idx)
+        for t, top in tops.items()
+    }
+    thesis = Thesis.model_validate(
+        {
+            "name": "cm_at_mean",
+            "target_mode": "basket",
+            "data": {"targets": list(tops)},
+            "entry": {
+                "type": "threshold",
+                "left": {"type": "field", "column": "close"},
+                "op": "!=",
+                "right": {"type": "constant", "value": 1.0},
+            },
+            "params": {"horizon": 1, "benchmark": "cross_mean"},
+        }
+    )
+    res = run_backtest(thesis, load(thesis, files))
+    rows = res.trades[~res.trades["is_open"] & (res.trades["target"] == "A")]
+    assert len(rows) == 19 and (rows["ret_raw"] == 0.25).all() and (rows["ret"] == 0.0).all()
+    assert res.summary["cells"][0]["by_target"]["A"]["hit_rate"] == 0.0
+
+
 def _cross_mean_basket(tmp_path, order, entry, *, n=100, horizon=5, seed=21):
     """Three members (fixed price paths per NAME) declared in ``order``, ``cross_mean``."""
     idx = pd.date_range("2021-01-01", periods=n, freq="1D")
@@ -4413,8 +4446,9 @@ def test_cross_mean_buckets_keep_every_row_a_bar_does_not_hold_whole(tmp_path):
     # U's quartile j and W's 3 - j never coincide: the all-full grid's buckets are the rows'
     # plain read, byte for byte, while its pbo still ties at 0.0. On a MIXED grid (U fires only
     # above a level) each cell's buckets are the stats read over the cell's bar values (each
-    # bar's exact excess sum, re-derived from the prices): the split feature still the plain
-    # read, the calendar's whole bars at their exact sums.
+    # bar's exact excess sum, re-derived from the prices): the split feature the plain read to
+    # the rounding of the few bars W and A share a quartile on, the calendar's whole bars at
+    # their exact sums.
     px = {"px": {"type": "field", "column": "close"}}
     res = _walk_basket(tmp_path, "UWA", _ALWAYS, px)
     assert res.summary["pbo"]["pbo"] == 0.0
@@ -4440,7 +4474,14 @@ def test_cross_mean_buckets_keep_every_row_a_bar_does_not_hold_whole(tmp_path):
         plain = cell_conditional_buckets(rows, list(feats))
         pool = _bar_pool_rows(rows, legs, "UWA")
         assert got == cell_conditional_buckets(rows, list(feats), rets_pool=pool)
-        assert got["conditional_buckets"]["px"] == plain["conditional_buckets"]["px"]
+        split = zip(
+            got["conditional_buckets"]["px"]["buckets"],
+            plain["conditional_buckets"]["px"]["buckets"],
+            strict=True,
+        )
+        for bucket, row_read in split:
+            assert bucket["n"] == row_read["n"] and bucket["hit_rate"] == row_read["hit_rate"]
+            assert bucket["mean_ret"] == pytest.approx(row_read["mean_ret"], rel=1e-12)
         moved.append(got["conditional_buckets"]["dow"] != plain["conditional_buckets"]["dow"])
     # the calendar buckets hold whole bars at their exact sums; the lvl-45 cell holds W alone —
     # the single-target arm, the frozen kernel's plain read

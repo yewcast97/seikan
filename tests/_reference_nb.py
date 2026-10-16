@@ -15,7 +15,8 @@ variance nears that range. Every
 window moment is taken about the window's own offset (its first value; a cross-section's is the
 midpoint of its range), never about the rounded mean of the raw values, and every MEAN a decision
 reads (``rolling_agg`` / ``cross_agg`` ``mean``, a cross-section's centre) is the exactly rounded
-``math.fsum`` over the count — NaN where that sum overflows.
+``math.fsum`` over the count — NaN where that sum overflows; a cross-section's demeaned member is
+its exact deviation's numerator ``k·x − S`` (exact rationals), rounded once, over ``k``.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from __future__ import annotations
 import itertools
 import math
 import sys
+from fractions import Fraction
 
 import numpy as np
 
@@ -466,17 +468,22 @@ def _row_offset(vals: list[float]) -> float:
     return max(vals) / 2.0 + min(vals) / 2.0
 
 
-def _row_deviations(vals: list[float]) -> list[float]:
-    """Each member's deviation from the cross-section's mean, about the row's offset."""
+def _row_variance(vals: list[float]) -> float:
+    """A cross-section's population variance, two-pass about the row's offset."""
     c = _row_offset(vals)
     y = [x - c for x in vals]
     mu = _exact_sum(y) / len(y)
-    return [v - mu for v in y]
+    return sum((v - mu) * (v - mu) for v in y) / len(vals)
 
 
-def _row_variance(vals: list[float]) -> float:
-    """A cross-section's population variance, two-pass about the row's offset."""
-    return sum(d * d for d in _row_deviations(vals)) / len(vals)
+def _row_exact_deviations(vals: list[float]) -> list[float]:
+    """Each member's deviation from the cross-section's mean: its exact numerator ``k·x − S``
+    rounded once, over ``k`` — in a frame scaled by ``2**-28`` where a member reaches ``2**996``,
+    scaled back (``±inf`` past the double range)."""
+    k = len(vals)
+    s = 2.0**-28 if max(abs(x) for x in vals) >= 2.0**996 else 1.0
+    total = sum(Fraction(x * s) for x in vals)
+    return [float(k * Fraction(x * s) - total) / k / s for x in vals]
 
 
 def rolling_corr_ref(left: np.ndarray, right: np.ndarray, window: int) -> np.ndarray:
@@ -801,10 +808,9 @@ def cross_demean_grouped_ref(arr: np.ndarray, labels: np.ndarray, min_valid: int
         for members in _groups(arr[i], labels[i]).values():
             if len(members) < max(min_valid, 2):
                 continue
-            vals = [float(arr[i, g]) for g in members]
-            devs = _row_deviations(vals)
+            devs = _row_exact_deviations([float(arr[i, g]) for g in members])
             for g, d in zip(members, devs, strict=True):
-                out[i, g] = 0.0 if len(set(vals)) == 1 else d
+                out[i, g] = d if math.isfinite(d) else math.nan
     return out
 
 
