@@ -481,13 +481,22 @@ def _latch_mask(flags: npt.NDArray[np.bool_]) -> npt.NDArray[np.bool_]:
     return np.maximum.accumulate(flags.astype(np.int8), axis=0).astype(bool)
 
 
+def _pending(value: pd.DataFrame, init: pd.DataFrame) -> npt.NDArray[np.bool_]:
+    """Where an input is initialized and has produced no finite value SINCE its init — the
+    pending arm of the derived latches. A value carried before the init counts for nothing: it
+    is no value of the input's own (a ``cross_agg`` broadcast into a warming member, snapshotted
+    by an ``event_value`` whose anchor later turns unknowable)."""
+    i: npt.NDArray[np.bool_] = init.to_numpy(dtype=bool)
+    return i & ~_latch_mask(np.isfinite(value.to_numpy(dtype=float)) & i)
+
+
 def _derived_latch(
     arr: np.ndarray, *inputs: tuple[pd.DataFrame, pd.DataFrame]
 ) -> npt.NDArray[np.bool_]:
     """The warmup latch of a Series computed FROM other Series (each input a ``(value, init)``
     pair): it initializes at its first finite value on a bar where every input is itself
-    initialized — or on a bar where every input is initialized and one of them has not yet
-    produced a value at all.
+    initialized — or on a bar where every input is initialized and one of them has produced no
+    value since its own init (:func:`_pending`).
 
     For an input whose init is its own finiteness latch (every data leaf and everything built
     from them) this IS ``_latch(arr)`` — a causal transform cannot produce a finite value before
@@ -503,9 +512,8 @@ def _derived_latch(
     all_init = np.ones(np.shape(arr), dtype=bool)
     pending = np.zeros(np.shape(arr), dtype=bool)
     for value, init in inputs:
-        i = init.to_numpy(dtype=bool)
-        all_init = all_init & i
-        pending = pending | (i & ~_latch(value.to_numpy(dtype=float)))
+        all_init = all_init & init.to_numpy(dtype=bool)
+        pending = pending | _pending(value, init)
     return _latch_mask(np.isfinite(arr) & all_init) | _latch_mask(all_init & pending)
 
 
@@ -537,10 +545,10 @@ def _derived_latch_at(
 ) -> npt.NDArray[np.bool_]:
     """:func:`_derived_latch` for a node whose value at ``t`` reads its input FROM the event bar
     ``s(t)`` on — ``event_value``'s snapshot ``x[s]``, ``event_agg``'s run ``x[s .. t]``: the
-    input's init and value latch are read AT ``s(t)``, so the node initializes at its first
+    input's init and pending arm are read AT ``s(t)``, so the node initializes at its first
     finite value whose event bar found the input initialized, or where the input was initialized
-    there with no value yet (the pending arm). Init latches never turn back off, so an input
-    initialized at ``s`` is initialized over the whole run.
+    there with no value since its init (:func:`_pending`). Init latches never turn back off, so
+    an input initialized at ``s`` is initialized over the whole run.
 
     Read at ``t`` instead, a snapshot taken during the input's warmup became usable the moment
     the input initialized, with no new event: a ``cross_agg`` broadcasts the basket's value into a
@@ -558,7 +566,7 @@ def _derived_latch_at(
     s = np.maximum(s_idx, 0)
     i = init.to_numpy(dtype=bool)
     init_s = np.take_along_axis(i, s, axis=0) & at
-    pending_s = np.take_along_axis(i & ~_latch(value.to_numpy(dtype=float)), s, axis=0) & at
+    pending_s = np.take_along_axis(_pending(value, init), s, axis=0) & at
     return _latch_mask(np.isfinite(arr) & init_s) | _latch_mask(pending_s | (unknown & i))
 
 

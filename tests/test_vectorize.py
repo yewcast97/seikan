@@ -230,8 +230,8 @@ def _ref_init(node, df) -> np.ndarray:
     became unknowable after warmup (a post-warmup hole in the event condition before the first
     event is a hole, not warmup), a snapshot only where its input is initialized too. A Series
     computed from others also initializes where every input is initialized and one of them has
-    never had a value yet — that stretch is the input's hole, ledgered by its readers rather than
-    absorbed as their warmup."""
+    had no value since its init — that stretch is the input's hole, ledgered by its readers
+    rather than absorbed as their warmup."""
     if node.type in _LEAF_ALWAYS_INIT:
         return np.ones(len(df), dtype=bool)
     if node.type == "mask":
@@ -252,7 +252,7 @@ def _ref_init(node, df) -> np.ndarray:
         child = getattr(node, attr, None)
         if child is not None:
             child_init = _ref_init(child, df)
-            child_seen = ever(~np.isnan(_ref_series(child, df)))
+            child_seen = ever(~np.isnan(_ref_series(child, df)) & child_init)
             if lag:  # a lagged read needs the bar it reads initialized
                 child_init = lagged(child_init, lag, False)
                 child_seen = lagged(child_seen, lag, False)
@@ -2417,6 +2417,41 @@ def test_an_unknown_anchor_cannot_initialize_a_snapshot_whose_input_has_not_star
     np.testing.assert_array_equal(init[:, 2], bars >= 50)
     np.testing.assert_array_equal(sig[:, 2], bars >= 50)
     assert not undefined[:, 2].any()
+
+
+def test_a_series_reader_ledgers_a_snapshot_initialized_with_no_value_since_its_init():
+    # The only event (bar 0) snapshots the breadth broadcast into T2/T3 while their own input
+    # warms (it starts at bar 40); a domain NaN in E at bar 45 then leaves the anchor unknowable
+    # with their input live, so the snapshot initializes there with no value: 35 holes. A series
+    # computed from it counted the 2.0 carried BEFORE that init as the snapshot having produced a
+    # value, so its pending arm never armed: `snap + 0 > 0` stayed in vacuous warmup and the
+    # 35 holes left the ledger with identical firings.
+    n = 80
+    bars = np.arange(n)
+    late = np.r_[np.full(40, np.nan), np.full(40, 3.0)]
+    e = np.ones(n)
+    e[0], e[45] = 2.0, -1.0
+    md = _mdk(n, x=[1.0, 3.0, late, late], e=[e] * 4)
+    event = ThresholdCondition(
+        left=UnaryOp(input=External(name="e"), op="log"), op=">", right=Constant(value=0.4)
+    )
+    snap = EventValue(event=event, input=CrossAgg(input=_X, agg="mean"))
+    v, i = (f.to_numpy() for f in vz.build_series(snap, md))
+    assert (v[:45] == 2.0).all() and np.isnan(v[45:]).all()
+    np.testing.assert_array_equal(i[:, 2:], np.repeat((bars >= 45)[:, None], 2, axis=1))
+    cond = ThresholdCondition(left=snap, op=">", right=Constant(value=0.0))
+    undefined = vz.undefined_mask(cond, md)
+    np.testing.assert_array_equal(undefined, np.repeat((bars >= 45)[:, None], 4, axis=1))
+    sig = vz.signal(cond, md).to_numpy()
+    for wrapped in (
+        BinaryOp(left=snap, op="+", right=Constant(value=0.0)),
+        BinaryOp(left=snap, op="*", right=Constant(value=1.0)),
+        UnaryOp(input=snap, op="abs"),
+    ):
+        np.testing.assert_array_equal(vz.build_series(wrapped, md)[1].to_numpy(), i)
+        reader = ThresholdCondition(left=wrapped, op=">", right=Constant(value=0.0))
+        np.testing.assert_array_equal(vz.undefined_mask(reader, md), undefined)
+        np.testing.assert_array_equal(vz.signal(reader, md).to_numpy(), sig)
 
 
 def test_a_lagged_read_of_a_broadcast_waits_for_the_bar_it_reads():

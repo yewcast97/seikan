@@ -360,8 +360,9 @@ every window overflows, its first included (`zscore` of levels near 1e160), neve
 never fires, an `or` holding it decides on its other branches alone, and no ledger counts it. The
 exception is a series initialized before any value — an event node whose anchor a hole in `E` made
 unknown before its first event (see "Event algebra"), a `mask` undecided on its first live bar, and
-a series computed from such an input: it initializes there, finite or not, and every overflowed bar
-after it is undecidable. A `cross_agg` is never one: its broadcast waits for its own first finite
+a series computed from such an input (a value it carried before its init, a broadcast snapshotted in
+warmup, counts for nothing): it initializes there, finite or not, and every overflowed bar after it
+is undecidable. A `cross_agg` is never one: its broadcast waits for its own first finite
 value as well as for the member's own first value, so one that overflows on every bar is warmup
 whatever its input. A window variance that falls BELOW the normal double range (deviations under
 ~1.5e-154) is a precision loss ordinary data reaches — an `ema` of a change decays geometrically
@@ -526,8 +527,8 @@ with a filter bolted on afterwards:
   any series computed from one — is no observation of that member yet, so it is neither ranked,
   demeaned nor averaged against its siblings there; the late member thins the cross-section as a
   late-listed one does. A rank or deviation reads its member's label as a second input: a label
-  initialized with no value yet (an event node whose anchor a hole made unknown) is undecidable
-  for that member, ledgered as every reader of the label ledgers it.
+  initialized with no value since its init (an event node whose anchor a hole made unknown) is
+  undecidable for that member, ledgered as every reader of the label ledgers it.
 - Nested cross nodes inside `where`/`group` are legal — a liquidity screen selecting the ranking
   population is `where = cross_rank(dollar_volume) >= 0.5` — and each carries its own
   `cross_breadth` entry. `where` operands are decision roots (depth-checked on their own, listed

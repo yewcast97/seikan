@@ -750,9 +750,10 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   event snapshot — `event_value`, `event_agg` — where its event bar was, or the current bar while
   a hole leaves that bar unknown, so a value an input carried during its own warmup never becomes
   usable without a new event), or
-  where every input is initialized and one has no value yet (an event node whose anchor became
-  unknowable before its first event, a mask undecided on its first live bar — a hole it then
-  ledgers, as the input's direct readers do, never its own warmup): identical to its own
+  where every input is initialized and one has produced no value since its own init (an event
+  node whose anchor became unknowable before its first event, a mask undecided on its first live
+  bar — a hole it then ledgers, as the input's direct readers do, never its own warmup; a value
+  the input carried before its init is not its own and settles nothing): identical to its own
   finiteness latch for plain data, and what keeps a reader of a `cross_agg` broadcast into a
   member whose own input has not started from latching early (the broadcast itself waits for the
   member's own first value). A cross node enters a member only with an initialized input, and
