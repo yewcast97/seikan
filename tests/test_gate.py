@@ -1058,6 +1058,16 @@ def test_cell_evidence_rejects_unknown_exit_reasons():
     assert "unknown exit reason" in check.detail
 
 
+def test_cell_evidence_refuses_a_non_string_exit_reason_key():
+    # Sorting the unknown keys for the detail raised TypeError on a mixed {1, "unexpected"} — a
+    # crash where drifted input must refuse with a detail.
+    cell = _cell()
+    cell["outcome_coverage"]["AAA"]["exit_reasons"].update({1: 0, "unexpected": 0})
+    check = _cell_checks(evaluate_gate(_summary(cells=[cell])))["cell_evidence"]
+    assert not check.met
+    assert "unknown exit reason(s) [1, 'unexpected']" in check.detail
+
+
 def test_cell_evidence_support_panel_must_agree_with_the_coverage_ledger():
     # The internally impossible summary: one closed firing in the ledger, but the graded panel
     # claims 42. The two are reconciled against EACH OTHER, not each only against itself.

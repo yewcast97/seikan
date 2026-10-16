@@ -48,7 +48,7 @@ def _grade_outcome_ledger(cov: dict[str, object], run_bars: int | None, unmet: l
         reasons = entry.get("exit_reasons")
         reasons = _as_dict(reasons)
         ledger, _bad = _int_ledger(reasons)
-        unknown = sorted(k for k in reasons if k not in EXIT_REASONS)
+        unknown = sorted((k for k in reasons if k not in EXIT_REASONS), key=str)
         if unknown:
             # A firing parked under an unrecognized reason is a firing the ledger's arithmetic
             # cannot account for — and its semantics are unknown to every reader downstream.
