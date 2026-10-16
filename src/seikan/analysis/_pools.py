@@ -105,6 +105,16 @@ def _ddof1_std(v: np.ndarray) -> float:
     return math.sqrt(var) if _normal(var) else _NAN
 
 
+def exact_sum(v: np.ndarray) -> float:
+    """``v``'s EXACTLY ROUNDED sum (``math.fsum``): one double whatever order the values come in.
+    NaN where the exact sum leaves the double range or meets ``inf − inf`` (``fsum`` raises
+    there) — a sum with no value, which every caller's finiteness test decides."""
+    try:
+        return math.fsum(v.tolist())
+    except (OverflowError, ValueError):
+        return _NAN
+
+
 def exact_mean(v: np.ndarray) -> float:
     """The mean of a pool of finite values as its EXACTLY ROUNDED sum over ``n`` — the read
     every mean the checklist grades, and its direct twins, share: ``pool_moments``' ``mean_ret``,
@@ -127,10 +137,7 @@ def exact_mean(v: np.ndarray) -> float:
         return _NAN
     if lo == hi:
         return lo
-    try:
-        return math.fsum(v.tolist()) / n
-    except OverflowError:
-        return _NAN
+    return exact_sum(v) / n
 
 
 def _finite_ratio(num: float, den: float) -> float:

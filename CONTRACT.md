@@ -860,10 +860,14 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   panel). So are the episode panels' per-episode means and `episode_profile.mean_ret` over them,
   whose signs the hit rate and the streaks count — summed pairwise, eight episodes of
   `[−0.5, −2**-55, 0.5, 2**-55]` read 6.9e-18 each, a hit rate of 1 and a win streak of 8 beside
-  a `mean_ret` of 0. The evidence-only means elsewhere (bootstrap draws, buckets, CSCV) stay the
+  a `mean_ret` of 0. The evidence-only means elsewhere (bootstrap draws, buckets) stay the
   arithmetic mean, save that each bootstrap episode's sum is exactly rounded too — summed in
   floating point, eight episodes of `[1, −2**54, −1, 2**54]` read a zero-width interval at 0.25
-  beside a `mean_ret` of 0; a draw's sum over its episodes' sums stays ordinary arithmetic.
+  beside a `mean_ret` of 0; a draw's sum over its episodes' sums stays ordinary arithmetic. CSCV's
+  block moments are exactly rounded sums (a column's returns about its exactly rounded mean, and
+  their squares), the same doubles in any row order: two candidates holding the same returns in
+  every block, in other orders, ranked apart by row-order rounding (`pbo` 0.571 for a grid of
+  full ties); a split's sum over its blocks stays ordinary arithmetic.
   The means a DECISION reads are exactly rounded the same way: `rolling_agg` and `cross_agg` `mean`,
   and the `cross_mean` bench leg (`nb.cross_means`), are the window's or the bar's exactly rounded
   sum over its count, in any bar or member order (summed pairwise, `[1, −2**-54, −1, 2**-54, 0]`

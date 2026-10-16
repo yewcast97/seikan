@@ -2233,6 +2233,32 @@ def test_cscv_pbo_midrank_full_test_tie_is_lambda_zero():
     assert out["lambda_mean"] == 0.0
 
 
+def test_cscv_pbo_candidates_with_the_same_block_returns_tie_in_any_row_order():
+    # The review's case: two candidates holding the same six returns in each of eight blocks, in
+    # other row orders. Every split ties in exact arithmetic, but the block sums ran in row order
+    # and their last bits ranked the candidates: pbo 0.571, lambda_mean -0.248. Exact block sums
+    # are the same doubles in any order, so every split is a full tie.
+    T, h = 800, 1
+    vals = np.array([-0.04, -0.02, 0.0, 0.02, 0.04, 0.06])
+    # each block's six returns in row order, as indices into `vals` (the review's seed 8)
+    orders = (
+        "035124 350124 530142 325014 254130 154203 025143 013452",
+        "054321 105342 402513 241305 234150 153402 421035 251043",
+    )
+    cells = []
+    for k, order in enumerate(orders):
+        mask, fwd = np.zeros(T), np.full(T, np.nan)
+        for b, perm in enumerate(order.split()):  # S=8 blocks of 100 bars, nothing purged
+            bars = b * 100 + 2 + 10 * np.arange(6)
+            mask[bars] = 1.0
+            fwd[bars] = vals[[int(i) for i in perm]]
+        cells.append({"key": (k, "t"), "mask_col": mask, "fwd_col": fwd, "h": h})
+    out = cscv_pbo(cells, T, ["t"], n_combos_declared=2)
+    assert out["reason"] is None and out["n_combos"] == 2 and out["n_splits"] == 70
+    assert out["pbo"] == 0.0
+    assert out["lambda_mean"] == 0.0
+
+
 def test_cscv_pbo_duplicate_collapse_leaves_a_planted_edge_unchanged():
     # Cloning a noise combo must not move any scored number — the clone collapses away and only
     # the population ledger says it was declared. Also the ledger inequality every block obeys.

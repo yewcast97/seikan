@@ -10,7 +10,7 @@ from typing import cast
 
 import numpy as np
 
-from seikan.analysis._pools import _NEAR_CONSTANT_ULPS
+from seikan.analysis._pools import _NEAR_CONSTANT_ULPS, exact_mean, exact_sum
 from seikan.numeric import MIN_NORMAL
 from seikan.types import (
     CellKey,
@@ -33,13 +33,23 @@ _PBO_MIN_SPLITS = 6
 _PBO_BLOCK_FALLBACKS = (6, 4)
 
 #: One (combo × member) pool's per-block moment accumulators: the block counts, the block sums of
-#: returns and the block sums of squares, each a ``(S,)`` array over the S blocks. Summing them
-#: over a split's blocks is what makes the split score a pure arithmetic reduction.
+#: returns and the block sums of squares, each a ``(S,)`` array over the S blocks (every sum
+#: exactly rounded, :func:`_block_sums`). Summing them over a split's blocks is what makes the
+#: split score a pure arithmetic reduction.
 type _MomentTriple = tuple[np.ndarray, np.ndarray, np.ndarray]
 
 #: The same pool's per-block return extrema ``(lo, hi)``, each ``(S,)`` (``+inf`` / ``-inf`` on an
 #: empty block): a split's pool is EXACTLY constant iff its chosen blocks' min equals their max.
 type _Extrema = tuple[np.ndarray, np.ndarray]
+
+
+def _block_sums(b: np.ndarray, w: np.ndarray, s: int) -> np.ndarray:
+    """``(s,)``: each block's EXACTLY ROUNDED sum of the values ``w`` in it (``b`` is each value's
+    block; 0.0 on an empty block) — one double whatever order the block's rows come in. A running
+    sum (``np.bincount``'s weights) rounded in row order: two candidates holding the same returns
+    in every block, in other orders, scored apart by their last bits, and every split between them
+    — a tie in exact arithmetic — read a winner and a loser (``pbo`` 0.571 for 0)."""
+    return np.array([exact_sum(w[b == g]) for g in range(s)])
 
 
 def _disperses(lo: np.ndarray, hi: np.ndarray, mean: np.ndarray, eps: float) -> np.ndarray:
@@ -73,8 +83,9 @@ def _split_scores(
     per-observation Sharpe under conjunction.
 
     ``moments`` is the (Q, T, 3, S) SHIFTED moment tensor: each (combo, target) column's kept
-    returns are shifted by that column's own overall mean (``refs``, (Q, T); 0.0 for absent
-    members, whose zero triple then contributes exactly nothing), so the one-pass variance runs
+    returns are shifted by that column's own overall mean (``refs``, (Q, T), the exactly rounded
+    mean; 0.0 for absent members, whose zero triple then contributes exactly nothing) and summed
+    per block exactly (:func:`_block_sums`), so the one-pass variance runs
     on centered data — the raw Σx² − n·mean² form cancelled to a silent zero on level-heavy
     series (a diff outcome at level 1e9 scored as pure rounding noise). Means are reconstructed
     exactly: per member ``mean = shifted-mean + ref``; pooled through the exact cross-term
@@ -218,7 +229,9 @@ def cscv_pbo(
     would hand the train winner the worst test rank purely for tying with itself. Test ranks
     are MIDRANKS (ties share their average rank; a full tie is λ = 0 — a split that cannot
     distinguish candidates is not evidence of overfitting), and the training winner's tie-break
-    is first-index / declaration order (``np.nanargmax``), deterministic by construction.
+    is first-index / declaration order (``np.nanargmax``), deterministic by construction. A
+    candidate's block moments are exactly rounded sums, the same doubles in any row order, so two
+    candidates holding the same returns in every block tie on every split.
 
     ``mode`` is the thesis's declared ``target_mode`` and sets the SPLIT SCORE — the score
     mirrors the statistic the caller of that mode selects on, because PBO describes the
@@ -351,20 +364,21 @@ def cscv_pbo(
             keep = (t + off + h) < edges[b + 1]
             t, b = t[keep], b[keep]
             r = fwd[t]
-            # SHIFTED moments: bincount the column's returns about its own overall kept mean, and
-            # carry that reference beside the triple — `_split_scores` reconstructs exact means
-            # while the variance arithmetic runs centered (level-safe). Per-S by necessity: the
-            # purge above depends on this partition's edges.
-            # A mean or a square past the double range is no input to a score: `_split_scores`
+            # SHIFTED moments: the column's returns about its own overall kept mean, summed per
+            # block exactly, with that reference carried beside the triple — `_split_scores`
+            # reconstructs exact means while the variance arithmetic runs centered (level-safe).
+            # Per-S by necessity: the purge above depends on this partition's edges.
+            # A shift or a square past the double range is no input to a score: `_split_scores`
             # nulls every split it reaches (`_representable`), so it overflows silently here.
+            ref = exact_mean(r) if r.size else 0.0
             with np.errstate(over="ignore", invalid="ignore"):
-                ref = float(r.mean()) if r.size else 0.0
                 r_shift = r - ref
-                stats_by_key[key] = (
-                    np.bincount(b, minlength=s).astype(float),
-                    np.bincount(b, weights=r_shift, minlength=s),
-                    np.bincount(b, weights=r_shift * r_shift, minlength=s),
-                )
+                r_square = r_shift * r_shift
+            stats_by_key[key] = (
+                np.bincount(b, minlength=s).astype(float),
+                _block_sums(b, r_shift, s),
+                _block_sums(b, r_square, s),
+            )
             refs_by_key[key] = ref
             lo = np.full(s, np.inf)
             hi = np.full(s, -np.inf)
@@ -377,9 +391,7 @@ def cscv_pbo(
                 # closed member, 0.0 on the others), summed per block — a split's mean is their sum
                 # over its row count. The purge above kept or dropped a bar's rows together (it
                 # reads the bar and the cell's horizon alone), so each block holds whole bars.
-                column = values[:, member[key[-1]]]
-                with np.errstate(over="ignore", invalid="ignore"):
-                    pool_by_key[key] = np.bincount(b, weights=column[t], minlength=s)
+                pool_by_key[key] = _block_sums(b, values[:, member[key[-1]]][t], s)
 
         # Every surviving cell belongs to an admissible, distinct candidate (filtered and
         # collapsed above, S-independently), so the roster here is exactly that candidate set.

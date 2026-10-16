@@ -10,7 +10,7 @@ from itertools import pairwise
 import numpy as np
 
 from seikan.analysis._episodes import overlap_clusters
-from seikan.analysis._pools import _ddof1_std
+from seikan.analysis._pools import _ddof1_std, exact_sum
 from seikan.types import (
     EpisodeBootstrapCI,
 )
@@ -37,15 +37,6 @@ BOOT_MIN_EPISODES = 5
 #: the chunk row count is a pure function of the episode count, so the RNG call sequence — and
 #: hence every drawn value — is deterministic for a given pool.
 _BOOT_CHUNK = 1 << 22
-
-
-def _exact_sum(v: np.ndarray) -> float:
-    """``v``'s exactly rounded sum, ``inf`` where it leaves the double range (``math.fsum``
-    raises there rather than returning an infinity)."""
-    try:
-        return math.fsum(v.tolist())
-    except (OverflowError, ValueError):
-        return math.inf
 
 
 def episode_bootstrap_ci(
@@ -121,7 +112,7 @@ def episode_bootstrap_ci(
     # by return. `pool` rides the same permutation and only breaks ties left in (bar, ret) —
     # rows equal in both, so the sorted bars/rets bytes and the digest stay the two-key ones,
     # while the episode sums add in one canonical order whatever pool values a caller hands in
-    # (exact sums, `_exact_sum`, whatever that order). Ordering on `pool` INSTEAD of `rets`
+    # (exact sums, `exact_sum`, whatever that order). Ordering on `pool` INSTEAD of `rets`
     # would hand a bar's tied zeros — and with them the hashed `rets` — back to the caller's
     # row order.
     order = np.lexsort((rets, bars) if rets_pool is None else (pool, rets, bars))
@@ -142,11 +133,11 @@ def episode_bootstrap_ci(
         return out
     # Clusters partition the sorted rows into CONTIGUOUS runs (the greedy merge walks the rows in
     # order), so each episode is one segment of the sorted pool. Its sum is exactly rounded; a
-    # sum past the double range is inf, which the finiteness test below decides.
+    # sum past the double range is NaN, which the finiteness test below decides.
     starts = np.fromiter((c[0] for c in clusters), dtype=np.int64, count=n_ep)
     ep_counts = np.diff(np.append(starts, rets.size))
     ep_sums = np.array(
-        [_exact_sum(pool[a:b]) for a, b in pairwise([*starts.tolist(), int(pool.size)])]
+        [exact_sum(pool[a:b]) for a, b in pairwise([*starts.tolist(), int(pool.size)])]
     )
 
     digest = hashlib.sha256(np.int64(h).tobytes() + bars.tobytes() + rets.tobytes()).digest()
@@ -165,10 +156,10 @@ def episode_bootstrap_ci(
             done += rows
 
     out["n_boot"] = int(n_boot)
-    # An episode sum that overflowed makes every draw that resamples it ±inf (NaN off inf − inf),
-    # ranked at one end, so the percentile read one FINITE bound over draws that left the double
-    # range beside a null one. Any such sum or draw nulls the whole interval and `boot_se` alike,
-    # and says why: a null evidence block carries its reason.
+    # An episode sum that overflowed makes every draw that resamples it NaN, and a draw's own sum
+    # can leave the double range (±inf, ranked at one end: the percentile read one FINITE bound
+    # over draws that left the range beside a null one). Any such sum or draw nulls the whole
+    # interval and `boot_se` alike, and says why: a null evidence block carries its reason.
     if not (np.isfinite(ep_sums).all() and np.isfinite(stats_arr).all()):
         out["ci_lo"] = out["ci_hi"] = out["boot_se"] = _NAN
         out["reason"] = "not_representable"
