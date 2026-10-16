@@ -284,13 +284,16 @@ the bootstrap, era, episode and HAC reads beside it keep its zero-excess identit
 `cross_breadth`'s `k` counts the members a kernel actually reduced over; later review rounds
 corrected more — among them correctly rounded CSV values, exactly rounded graded means and the
 decision-side means beside them (`rolling_agg` / `cross_agg` `mean` and the cross-section
-centre), a HAC summed per bar about the pool's offset, exact `cross_mean` and `event_agg` sums
-(every `cross_mean` bar-closed sum the bar's exact excess sum), window, pool and `cross_mean`
-excess moments about their own offset, the regression's alpha on the exact leg means, an EW
-z-score on a compensated mean, correlations clipped to their range, warmup that follows the
-bars a lagged or snapshot operand reads, cross-sections that enter only initialized inputs and
-labels, a rotation transform run in a unit frame, an overflow-safe median, and clock arithmetic
-in exact ticks)
+centre), exact per-episode means, each cross-section member's exact deviation (`cross_demean`,
+the `cross_mean` excess), a HAC summed per bar about the pool's offset, exact `cross_mean` and
+`event_agg` sums (every `cross_mean` bar-closed sum the bar's exact excess sum), window and pool
+moments — the shape moments included — about their own offset, a `cvar_5` over the worst
+⌈n/20⌉ observations, a signed log ratio (`ln(a/b)` is `−ln(b/a)` bit for bit), the regression's
+alpha on the exact leg means and a fit of every varying raw leg, an EW z-score on a compensated
+mean, correlations clipped to their range, warmup that follows the bars a lagged or snapshot
+operand reads, cross-sections that enter only initialized inputs and labels, cross-target value
+reads withheld where a `diff` outcome's level units differ, a rotation transform run in a unit
+frame, an overflow-safe median, and clock arithmetic in exact ticks)
 names the engine's estimator revision the same way.
 
 The summary is a GRID, not a headline. Run-level keys are geometry and provenance only —
