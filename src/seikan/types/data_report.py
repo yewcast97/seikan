@@ -38,6 +38,7 @@ type DataIssueCode = Literal[
     "spec_data_mismatch",
     "target_index_mismatch",
     "tz_aware_timestamp",
+    "unnamed_column",
     "unreadable",
     "unsorted_timestamp",
 ]

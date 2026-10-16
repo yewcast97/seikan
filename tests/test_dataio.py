@@ -59,6 +59,10 @@ REJECTIONS = [
     ("empty_file", ""),
     ("header_only", "datetime,close\n"),
     ("duplicate_column", "datetime,close,Close\n2021-01-01,1,2\n"),
+    # an empty header name: pandas invents `Unnamed: N`, which a written name can collide with
+    ("unnamed_column", "datetime,,unnamed: 1\n2024-01-01,1,2\n2024-01-02,3,4\n"),
+    ("unnamed_column", "datetime,,x\n2021-01-01,1,2\n"),
+    ("unnamed_column", "datetime, \t,x\n2021-01-01,1,2\n"),  # blank once stripped
     # record shape: every record carries exactly the header's field count, more OR fewer refuses
     (
         "field_count_mismatch",
@@ -233,6 +237,27 @@ def test_file_is_read_exactly_once(tmp_path, monkeypatch):
     assert len(opens) == 1, (
         f"file opened {len(opens)}× — the digest may not describe the parsed bytes"
     )
+
+
+def test_an_unnamed_header_column_refuses_before_pandas_names_it(tmp_path):
+    # The review's header `datetime,,unnamed: 1`: pandas named the empty field `Unnamed: 1`,
+    # which lower-cased onto the written `unnamed: 1` — two columns under one name, and the read
+    # crashed on it (AttributeError, exit 4). The empty name refuses at the header, naming the
+    # field and its line; a duplicate among the written names is reported beside it.
+    path = _write(tmp_path, "datetime,,unnamed: 1\n2024-01-01,1,2\n2024-01-02,3,4\n")
+    df, rep = read_strict_csv(path)
+    assert df is None and [e["code"] for e in rep.errors] == ["unnamed_column"]
+    assert "header field(s) [2]" in rep.errors[0]["message"]
+    assert rep.errors[0]["examples"] == [{"csv_line": 1}]
+    _df, rep = _run(tmp_path, "datetime,a,A,\n2021-01-01,1,2,3\n")
+    assert [e["code"] for e in rep.errors] == ["unnamed_column", "duplicate_column"]
+    # the timestamp column's name is never read: unnamed — the index pandas writes — it admits,
+    # its frame keeping the file's own empty name rather than pandas' `Unnamed: 0`
+    df, rep = _run(tmp_path, ",close\n2021-01-01,1\n2021-01-04,2\n")
+    assert rep.ok and list(df.columns) == ["close"] and df.index[-1] == pd.Timestamp("2021-01-04")
+    # …but beside a `datetime` column the first column is a value column like any other
+    _df, rep = _run(tmp_path, ",datetime,close\n0,2021-01-01,1\n1,2021-01-04,2\n")
+    assert [e["code"] for e in rep.errors] == ["unnamed_column"]
 
 
 def test_a_reader_measures_one_snapshot_of_each_path(tmp_path):
@@ -611,19 +636,22 @@ def test_record_scan_matches_pandas_tokenizer_on_random_text():
     # this short never meets the tokenizer's 256 KiB buffer edge, where a space-led quote or a BOM
     # in an over-long header can part them); past a lone \r or a NUL byte they do part, and the
     # cross-check refuses every text where they did.
-    from seikan.dataio import _LONE_CR, FileReport, _records, _tokenizer_parity
+    from seikan.dataio import _LONE_CR, FileReport, _parse_frame, _records, _tokenizer_parity
 
     tokens = [",", '"', '""', "\n", "\r\n", "\r", " ", "\t", "a", "1", "\x00", "\ufeff"]
     rng = np.random.RandomState(0)
     n_trusted = n_parted = 0
     for _ in range(4000):
         blob = "".join(rng.choice(tokens, size=rng.randint(0, 25))).encode()
-        records = [fields for _line, fields in _records(blob)]
+        scanned = list(_records(blob))
+        records = [fields for _line, fields in scanned]
         if not records or any(len(f) != len(records[0]) for f in records[1:]):
             continue
+        first_line = scanned[0][0]
         names = [h.strip().lower() for h in records[0]]
-        if len(set(names)) < len(names):
-            continue  # a duplicate header name refuses before pandas reads
+        ts_at = names.index("datetime") if "datetime" in names else 0
+        if any(not n and i != ts_at for i, n in enumerate(names)) or len(set(names)) < len(names):
+            continue  # an unnamed value column or a duplicate name refuses before pandas reads
         trusted = b"\x00" not in blob and _LONE_CR.search(blob) is None
         try:
             raw = pd.read_csv(
@@ -643,8 +671,9 @@ def test_record_scan_matches_pandas_tokenizer_on_random_text():
             assert same, blob
         elif not same:
             n_parted += 1
-            raw.columns = [str(c).strip().lower() for c in raw.columns]  # as _parse_frame does
-            assert not _tokenizer_parity("f.csv", blob, raw, FileReport(path="f.csv")), blob
+            rep = FileReport(path="f.csv")  # stage 4 refuses a header pandas read otherwise
+            parsed = _parse_frame("f.csv", blob, (first_line, names), rep)
+            assert parsed is None or not _tokenizer_parity("f.csv", blob, parsed, rep), blob
     assert n_trusted > 500 and n_parted > 20  # both properties exercised, not vacuously skipped
 
 

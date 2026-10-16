@@ -1404,7 +1404,9 @@ CSV_FORMAT: dict[str, JsonValue] = {
     ),
     "record_shape": (
         "comma-delimited, '\"'-quoted (a quoted comma or line break stays inside ONE field; '\"\"' "
-        "is a literal quote); the first non-blank line is the header, and every record after it "
+        "is a literal quote); the first non-blank line is the header — every value column named, "
+        "uniquely (an empty name refuses as unnamed_column, a repeated one as duplicate_column; "
+        "only the timestamp column may go unnamed) — and every record after it "
         "carries exactly one field per header column — any record with more (a trailing "
         "delimiter is one more) or fewer refuses as field_count_mismatch, counting every "
         "offender and naming the first csv lines; never read as an index, never padded. Lines of "

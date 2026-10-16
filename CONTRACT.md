@@ -669,7 +669,11 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   refused later as non-finite) read CORRECTLY ROUNDED — the double nearest the decimal written,
   so every repr a writer emits reads back bit for bit, where pandas' own parser missed by an ulp
   on nearly half of all 17-digit strings and read `0.00000000000000001` as 0 — and OHLC
-  invariants refuse rather than clamp (the loader never mutates evidence). Every record
+  invariants refuse rather than clamp (the loader never mutates evidence). Every value column is
+  named, uniquely: an empty header name refuses (`unnamed_column` — pandas invents `Unnamed: N`
+  for it, and `datetime,,unnamed: 1` loaded two columns under one name and crashed the read, exit
+  4), save the timestamp column's, which no stage reads; a repeated name refuses
+  (`duplicate_column`), and pandas must read every name the strict scan does. Every record
   carries exactly one field per header column, checked by a `csv.reader` pass in pandas' own
   dialect before pandas reads the file: any record with more fields (a trailing delimiter is one
   more) or fewer refuses as `field_count_mismatch`, counting every offender and naming the first

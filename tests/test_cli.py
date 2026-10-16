@@ -2939,6 +2939,17 @@ def test_a_feed_lag_past_the_clock_is_a_data_refusal_never_an_internal_error(tmp
     assert [e["code"] for e in doc["data_report"]["errors"]] == ["spec_data_mismatch"]
 
 
+def test_check_data_refuses_an_unnamed_header_column_instead_of_crashing(tmp_path, capsys):
+    # `datetime,,unnamed: 1`: pandas' invented `Unnamed: 1` collided with the written name and
+    # the strict read crashed (exit 4, an internal error). It is a data refusal: exit 2, coded.
+    bad = tmp_path / "unnamed.csv"
+    bad.write_text("datetime,,unnamed: 1\n2024-01-01,1,2\n2024-01-02,3,4\n", encoding="utf-8")
+    code, doc = _run(capsys, ["check-data", str(bad)])
+    assert code == 2
+    errors = doc["data_report"]["files"][0]["errors"]
+    assert [e["code"] for e in errors] == ["unnamed_column"]
+
+
 def test_every_strict_reader_refuses_a_shifted_record_shape(tmp_path, capsys):
     # Every record one field longer than the header: pandas read the first field as an implicit
     # index, so this file passed check-data CLEAN (exit 0) with its first dates silently

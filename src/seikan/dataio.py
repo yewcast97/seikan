@@ -7,12 +7,12 @@ timestamps, no format guessing, forced-float value columns, duplicate/order chec
 sees a single number. All violations for a file are accumulated — never fail-fast — and every
 check lands in a structured ``data_report`` the CLI emits even on refusal (exit 2), so a calling
 agent can fix its data without guesswork. One exception is a structural refusal (undecodable
-bytes, a duplicate header name, a ragged record, a record the strict scan cannot read — a field
-past ``_CSV_FIELD_LIMIT`` characters, usually a quote that never closes — or a record pandas cannot
-read or reads differently from the file): past it no cell can be placed under a column, so the
-cell-level checks do not run. Likewise a timestamp or value-cell error stops the read before the
-frame-level checks (shape, the :func:`check_frame` invariants): the cells' own errors are all
-reported, but a frame built from refused cells is not graded further.
+bytes, an unnamed or duplicate header name, a ragged record, a record the strict scan cannot
+read — a field past ``_CSV_FIELD_LIMIT`` characters, usually a quote that never closes — or a
+record pandas cannot read or reads differently from the file): past it no cell can be placed
+under a column, so the cell-level checks do not run. Likewise a timestamp or value-cell error
+stops the read before the frame-level checks (shape, the :func:`check_frame` invariants): the
+cells' own errors are all reported, but a frame built from refused cells is not graded further.
 
 Refusals vs warnings: structural defects (bad timestamps, non-numeric garbage, inverted OHLC)
 refuse; market-shaped anomalies (interior NaN holes, crash-sized moves, calendar gaps) only warn —
@@ -258,7 +258,10 @@ def read_strict_csv(
     - value cells are ASCII decimal numbers (optional sign, fraction and exponent) or a signed
       ``inf``/``infinity``, each read correctly rounded — the double nearest the decimal written;
       the only missing-value markers are an empty cell or ``nan``
-    - no duplicate column names, no empty/header-only file
+    - every value column named, and uniquely: an empty header name refuses (``unnamed_column`` —
+      pandas invents ``Unnamed: N`` for it, a name the file never wrote) save the timestamp
+      column's, whose name is never read; a repeated name refuses (``duplicate_column``); no
+      empty/header-only file
     - :func:`check_frame` invariants for the detected (or ``expected_shape``) shape
 
     Warnings (returned, never refusing): per-column NaN fraction, |1-bar close return| >
@@ -339,10 +342,10 @@ class StrictCsvReader:
         rep.sha256 = snap.sha256
         ambient = csv.field_size_limit(_CSV_FIELD_LIMIT)  # set, returning the limit it replaces
         try:
-            cols = _header_columns(path, blob, rep)
-            if cols is None or not _record_shape(path, blob, len(cols), rep):
+            header = _header_columns(path, blob, rep)
+            if header is None or not _record_shape(path, blob, len(header[1]), rep):
                 return None, rep
-            raw = _parse_frame(path, blob, rep)
+            raw = _parse_frame(path, blob, header, rep)
             if raw is None or not _tokenizer_parity(path, blob, raw, rep):
                 return None, rep
         finally:  # here, never in the _records generator, whose cleanup waits on garbage collection
@@ -471,10 +474,16 @@ def _refuse_unparsable(path: str, exc: _RecordError, rep: FileReport) -> None:
     )
 
 
-def _header_columns(path: str, blob: bytes, rep: FileReport) -> list[str] | None:
-    """Stage 2: header inspection BEFORE pandas mangles duplicate names to ``col.1`` — an
-    empty file, an undecodable one, or duplicate column names refuse here. The header is the
-    first record :func:`_records` yields — the one pandas reads, leading blank lines skipped."""
+def _header_columns(path: str, blob: bytes, rep: FileReport) -> tuple[int, list[str]] | None:
+    """Stage 2: header inspection BEFORE pandas renames a column → ``(csv_line, names)``. An
+    empty file, an undecodable one, an unnamed value column or a duplicate name refuses here.
+    The header is the first record :func:`_records` yields — the one pandas reads, leading blank
+    lines skipped — and a name is read stripped and lower-cased, as every later stage reads it.
+    pandas names an EMPTY one ``Unnamed: N`` and a repeated one ``col.1``, names the file never
+    wrote, and an invented name can collide with a written one: ``datetime,,unnamed: 1`` loaded
+    two columns called ``unnamed: 1`` and crashed the read (exit 4). The one name that may be
+    empty is the timestamp column's — the first column, where none is named ``datetime`` (the
+    index pandas writes unnamed) — because no stage reads it by name."""
     try:
         first = next(_records(blob), None)
     except UnicodeDecodeError as exc:  # decoding is lazy — it surfaces at the first read
@@ -490,15 +499,24 @@ def _header_columns(path: str, blob: bytes, rep: FileReport) -> list[str] | None
             f"{path}: file is empty" if bare else f"{path}: file holds only blank lines, no header",
         )
         return None
-    cols = [str(c).strip().lower() for c in first[1]]
-    dups = sorted({c for c in cols if cols.count(c) > 1})
+    line, cols = first[0], [str(c).strip().lower() for c in first[1]]
+    ts_at = cols.index("datetime") if "datetime" in cols else 0
+    unnamed = [i + 1 for i, c in enumerate(cols) if not c and i != ts_at]
+    if unnamed:
+        rep.error(
+            "unnamed_column",
+            f"{path}: header field(s) {unnamed} carry no name — every value column must be "
+            "named (pandas would invent 'Unnamed: N', a name the file never wrote); only the "
+            "timestamp column may go unnamed",
+            examples=[{"csv_line": line}],
+        )
+    dups = sorted({c for c in cols if c and cols.count(c) > 1})
     if dups:
         rep.error(
             "duplicate_column",
             f"{path}: duplicate column name(s) {dups} — every column must be uniquely named",
         )
-        return None
-    return cols
+    return None if unnamed or dups else (line, cols)
 
 
 def _record_shape(path: str, blob: bytes, n_fields: int, rep: FileReport) -> bool:
@@ -546,14 +564,34 @@ def _record_shape(path: str, blob: bytes, n_fields: int, rep: FileReport) -> boo
     return True
 
 
-def _parse_frame(path: str, blob: bytes, rep: FileReport) -> pd.DataFrame | None:
-    """Stage 4: the full read, everything as strings — no type guessing anywhere."""
+def _parse_frame(
+    path: str, blob: bytes, header: tuple[int, list[str]], rep: FileReport
+) -> pd.DataFrame | None:
+    """Stage 4: the full read, everything as strings — no type guessing anywhere — under the
+    header stage 2 read (``header``, its csv line and names). pandas must read every name that
+    scan did, or the frame places cells under names the file does not give them: it refuses as
+    ``unreadable``. The tokenizer can part from the scan on a header — a byte-order mark at its
+    256 KiB read-buffer edge drops out of an over-long one, turning two distinct names into
+    ``close`` and ``close.1``. The frame then carries the scan's names, so an unnamed timestamp
+    column keeps its empty name rather than pandas' ``Unnamed: 0``."""
+    line, cols = header
     try:
         raw = pd.read_csv(io.BytesIO(blob), dtype=str, keep_default_na=False, encoding="utf-8-sig")
     except Exception as exc:
         rep.error("unreadable", f"{path}: could not be parsed as CSV ({exc})")
         return None
-    raw.columns = [str(c).strip().lower() for c in raw.columns]
+    read = [str(c).strip().lower() for c in raw.columns]
+    if len(read) != len(cols) or any(c and r != c for r, c in zip(read, cols, strict=True)):
+        rep.error(
+            "unreadable",
+            f"{path}: pandas' CSV tokenizer read the header differently from the strict record "
+            "scan — it cuts a name at a NUL byte, and at its 256 KiB read-buffer edge can drop a "
+            "byte-order mark from an over-long header; re-save the file with no NUL bytes and no "
+            "byte-order mark past its start",
+            examples=[{"csv_line": line}],
+        )
+        return None
+    raw.columns = cols
     if len(raw) == 0:
         rep.error("header_only", f"{path}: has a header but no data rows")
         return None
@@ -568,10 +606,10 @@ def _tokenizer_parity(path: str, blob: bytes, raw: pd.DataFrame, rep: FileReport
     left, clean and wrong; a quote at its 256 KiB buffer edge loads ``   "2021-01-04"`` as a clean
     timestamp that the same line anywhere else refuses; a BOM at that edge of an over-long header
     drops out of a name, so two names the duplicate check saw as distinct load as ``close`` and
-    ``close.1``. There the frame is compared with the scan cell by cell, each cell stripped as
-    every later stage reads it (header names where the file gives one: pandas names an empty one
-    ``Unnamed: N``), and a disagreement refuses as ``unreadable``, naming the csv line where the
-    two readings part. Every other file is not re-read.
+    ``close.1`` (stage 4 refuses that header itself). There the frame's records are compared with
+    the scan's cell by cell, each cell stripped as every later stage reads it, and a disagreement
+    refuses as ``unreadable``, naming the csv line where the two readings part. Every other file
+    is not re-read.
     """
     if not (
         b"\x00" in blob
@@ -581,12 +619,8 @@ def _tokenizer_parity(path: str, blob: bytes, raw: pd.DataFrame, rep: FileReport
     ):
         return True
     records = _records(blob)
-    line, header = next(records)
-    agree = (
-        isinstance(raw.index, pd.RangeIndex)
-        and len(raw.columns) == len(header)
-        and all(h == "" or h.strip().lower() == c for h, c in zip(header, raw.columns, strict=True))
-    )
+    line, _header = next(records)  # stage 4 held pandas' header to it
+    agree = isinstance(raw.index, pd.RangeIndex)
     rows = raw.itertuples(index=False, name=None)
     if agree:
         for at, fields in records:
@@ -602,9 +636,8 @@ def _tokenizer_parity(path: str, blob: bytes, raw: pd.DataFrame, rep: FileReport
             f"{path}: pandas' CSV tokenizer read csv line {line} differently from the strict "
             "record scan — it misreads a record after a bare carriage-return line ending, cuts a "
             "field at a NUL byte, and at its 256 KiB read-buffer edge can open a quote that "
-            "follows a line's leading spaces or drop a byte-order mark from an over-long header; "
-            "re-save the file with \\n or \\r\\n line endings, no NUL bytes, no quote after "
-            "leading spaces and no byte-order mark past its start",
+            "follows a line's leading spaces; re-save the file with \\n or \\r\\n line "
+            "endings, no NUL bytes and no quote after leading spaces",
             examples=[{"csv_line": line}],
         )
     return agree

@@ -166,8 +166,10 @@ engine sees a number, and a violation exits 2 with a machine-readable `data_repo
 column / csv line. Pre-flight with `seikan check-data <files…>`. The contract:
 
 - **Record shape**: comma-delimited, `"`-quoted (a quoted comma or line break stays inside one
-  field). The first non-blank line is the header, and every record carries exactly one field per
-  header column: any record with more (a trailing delimiter is one more) or fewer refuses as
+  field). The first non-blank line is the header — every value column named, uniquely (an empty
+  name refuses as `unnamed_column`, a repeated one as `duplicate_column`; only the timestamp
+  column may go unnamed, as pandas writes an unnamed index) — and every record carries exactly one
+  field per header column: any record with more (a trailing delimiter is one more) or fewer refuses as
   `field_count_mismatch`, counting every offender and naming the first csv lines — never read as
   an index, never padded with empty cells. Blank lines (spaces/tabs only) are skipped. Bare
   carriage-return (`\r`) line endings, NUL bytes, a quote after a line's leading spaces and a
