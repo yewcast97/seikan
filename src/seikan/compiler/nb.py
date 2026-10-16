@@ -57,7 +57,7 @@ from seikan.numeric import MIN_NORMAL, log_ratio_array
 # ledger records it. A latch initializes a series no earlier than its first finite value, save one
 # arm that initializes it with no value yet: an event node whose anchor became unknowable before its
 # first event, a ``mask`` undecided on its first live bar, and (``_derived_latch``) a series on a
-# bar every input is initialized and one has no value yet. A ``cross_agg`` never takes that arm —
+# bar every input is initialized and one has none since its init. A ``cross_agg`` never takes it —
 # its broadcast waits for its own first finite value as well as for the member's own first value. So
 # a series NaN on every bar — a ``zscore`` of plain levels near 1e160, any ``cross_agg`` — never
 # initializes, never fires and is counted by no coverage ledger, while one that arm initialized

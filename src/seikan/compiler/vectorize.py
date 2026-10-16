@@ -818,8 +818,8 @@ def _build_series(node: Series, md: MarketData) -> tuple[pd.DataFrame, pd.DataFr
                 own = _latch(x) & xi.to_numpy(dtype=bool)
                 return _df(arr, md), _df(_latch(arr) & own, md)
             # A rank or deviation is read off the member's label as well as its input, so the
-            # label is a second input of the derived latch (``rolling_corr``'s pair): one
-            # initialized with no value yet ledgers that stretch, as every reader of it does.
+            # label is a second input of the derived latch (``rolling_corr``'s pair): one with
+            # no value since its init ledgers that stretch, as every reader of it does.
             inputs = [(xv, xi)] if group is None else [(xv, xi), group]
             return _df(arr, md), _df(_derived_latch(arr, *inputs), md)
         case (
@@ -895,7 +895,7 @@ def _build_series(node: Series, md: MarketData) -> tuple[pd.DataFrame, pd.DataFr
             # The standard latch OR'd with "the anchor became unknowable after warmup": a hole in
             # E BEFORE the first event (a domain NaN no raw-leaf panel sees) reads as a hole, never
             # as silent warmup — here and in every series computed from the node, whose
-            # ``_derived_latch`` initializes on an input initialized with no value yet. A snapshot
+            # ``_derived_latch`` initializes on an input with no value since its init. A snapshot
             # takes the arm only where its input is initialized (``_derived_latch_at``).
             unknown = ci & ~known
             if isinstance(node, BarsSinceEvent):
