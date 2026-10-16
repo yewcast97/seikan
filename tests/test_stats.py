@@ -2497,11 +2497,12 @@ def test_episode_profile_streaks_walk_time_order_and_zero_breaks_both():
 
 
 def test_episode_profile_reads_nothing_off_an_overflowed_episode_mean():
-    # One episode of two overlapping 1.2e308 rows: its true mean is 1.2e308, but its row SUM
-    # overflowed and its mean read inf. The profit factor (6.0 here) and the quantiles were read
-    # WITHOUT it — the pool filters drop a non-finite value — the worst return beside it, and the
-    # hit rate and the win streak off its overflowed sign. Its value and sign are unknown, so
-    # every read over the episode means is null and it breaks both streaks (2, not 3).
+    # One episode of two overlapping rows, 1.2e308 and 1.3e308: its true mean is 1.25e308, but
+    # its row SUM overflows, and a pairwise mean read inf. The profit factor (6.0 here) and the
+    # quantiles were read WITHOUT it — the pool filters drop a non-finite value — the worst
+    # return beside it, and the hit rate and the win streak off its overflowed sign. Its value
+    # and sign are unknown, so every read over the episode means is null and it breaks both
+    # streaks (2, not 3). (Two EQUAL rows read their value: an all-equal pool's exact mean.)
     day = pd.Timedelta(days=1)
     base = pd.Timestamp("2021-03-01")
     starts = [0, 1, 20, 40, 60, 80]
@@ -2509,7 +2510,7 @@ def test_episode_profile_reads_nothing_off_an_overflowed_episode_mean():
         {
             "entry_time": [base + d * day for d in starts],
             "exit_time": [base + (d + 5) * day for d in starts],
-            "ret": [1.2e308, 1.2e308, 1.0, 2.0, -1.0, 3.0],
+            "ret": [1.2e308, 1.3e308, 1.0, 2.0, -1.0, 3.0],
         }
     )
     prof = episode_profile(trades)
@@ -2544,6 +2545,29 @@ def test_episode_ledger_mean_past_the_double_range_is_nan_never_a_signed_inf():
     # a full bar's exact 0 through `rets_pool` stays exactly 0 beside it
     zeros = episode_ledger(trades, rets_pool=np.array([0.0] * 5 + [0.125]))
     assert [e["mean_ret"] for e in zeros["entries"]] == [0.0, 0.125]
+
+
+def test_episode_means_are_exactly_rounded_sums():
+    # The review's episodes: four overlapping rows [−0.5, −2**−55, 0.5, 2**−55] each, summing to
+    # exactly 0. Summed pairwise each mean read 6.9e-18 — eight "winning" episodes, a hit rate of
+    # 1 and a win streak of 8 beside a row mean_ret of exactly 0. The exactly rounded sum reads
+    # every episode at 0: no win, no streak.
+    day = pd.Timedelta(days=1)
+    base = pd.Timestamp("2022-01-03")
+    rows = [-0.5, -(2.0**-55), 0.5, 2.0**-55]
+    starts = [10 * e + i for e in range(8) for i in range(4)]
+    trades = pd.DataFrame(
+        {
+            "entry_time": [base + d * day for d in starts],
+            "exit_time": [base + (d + 5) * day for d in starts],
+            "ret": rows * 8,
+        }
+    )
+    assert float(np.mean(rows)) > 0.0  # the premise
+    assert [e["mean_ret"] for e in episode_ledger(trades)["entries"]] == [0.0] * 8
+    prof = episode_profile(trades)
+    assert prof["n_episodes"] == 8 and prof["hit_rate"] == 0.0 and prof["mean_ret"] == 0.0
+    assert prof["max_win_streak"] == 0 and prof["max_loss_streak"] == 0
 
 
 def test_episode_profile_merges_across_targets_exactly_like_episode_stats():

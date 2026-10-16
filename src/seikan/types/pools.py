@@ -204,10 +204,12 @@ class EpisodeLedgerEntry(TypedDict):
 
     ``start``/``end`` are the cluster's earliest entry and latest exit (a chain merge can end on
     an interior row's window); ``share_abs`` is its |return| mass over the pool total, NaN → null
-    on a zero-mass pool or one whose total mass left the double range. ``mean_ret`` is NaN →
-    null where the episode's rows — finite returns — sum past the double range: the true mean
-    is finite there, the computed one is not, and not even its sign is known (the same unknown
-    mean that nulls every ``episode_profile`` read over the episode means).
+    on a zero-mass pool or one whose total mass left the double range. ``mean_ret`` is the
+    exactly rounded sum of the episode's rows over their count — exactly 0 where the rows
+    cancel, so a zero-mean episode is no win — and NaN → null where those rows, finite returns,
+    sum past the double range: the true mean is finite there, the computed one is not, and not
+    even its sign is known (the same unknown mean that nulls every ``episode_profile`` read
+    over the episode means).
     """
 
     start: str
@@ -242,13 +244,12 @@ class EpisodeProfileBlock(TypedDict):
     times (× members in basket): one crisis can be the whole tail of ``mae_quantiles``, most of
     ``hit_rate``'s streak of wins, and ``profit_factor``'s loss mass. This block recomputes the
     same statistic family in EPISODE units — the same frozen cross-target overlap merge as
-    ``episode_stats``, one aggregate per episode (the MEAN of member rows' ``ret`` — a
-    ``cross_mean`` full bar's rows at their sum's exact 0 — matching the ledger's per-episode
-    ``mean_ret``; the extreme ``mae``/``mfe`` within the episode) — so
-    row-vs-episode divergence is itself the visible cluster diagnostic, the ``n`` vs
-    ``n_nonoverlap``
-    doctrine applied to every pool statistic. Reported, never a correction: no row-level number
-    is reweighted, and no check reads any field here.
+    ``episode_stats``, one aggregate per episode (the MEAN of member rows' ``ret``, their
+    exactly rounded sum over the row count — a ``cross_mean`` full bar's rows at their sum's
+    exact 0 — matching the ledger's per-episode ``mean_ret``; the extreme ``mae``/``mfe`` within
+    the episode) — so row-vs-episode divergence is itself the visible cluster diagnostic, the
+    ``n`` vs ``n_nonoverlap`` doctrine applied to every pool statistic. Reported, never a
+    correction: no row-level number is reweighted, and no check reads any field here.
 
     ``n_episodes == episode_stats.n_clusters`` on the same rows by construction (a reader-
     checkable reconciliation, deliberately not gated). Emits ALWAYS — descriptive statistics do

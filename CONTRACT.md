@@ -831,7 +831,10 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   constant pool's own value; a `cross_mean` basket's pooled `mean_ret` is its exact excess sum
   from the raw legs, and the bar-closed sums beside it — the CSCV split means and the bucket
   means over whole bars among them — read each bar at its exact excess sum (see the pooled
-  panel). The evidence-only means elsewhere (bootstrap draws, episodes, buckets, CSCV) stay the
+  panel). So are the episode panels' per-episode means and `episode_profile.mean_ret` over them,
+  whose signs the hit rate and the streaks count — summed pairwise, eight episodes of
+  `[−0.5, −2**-55, 0.5, 2**-55]` read 6.9e-18 each, a hit rate of 1 and a win streak of 8 beside
+  a `mean_ret` of 0. The evidence-only means elsewhere (bootstrap draws, buckets, CSCV) stay the
   arithmetic mean, save that each bootstrap episode's sum is exactly rounded too — summed in
   floating point, eight episodes of `[1, −2**54, −1, 2**54]` read a zero-width interval at 0.25
   beside a `mean_ret` of 0; a draw's sum over its episodes' sums stays ordinary arithmetic.

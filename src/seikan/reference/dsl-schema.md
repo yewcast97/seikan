@@ -1236,7 +1236,9 @@ and int64 nanosecond counts silently round in IEEE-754 consumers.)
     each `{start, end, n, mean_ret, share_abs}`, capped at 32 with mass-conserving truncation
     (`n_omitted` + `omitted_share_abs`; listed + omitted shares ≈ 1), and `n_total ==
     episode_stats.n_clusters` by construction. A count read off a truncated ledger is a floor.
-    An entry's `mean_ret` is null where its rows' sum left the double range.
+    An entry's `mean_ret` is its rows' exactly rounded sum over their count — exactly 0 where
+    they cancel, so a zero-mean episode is no win in `episode_profile`'s hit rate and streaks —
+    and null where that sum left the double range.
   - `conditional_buckets` / `bucket_monotonicity` — per-feature qcut buckets (q=4) over the
     CELL's own closed rows — bucket EDGES per target, records aggregated by ordinal (labels
     `q1..qk` on multi-target cells; one pooled qcut over raw levels would conflate member

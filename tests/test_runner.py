@@ -4678,13 +4678,15 @@ def test_cross_mean_bar_mean_is_taken_about_the_bars_offset_and_censors_only_pas
 
 
 def _ceiling_episode_files(tmp_path, targets):
-    """OHLCV targets whose open alternates 1e-300 (even bars) / 1e8 (odd bars), firing on
-    ``volume > 1.5`` at bars 1 and 3, 21 and 23, 41 and 43 — each pair one episode at h = 3,
-    whose pct returns of 1e308 (a 1e-300 fill into a 1e8 exit) sum past the double range — and
-    the FIRST target alone at bar 61, one row: an episode whose mean is the finite 1e308."""
+    """OHLCV targets whose open alternates 1e-300 (even bars) / 1e8 (odd bars, 1.5e8 at bars 7,
+    27 and 47), firing on ``volume > 1.5`` at bars 1 and 3, 21 and 23, 41 and 43 — each pair
+    one episode at h = 3, whose pct returns of 1e308 and 1.5e308 (a 1e-300 fill into a 1e8 or
+    1.5e8 exit) sum past the double range — and the FIRST target alone at bar 61, one row: an
+    episode whose mean is the finite 1e308."""
     n = 80
     idx = pd.date_range("2021-01-01", periods=n, freq="1D")
     px = np.where(np.arange(n) % 2 == 0, 1e-300, 1e8)
+    px[[7, 27, 47]] = 1.5e8
     files = {}
     for j, t in enumerate(targets):
         vol = np.ones(n)
@@ -4708,12 +4710,12 @@ def _ceiling_episode_files(tmp_path, targets):
     ],
 )
 def test_overflowed_episode_mean_reads_null_never_a_crash(tmp_path, targets, mode, direction):
-    # Two finite returns of 1e308 in one episode sum past the double range, and the ledger's
-    # per-episode mean read inf — into a field typed plain `float`, so json_safe's null failed
-    # the emitted contract: ReportContractError out of compile_thesis, exit 4 out of the CLI, no
-    # report, on input the strict loader admits. The mean is unknown (not even its sign is):
-    # NaN → null, the read episode_profile already nulled off the same episodes — and the run is
-    # warning-free under the suite's -W error.
+    # Finite returns of 1e308 and 1.5e308 in one episode sum past the double range, and the
+    # ledger's per-episode mean read inf — into a field typed plain `float`, so json_safe's null
+    # failed the emitted contract: ReportContractError out of compile_thesis, exit 4 out of the
+    # CLI, no report, on input the strict loader admits. The mean is unknown (not even its sign
+    # is): NaN → null, the read episode_profile already nulled off the same episodes — and the
+    # run is warning-free under the suite's -W error.
     from seikan.api import compile_thesis
 
     thesis = Thesis.model_validate(

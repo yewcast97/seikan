@@ -260,8 +260,9 @@ def test_run_writes_complete_report_and_exits_0(tmp_path, capsys):
 def test_run_at_the_double_ceiling_reports_null_means_never_an_internal_error(
     tmp_path, capsys, read
 ):
-    # Finite returns whose SUMS leave the double range: an episode's two pct returns of 1e308 (a
-    # 1e-300 quote into 1e8), and a series target's diff rows of ~-1.6e308 summed per bucket.
+    # Finite returns whose SUMS leave the double range: an episode's pct returns of 1e308 and
+    # 1.5e308 (a 1e-300 quote into 1e8 and 1.5e8), and a series target's diff rows of ~-1.6e308
+    # summed per bucket.
     # The ledger's and the buckets' means were plain floats, so their overflow's null failed the
     # emission seam: exit 4 `internal`, no report, on admitted input. Exit 0 with the means null —
     # and in-process under the suite's -W error, so no numpy warning escaped the run either.
@@ -269,6 +270,7 @@ def test_run_at_the_double_ceiling_reports_null_means_never_an_internal_error(
     idx = pd.date_range("2021-01-01", periods=n, freq="1D")
     if read == "episodes":
         px = np.where(np.arange(n) % 2 == 0, 1e-300, 1e8)
+        px[[7, 27]] = 1.5e8  # the second row's exit in each episode
         vol = np.ones(n)
         vol[[1, 3, 21, 23]] = 2.0  # two episodes of two overlapping rows each at h = 3
         frame = pd.DataFrame(

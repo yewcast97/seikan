@@ -10,7 +10,14 @@ from typing import NamedTuple
 import numpy as np
 import pandas as pd
 
-from seikan.analysis._pools import edge_ratio, mae_block, mfe_block, pool_quantiles, profit_factor
+from seikan.analysis._pools import (
+    edge_ratio,
+    exact_mean,
+    mae_block,
+    mfe_block,
+    pool_quantiles,
+    profit_factor,
+)
 from seikan.types import (
     EpisodeLedgerBlock,
     EpisodeProfileBlock,
@@ -99,13 +106,14 @@ def _episode_view(trades: pd.DataFrame, rets_pool: np.ndarray | None = None) -> 
 
 def _episode_means(pool: np.ndarray, clusters: list[list[int]]) -> np.ndarray:
     """Each episode's MEAN of its rows' pool values — the per-episode read the ledger lists and
-    the profile aggregates — NaN where the rows' sum left the double range. The true mean of
-    finite returns is finite, but the computed one is not even sign-safe: ``1e308 + 1e308`` is
-    ``inf`` before three rows of ``-1.7e308`` can bring the sum below zero, so ``+inf`` would
-    claim a sign the episode does not have. No value, no sign: NaN → null. (Its callers run
-    under ``errstate``, below.)"""
-    means = np.array([float(np.mean(pool[c])) for c in clusters])
-    return np.where(np.isfinite(means), means, _NAN)
+    the profile aggregates — as the exactly rounded sum over the row count (:func:`exact_mean`):
+    the exact sum's sign, and 0.0 exactly where it is 0, because the profile COUNTS those signs
+    (hit rate, streaks). Summed pairwise, eight episodes of ``[−0.5, −2**−55, 0.5, 2**−55]``
+    read a mean of 6.9e-18 each — a hit rate of 1 and a win streak of 8 beside a row
+    ``mean_ret`` of exactly 0. NaN where the rows' sum leaves the double range: the true mean of
+    finite returns is finite, but no computed one is, and an overflowed sum claims a sign the
+    episode does not have. No value, no sign: NaN → null."""
+    return np.array([exact_mean(pool[c]) for c in clusters])
 
 
 # The three panels below sum |returns| and episode rows that can leave the double range; each
@@ -222,11 +230,10 @@ def episode_ledger(
     ``mean_ret`` sums ``rets_pool`` (row-aligned with ``trades``; default the rows' ``ret``) —
     a ``cross_mean`` basket's bar values, each bar's exact excess sum on its first closed row and
     0.0 on the rest (``_pools.cross_mean_bar_values``); an episode holds each bar's rows
-    entirely, so its mean sums its bars' exact sums over its row count.
-    It is NaN → null where the episode's sum left the double range (:func:`_episode_means` —
-    the same unknown mean ``episode_profile`` nulls its reads over), never an ``inf`` whose sign
-    the overflow picked. The |return| shares stay on ``ret``: a row's mass is its own, not its
-    bar's.
+    entirely, so its mean is the exactly rounded sum of its bars' exact sums over its row count
+    (:func:`_episode_means`). It is NaN → null where that sum leaves the double range (the same
+    unknown mean ``episode_profile`` nulls its reads over), never an ``inf`` whose sign the
+    overflow picked. The |return| shares stay on ``ret``: a row's mass is its own, not its bar's.
     """
     empty: EpisodeLedgerBlock = {
         "entries": [],
@@ -290,8 +297,10 @@ def episode_profile(
 
     Per-episode aggregates: ``ret`` → the MEAN of the episode's rows (the ledger's established
     per-episode aggregate, summed off the same ``rets_pool`` as :func:`episode_ledger`'s
-    ``mean_ret``, and the unit that stays commensurable with the row-level ``mean_ret``; a SUM
-    would scale with overlap density — re-importing exactly the inflation this block removes);
+    ``mean_ret`` and exactly rounded like it — :func:`_episode_means` — and the unit that stays
+    commensurable with the row-level ``mean_ret``; a SUM would scale with overlap density —
+    re-importing exactly the inflation this block removes; ``mean_ret`` is their exactly
+    rounded mean);
     ``mae`` → the episode's most adverse finite excursion (min), ``mfe`` → its most
     favorable (max), each excursion pool covering the episodes that carry a finite path column
     (subset ``n`` beside it, exactly like the row-level blocks) — while ``edge_ratio`` pairs at
@@ -370,7 +379,7 @@ def episode_profile(
     return {
         "n_episodes": len(clusters),
         "hit_rate": float(np.mean(ret_means > 0)) if known else _NAN,
-        "mean_ret": float(np.mean(ret_means)) if known else _NAN,
+        "mean_ret": exact_mean(ret_means) if known else _NAN,
         "profit_factor": profit_factor(ret_means) if known else _NAN,
         "ret_quantiles": pool_quantiles(ret_means if known else np.empty(0)),
         "worst_ret": float(np.min(ret_means)) if known else _NAN,
