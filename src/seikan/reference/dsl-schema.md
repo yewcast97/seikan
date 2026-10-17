@@ -1508,15 +1508,16 @@ open to quote a statistic honestly.
 - `t_hac` / `hac_se` — the EVENT-TIME Newey-West t: Bartlett weights on actual entry-bar distances,
   so a sparse pool degrades to the iid SE instead of a collapsed one. df = `n_nonoverlap` − 1; the derived
   p is not emitted, re-derive it if you need one. `t_hac` is `mean_ret` over `hac_se`, and the
-  long-run variance is formed from each bar's deviation sum, exactly rounded from the bar's own
-  returns and the centre, so basket members whose deviations cancel on a bar keep their small
-  combined variance (summed row by row, ten members netting to `(k − 2.5)·2**−24` per bar read an
-  SE 65% low). The deviations are read in shifted coordinates — each return less the pool's range
-  midpoint, their mean correctly rounded at that scale — so a pool and its translate read the same
-  `hac_se` (about the reported mean, whose rounding is the level's ulp, returns at `1 + k·2**-52`
-  read an SE 30% high, and the same pool shifted onto 0 the exact one). Null on a (near-)constant pool — its spread is rounding residue, not dispersion —
-  on a pooled pool whose every bar sits at its mean (every row on one bar among them), and where
-  the long-run variance leaves the double range. KNOWN CAVEAT: anti-conservative on heavily
+  long-run variance is formed from each bar's deviation sum about the pool's EXACT mean, exact and
+  rounded once, so basket members whose deviations cancel on a bar keep their small combined
+  variance (summed row by row, ten members netting to `(k − 2.5)·2**−24` per bar read an SE 65%
+  low), members whose returns cancel within every bar read none (rounded per row about the pool's
+  range midpoint, three alternating `[0.8, −0.4, −0.4]` and `[0, 0, 0]` beside a fourth at
+  `2**−52` read a `t_hac` of 35.7), and a pool and its translate read the same `hac_se` (about the
+  reported mean, whose rounding is the level's ulp, returns at `1 + k·2**-52` read an SE 30% high).
+  Null on a (near-)constant pool — its spread is rounding residue, not dispersion — on a pool
+  whose every bar sits exactly at its mean (every row on one bar among them), and where the
+  long-run variance leaves the double range. KNOWN CAVEAT: anti-conservative on heavily
   overlapping pools (the taper understates the long-run variance).
 - `n_nonoverlap` — the greedy non-overlapping observation count. Compare to `n` to see how much of your
   sample is really one event.

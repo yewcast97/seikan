@@ -50,8 +50,7 @@ def midrange(lo: float, hi: float) -> float:
     finite ends and no value between them lies farther from it than the double range holds.
 
     The OFFSET a dispersion is computed about — the pools' ddof=1 std and the regression legs
-    (``analysis._pools``), the HAC's bar deviation sums (``analysis._hac``) and ``describe``'s
-    std; the kernels' cross-sections take the same rule
+    (``analysis._pools``) and ``describe``'s std; the kernels' cross-sections take the same rule
     row by row (``compiler.nb._row_offset``). A value's deviation from it is exact wherever the
     values lie within a factor of two of it, so a spread at the level's ulp keeps its bits, where
     one about the ROUNDED raw mean carries that mean's rounding: ``[2**52, 2**52 + 1]``'s mean

@@ -1298,9 +1298,12 @@ def _measure_grid(
                     )
             if closed_mask is not None:
                 mean_ret = cross_mean_pooled_mean(hf.raw, closed_mask)
+                numerators = cross_mean_bar_numerators(hf.raw, closed_mask)
                 pooled_mean_ret[combo_key] = mean_ret
-                pooled_hac[combo_key] = cross_mean_pooled_hac(fwd, hf.raw, closed_mask, mean_ret, h)
-                pooled_bar_numerators[combo_key] = cross_mean_bar_numerators(hf.raw, closed_mask)
+                pooled_hac[combo_key] = cross_mean_pooled_hac(
+                    fwd, closed_mask, numerators, mean_ret, h
+                )
+                pooled_bar_numerators[combo_key] = numerators
 
     return _GridResult(
         frames=frames,

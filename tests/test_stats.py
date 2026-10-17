@@ -18,7 +18,7 @@ from scipy import stats as sps
 from seikan.analysis._conditioning import _bucket_monotonicity
 from seikan.analysis._cscv import _degradation_slope
 from seikan.analysis._hac import _bar_deviation_sums
-from seikan.analysis._pools import _near_constant, cross_mean_bar_deviations
+from seikan.analysis._pools import _near_constant
 from seikan.analysis._rotation import _fwd_ffts, _rotation_num_den, _tail_p
 from seikan.analysis.stats import (
     ASSOC_MIN_N,
@@ -1168,21 +1168,54 @@ def test_newey_west_same_bar_sum_past_the_double_range_is_null_never_a_crash():
     assert np.isnan(t) and np.isnan(se)
 
 
-def test_newey_west_bar_deviation_sums_are_exactly_rounded():
-    # Each bar's Σ(y − m) in shifted coordinates — y = r − c about the pool's range midpoint, m
-    # their correctly rounded mean: its exact value, correctly rounded — one fsum over the bar's
-    # shifted returns and its copies of −m, never a sum of rounded deviations.
+def test_newey_west_bar_deviation_sums_are_exact_about_the_exact_mean():
+    # Each bar's Σ(r − μ) about the pool's EXACT mean μ: its exact value, rounded once — no row's
+    # deviation rounded before the bar sums it, and no centre rounded either, at any level.
     rng = np.random.RandomState(21)
     for level in (0.0, 1.0, 1e6):
         rets = level + rng.normal(0.0, 0.02, 400) * 10.0 ** rng.randint(-4, 5, 400)
-        bars = np.sort(rng.randint(0, 90, 400))
-        y = rets - (float(rets.max()) / 2.0 + float(rets.min()) / 2.0)
-        m = math.fsum(y.tolist()) / y.size
-        u, count, d = _bar_deviation_sums(rets, bars)
-        assert (count > 1).any() and (count == 1).any()
-        for a, k, got in zip(u.tolist(), count.tolist(), d.tolist(), strict=True):
-            exact = sum((Fraction(v) for v in y[bars == a].tolist()), Fraction(0))
-            assert got == float(exact - k * Fraction(m)), (level, a)
+        bars = rng.randint(0, 90, 400)
+        assert (np.bincount(bars) > 1).any() and (np.bincount(bars) == 1).any()
+        mu = sum(map(Fraction, rets.tolist())) / rets.size
+        u, d = _bar_deviation_sums(rets, bars)
+        assert u.tolist() == sorted(set(bars.tolist()))
+        for a, got in zip(u.tolist(), d.tolist(), strict=True):
+            exact = sum(Fraction(v) - mu for v in rets[bars == a].tolist())
+            assert got == float(exact), (level, a)
+
+
+def test_newey_west_members_cancelling_within_each_bar_have_no_long_run_variance():
+    # The review's basket: three members alternate [0.8, −0.4, −0.4] and [0, 0, 0] over 40 bars
+    # beside a fourth at 2**−52 (h = 1), so every bar sits exactly at the mean 2**−54. Each row's
+    # deviation was rounded about the pool's range midpoint before its bar summed it, and the bars
+    # read ±5.6e-17 — an SE of 1.6e-18 and t 35.7 where the estimator has no variance at all.
+    # The bar sums are exact about the exact mean: no estimate, on the kernel and on the basket's
+    # pooled read. With the fourth at 2**−51 on every other bar the bars vary for real (±2**−53)
+    # and the SE is the estimator's exact value; it read 27% high.
+    def basket(odd):
+        cols = np.zeros((50, 4))
+        cols[0:40:2, :3] = [0.8, -0.4, -0.4]
+        cols[:40, 3] = np.where(np.arange(40) % 2 == 0, 2.0**-52, odd)
+        return cols
+
+    for odd, exact_t in ((2.0**-52, None), (2.0**-51, 18.914280319377735)):
+        cols = basket(odd)
+        rets, bars = cols[:40].ravel(), np.repeat(np.arange(40), 4)
+        t, se = newey_west_mean(rets, bars, 1)
+        cells = [
+            {"key": ("c", m), "mask_col": np.arange(50) < 40, "fwd_col": cols[:, g], "h": 1}
+            for g, m in enumerate("ABCD")
+        ]
+        read = pooled_reliability_summary(cells, 50)["per_cell"][("c",)]
+        if exact_t is None:
+            assert exact_mean(rets) == 2.0**-54
+            assert np.isnan(t) and np.isnan(se)
+            assert np.isnan(read["t_hac"]) and np.isnan(read["hac_se"])
+        else:
+            t_exact, se_exact = _hac_exact(rets, bars, 1)
+            assert t_exact == exact_t
+            assert se == pytest.approx(se_exact, rel=1e-13) and t == exact_mean(rets) / se
+            assert (read["t_hac"], read["hac_se"]) == (t, se)
 
 
 def test_newey_west_deviations_are_summed_about_the_pools_offset():
@@ -1190,8 +1223,8 @@ def test_newey_west_deviations_are_summed_about_the_pools_offset():
     # three bars apart at h = 1, so the estimate is the iid std/√n. The reported mean rounds at
     # the LEVEL's ulp, as large as the deviations themselves, and about it the HAC read an SE of
     # 1.714e-18 for the exact 1.312e-18 — while the same pool shifted onto 0, whose mean is
-    # representable, read the exact value: the estimate hung on the level. Summed in shifted
-    # coordinates, the pool and its shift read the same SE, the exact one to rounding.
+    # representable, read the exact value: the estimate hung on the level. Summed exactly about
+    # the exact mean, the pool and its shift read the same SE, the exact one to rounding.
     u = np.tile([0.0, 1.0], 5000)
     u[-1] = 32.0
     rets = 1.0 + 2.0**-52 * u
@@ -2978,47 +3011,55 @@ def test_cross_mean_bar_numerators_carry_each_bar_s_numerator_exactly():
     assert (rows[~first] == 0.0).all()
 
 
-def _cross_mean_bar_numerators(raw, closed, mean):
-    """Each closed bar's exact ``N·D_t = Σ_g (N·[closed] − k_t)·raw − k_t·N·mean``."""
+def _pooled_hac(excess, raw, closed, mean, h):
+    """``cross_mean_pooled_hac`` over the bar numerators of ``raw`` / ``closed`` — the runner's
+    call."""
+    return cross_mean_pooled_hac(excess, closed, cross_mean_bar_numerators(raw, closed), mean, h)
+
+
+def _cross_mean_hac_se_exact(raw, closed, h):
+    """The pooled ``cross_mean`` HAC's SE in exact arithmetic: the Bartlett form over each bar's
+    exact excess deviation sum ``Σ_{closed g} e_tg − k_t·μ`` about the exact pooled mean ``μ``,
+    over ``(n − 1)·n``, only the root rounded."""
     n_members = raw.shape[1]
-    out = {}
+    sums, ks = {}, {}
     for t in np.flatnonzero(closed.any(axis=1)).tolist():
-        k = int(closed[t].sum())
-        legs = sum(
-            (
-                (n_members * int(c) - k) * Fraction(x)
-                for c, x in zip(closed[t].tolist(), raw[t].tolist(), strict=True)
-            ),
-            Fraction(0),
-        )
-        out[t] = legs - k * n_members * Fraction(mean)
-    return out
+        legs = [Fraction(float(x)) for x in raw[t]]
+        sums[t] = sum(legs[g] - sum(legs) / n_members for g in np.flatnonzero(closed[t]))
+        ks[t] = int(closed[t].sum())
+    n = sum(ks.values())
+    mu = sum(sums.values()) / n
+    dev = {t: sums[t] - ks[t] * mu for t in sums}
+    s = sum(
+        (1 - Fraction(abs(a - b), h)) * dev[a] * dev[b] for a in dev for b in dev if abs(a - b) < h
+    )
+    return math.sqrt(s / (n - 1) / n)
 
 
-def test_cross_mean_bar_deviations_are_the_exact_bar_excess_sums():
-    # Each bar's deviation sum is its exact numerator, correctly rounded, over N — the closed
-    # members' excess sum around the pooled mean, from the raw legs — in any member order.
+def test_cross_mean_pooled_hac_reads_the_exact_bar_deviation_sums():
+    # Each bar's deviation sum is its exact numerator over N less its closed rows' share of the
+    # exact pooled mean, rounded once: the SE is the estimator's exact value to rounding, and no
+    # member order moves a bit of it.
     rng = np.random.RandomState(18)
     raw = rng.normal(0.0, 0.02, (120, 5)) * 10.0 ** rng.randint(-3, 4, (120, 5))
     closed = rng.rand(120, 5) < 0.4
     closed[:10] = True  # ten full bars beside the partial ones
+    excess = raw - raw.mean(axis=1, keepdims=True)
     mean = cross_mean_pooled_mean(raw, closed)
-    rows, k, d = cross_mean_bar_deviations(raw, closed, mean)
-    assert rows.tolist() == np.flatnonzero(closed.any(axis=1)).tolist()
-    assert k.tolist() == closed[rows].sum(axis=1).tolist()
-    exact = _cross_mean_bar_numerators(raw, closed, mean)
-    assert d.tolist() == [float(exact[t]) / 5 for t in rows.tolist()]
-    for perm in ([4, 2, 0, 3, 1], [1, 0, 4, 3, 2]):
-        moved = cross_mean_bar_deviations(raw[:, perm], closed[:, perm], mean)
-        assert moved[2].tolist() == d.tolist()
-    # identical legs on every bar: every excess, the mean and every bar's sum are exactly 0
-    same = np.repeat(raw[:, :1], 5, axis=1)
-    assert cross_mean_pooled_mean(same, closed) == 0.0
-    assert cross_mean_bar_deviations(same, closed, 0.0)[2].tolist() == [0.0] * rows.size
-    # no sums: an empty pool, a non-finite mean, a centre whose N·mean leaves the double range
-    assert cross_mean_bar_deviations(raw, np.zeros_like(closed), 0.0) is None
-    assert cross_mean_bar_deviations(raw, closed, float("nan")) is None
-    assert cross_mean_bar_deviations(raw, closed, 1e308) is None
+    for h in (1, 4):
+        t, se = _pooled_hac(excess, raw, closed, mean, h)
+        assert se == pytest.approx(_cross_mean_hac_se_exact(raw, closed, h), rel=1e-14)
+        assert t == mean / se
+        for perm in ([4, 2, 0, 3, 1], [1, 0, 4, 3, 2]):
+            moved = _pooled_hac(excess[:, perm], raw[:, perm], closed[:, perm], mean, h)
+            assert moved == (t, se)
+    # a bar whose numerator leaves the double range: no estimate
+    big = raw.copy()
+    big[50] = [1e308, -1e308, 1e308, 0.0, 0.0]
+    big_closed = closed.copy()
+    big_closed[50] = [True, False, False, False, False]
+    t, se = _pooled_hac(excess, big, big_closed, mean, 1)
+    assert np.isnan(t) and np.isnan(se)
 
 
 def test_cross_mean_pooled_hac_has_no_variance_where_every_bar_sum_is_exactly_zero():
@@ -3031,15 +3072,15 @@ def test_cross_mean_pooled_hac_has_no_variance_where_every_bar_sum_is_exactly_ze
     for perm in ([0, 1, 2, 3], [3, 1, 0, 2]):
         r, c = raw[:, perm], full[:, perm]
         excess = r - r.mean(axis=1, keepdims=True)
-        t, se = cross_mean_pooled_hac(excess, r, c, cross_mean_pooled_mean(r, c), 1)
+        t, se = _pooled_hac(excess, r, c, cross_mean_pooled_mean(r, c), 1)
         assert np.isnan(t) and np.isnan(se), perm
     same = np.repeat(raw[:, :1], 4, axis=1)
-    t, se = cross_mean_pooled_hac(np.zeros_like(same), same, full, 0.0, 1)
+    t, se = _pooled_hac(np.zeros_like(same), same, full, 0.0, 1)
     assert np.isnan(t) and np.isnan(se)
     # the 22-member bar whose 15 firing members' excesses sum to exactly 0, on every bar
     raw22 = np.array([[0.0] * 7 + [2.0] * 7 + [1.0] * 8] * 30)
     closed22 = np.array([[True] * 15 + [False] * 7] * 30)
-    t, se = cross_mean_pooled_hac(raw22 - 1.0, raw22, closed22, 0.0, 2)
+    t, se = _pooled_hac(raw22 - 1.0, raw22, closed22, 0.0, 2)
     assert np.isnan(t) and np.isnan(se)
     # the review's basket: members (a, b, a, b); only the first two fire, three bars apart, and
     # every other firing bar they move while their twins mirror them — each firing bar's two
@@ -3053,15 +3094,13 @@ def test_cross_mean_pooled_hac_has_no_variance_where_every_bar_sum_is_exactly_ze
     assert (excess[closed].reshape(-1, 2).sum(axis=1) != 0.0).any()  # the premise
     mean = cross_mean_pooled_mean(raw, closed)
     assert mean == 0.0
-    t, se = cross_mean_pooled_hac(excess, raw, closed, mean, 1)
+    t, se = _pooled_hac(excess, raw, closed, mean, 1)
     assert np.isnan(t) and np.isnan(se)
     # legs past the double range: no estimate, never a warning
     big = np.array([[1.5e308, 0.0, 0.0]] * 4)
     closed_big = np.array([[True, True, False]] * 4)
     excess_big = big - big.mean(axis=1, keepdims=True)
-    t, se = cross_mean_pooled_hac(
-        excess_big, big, closed_big, cross_mean_pooled_mean(big, closed_big), 1
-    )
+    t, se = _pooled_hac(excess_big, big, closed_big, cross_mean_pooled_mean(big, closed_big), 1)
     assert np.isnan(t) and np.isnan(se)
 
 
@@ -3076,14 +3115,14 @@ def test_cross_mean_pooled_hac_t_is_the_exact_mean_over_its_se():
     mean = cross_mean_pooled_mean(raw, closed)
     bars = np.nonzero(closed)[0]
     for h in (1, 3, 7):
-        t, se = cross_mean_pooled_hac(excess, raw, closed, mean, h)
+        t, se = _pooled_hac(excess, raw, closed, mean, h)
         assert t == mean / se
         assert se == pytest.approx(newey_west_mean(excess[closed], bars, h)[1], rel=1e-12)
     # fewer than two rows, or no horizon: no estimate
     one = np.zeros_like(closed)
     one[5, 2] = True
-    assert all(np.isnan(cross_mean_pooled_hac(excess, raw, one, mean, 1)))
-    assert all(np.isnan(cross_mean_pooled_hac(excess, raw, closed, mean, 0)))
+    assert all(np.isnan(_pooled_hac(excess, raw, one, mean, 1)))
+    assert all(np.isnan(_pooled_hac(excess, raw, closed, mean, 0)))
 
 
 def test_benchmark_regression_recovers_a_planted_beta_and_alpha():

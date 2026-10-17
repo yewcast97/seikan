@@ -855,9 +855,9 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   where that mean's sum overflowed — as for any pool whose resampled means are bit-identical on
   every draw), and the reads that divide by dispersion stand down where the spread is within
   rounding — the HAC nulls (largest deviation within ~10 ulps of the mean, the skewness/kurtosis
-  gate, or every BAR's mean deviation within them: a pooled pool whose bars all sit at its mean,
-  every row on one bar among them; skewness/kurtosis are otherwise taken about the pool's
-  offset, translation-invariant — about scipy's own rounded mean the symmetric `1 + k·eps`,
+  gate, or every BAR's deviation sum exactly 0 about the exact mean: a pooled pool whose bars all
+  sit at its mean, every row on one bar among them; skewness/kurtosis are otherwise taken about
+  the pool's offset, translation-invariant — about scipy's own rounded mean the symmetric `1 + k·eps`,
   k = 0..21, read skewness 0.666 for 0), the benchmark regression declines a (near-)constant
   bench leg (and fits `beta` exactly 0 on a constant raw leg, while a raw leg that varies is
   fitted however small its spread — its deviations about its offset are exact), and a CSCV
@@ -881,8 +881,14 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   block moments are exactly rounded sums (a column's returns about its exactly rounded mean, and
   their squares), the same doubles in any row order: two candidates holding the same returns in
   every block, in other orders, ranked apart by row-order rounding (`pbo` 0.571 for a grid of
-  full ties); a split's sum over its blocks stays ordinary arithmetic. The |return|-mass shares
-  (`top_share_abs`, the episode shares, `member_share`) divide exactly rounded masses, so no
+  full ties); a split's sum over its blocks stays ordinary arithmetic. The HAC's per-bar deviation
+  sums are exact about the pool's EXACT mean, each rounded once (the returns read as integers over
+  one power-of-two denominator), so a bar at the mean reads 0 and a pool and its translate read
+  one `hac_se`: rounded per row about the pool's range midpoint, three members alternating
+  `[0.8, −0.4, −0.4]` and `[0, 0, 0]` beside a fourth at `2**-52` — every bar exactly at the
+  mean — read a `t_hac` of 35.7, and about the reported mean returns at `1 + k·2**-52` read an SE
+  30% high. The |return|-mass shares (`top_share_abs`, the episode shares, `member_share`)
+  divide exactly rounded masses, so no
   share passes 1 — summed in floating point, five masses among 95 zeros read a top share of
   1.0000000000000002 — and `mass_hhi` / `effective_n_clusters` are the correctly rounded values
   of exact arithmetic over the cluster masses, the latter within `[1, n_clusters]`.
@@ -904,9 +910,7 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   which no kernel can tell from variation. Every window, cross-section and pool that varies is
   the direct two-pass form about its OWN offset — the window's first value, a cross-section's or a
   pool's range midpoint (`numeric.midrange`: the pools' `std_ret`, `boot_se` and baseline std, the
-  benchmark regression's second moments, the HAC's bar deviation sums — their centre the pool's
-  mean in those shifted coordinates, so a pool and its translate read one `hac_se` (about the
-  reported mean, returns at `1 + k·2**-52` read an SE 30% high) — `describe`'s dispersion stds)
+  benchmark regression's second moments, `describe`'s dispersion stds)
   — bit for bit, while its
   variances and, for `rolling_corr`, their product are normal doubles (the next bullet): centered
   on the rounded mean of the raw values, a spread at its level's ulp was lost to that mean's
