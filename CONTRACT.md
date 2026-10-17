@@ -260,7 +260,8 @@ LAST, after every other nominated output has landed, so a document enumerating f
 appeared is not a state this CLI can reach. There is no top-level `n`: a scalar observation count
 would have to be some cell's, and naming one cell is the selection this engine does not perform.
 `policy_version` (**4** — v4: a cell names its horizon, which bounds its non-overlapping
-counts; v3: a never-available source refuses, and the support floor reads the renamed
+counts, no two cells name one assignment, and a basket's one-name read is the largest share of
+its member decomposition; v3: a never-available source refuses, and the support floor reads the renamed
 `n_nonoverlap`) names the checklist semantics (two cell results compare only
 under the same version); `summary.statistics_version` (**5** — v2 ADDED evidence: the p05/p95
 quantile tails, the promoted per-cell shape reads, `benchmark_regression`, `timing` and the
@@ -529,7 +530,9 @@ grades, reconciling with the member panels: `pooled.n ==` the per-target total (
 attributed), `pooled.n_nonoverlap ≤ pooled.n`, `pooled.n_nonoverlap ≤ max(0, ⌊(n_bars − 2) /
 horizon⌋)` (same-bar cross-member firings collapse in the greedy count, so the bar clock's windows
 bound it), `pooled.n ≤ n_bars ×
-len(targets)` (each member fires at most once per bar); a `pooled` key on a conjunction cell
+len(targets)` (each member fires at most once per bar), and a `member_share.max_member_share_abs`
+that is a share is the largest of its `by_target` shares, string-keyed over the targets exactly
+(0.5 beside shares `{AAA: 1.0, BBB: 0.0}` met every check); a `pooled` key on a conjunction cell
 REFUSES — the runner writes pooled only in basket mode (absent, not null, on conjunction
 cells), so the configuration is the signature of a RESTAMPED basket and refusing it costs zero
 honest refusals (`evidence_complete` re-refuses `benchmark='cross_mean'` under a conjunction
@@ -625,8 +628,8 @@ the fields the basket rubric reads (mean_ret_raw/mean_ret_bench, benchmark_regre
 hit_rate, win_loss_ratio, profit_factor, the shape reads, t_hac/hac_se, rot_p, boot,
 subperiods, the quantile blocks with worst/best, edge_ratio, timing), and
 `pooled.member_share.by_target` (the full member-mass decomposition —
-attribution, never a ranking; only `max_member_share_abs` gates) — all ride in the summary and
-no check reads them — `metric_roles` says so explicitly, and
+attribution, never a ranking; only `max_member_share_abs` gates, and `cell_evidence` reads
+`by_target` only to reconcile that maximum) — all ride in the summary and no check grades them — `metric_roles` says so explicitly, and
 its `caveats` map states each one's failure mode in the report itself. Cross-target STATISTICS
 exist ONLY in basket mode, as the declared, graded `pooled` block — conjunction forms none — and
 NEITHER mode selects among members: nothing anywhere in the report ranks the targets or crowns

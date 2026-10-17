@@ -67,6 +67,9 @@ METRIC_ROLES: dict[str, JsonValue] = {
             "pooled.n_nonoverlap <= pooled.n, pooled.n_nonoverlap <= max(0, (n_bars − 2) // "
             "horizon), pooled.n <= n_bars × targets; "
             "a pooled key on a conjunction cell REFUSES as a restamped basket)",
+            "cells[*].pooled.member_share.{by_target,max_member_share_abs} (basket only — "
+            "by_target string-keyed over the targets exactly; a max_member_share_abs that is a "
+            "share is the largest by_target share)",
             "targets + n_bars + target_mode (the cross-panel reconciliation references)",
         ],
         "outcome_coverage": [
@@ -181,7 +184,8 @@ METRIC_ROLES: dict[str, JsonValue] = {
         "its tie band, and row-level reads keep each row's rounding — and the legs still "
         "attribute: mean_ret_bench ≈ mean_ret_raw is the basket's own drift)",
         "per-cell pooled.member_share.by_target (the full member-mass decomposition — "
-        "attribution, never a ranking; only max_member_share_abs gates)",
+        "attribution, never a ranking; only max_member_share_abs gates, and cell_evidence "
+        "reads by_target only to reconcile that maximum)",
     ],
     # ONE machine-readable class per reported metric, so a consuming agent can tell what KIND of
     # number it is holding without parsing prose: `descriptive` describes the realized sample and
@@ -496,7 +500,9 @@ METRIC_ROLES_DOC: dict[str, JsonValue] = {
         "pooled.n_nonoverlap <= pooled.n, pooled.n_nonoverlap <= max(0, (n_bars − 2) // "
         "horizon) (same-bar cross-member firings collapse in the greedy count), "
         "pooled.n <= n_bars × len(targets) (each member fires "
-        "at most once per bar); a pooled key on a conjunction cell REFUSES — the runner "
+        "at most once per bar), and a member_share whose max_member_share_abs is a share "
+        "names it as the largest of its by_target shares (string-keyed over the targets "
+        "exactly); a pooled key on a conjunction cell REFUSES — the runner "
         "writes pooled only in basket mode, so the configuration is the signature of a "
         "restamped basket and refusing it costs zero honest refusals; a missing target_mode "
         "stamp refuses — whether a pooled panel is part of the contract is then "
@@ -699,8 +705,9 @@ METRIC_ROLES_DOC: dict[str, JsonValue] = {
         "selection read. The LEGS still attribute: mean_ret_bench ≈ mean_ret_raw is the basket's "
         "own realized drift, a market-magnitude number and not a construction artifact)",
         "per-cell pooled.member_share.by_target (basket only — each member's share of the "
-        "pooled |return| mass, a full decomposition and never a ranking; the checklist reads "
-        "only max_member_share_abs)",
+        "pooled |return| mass, a full decomposition and never a ranking; the checklist "
+        "grades only max_member_share_abs, which cell_evidence reconciles as its largest "
+        "share)",
     ],
     "metric_classes": (
         "the compact metric_roles carries ONE machine-readable class per reported metric, so a "
@@ -944,7 +951,8 @@ METRIC_ROLES_DOC: dict[str, JsonValue] = {
             "and never a verdict about any member. Structure matters: a 2-member basket's "
             "larger member always carries >= 0.5, so small baskets read structurally elevated "
             "against the same sealed ceiling — exactly as thin pools do under concentration. "
-            "Only max_member_share_abs gates; by_target is attribution."
+            "Only max_member_share_abs gates — cell_evidence refuses one that is not the "
+            "largest by_target share; by_target is attribution."
         ),
         "win_loss_ratio": (
             "Average win over average |loss| — the payoff-asymmetry partner of hit_rate's "
@@ -1388,8 +1396,9 @@ REPORT_FIELDS: dict[str, JsonValue] = {
         ),
         "pooled.member_share": (
             "{by_target, max_member_share_abs} — each member's share of the pooled |return| "
-            "mass; the checklist reads ONLY max_member_share_abs (the one-name-basket "
-            "detector), by_target is attribution and never a ranking"
+            "mass; the checklist grades ONLY max_member_share_abs (the one-name-basket "
+            "detector), which cell_evidence reconciles as the largest by_target share; "
+            "by_target is attribution and never a ranking"
         ),
         "pooled.mean_ret_raw / mean_ret_bench / profit_factor / boot / subperiods / "
         "ret_quantiles / worst_ret / best_ret / mae_quantiles / mfe_quantiles / edge_ratio": (
@@ -1563,7 +1572,9 @@ GATE_CONTRACT_DOC: dict[str, JsonValue] = {
             "pooled dict their rubric grades, reconciling with the member panels (pooled.n == "
             "the per-target total, pooled.n_nonoverlap <= pooled.n, pooled.n_nonoverlap <= "
             "max(0, (n_bars − 2) // horizon), pooled.n "
-            "<= n_bars × len(targets)); a pooled key on a conjunction cell REFUSES as a "
+            "<= n_bars × len(targets), and a max_member_share_abs that is a share is the "
+            "largest of member_share.by_target's shares, string-keyed over the targets "
+            "exactly); a pooled key on a conjunction cell REFUSES as a "
             "restamped basket (the runner writes pooled only in basket mode), and a "
             "missing target_mode stamp refuses. An internally impossible summary is "
             "drifted input, not something to grade"
@@ -1622,10 +1633,10 @@ GATE_CONTRACT_DOC: dict[str, JsonValue] = {
         "episode_stats panel beyond the two fields the checklist reads, the per-cell episodes "
         "ledger, conditional_buckets/bucket_monotonicity and feature_association, and — in "
         "basket — every pooled field beyond {n, n_nonoverlap, mean_ret, "
-        "concentration.top_share_abs, "
-        "member_share.max_member_share_abs}, including member_share.by_target (attribution, "
-        "never a ranking) all ride in the summary as EVIDENCE and no "
-        "check reads them — see metric_roles (and its caveats map) for why"
+        "concentration.top_share_abs, member_share} (member_share.by_target read only to "
+        "reconcile max_member_share_abs — attribution, never a ranking) all ride in the "
+        "summary as EVIDENCE and no check reads them — see metric_roles (and its caveats "
+        "map) for why"
     ),
     # The prose rationale behind the compact ``metric_roles`` map (which the run report and
     # ``seikan schema`` both stamp identically). It lives HERE, under its own key, so

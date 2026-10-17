@@ -1259,7 +1259,8 @@ and int64 nanosecond counts silently round in IEEE-754 consumers.)
     was censored, or whose only firing is the final bar, still moves it while adding no row),
     `concentration`, `member_share` (`by_target` — each member's share of the pooled
     |return| mass, a full decomposition and never a ranking — plus `max_member_share_abs`, the
-    one read the checklist gates), `boot` (the episode bootstrap over the cross-member-merged
+    one read the checklist gates, which `cell_evidence` refuses unless it is the largest
+    `by_target` share), `boot` (the episode bootstrap over the cross-member-merged
     episodes), `subperiods`, `ret_quantiles` / `worst_ret` / `best_ret`, `mae_quantiles` /
     `mfe_quantiles`, and `edge_ratio`. This is the panel the checklist grades in basket mode.
   - `episode_stats` — the cell's closed rows clustered into market EPISODES by merging overlapping
@@ -1398,9 +1399,10 @@ complete statistics are still in `summary.cells[i]` — a checklist result never
   cells must ADDITIONALLY carry the `pooled` dict their own rubric grades, reconciling with the
   member panels: `pooled.n ==` the sum of `by_target.n` (one pool, fully attributed),
   `pooled.n_nonoverlap <= pooled.n`, `pooled.n_nonoverlap <= max(0, (n_bars − 2) // horizon)` (the
-  greedy count collapses same-bar cross-member firings, so the bar clock's windows bound it), and
-  `pooled.n <= n_bars ×
-  len(targets)` (each member fires at most once per bar). A `pooled` key on a conjunction cell
+  greedy count collapses same-bar cross-member firings, so the bar clock's windows bound it),
+  `pooled.n <= n_bars × len(targets)` (each member fires at most once per bar), and a
+  `member_share.max_member_share_abs` that is a share is the largest of its `by_target` shares,
+  string-keyed over the targets exactly. A `pooled` key on a conjunction cell
   REFUSES: the engine writes `pooled` only in basket mode, so a conjunction-stamped report
   carrying one can only be a basket report whose mode stamp was rewritten — the checklist reads
   it as drifted input rather than quietly grading the friendlier rubric (a conjunction stamp
@@ -1536,7 +1538,8 @@ open to quote a statistic honestly.
   event: the greedy `n_nonoverlap` kernel collapses them to one window, and the pooled HAC prices their
   cross terms at Bartlett weight 1 — full covariance, never independent evidence. (3)
   `pooled.member_share.by_target` is ATTRIBUTION — a full decomposition of the pooled |return|
-  mass, never a ranking, and read by no check (only `max_member_share_abs` gates); a 2-member
+  mass, never a ranking, and graded by no check (only `max_member_share_abs` gates, and
+  `cell_evidence` reads `by_target` only to reconcile that maximum); a 2-member
   basket reads structurally elevated, its larger member always carrying ≥ 0.5. The pooled
   `rot_p` is a COMMON-SHIFT null — one shift rotates every FIRED member's complete mask as a block,
   closed rows or not, preserving per-member counts AND the per-bar cross-sectional pattern a rank

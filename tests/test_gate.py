@@ -1858,6 +1858,33 @@ def test_member_mass_breach_leaves_basket_concentration_unmet():
     assert "mostly one name" in check.detail
 
 
+@pytest.mark.parametrize(
+    "by_target",
+    [{"AAA": 1.0, "BBB": 0.0}, {}, {"AAA": 0.5}, {"AAA": 0.5, "BBB": 1.5}, {1: 0.5, 2: 0.5}, None],
+)
+def test_a_basket_one_name_read_is_the_maximum_of_its_decomposition(by_target):
+    # The review's tamper: max_member_share_abs 0.5 beside shares {AAA: 1.0, BBB: 0.0} — one
+    # member carrying the whole mass — met every check, concentration grading the maximum alone
+    # and nothing reading it against the decomposition the runner takes it from. So did an
+    # empty breakdown.
+    pooled = _pooled()
+    pooled["member_share"] = {"by_target": by_target, "max_member_share_abs": 0.5}
+    report = evaluate_gate(_basket(cells=[_basket_cell(pooled=pooled)]))
+    check = _cell_checks(report)["cell_evidence"]
+    assert not check.met
+    assert "pooled.member_share" in check.detail
+    assert report.cells[0].met is False
+
+
+def test_a_massless_member_share_is_left_to_concentration():
+    # A pool with no |return| mass carries null shares and a null maximum (the runner's zero-mass
+    # rule): no breakdown contradicts the read, and concentration refuses it.
+    pooled = _pooled()
+    pooled["member_share"] = {"by_target": {"AAA": None, "BBB": None}, "max_member_share_abs": None}
+    checks = _cell_checks(evaluate_gate(_basket(cells=[_basket_cell(pooled=pooled)])))
+    assert checks["cell_evidence"].met and not checks["concentration"].met
+
+
 def test_missing_member_share_refuses_basket_concentration():
     pooled = _pooled()
     del pooled["member_share"]
@@ -1876,7 +1903,7 @@ def test_cluster_share_breach_leaves_basket_concentration_unmet():
 
 def test_basket_concentration_boundary_is_inclusive():
     pooled = _pooled(top_share=0.6)
-    pooled["member_share"]["max_member_share_abs"] = 0.6
+    pooled["member_share"] = {"by_target": {"AAA": 0.6, "BBB": 0.4}, "max_member_share_abs": 0.6}
     cell = _basket_cell(pooled=pooled, cluster_share=0.6)
     assert _cell_checks(evaluate_gate(_basket(cells=[cell])))["concentration"].met
 
@@ -1919,8 +1946,8 @@ def test_a_pooled_key_on_a_conjunction_cell_refuses_as_a_restamped_basket():
 
 def test_stripping_pooled_non_gated_fields_changes_no_result():
     # Evidence-only pin, pooled edition: everything beyond {n, n_nonoverlap, mean_ret,
-    # concentration.top_share_abs, member_share.max_member_share_abs} is evidence and no check
-    # reads it — member_share.by_target included (attribution, never graded).
+    # concentration.top_share_abs, member_share} is evidence and no check reads it
+    # (member_share.by_target is read only to reconcile the maximum it decomposes).
     cell = _basket_cell()
     for k in (
         "hit_rate",
@@ -1935,7 +1962,6 @@ def test_stripping_pooled_non_gated_fields_changes_no_result():
         "mfe_quantiles",
     ):
         del cell["pooled"][k]
-    del cell["pooled"]["member_share"]["by_target"]
     report = evaluate_gate(_basket(cells=[cell]))
     assert report.cells[0].met is True
     assert all(c.met for c in report.run_checks)
