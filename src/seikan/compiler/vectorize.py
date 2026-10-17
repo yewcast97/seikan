@@ -874,11 +874,16 @@ def _build_series(node: Series, md: MarketData) -> tuple[pd.DataFrame, pd.DataFr
                 # boundary. Letting a warming column latch ``init`` off the broadcast would FIRE
                 # a member before its own data begins (and classify every such firing
                 # ``no_outcome``, hard-refusing the cell), so the warmup latch is gated by the
-                # member's OWN input as well: both its first value and its init (an event node's
-                # init can precede its first value — a hole before the first event — and the
-                # broadcast must not fire the member from there either).
+                # member's OWN input as well: a finite value on a bar where the input is
+                # initialized (``_pending``'s rule). Neither alone is the member's own — an event
+                # node's init can precede its first value (a hole before the first event), and a
+                # value can precede the init: an inner broadcast snapshotted by an ``event_value``
+                # while the member warmed, read beside an init that arrived later (the snapshot's
+                # anchor turned unknowable, leaving it initialized with no value), latched the
+                # member and fired it off the broadcast on every bar after the hole, where the
+                # hole-free run fires it nowhere.
                 arr = np.where(pop, arr, np.nan)
-                own = _latch(x) & xi.to_numpy(dtype=bool)
+                own = _latch_mask(np.isfinite(x) & xi.to_numpy(dtype=bool))
                 return _df(arr, md), _df(_latch(arr) & own, md)
             # A rank or deviation is read off the member's label as well as its input, so the
             # label is a second input of the derived latch (``rolling_corr``'s pair): one with

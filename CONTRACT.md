@@ -779,7 +779,8 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   the input carried before its init is not its own and settles nothing): identical to its own
   finiteness latch for plain data, and what keeps a reader of a `cross_agg` broadcast into a
   member whose own input has not started from latching early (the broadcast itself waits for the
-  member's own first value). A transform that carries state across bars — `ema` below decay 1
+  member's own first finite value since its init — a value carried before the init, beside an
+  init that arrived later, is neither). A transform that carries state across bars — `ema` below decay 1
   (at `alpha = 1` it is its input, hole for hole), `zscore` over an EW mean, and the expanding
   (`window`-less) `rolling_agg` / `drawdown` / `runup` / `bars_since_extremum` — has no value
   from its input's first post-init hole on: its kernel skips a NaN, and the state it carried
@@ -822,7 +823,8 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   on its first live bar, a stateful transform whose input holes before its first value, and a
   series computed from such an input: it initializes there, finite or not, and every overflowed bar
   after it is undecidable. A `cross_agg` is never one — its broadcast
-  waits for its own first finite value as well as for the member's own first value — so one that
+  waits for its own first finite value as well as for the member's own first finite value since
+  its init — so one that
   overflows on every bar is warmup throughout, whatever its input. The ratio transforms
   (`change(kind="pct")`, `drawdown`, `runup`) are POSITIVE-domain like the pct/log outcome
   algebras: off a positive scale they invert silently, so a non-positive base censors as NaN

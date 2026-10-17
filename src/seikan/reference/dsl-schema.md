@@ -382,8 +382,8 @@ stateful transform whose input holes before its first value (see "Transforms"), 
 computed from such an input (a value it carried before its init, a broadcast snapshotted in
 warmup, counts for nothing): it initializes there, finite or not, and every overflowed bar after it
 is undecidable. A `cross_agg` is never one: its broadcast waits for its own first finite
-value as well as for the member's own first value, so one that overflows on every bar is warmup
-whatever its input. A window variance that falls BELOW the normal double range (deviations under
+value as well as for the member's own first finite value since its init, so one that overflows on
+every bar is warmup whatever its input. A window variance that falls BELOW the normal double range (deviations under
 ~1.5e-154) is a precision loss ordinary data reaches — an `ema` of a change decays geometrically
 through it over a held stretch — whose squares lose their bits (a z-score past its bound `√(w−1)`)
 or vanish into the `0.0` an all-equal window owns. Such a VARYING window is recomputed on its values
@@ -517,9 +517,10 @@ floor sweeps the SAMPLE, not the hypothesis. Each node counts as one operator le
   Unlike the other two, the value is a property of the CROSS-SECTION, not of the individual
   target, so a bar carries the VALUE (for every column) wherever `min_valid` targets are finite
   even when the target's own value is still warming up — intentional, do not "fix". The FIRING
-  latch is stricter: a member cannot fire off the broadcast before its own series has ever
-  produced a value (its warmup gates on its own input as well), so a staggered-start basket
-  measures each member only over the history it actually has. `mean` is the finite members'
+  latch is stricter: a member cannot fire off the broadcast before its own series has
+  produced a finite value since its init (its warmup gates on its own input as well — a value the
+  input carried before its init, a broadcast snapshotted in warmup, counts for nothing), so a
+  staggered-start basket measures each member only over the history it actually has. `mean` is the finite members'
   exactly rounded sum over their count; `std` is the population std (ddof=0, matching
   `rolling_agg`); `frac_positive` is the fraction of finite values > 0, in `[0, 1]`.
 

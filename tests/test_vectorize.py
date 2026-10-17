@@ -2540,6 +2540,34 @@ def test_an_event_snapshot_of_a_broadcast_initializes_where_its_event_bar_was():
     np.testing.assert_array_equal(i2[:, 2], np.arange(n) >= 50)
 
 
+def test_a_snapshot_whose_anchor_turns_unknown_cannot_fire_a_members_broadcast():
+    # The twin above with a domain NaN — log(−1) — in T2/T3's event condition on bar 45, after
+    # the only event (bar 0) and after their own input started (bar 40). Their snapshot of the
+    # breadth, taken while their input warmed, holds a VALUE through bar 44 and is then, its
+    # anchor unknowable, initialized with no value. The outer cross_agg's latch read the member's
+    # own input as "has had a finite value" and "is initialized" on different bars, so it latched
+    # T2/T3 at 45 and the broadcast fired them on 35 bars each (33 closed observations at h = 1)
+    # where the hole-free run fires them nowhere: a hole minting signals. The member's own input
+    # must have a finite value SINCE its init.
+    n = 80
+    late = np.r_[np.full(40, np.nan), np.full(40, 3.0)]
+    e = np.r_[2.0, np.ones(n - 1)]  # log(2) > 0.4: the one event, bar 0
+    holed = e.copy()
+    holed[45] = -1.0
+    event = ThresholdCondition(
+        left=UnaryOp(input=External(name="e"), op="log"), op=">", right=Constant(value=0.4)
+    )
+    snap = EventValue(event=event, input=CrossAgg(input=_X, agg="mean"))
+    node = ThresholdCondition(
+        left=CrossAgg(input=snap, agg="mean"), op=">", right=Constant(value=0.0)
+    )
+    for e_late in (e, holed):
+        md = _mdk(n, x=[1.0, 3.0, late, late], e=[e, e, e_late, e_late])
+        sig = vz.signal(node, md).to_numpy()
+        assert sig[:, :2].all() and not sig[:, 2:].any()
+        assert not vz.build_series(node.left, md)[1].to_numpy()[:, 2:].any()
+
+
 @pytest.mark.parametrize("snapshot", [EventValue, EventAgg])
 def test_an_unknown_anchor_cannot_initialize_a_snapshot_whose_input_has_not_started(snapshot):
     # E = log(e) > 0.4 fires on bar 10, and a domain NaN on bar 5 (log(-1)) leaves its anchor
