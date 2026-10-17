@@ -35,10 +35,15 @@ def _cell_panels(
     )
 
 
-def _grade_outcome_ledger(cov: dict[str, object], run_bars: int | None, unmet: list[str]) -> bool:
+def _grade_outcome_ledger(
+    cov: dict[str, object], run_bars: int | None, closable: int | None, unmet: list[str]
+) -> bool:
     """Per-target exit-reason ledger arithmetic (shape only — which reasons may be NONZERO is
-    ``outcome_coverage``'s semantic read). Appends into ``unmet`` in ledger order; returns False
-    when any row was uncountable (the cross-panel total is then unverifiable)."""
+    ``outcome_coverage``'s semantic read) and the index geometry that bounds it: a target fires
+    at most once per bar and a firing on the final bar has no next open to fill at, so the ledger
+    holds at most ``n_bars − 1`` firings, of which at most ``closable`` close inside the index.
+    Appends into ``unmet`` in ledger order; returns False when any row was uncountable (the
+    cross-panel total is then unverifiable)."""
     readable = True
     for tgt in sorted(cov):
         entry = cov.get(tgt)
@@ -73,16 +78,23 @@ def _grade_outcome_ledger(cov: dict[str, object], run_bars: int | None, unmet: l
                 f"{ledger['horizon']} — inconsistent ledger"
             )
         # Index geometry bounds the OUTCOME side exactly as it bounds the decision side
-        # (`signal_coverage`'s n_undefined <= n_bars, `sources`' n_missing <= n_bars): a target
-        # fires at most once per bar, so the runner writes at most one ledger row per bar per
-        # target. Without this, a ledger could claim more firings than the index has bars and
-        # still reconcile internally — the counts inflate together, and `n_nonoverlap <= n` only
-        # gets
-        # easier — so the impossibility would sail past every relative check.
-        if run_bars is not None and n_att > run_bars:
+        # (`signal_coverage`'s n_undefined <= n_bars, `sources`' n_missing <= n_bars). Without
+        # it a ledger could claim more firings than the index can anchor, or more closed ones
+        # than its horizon closes, and still reconcile internally — the counts inflate together,
+        # and `n_nonoverlap <= n` only gets easier — so the impossibility would sail past every
+        # relative check: 30 closed observations of horizon 1 over 31 bars, where 29 close, met
+        # the support floor.
+        if run_bars is not None and n_att > run_bars - 1:
             unmet.append(
-                f"outcome_coverage[{tgt}]: n_attempted={n_att} exceeds the index's "
-                f"n_bars={run_bars} — a target fires at most once per bar; drifted input"
+                f"outcome_coverage[{tgt}]: n_attempted={n_att} exceeds {run_bars - 1}, the "
+                f"firings an index of n_bars={run_bars} can anchor — a target fires at most once "
+                "per bar, and the final bar has no next open to fill at; drifted input"
+            )
+        if closable is not None and n_closed > closable:
+            unmet.append(
+                f"outcome_coverage[{tgt}]: n_closed={n_closed} exceeds {closable}, the most "
+                "observations of the cell's horizon that close inside the index (a firing at bar "
+                "t closes at bar t + 1 + horizon); drifted input"
             )
     return readable
 
@@ -90,14 +102,15 @@ def _grade_outcome_ledger(cov: dict[str, object], run_bars: int | None, unmet: l
 def _grade_by_target(
     by_tgt: dict[str, object],
     cov: dict[str, object],
-    run_bars: int | None,
+    closable: int | None,
     windows: int | None,
     by_target_n: dict[str, int | None],
     unmet: list[str],
 ) -> tuple[int, bool]:
     """Per-target support-panel counts + their reconciliation against the coverage ledger and the
-    most non-overlapping windows the cell's horizon closes inside the index (``windows``).
-    Returns ``(per-target n total, readable)``."""
+    index geometry: the most observations of the cell's horizon that close inside the index
+    (``closable``) and the most non-overlapping windows among them (``windows``). Returns
+    ``(per-target n total, readable)``."""
     total = 0
     readable = True
     for tgt in sorted(by_tgt):
@@ -110,12 +123,12 @@ def _grade_by_target(
             unmet.append(f"by_target[{tgt}]: n is not a count — drifted input")
             readable = False
             continue
-        if run_bars is not None and n > run_bars:
+        if closable is not None and n > closable:
             # The same geometric bound the ledger carries, applied where `support` reads. Graded
             # independently so a cell whose panels disagree still cannot claim impossible support.
             unmet.append(
-                f"by_target[{tgt}]: n={n} exceeds the index's n_bars={run_bars} — a target fires "
-                "at most once per bar; drifted input"
+                f"by_target[{tgt}]: n={n} exceeds {closable}, the most observations of the "
+                "cell's horizon that close inside the index; drifted input"
             )
         total += n
         if n_nonoverlap is None or n_nonoverlap < 0:
@@ -196,7 +209,7 @@ def _grade_pooled(
     cell: dict[str, object],
     mode: str | None,
     targets: list[str] | None,
-    run_bars: int | None,
+    closable: int | None,
     windows: int | None,
     by_target_n_total: int,
     n_total_readable: bool,
@@ -204,9 +217,10 @@ def _grade_pooled(
     unmet: list[str],
 ) -> None:
     """The mode-dispatched pooled-panel contract: a basket cell must carry one that reconciles
-    with the member panels and the bar clock (``windows``, the most non-overlapping windows the
-    cell's horizon closes inside the index); a conjunction cell carrying one is the signature of
-    a restamped basket and refuses."""
+    with the member panels and the bar clock (``closable``, the most observations of the cell's
+    horizon that close inside the index per member; ``windows``, the most non-overlapping windows
+    among them); a conjunction cell carrying one is the signature of a restamped basket and
+    refuses."""
     if mode == "conjunction" and "pooled" in cell:
         # The runner writes `pooled` ONLY in basket mode — absent, not null, on
         # conjunction cells — so a conjunction-stamped cell carrying one is not stray noise but
@@ -244,11 +258,12 @@ def _grade_pooled(
                         "pooled panel and the member panels describe different pools; drifted "
                         "input"
                     )
-                if run_bars is not None and targets and p_n > run_bars * len(targets):
+                if closable is not None and targets and p_n > closable * len(targets):
                     unmet.append(
-                        f"pooled.n={p_n} exceeds n_bars × len(targets) = "
-                        f"{run_bars * len(targets)} — each member fires at most once per bar; "
-                        "drifted input"
+                        f"pooled.n={p_n} exceeds len(targets) × {closable} = "
+                        f"{closable * len(targets)}, the most observations of the cell's horizon "
+                        "that close inside the index across the members — each fires at most "
+                        "once per bar; drifted input"
                     )
             if p_eff is None or p_eff < 0:
                 unmet.append("pooled.n_nonoverlap is not a count — drifted input")
@@ -318,28 +333,34 @@ def _check_cell_evidence(cell: object, s: Mapping[str, object], t: GateThreshold
     silently dropped target must fail here, not pass by absence).
 
     Arithmetic: every count is countable and non-negative, the exit reasons sum to the pool's
-    ``n_attempted``, and ``n_closed == exit_reasons["horizon"]`` — a ledger anyone can re-check.
+    ``n_attempted``, and ``n_closed == exit_reasons["horizon"]`` — a ledger anyone can re-check —
+    and the index's geometry holds it: a firing fills at the next bar's open and closes
+    ``horizon`` bars later, so at most ``n_bars − 1`` firings anchor an observation (the final
+    bar has no next open) and at most ``max(0, n_bars − 1 − horizon)`` of them close inside the
+    index. Bounded by ``n_bars`` alone, 30 closed observations of horizon 1 over 31 bars — where
+    29 close, and the run read 29 closed and one open — reconciled everywhere and met the
+    30-observation support floor.
 
     Reconciliation: the panels describe the SAME rows, so ``support`` reading ``by_target[t].n``
-    and ``outcome_coverage`` counting the closed firings that produced it must agree;
-    ``n_nonoverlap <= n`` (non-overlapping windows cannot outnumber observations) and ``n_nonoverlap
-    <= max(0, (n_bars − 2) // horizon)`` — a firing fills at the next bar's open and closes
-    ``horizon`` bars later, so a closed window starts by bar ``n_bars − 2 − horizon`` and the
-    greedy count's windows sit ``horizon`` bars apart: 40 windows of 21 bars in a 600-bar index
-    claimed more than the 28 that fit; the cell's ``episode_stats.n`` is the per-target total (the
-    concentration panel and the support panel must describe one pool); and
-    ``signal_coverage[t].n_bars`` is the run's ``n_bars`` (the decision ledger spans the whole
-    index — pure geometry, not a property of the data). A summary claiming 42 observations over a
-    ledger holding one is internally impossible, and an impossible summary is drifted input, not
-    something to grade.
+    and ``outcome_coverage`` counting the closed firings that produced it must agree (and that
+    ``n`` is held to the same closed ceiling); ``n_nonoverlap <= n`` (non-overlapping windows
+    cannot outnumber observations) and ``n_nonoverlap <= max(0, (n_bars − 2) // horizon)`` — the
+    greedy count's windows sit ``horizon`` bars apart among the closed observations: 40 windows
+    of 21 bars in a 600-bar index claimed more than the 28 that fit; the cell's
+    ``episode_stats.n`` is the per-target total (the concentration panel and the support panel
+    must describe one pool); and ``signal_coverage[t].n_bars`` is the run's ``n_bars`` (the
+    decision ledger spans the whole index — pure geometry, not a property of the data). A summary
+    claiming 42 observations over a ledger holding one is internally impossible, and an
+    impossible summary is drifted input, not something to grade.
 
     Basket cells (``target_mode == "basket"``) additionally carry the ``pooled`` cross-target
     panel their own ``support``/``concentration`` reads grade, and it must reconcile with the
     member panels: ``pooled.n == sum of by_target.n`` (one pool, fully attributed),
     ``pooled.n_nonoverlap <= pooled.n``, ``pooled.n_nonoverlap <= max(0, (n_bars − 2) //
     horizon)`` (the greedy non-overlapping count collapses same-bar cross-member firings, so the
-    bar clock's windows bound it as they bound each target's), ``pooled.n <= n_bars ×
-    len(targets)`` (each member fires at most once per bar), and a ``member_share`` panel's
+    bar clock's windows bound it as they bound each target's), ``pooled.n <= len(targets) ×
+    max(0, n_bars − 1 − horizon)`` (each member fires at most once per bar and closes at most
+    that many), and a ``member_share`` panel's
     one-name read is the largest share of its ``by_target`` decomposition, string-keyed over the
     targets exactly (:func:`_grade_member_share` — ``max_member_share_abs`` 0.5 beside shares
     ``{AAA: 1.0, BBB: 0.0}`` met every check, the ceiling grading a number its own breakdown
@@ -354,15 +375,18 @@ def _check_cell_evidence(cell: object, s: Mapping[str, object], t: GateThreshold
     threshold = (
         "cell is a dict with dict params naming a countable horizon>=1; by_target, "
         "outcome_coverage and signal_coverage string-keyed and covering summary targets exactly; "
-        "all counts countable and non-negative; per target sum(exit_reasons)==n_attempted and "
-        "n_closed==exit_reasons[horizon]; panels reconcile (by_target.n==outcome_coverage."
-        "n_closed, n_nonoverlap<=n, n_nonoverlap<=max(0,(n_bars-2)//horizon), "
+        "all counts countable and non-negative; per target sum(exit_reasons)==n_attempted, "
+        "n_closed==exit_reasons[horizon], n_attempted<=n_bars-1 and "
+        "n_closed<=max(0,n_bars-1-horizon) (a firing fills at the next bar's open and closes "
+        "horizon bars later); panels reconcile (by_target.n==outcome_coverage.n_closed, "
+        "n<=max(0,n_bars-1-horizon), n_nonoverlap<=n, n_nonoverlap<=max(0,(n_bars-2)//horizon), "
         "episode_stats.n==sum of by_target.n, signal_coverage.n_bars==summary.n_bars); "
         "target_mode readable (the stamp says whether a pooled panel is part of the cell's "
         "contract); basket cells additionally carry a pooled dict that reconciles "
         "(pooled.n==sum of by_target.n, pooled.n_nonoverlap<=pooled.n, "
         "pooled.n_nonoverlap<=max(0,(n_bars-2)//horizon), "
-        "pooled.n<=n_bars×len(targets), member_share.by_target string-keyed over the targets "
+        "pooled.n<=len(targets)×max(0,n_bars-1-horizon), member_share.by_target string-keyed "
+        "over the targets "
         "exactly and, where max_member_share_abs is a share, every share in [0,1] with "
         "max==max_member_share_abs); a pooled key on a conjunction cell refuses (a "
         "restamped basket)"
@@ -401,10 +425,15 @@ def _check_cell_evidence(cell: object, s: Mapping[str, object], t: GateThreshold
                 "not name the window it measured; drifted input"
             )
             horizon = None
-    # A firing fills at the next bar's open and closes `horizon` bars later, so a closed window
-    # starts by bar n_bars − 2 − horizon, and the greedy non-overlapping windows sit `horizon`
-    # bars apart: at most this many close inside the index, per target and pooled.
-    windows = None if run_bars is None or horizon is None else max(0, (run_bars - 2) // horizon)
+    # A firing at bar t fills at the next bar's open and closes `horizon` bars later, so an index
+    # of n_bars anchors firings on bars 0 … n_bars − 2 and closes those on bars
+    # 0 … n_bars − 2 − horizon: per target at most `closable` closed observations, whose greedy
+    # non-overlapping windows sit `horizon` bars apart — at most `windows` of them.
+    closable: int | None = None
+    windows: int | None = None
+    if run_bars is not None and horizon is not None:
+        closable = max(0, run_bars - 1 - horizon)
+        windows = max(0, (run_bars - 2) // horizon)
     targets = _targets(s)
     tset = set(targets) if targets else None
     by_tgt, cov, sig = _cell_panels(cell)
@@ -444,15 +473,15 @@ def _check_cell_evidence(cell: object, s: Mapping[str, object], t: GateThreshold
             )
     # The five graded sections below share the unmet list, in this order — append order is
     # emitted text.
-    readable_cov = _grade_outcome_ledger(cov, run_bars, unmet)
+    readable_cov = _grade_outcome_ledger(cov, run_bars, closable, unmet)
     by_target_n_total, readable_bt = _grade_by_target(
-        by_tgt, cov, run_bars, windows, by_target_n, unmet
+        by_tgt, cov, closable, windows, by_target_n, unmet
     )
     n_total_readable = bool(cov) and bool(by_tgt) and readable_cov and readable_bt
     _grade_signal_geometry(sig, run_bars, unmet)
     _grade_episode_total(cell, by_target_n_total, n_total_readable, observed, unmet)
     _grade_pooled(
-        cell, mode, targets, run_bars, windows, by_target_n_total, n_total_readable, observed, unmet
+        cell, mode, targets, closable, windows, by_target_n_total, n_total_readable, observed, unmet
     )
     return GateCheck(
         name="cell_evidence",

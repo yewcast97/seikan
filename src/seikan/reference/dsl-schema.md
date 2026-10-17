@@ -1393,15 +1393,19 @@ complete statistics are still in `summary.cells[i]` — a checklist result never
 
 - `cell_evidence` — the cell's `params` name a countable `horizon >= 1`, its panels are present,
   string-keyed, cover your targets exactly, and RECONCILE with each other
-  (`by_target.n == outcome_coverage.n_closed`, `n_nonoverlap <= n` and
-  `n_nonoverlap <= max(0, (n_bars − 2) // horizon)` — a firing fills at the next bar's open and
-  closes `horizon` bars later, so no more non-overlapping windows close inside the index —
-  `episode_stats.n` == the per-target total, `signal_coverage.n_bars == summary.n_bars`). Basket
+  (`by_target.n == outcome_coverage.n_closed`; `n_attempted <= n_bars − 1` and
+  `n_closed <= max(0, n_bars − 1 − horizon)` — a firing fills at the next bar's open and closes
+  `horizon` bars later, so the final bar anchors nothing and only so many observations close
+  inside the index, `by_target.n` held to the same ceiling; `n_nonoverlap <= n` and
+  `n_nonoverlap <= max(0, (n_bars − 2) // horizon)` — the greedy count's windows sit `horizon` bars
+  apart among them; `episode_stats.n` == the per-target total,
+  `signal_coverage.n_bars == summary.n_bars`). Basket
   cells must ADDITIONALLY carry the `pooled` dict their own rubric grades, reconciling with the
   member panels: `pooled.n ==` the sum of `by_target.n` (one pool, fully attributed),
   `pooled.n_nonoverlap <= pooled.n`, `pooled.n_nonoverlap <= max(0, (n_bars − 2) // horizon)` (the
   greedy count collapses same-bar cross-member firings, so the bar clock's windows bound it),
-  `pooled.n <= n_bars × len(targets)` (each member fires at most once per bar), and a
+  `pooled.n <= len(targets) × max(0, n_bars − 1 − horizon)` (each member fires at most once per bar
+  and closes at most that many), and a
   `member_share.max_member_share_abs` that is a share is the largest of its `by_target` shares,
   string-keyed over the targets exactly. A `pooled` key on a conjunction cell
   REFUSES: the engine writes `pooled` only in basket mode, so a conjunction-stamped report

@@ -1818,9 +1818,17 @@ def test_pooled_n_cannot_exceed_bars_times_members():
 
 
 def test_a_basket_cell_exactly_filling_the_bar_clock_still_reconciles():
-    # Boundary inclusive: every member firing on every bar, its windows filling the bar clock at
-    # the cell's horizon (⌊(600 − 2) / 21⌋ = 28), is legitimate geometry.
-    cell = _basket_cell(n=_N_BARS, pooled=_pooled(n=2 * _N_BARS, n_nonoverlap=28))
+    # Boundary inclusive: every member firing on every bar it can — 599 firings over 600 bars,
+    # 578 of them closing at horizon 21 — its windows filling the bar clock at the cell's horizon
+    # (⌊(600 − 2) / 21⌋ = 28), is legitimate geometry.
+    closable = _N_BARS - 1 - 21
+    cell = _basket_cell(n=closable, pooled=_pooled(n=2 * closable, n_nonoverlap=28))
+    for tgt in ("AAA", "BBB"):
+        cell["outcome_coverage"][tgt] = _cov(
+            closable,
+            n_attempted=_N_BARS - 1,
+            exit_reasons={"horizon": closable, "open": 21, "no_outcome": 0, "no_benchmark": 0},
+        )
     check = _cell_checks(evaluate_gate(_basket(cells=[cell])))["cell_evidence"]
     assert check.met
 
@@ -2277,11 +2285,61 @@ def test_outcome_ledger_counts_cannot_exceed_the_index_length():
     assert report.to_dict()["n_met"] == 0
 
 
-def test_a_cell_exactly_filling_the_index_is_still_met():
-    """The bound is ``<=``, not ``<`` — a condition firing on every bar is legitimate, so the
-    check must not manufacture a refusal at the boundary."""
-    report = evaluate_gate(_summary(cells=[_cell(n=_N_BARS)]))
+def test_a_cell_exactly_filling_the_horizons_geometry_is_still_met():
+    """The bounds are ``<=``, not ``<`` — a condition firing on every bar it can is legitimate,
+    so the check must not manufacture a refusal at the boundary: 600 bars anchor 599 firings and
+    close 578 of them at horizon 21, the other 21 open."""
+    closable = _N_BARS - 1 - 21
+    cell = _cell(n=closable)
+    cell["outcome_coverage"]["AAA"] = _cov(
+        closable,
+        n_attempted=_N_BARS - 1,
+        exit_reasons={"horizon": closable, "open": 21, "no_outcome": 0, "no_benchmark": 0},
+    )
+    report = evaluate_gate(_summary(cells=[cell]))
     assert _cell_checks(report)["cell_evidence"].met is True
+
+
+def test_closed_observations_cannot_outrun_the_horizons_geometry():
+    # A firing at bar t fills at t + 1 and closes at t + 1 + horizon, so 31 bars close at most 29
+    # observations of horizon 1 (and anchor 30). The review's summary: the run's 29 closed and
+    # one open became 30 closed, every ledger reconciled, and the 30-observation support floor
+    # was met over a geometry that cannot supply it.
+    def _over_31_bars(n_closed: int, n_attempted: int = 30) -> dict:
+        cell = _cell(n=n_closed, n_nonoverlap=8, params={"zscore_window": 20, "horizon": 1})
+        reasons = {
+            "horizon": n_closed,
+            "open": n_attempted - n_closed,
+            "no_outcome": 0,
+            "no_benchmark": 0,
+        }
+        cell["outcome_coverage"]["AAA"] = _cov(
+            n_closed, n_attempted=n_attempted, exit_reasons=reasons
+        )
+        cell["signal_coverage"]["AAA"] = _sig(n_bars=31)
+        s = _summary(cells=[cell], n_bars=31)
+        s["sources"]["AAA"]["n_bars"] = 31
+        return s
+
+    forged = _cell_checks(evaluate_gate(_over_31_bars(30)))
+    assert not forged["cell_evidence"].met
+    assert "n_closed=30 exceeds 29" in forged["cell_evidence"].detail
+    assert "by_target[AAA]: n=30 exceeds 29" in forged["cell_evidence"].detail
+    honest = _cell_checks(evaluate_gate(_over_31_bars(29)))
+    assert honest["cell_evidence"].met and not honest["support"].met
+    # the final bar has no next open to fill at: 31 bars anchor at most 30 firings
+    check = _cell_checks(evaluate_gate(_over_31_bars(29, n_attempted=31)))["cell_evidence"]
+    assert not check.met
+    assert "n_attempted=31 exceeds 30" in check.detail
+
+
+def test_a_pooled_count_cannot_outrun_the_members_closed_geometry():
+    # Two members over 600 bars close at most 2 × 578 observations of horizon 21; a pooled n of
+    # 1,200 — n_bars × len(targets), the old bound — sailed through that read.
+    cell = _basket_cell(n=_N_BARS - 1 - 21, pooled=_pooled(n=2 * _N_BARS))
+    check = _cell_checks(evaluate_gate(_basket(cells=[cell])))["cell_evidence"]
+    assert not check.met
+    assert "pooled.n=1200 exceeds len(targets) × 578 = 1156" in check.detail
 
 
 # ---- support / concentration grade the REGIME, not whichever panel is present --------------

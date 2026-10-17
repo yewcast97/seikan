@@ -520,17 +520,21 @@ countable `horizon ≥ 1`; `by_target`,
 silently dropped target leaves this check unmet rather than escaping notice by absence; every
 count is countable and
 non-negative; the ledger arithmetic holds per target (`sum(exit_reasons) == n_attempted`,
-`n_closed == exit_reasons["horizon"]`); and the panels RECONCILE — `by_target[t].n ==
-outcome_coverage[t].n_closed`, `n_nonoverlap ≤ n`, `n_nonoverlap ≤ max(0, ⌊(n_bars − 2) /
-horizon⌋)` (a firing fills at the next bar's open and closes `horizon` bars later: 40 windows of
-21 bars claimed in a 600-bar index, where 28 fit, is no run's output), `episode_stats.n` == the per-target total,
+`n_closed == exit_reasons["horizon"]`) and so does the next-open geometry (`n_attempted ≤ n_bars −
+1`, `n_closed ≤ max(0, n_bars − 1 − horizon)` — a firing fills at the next bar's open and closes
+`horizon` bars later, so the final bar anchors nothing and 31 bars close at most 29 observations
+of horizon 1: the review's 30, every ledger reconciled, met the 30-observation support floor); and
+the panels RECONCILE — `by_target[t].n == outcome_coverage[t].n_closed` (held to the same closed
+ceiling), `n_nonoverlap ≤ n`, `n_nonoverlap ≤ max(0, ⌊(n_bars − 2) /
+horizon⌋)` (the greedy count's windows sit `horizon` bars apart among the closed observations: 40
+windows of 21 bars claimed in a 600-bar index, where 28 fit, is no run's output), `episode_stats.n` == the per-target total,
 `signal_coverage[t].n_bars == summary.n_bars`: an internally impossible cell is drifted input, not
 something to grade. Basket cells must ADDITIONALLY carry the `pooled` dict their own rubric
 grades, reconciling with the member panels: `pooled.n ==` the per-target total (one pool, fully
 attributed), `pooled.n_nonoverlap ≤ pooled.n`, `pooled.n_nonoverlap ≤ max(0, ⌊(n_bars − 2) /
 horizon⌋)` (same-bar cross-member firings collapse in the greedy count, so the bar clock's windows
-bound it), `pooled.n ≤ n_bars ×
-len(targets)` (each member fires at most once per bar), and a `member_share.max_member_share_abs`
+bound it), `pooled.n ≤ len(targets) × max(0, n_bars − 1 − horizon)` (each member fires at most once
+per bar and closes at most that many), and a `member_share.max_member_share_abs`
 that is a share is the largest of its `by_target` shares, string-keyed over the targets exactly
 (0.5 beside shares `{AAA: 1.0, BBB: 0.0}` met every check); a `pooled` key on a conjunction cell
 REFUSES — the runner writes pooled only in basket mode (absent, not null, on conjunction
