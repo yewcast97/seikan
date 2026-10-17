@@ -62,7 +62,7 @@ METRIC_ROLES: dict[str, JsonValue] = {
             "cells[*].by_target[*].{n,n_nonoverlap}",
             "cells[*].outcome_coverage[*].{n_attempted,n_closed,exit_reasons} (the ledger "
             "arithmetic, and the next-open geometry: n_attempted <= n_bars − 1, n_closed <= "
-            "max(0, n_bars − 1 − horizon))",
+            "max(0, n_bars − 1 − horizon), exit_reasons.open <= min(horizon, n_bars − 1))",
             "cells[*].signal_coverage[*].n_bars",
             "cells[*].episode_stats.{n,n_clusters,largest_cluster_share_abs,max_cluster_share_abs} "
             "(n == the per-target total; n_clusters a count in 0..n, 0 iff n == 0; the ceiling "
@@ -79,8 +79,8 @@ METRIC_ROLES: dict[str, JsonValue] = {
         ],
         "outcome_coverage": [
             "cells[*].outcome_coverage[*].exit_reasons.{no_outcome,no_benchmark} "
-            "('open' is ALLOWED at any count — end-of-data right-censoring is structural; "
-            "per-target in BOTH modes)",
+            "('open' is ALLOWED — end-of-data right-censoring is structural, its count held "
+            "by cell_evidence to min(horizon, n_bars − 1); per-target in BOTH modes)",
         ],
         "signal_coverage": [
             "cells[*].signal_coverage[*].{n_bars,n_undefined} (per-target in BOTH modes)",
@@ -497,8 +497,10 @@ METRIC_ROLES_DOC: dict[str, JsonValue] = {
         "Arithmetic: exit reasons sum to n_attempted and n_closed == exit_reasons.horizon — a "
         "ledger anyone can re-check — and the next-open geometry holds it: a firing fills at the "
         "next bar's open and closes params.horizon bars later, so at most n_bars − 1 firings "
-        "anchor an observation and at most max(0, n_bars − 1 − horizon) of them close inside "
-        "the index (by_target.n is held to the same ceiling). Reconciliation: by_target.n == "
+        "anchor an observation, at most max(0, n_bars − 1 − horizon) of them close inside "
+        "the index (by_target.n is held to the same ceiling) and at most min(horizon, n_bars − "
+        "1) run past its end as open — the last horizon anchor bars. Reconciliation: "
+        "by_target.n == "
         "outcome_coverage.n_closed, "
         "n_nonoverlap <= n (non-overlapping windows cannot outnumber observations), "
         "n_nonoverlap <= max(0, (n_bars − 2) // horizon) (the greedy count's windows sit "
@@ -530,10 +532,12 @@ METRIC_ROLES_DOC: dict[str, JsonValue] = {
         "benchmark hole and every statistic silently skips the row, which is exactly how a "
         "vendor outage, a stale feed, or an adversarial file could delete adverse outcomes and "
         "leave a clean-looking cell. Any such firing refuses; missing-at-random is never "
-        "assumed. 'open' is ALLOWED at any count: with no holdout there is no embargo and no "
-        "tail, so a forward window running past the last bar is structural right-censoring every "
-        "cell near the index end must exhibit — refusing it would refuse the calendar, not a "
-        "data defect. An in-bounds hole is not 'open'; it classifies as no_outcome/no_benchmark "
+        "assumed. 'open' is ALLOWED: with no holdout there is no embargo and no tail, so a "
+        "forward window running past the last bar is structural right-censoring every cell near "
+        "the index end must exhibit — refusing it would refuse the calendar, not a data defect "
+        "(its count is geometry, which cell_evidence holds to the min(horizon, n_bars − 1) "
+        "anchor bars the calendar can censor). An in-bounds hole is not 'open'; it classifies as "
+        "no_outcome/no_benchmark "
         "upstream and refuses here)",
         "cells[*].signal_coverage[*].{n_bars,n_undefined} (signal_coverage — the DECISION-side "
         "twin of outcome_coverage, pooled layer. The outcome ledger can only account for bars "
@@ -1436,9 +1440,9 @@ REPORT_FIELDS: dict[str, JsonValue] = {
             "mean_ret_raw is the basket's own realized drift"
         ),
         "outcome_coverage": (
-            "per target {n_attempted, n_closed, exit_reasons} — 'open' is ALLOWED at any count "
-            "(end-of-data right-censoring is structural); no_outcome / no_benchmark are data "
-            "holes and refuse"
+            "per target {n_attempted, n_closed, exit_reasons} — 'open' is ALLOWED (end-of-data "
+            "right-censoring is structural; cell_evidence holds its count to min(horizon, "
+            "n_bars − 1)); no_outcome / no_benchmark are data holes and refuse"
         ),
         "signal_coverage": (
             "per target {n_bars, n_undefined} — post-warmup bars where the entry condition was "
@@ -1589,7 +1593,8 @@ GATE_CONTRACT_DOC: dict[str, JsonValue] = {
             "and non-negative; the "
             "ledger arithmetic holds per target (sum(exit_reasons) == n_attempted, n_closed == "
             "exit_reasons.horizon, and the next-open geometry: n_attempted <= n_bars − 1, "
-            "n_closed <= max(0, n_bars − 1 − horizon)); and the panels RECONCILE — by_target.n "
+            "n_closed <= max(0, n_bars − 1 − horizon), exit_reasons.open <= min(horizon, "
+            "n_bars − 1)); and the panels RECONCILE — by_target.n "
             "== outcome_coverage.n_closed (held to the same closed ceiling), n_nonoverlap <= n, "
             "n_nonoverlap <= max(0, (n_bars − 2) // horizon), episode_stats.n == the per-target "
             "total, episode_stats.n_clusters a count in 0..n (0 iff n == 0), "

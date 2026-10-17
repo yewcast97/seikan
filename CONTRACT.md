@@ -526,9 +526,12 @@ silently dropped target leaves this check unmet rather than escaping notice by a
 count is countable and
 non-negative; the ledger arithmetic holds per target (`sum(exit_reasons) == n_attempted`,
 `n_closed == exit_reasons["horizon"]`) and so does the next-open geometry (`n_attempted ≤ n_bars −
-1`, `n_closed ≤ max(0, n_bars − 1 − horizon)` — a firing fills at the next bar's open and closes
-`horizon` bars later, so the final bar anchors nothing and 31 bars close at most 29 observations
-of horizon 1: the review's 30, every ledger reconciled, met the 30-observation support floor); and
+1`, `n_closed ≤ max(0, n_bars − 1 − horizon)`, `exit_reasons["open"] ≤ min(horizon, n_bars − 1)`
+— a firing fills at the next bar's open and closes `horizon` bars later, so the final bar anchors
+nothing, only the last `horizon` anchor bars are right-censored, and 31 bars close at most 29
+observations of horizon 1: the review's 30, every ledger reconciled, met the 30-observation
+support floor, and 100 open observations of horizon 21 over 600 bars, where 21 can be, met every
+check — deleted outcomes relabelled as the calendar); and
 the panels RECONCILE — `by_target[t].n == outcome_coverage[t].n_closed` (held to the same closed
 ceiling), `n_nonoverlap ≤ n`, `n_nonoverlap ≤ max(0, ⌊(n_bars − 2) /
 horizon⌋)` (the greedy count's windows sit `horizon` bars apart among the closed observations: 40
@@ -558,10 +561,11 @@ stamp by the same logic); a missing `target_mode` stamp refuses — whether a po
 part of the cell's contract is then undeterminable); `outcome_coverage` (fail-closed missingness on the
 OUTCOME side: per target
 `no_outcome == 0` and `no_benchmark == 0` — a data hole that deletes outcomes can hide adverse
-results, and missing-at-random is never assumed. **`open` is ALLOWED at any count**: with no
-holdout there is no embargo and no tail, so a forward window running past the last bar is
-structural end-of-data right-censoring every cell near the index end must exhibit, and refusing it
-would refuse the calendar rather than a data defect. A window that closes within the data and
+results, and missing-at-random is never assumed. **`open` is ALLOWED**: with no holdout there is
+no embargo and no tail, so a forward window running past the last bar is structural end-of-data
+right-censoring every cell near the index end must exhibit, and refusing it would refuse the
+calendar rather than a data defect (its COUNT is geometry, which `cell_evidence` holds to the
+`min(horizon, n_bars − 1)` anchor bars the calendar can censor). A window that closes within the data and
 reads a NaN leg is never `open` — it classifies as `no_outcome`/`no_benchmark` upstream and
 refuses here; one running past the last bar is `open` even on a NaN fill print, as no outcome of
 it was ever measurable for a hole to delete); `signal_coverage` (the

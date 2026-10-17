@@ -1399,10 +1399,11 @@ complete statistics are still in `summary.cells[i]` — a checklist result never
 
 - `cell_evidence` — the cell's `params` name a countable `horizon >= 1`, its panels are present,
   string-keyed, cover your targets exactly, and RECONCILE with each other
-  (`by_target.n == outcome_coverage.n_closed`; `n_attempted <= n_bars − 1` and
-  `n_closed <= max(0, n_bars − 1 − horizon)` — a firing fills at the next bar's open and closes
-  `horizon` bars later, so the final bar anchors nothing and only so many observations close
-  inside the index, `by_target.n` held to the same ceiling; `n_nonoverlap <= n` and
+  (`by_target.n == outcome_coverage.n_closed`; `n_attempted <= n_bars − 1`,
+  `n_closed <= max(0, n_bars − 1 − horizon)` and `exit_reasons.open <= min(horizon, n_bars − 1)`
+  — a firing fills at the next bar's open and closes `horizon` bars later, so the final bar
+  anchors nothing, only so many observations close inside the index (`by_target.n` held to the
+  same ceiling) and only the last `horizon` anchor bars are right-censored; `n_nonoverlap <= n` and
   `n_nonoverlap <= max(0, (n_bars − 2) // horizon)` — the greedy count's windows sit `horizon` bars
   apart among them; `episode_stats.n` == the per-target total, its `n_clusters` a count in
   `0..n` (0 iff `n == 0`) and its `max_cluster_share_abs` at least `largest_cluster_share_abs`

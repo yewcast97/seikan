@@ -2410,6 +2410,33 @@ def test_a_cell_exactly_filling_the_horizons_geometry_is_still_met():
     assert _cell_checks(report)["cell_evidence"].met is True
 
 
+def test_open_observations_cannot_outrun_the_horizons_geometry():
+    # A firing is right-censored only from bar n_bars − 1 − horizon on, so at most
+    # min(horizon, n_bars − 1) firings can be open. The review's summary over 600 bars at
+    # horizon 21: 142 attempted, 42 closed and 100 open reconciled everywhere and met every
+    # check — the same 100 classified no_outcome refuse — where 21 can be open. Open stays the
+    # one reason outcome_coverage allows; the count is the geometry's, cell_evidence's to hold.
+    def _ledger(n_open: int) -> dict:
+        cell = _cell(n=42)
+        reasons = {"horizon": 42, "open": n_open, "no_outcome": 0, "no_benchmark": 0}
+        cell["outcome_coverage"]["AAA"] = _cov(42, n_attempted=42 + n_open, exit_reasons=reasons)
+        return _cell_checks(evaluate_gate(_summary(cells=[cell])))
+
+    review = _ledger(100)
+    assert not review["cell_evidence"].met
+    assert "open=100 exceeds 21" in review["cell_evidence"].detail
+    assert review["outcome_coverage"].met
+    assert _ledger(21)["cell_evidence"].met and not _ledger(22)["cell_evidence"].met
+    # a horizon longer than the index right-censors every anchor bar: n_bars − 1 of them
+    short = _cell(n=0, params={"zscore_window": 20, "horizon": 21})
+    reasons = {"horizon": 0, "open": 9, "no_outcome": 0, "no_benchmark": 0}
+    short["outcome_coverage"]["AAA"] = _cov(0, n_attempted=9, exit_reasons=reasons)
+    short["signal_coverage"]["AAA"] = _sig(n_bars=10)
+    s = _summary(cells=[short], n_bars=10)
+    s["sources"]["AAA"]["n_bars"] = 10
+    assert _cell_checks(evaluate_gate(s))["cell_evidence"].met
+
+
 def test_closed_observations_cannot_outrun_the_horizons_geometry():
     # A firing at bar t fills at t + 1 and closes at t + 1 + horizon, so 31 bars close at most 29
     # observations of horizon 1 (and anchor 30). The review's summary: the run's 29 closed and

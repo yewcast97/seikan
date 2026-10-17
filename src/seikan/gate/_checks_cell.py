@@ -44,14 +44,19 @@ def _cell_panels(
 
 
 def _grade_outcome_ledger(
-    cov: dict[str, object], run_bars: int | None, closable: int | None, unmet: list[str]
+    cov: dict[str, object],
+    run_bars: int | None,
+    closable: int | None,
+    openable: int | None,
+    unmet: list[str],
 ) -> bool:
     """Per-target exit-reason ledger arithmetic (shape only — which reasons may be NONZERO is
     ``outcome_coverage``'s semantic read) and the index geometry that bounds it: a target fires
     at most once per bar and a firing on the final bar has no next open to fill at, so the ledger
-    holds at most ``n_bars − 1`` firings, of which at most ``closable`` close inside the index.
-    Appends into ``unmet`` in ledger order; returns False when any row was uncountable (the
-    cross-panel total is then unverifiable)."""
+    holds at most ``n_bars − 1`` firings, of which at most ``closable`` close inside the index and
+    at most ``openable`` — the last ``horizon`` anchor bars — run past its end. Appends into
+    ``unmet`` in ledger order; returns False when any row was uncountable (the cross-panel total
+    is then unverifiable)."""
     readable = True
     for tgt in sorted(cov):
         entry = cov.get(tgt)
@@ -103,6 +108,16 @@ def _grade_outcome_ledger(
                 f"outcome_coverage[{tgt}]: n_closed={n_closed} exceeds {closable}, the most "
                 "observations of the cell's horizon that close inside the index (a firing at bar "
                 "t closes at bar t + 1 + horizon); drifted input"
+            )
+        if openable is not None and ledger["open"] > openable:
+            # The complement: only the last `horizon` anchor bars run past the index end, so a
+            # ledger parking more firings under `open` — the one reason outcome_coverage allows
+            # — relabels deleted outcomes as the calendar: 100 open of horizon 21 over 600 bars
+            # met every check where 21 can be.
+            unmet.append(
+                f"outcome_coverage[{tgt}]: open={ledger['open']} exceeds {openable}, the most "
+                "firings whose window of the cell's horizon runs past the index end (a firing is "
+                "right-censored only from bar n_bars − 1 − horizon on); drifted input"
             )
     return readable
 
@@ -393,9 +408,12 @@ def _check_cell_evidence(cell: object, s: Mapping[str, object], t: GateThreshold
     and the index's geometry holds it: a firing fills at the next bar's open and closes
     ``horizon`` bars later, so at most ``n_bars − 1`` firings anchor an observation (the final
     bar has no next open) and at most ``max(0, n_bars − 1 − horizon)`` of them close inside the
-    index. Bounded by ``n_bars`` alone, 30 closed observations of horizon 1 over 31 bars — where
-    29 close, and the run read 29 closed and one open — reconciled everywhere and met the
-    30-observation support floor.
+    index, while at most ``min(horizon, n_bars − 1)`` of them run past its end (``open``, the
+    last ``horizon`` anchor bars). Bounded by ``n_bars`` alone, 30 closed observations of
+    horizon 1 over 31 bars — where 29 close, and the run read 29 closed and one open —
+    reconciled everywhere and met the 30-observation support floor; with the closed count bounded
+    alone, 100 open observations of horizon 21 over 600 bars, beside 42 closed, met every check
+    where 21 can be open — the same 100 under ``no_outcome`` refuse.
 
     Reconciliation: the panels describe the SAME rows, so ``support`` reading ``by_target[t].n``
     and ``outcome_coverage`` counting the closed firings that produced it must agree (and that
@@ -436,9 +454,11 @@ def _check_cell_evidence(cell: object, s: Mapping[str, object], t: GateThreshold
         "cell is a dict with dict params naming a countable horizon>=1; by_target, "
         "outcome_coverage and signal_coverage string-keyed and covering summary targets exactly; "
         "all counts countable and non-negative; per target sum(exit_reasons)==n_attempted, "
-        "n_closed==exit_reasons[horizon], n_attempted<=n_bars-1 and "
-        "n_closed<=max(0,n_bars-1-horizon) (a firing fills at the next bar's open and closes "
-        "horizon bars later); panels reconcile (by_target.n==outcome_coverage.n_closed, "
+        "n_closed==exit_reasons[horizon], n_attempted<=n_bars-1, "
+        "n_closed<=max(0,n_bars-1-horizon) and exit_reasons.open<=min(horizon,n_bars-1) (a "
+        "firing fills at the next bar's open and closes horizon bars later, so only the last "
+        "horizon anchor bars are right-censored); panels reconcile "
+        "(by_target.n==outcome_coverage.n_closed, "
         "n<=max(0,n_bars-1-horizon), n_nonoverlap<=n, n_nonoverlap<=max(0,(n_bars-2)//horizon), "
         "episode_stats.n==sum of by_target.n, episode_stats.n_clusters a count in 0..n (0 iff "
         "n==0), episode_stats.max_cluster_share_abs>=largest_cluster_share_abs and "
@@ -490,12 +510,15 @@ def _check_cell_evidence(cell: object, s: Mapping[str, object], t: GateThreshold
     # A firing at bar t fills at the next bar's open and closes `horizon` bars later, so an index
     # of n_bars anchors firings on bars 0 … n_bars − 2 and closes those on bars
     # 0 … n_bars − 2 − horizon: per target at most `closable` closed observations, whose greedy
-    # non-overlapping windows sit `horizon` bars apart — at most `windows` of them.
+    # non-overlapping windows sit `horizon` bars apart — at most `windows` of them — and at most
+    # `openable` right-censored ones, the anchor bars n_bars − 1 − horizon … n_bars − 2.
     closable: int | None = None
     windows: int | None = None
+    openable: int | None = None
     if run_bars is not None and horizon is not None:
         closable = max(0, run_bars - 1 - horizon)
         windows = max(0, (run_bars - 2) // horizon)
+        openable = run_bars - 1 - closable
     targets = _targets(s)
     tset = set(targets) if targets else None
     by_tgt, cov, sig = _cell_panels(cell)
@@ -535,7 +558,7 @@ def _check_cell_evidence(cell: object, s: Mapping[str, object], t: GateThreshold
             )
     # The five graded sections below share the unmet list, in this order — append order is
     # emitted text.
-    readable_cov = _grade_outcome_ledger(cov, run_bars, closable, unmet)
+    readable_cov = _grade_outcome_ledger(cov, run_bars, closable, openable, unmet)
     by_target_n_total, readable_bt = _grade_by_target(
         by_tgt, cov, closable, windows, by_target_n, unmet
     )
@@ -573,15 +596,17 @@ def _check_cell_outcome_coverage(
     ``open`` is ALLOWED. With no holdout there is no embargo and no tail: a firing whose forward
     window runs past the last bar is right-censored by the data's end, which is structural
     geometry every cell near the index end must exhibit. Refusing it would refuse the calendar,
-    not a data defect. What it is NOT allowed to hide is an in-bounds hole — those classify as
-    ``no_outcome``/``no_benchmark`` upstream and refuse here.
+    not a data defect (``cell_evidence`` holds the count to the ``min(horizon, n_bars − 1)``
+    anchor bars the calendar can censor). What it is NOT allowed to hide is an in-bounds hole —
+    those classify as ``no_outcome``/``no_benchmark`` upstream and refuse here.
 
     Reads are independent of every other check (no check relies on another having run); a missing
     or uncountable ledger refuses."""
     threshold = (
         "per target: exit_reasons.no_outcome == 0 and exit_reasons.no_benchmark == 0. "
-        "exit_reasons.open is ALLOWED at any count — with no holdout and no embargo, a forward "
-        "window running past the data end is structural right-censoring, not a data hole"
+        "exit_reasons.open is ALLOWED — with no holdout and no embargo, a forward window running "
+        "past the data end is structural right-censoring, not a data hole (cell_evidence holds "
+        "the count to the min(horizon, n_bars − 1) anchor bars the calendar can censor)"
     )
     targets = _targets(s)
     tset = set(targets) if targets else None
