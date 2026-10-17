@@ -36,7 +36,10 @@ def _check_evidence_complete(s: Mapping[str, object], t: GateThresholds) -> Gate
     EXACTLY, and ``cells`` must be a list holding EXACTLY the declared grid. That last one is the
     honesty invariant of this identity: the panel carries one entry per declared combo × horizon
     INCLUDING those that never fired, so a report short of ``n_hypotheses_attempted`` cells has
-    silently dropped hypotheses from the record and is drifted input, not evidence."""
+    silently dropped hypotheses from the record and is drifted input, not evidence — and so is
+    one where two cells name the same ``params``: a declared cell on the record twice stands in
+    for one that is missing, at the right count (an entry with no readable params is
+    ``cell_evidence``'s to refuse, and only its own)."""
     targets = _targets(s)
     mode = _mode(s)
     stats_v = s.get("statistics_version")
@@ -55,7 +58,8 @@ def _check_evidence_complete(s: Mapping[str, object], t: GateThresholds) -> Gate
         "(refused at validation upstream; the gate re-refuses, never trusts); "
         "n_hypotheses_attempted>=1; n_bars>=1; sources string-keyed and covering targets "
         "exactly; cells a list with len(cells)==n_hypotheses_attempted (every declared cell on "
-        "the record, non-firing combos included)"
+        "the record, non-firing combos included) and no two cells naming the same params (a "
+        "cell on the record twice stands in for a missing one)"
     )
     unmet: list[str] = []
     if stats_v != STATISTICS_VERSION:
@@ -167,12 +171,30 @@ def _check_evidence_complete(s: Mapping[str, object], t: GateThresholds) -> Gate
             f"summary carries no cells panel (cells={type(cells).__name__}) — the per-cell "
             "record IS the report under this policy; drifted input"
         )
-    elif n_att is not None and len(cells) != n_att:
-        unmet.append(
-            f"cells holds {len(cells)} entr(ies) but n_hypotheses_attempted={n_att} — every "
-            "declared combo × horizon must be on the record, non-firing ones included; a report "
-            "missing declared cells has dropped hypotheses from the search burden it declares"
-        )
+    else:
+        if n_att is not None and len(cells) != n_att:
+            unmet.append(
+                f"cells holds {len(cells)} entr(ies) but n_hypotheses_attempted={n_att} — every "
+                "declared combo × horizon must be on the record, non-firing ones included; a "
+                "report missing declared cells has dropped hypotheses from the search burden it "
+                "declares"
+            )
+        # An assignment's identity is its sorted items — a total order over string keys, which
+        # never compares the values.
+        first: dict[str, int] = {}
+        for i, cell in enumerate(cells):
+            params = _str_keyed(_as_dict(cell).get("params"))
+            if params is None:
+                continue
+            key = repr(sorted(params.items()))
+            if key in first:
+                unmet.append(
+                    f"cells[{first[key]}] and cells[{i}] name the same params {params!r} — one "
+                    "declared hypothesis on the record twice stands in for one that is missing; "
+                    "drifted input"
+                )
+            else:
+                first[key] = i
     observed = {
         "statistics_version": stats_v,
         "gate_evidence_basis": basis,

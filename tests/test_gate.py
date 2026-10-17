@@ -160,6 +160,11 @@ def _cell(
     return c
 
 
+def _grid(n: int) -> list[dict]:
+    """``n`` reconciling cells naming ``n`` distinct assignments — a declared grid."""
+    return [_cell(params={"zscore_window": w, "horizon": 21}) for w in range(n)]
+
+
 def _sources(**over) -> dict:
     """One clean per-source availability panel: every raw decision leaf the entry tree reads is
     available across the whole evaluated interval."""
@@ -630,10 +635,27 @@ def test_evidence_complete_requires_every_declared_cell_on_the_record():
     ]
     assert not check.met
     assert "n_hypotheses_attempted=4" in check.detail
-    check = _run(evaluate_gate(_summary(cells=[_cell(), _cell()], n_hypotheses_attempted=1)))[
+    check = _run(evaluate_gate(_summary(cells=_grid(2), n_hypotheses_attempted=1)))[
         "evidence_complete"
     ]
     assert not check.met
+    assert "cells holds 2 entr(ies) but n_hypotheses_attempted=1" in check.detail
+
+
+@pytest.mark.parametrize("params", [{"zscore_window": 20, "horizon": 21}, {}])
+def test_evidence_complete_refuses_a_declared_cell_on_the_record_twice(params):
+    # The review's record: a two-cell grid holding one cell twice is the right size, and every
+    # check met — a declared hypothesis missing behind a copy of another. Two cells naming the
+    # same params are one hypothesis, whatever else they carry.
+    cells = [_cell(params=params), _cell(params=dict(params), n=50), _cell(params={"horizon": 5})]
+    report = evaluate_gate(_summary(cells=cells, n_hypotheses_attempted=3))
+    check = _run(report)["evidence_complete"]
+    assert not check.met
+    assert "cells[0] and cells[1] name the same params" in check.detail
+    assert report.to_dict()["n_met"] == 0
+    assert _run(evaluate_gate(_summary(cells=_grid(3), n_hypotheses_attempted=3)))[
+        "evidence_complete"
+    ].met
 
 
 def test_evidence_complete_requires_a_sources_panel_covering_the_regime():
@@ -947,11 +969,11 @@ def test_search_cap_applies_to_every_thesis():
 def test_search_cap_gates_the_declared_grid():
     # The declared grid is the honest search burden: combos that never fired still count, and it
     # is the ONLY multiplicity input this policy carries.
-    at_cap = _summary(cells=[_cell()] * 64, n_hypotheses_attempted=64)
+    at_cap = _summary(cells=_grid(64), n_hypotheses_attempted=64)
     report = evaluate_gate(at_cap)
     assert _run(report)["search_cap"].met  # boundary inclusive
     assert report.to_dict()["n_met"] == 64
-    over = _summary(cells=[_cell()] * 65, n_hypotheses_attempted=65)
+    over = _summary(cells=_grid(65), n_hypotheses_attempted=65)
     report = evaluate_gate(over)
     check = _run(report)["search_cap"]
     assert not check.met
@@ -973,7 +995,7 @@ def test_search_cap_not_disableable_by_construction():
 
 
 def test_a_stricter_search_cap_binds():
-    s = _summary(cells=[_cell()] * 9, n_hypotheses_attempted=9)
+    s = _summary(cells=_grid(9), n_hypotheses_attempted=9)
     report = evaluate_gate(s, GateThresholds(thesis_max_hypotheses=8))
     assert not _run(report)["search_cap"].met
     assert report.to_dict()["n_met"] == 0

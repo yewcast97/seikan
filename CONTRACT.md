@@ -496,9 +496,10 @@ a `diff` outcome refuses as drifted input: DSL validation refuses both upstream,
 re-refuses rather than trusts) —
 countable `n_bars` and
 `n_hypotheses_attempted` ≥ 1, a string-keyed `sources` panel covering the targets EXACTLY, and a
-`cells` list holding EXACTLY `n_hypotheses_attempted` entries — a report short of the declared
-grid has dropped hypotheses from the search burden it declares, which is drifted input, not
-evidence); `source_coverage` (the fail-closed availability contract over the RAW decision inputs,
+`cells` list holding EXACTLY `n_hypotheses_attempted` entries, no two naming the same `params` —
+a report short of the declared grid has dropped hypotheses from the search burden it declares,
+and one holding a cell twice stands one in for a missing hypothesis at the right count (every
+check met on the review's copy), which is drifted input, not evidence); `source_coverage` (the fail-closed availability contract over the RAW decision inputs,
 run-level because it is combo-independent: per target `sources.n_missing == 0` — every leaf the
 entry tree reads (`Field`/`External`/`DaysSince`, plus `native:<feed>` for a feed a `Native` node
 reads on its own clock — every print, so a NaN print absorbed between two bars is a hole the
@@ -1110,7 +1111,7 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   reconstruction at entry, so a mutated or loosened object cannot bend the checklist at the library
   boundary). The policy contract: stamped evidence verification (`statistics_version` +
   `gate_evidence_basis == "full_sample"` + a readable `target_mode` stamp — the rubric selector,
-  refusing fail-closed when missing — + an exactly-sized `cells` panel + a string-keyed
+  refusing fail-closed when missing — + an exactly-sized `cells` panel of distinct `params` + a string-keyed
   `sources` panel), fail-closed missingness on BOTH sides (outcomes via `outcome_coverage` —
   end-of-data `open` allowed, in-bounds holes refused — and decisions via the pooled
   `signal_coverage` plus the run-level `source_coverage`; per-target in BOTH modes), support

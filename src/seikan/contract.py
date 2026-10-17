@@ -41,7 +41,8 @@ METRIC_ROLES: dict[str, JsonValue] = {
             "input)",
             "n_hypotheses_attempted",
             "n_bars",
-            "cells (a list with len(cells) == n_hypotheses_attempted)",
+            "cells (a list with len(cells) == n_hypotheses_attempted, no two cells[*].params "
+            "the same)",
             "sources (string-keyed, covering targets exactly)",
         ],
         "source_coverage": [
@@ -446,10 +447,11 @@ METRIC_ROLES_DOC: dict[str, JsonValue] = {
         "input (validation refuses both upstream; the gate re-refuses, never trusts) — the "
         "geometry and declared grid must be "
         "countable and at least one, the sources panel must be string-keyed and cover the regime "
-        "EXACTLY, and cells must hold EXACTLY n_hypotheses_attempted entries. That last one is "
-        "this report's honesty invariant: the panel carries one entry per declared combo × "
-        "horizon INCLUDING those that never fired, so a report short of the declared grid has "
-        "dropped hypotheses from the search burden it declares — drifted input, not evidence)",
+        "EXACTLY, and cells must hold EXACTLY n_hypotheses_attempted entries, no two naming the "
+        "same params. That last one is this report's honesty invariant: the panel carries one "
+        "entry per declared combo × horizon INCLUDING those that never fired, so a report short "
+        "of the declared grid has dropped hypotheses from the search burden it declares, and one "
+        "holding a cell twice has one missing behind the copy — drifted input, not evidence)",
         "sources[*].{n_bars,n_missing} + sources[*].by_source[*].n_missing (source_coverage — "
         "the fail-closed availability contract over the RAW decision inputs, run-level because "
         "it is combo-independent: the entry tree's leaves (Field/External/DaysSince, and the "
@@ -1511,10 +1513,11 @@ GATE_CONTRACT_DOC: dict[str, JsonValue] = {
             "are countable and "
             ">= 1; the sources "
             "panel is string-keyed and covers the target set EXACTLY; and cells is a list "
-            "holding EXACTLY n_hypotheses_attempted entries — every declared combo × horizon on "
-            "the record, non-firing ones included, because a report missing declared cells has "
-            "dropped hypotheses from the search burden it declares. NaN/±inf/non-integral reads "
-            "refuse"
+            "holding EXACTLY n_hypotheses_attempted entries, no two naming the same params — "
+            "every declared combo × horizon on the record once, non-firing ones included, "
+            "because a report missing declared cells (or holding one twice in another's place) "
+            "has dropped hypotheses from the search burden it declares. NaN/±inf/non-integral "
+            "reads refuse"
         ),
         "source_coverage": (
             "fail-closed availability contract over the RAW decision inputs, run-level because "

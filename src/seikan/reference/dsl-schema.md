@@ -1363,8 +1363,9 @@ complete statistics are still in `summary.cells[i]` — a checklist result never
   `diff` outcome refuses as drifted input (validation refuses both upstream; the gate re-refuses,
   never trusts) — string-typed targets, countable `n_bars`/`n_hypotheses_attempted`), a
   string-keyed `sources` panel covering the targets EXACTLY, and a `cells` panel holding
-  EXACTLY the declared grid. A report short of `n_hypotheses_attempted` cells has dropped
-  hypotheses from the search burden it declares, which is drifted input, not evidence.
+  EXACTLY the declared grid, no two cells naming the same `params`. A report short of
+  `n_hypotheses_attempted` cells has dropped hypotheses from the search burden it declares, and
+  one holding a cell twice has one missing behind the copy — drifted input, not evidence.
 - `source_coverage` — fail-closed availability over the RAW decision inputs (`summary.sources`):
   per target `n_missing == 0` for every leaf the entry tree reads (a price field, an external feed,
   a `days_since` age — and, for a feed a `native` node reads on its own clock, its prints:
