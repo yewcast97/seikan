@@ -4118,6 +4118,40 @@ def test_cscv_split_variance_merges_the_block_moments_at_any_level():
         assert got == pytest.approx(float(mean) / math.sqrt(var), rel=1e-12)
 
 
+def test_cscv_split_score_reads_each_blocks_spread_at_its_own_level():
+    # Blocks 0-1 alternate 0 and 2**-56, blocks 2-3 sit at 1.0 / 1.2. Shifted by the whole
+    # column's mean (≈ 0.55), every tiny row read −0.55: the split over blocks {0, 1} had a
+    # variance of exactly 0 and scored NaN where its Sharpe is √(19/20). About each block's own
+    # offset the split's score reads its own rows alone — bit-identical whether the held-out
+    # blocks sit at 1 or at 2**-56.
+    tiny = np.array([0.0, 2.0**-56] * 10)
+    b = np.repeat(np.arange(4), 10)
+    beside_level = np.concatenate([tiny, np.array([1.0, 1.2] * 10)])
+    beside_tiny = np.concatenate([tiny, tiny])
+    scores = [
+        _split_scores(*_split_tensors(r, b), np.array([0, 1]))[0]
+        for r in (beside_level, beside_tiny)
+    ]
+    assert scores[0] == scores[1] == pytest.approx(math.sqrt(19 / 20))
+    # the review's grid through cscv_pbo: two alternating-bar candidates over a column whose first
+    # half alternates 0 / 2**-56 pairwise and whose second half sits at 1 / 1.2 — the two splits
+    # drawn from the first half alone went unscored (68 of 70); every split scores now
+    T = 176
+    half = np.arange(T) < T // 2
+    fwd = np.where(
+        half,
+        np.tile([0.0, 0.0, 2.0**-56, 2.0**-56], T // 4),
+        np.tile([1.0, 1.0, 1.2, 1.2], T // 4),
+    )
+    cells = []
+    for k in range(2):
+        m = np.zeros(T)
+        m[k : T - 2 : 2] = 1.0
+        cells.append({"key": (k, "t"), "mask_col": m, "fwd_col": fwd, "h": 1})
+    out = cscv_pbo(cells, T, ["t"], n_combos_declared=2)
+    assert out["reason"] is None and out["n_splits"] == out["n_splits_attempted"] == 70
+
+
 def test_cscv_basket_absent_member_cannot_widen_an_exact_constant_split():
     # The same near-level fixture through cscv_pbo, combo 0's member B absent: it adds no rows,
     # so every within-half split stays exactly constant.

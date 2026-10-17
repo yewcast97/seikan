@@ -912,11 +912,15 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   split's mean is its rows' exactly rounded sum over their count, one `math.fsum` over its
   blocks' exact parts — rebuilt from the column's mean, an exact 0 read −2.6e-18 and two
   candidates cycling through ±0.3 read `pbo` 2/70 and `prob_oos_loss` 1/70 for 1/70 and 0 —
-  and its block moments are exactly rounded sums (a column's returns about its exactly rounded
-  mean, each block's deviations from the block's mean squared), the same doubles in any row
+  and its block moments are exactly rounded sums (each block's returns about its OWN range
+  midpoint — about the column's mean, a block alternating 0 and 2**-56 beside blocks at 1 read
+  every shift as that mean's ulp, a variance of 0 and NaN for a Sharpe of √(19/20), two of a
+  grid's 70 splits unscored — each block's deviations from the block's mean squared), the same
+  doubles in any row
   order: two candidates holding the same returns in every block, in other orders, ranked apart
   by row-order rounding (`pbo` 0.571 for a grid of full ties). A split's variance merges its
-  blocks' moments (`Σ m2_b + Σ n_b·(m_b − m)²`, every term a square, ordinary arithmetic). The HAC's per-bar deviation
+  blocks' moments in the split's own frame, its range midpoint (`Σ m2_b + Σ n_b·(m_b − m)²`,
+  every term a square, ordinary arithmetic). The HAC's per-bar deviation
   sums are exact about the pool's EXACT mean, each rounded once (the returns read as integers over
   one power-of-two denominator), so a bar at the mean reads 0 and a pool and its translate read
   one `hac_se`: rounded per row about the pool's range midpoint, three members alternating

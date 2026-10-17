@@ -43,13 +43,13 @@ _PBO_BLOCK_FALLBACKS = (6, 4)
 
 class _Column(NamedTuple):
     """One scored column's per-block accumulators over its kept rows: ``moments`` (3, S) — the
-    row counts, the exact block sums of the rows' shifts from the column's exactly rounded mean,
-    and the exact block sums of those shifts' squared deviations from their block's mean (each
-    block's centered second moment) — ``extrema`` (2, S) the per-block ``(min, max)`` (``+inf`` /
-    ``-inf`` on an empty block: a split's pool is EXACTLY constant iff its chosen blocks' min
-    equals their max), and ``sums`` (S, J) each block's exact row sum times ``scale``, as exact
-    parts (``_pools.parts_table``). Reducing them over a split's blocks makes its score a pure
-    arithmetic reduction (:func:`_split_scores`)."""
+    row counts, the exact block sums of the rows' shifts from the block's own offset
+    (:func:`_offsets`, off its extrema), and the exact block sums of those shifts' squared
+    deviations from their block's mean (each block's centered second moment) — ``extrema`` (2, S)
+    the per-block ``(min, max)`` (``+inf`` / ``-inf`` on an empty block: a split's pool is EXACTLY
+    constant iff its chosen blocks' min equals their max), and ``sums`` (S, J) each block's exact
+    row sum times ``scale``, as exact parts (``_pools.parts_table``). Reducing them over a split's
+    blocks makes its score a pure arithmetic reduction (:func:`_split_scores`)."""
 
     moments: np.ndarray
     extrema: np.ndarray
@@ -68,25 +68,39 @@ def _kept_rows(cell: ReliabilityCell, edges: np.ndarray, off: int) -> tuple[np.n
     return t[keep], b[keep]
 
 
+def _offsets(lo: np.ndarray, hi: np.ndarray) -> np.ndarray:
+    """Each pool's offset — the midpoint of its range ``(lo, hi)``, the rule of
+    :func:`~seikan.numeric.midrange` over arrays (the centre the pools' ddof=1 std and the kernels'
+    cross-sections take): a value's deviation from it is exact wherever the pool lies within a
+    factor of two of it. NaN on an empty block's ``(+inf, −inf)``."""
+    out: np.ndarray = hi / 2.0 + lo / 2.0
+    return out
+
+
 def _column(b: np.ndarray, r: np.ndarray, parts: np.ndarray, scale: int, s: int) -> _Column:
     """The :class:`_Column` over rows in blocks ``b`` with returns ``r``, whose rows of exact
     ``parts`` sum to ``scale`` times the rows' sum: each row's own return over 1, or on a
     ``cross_mean`` grid the rows' bar numerators over the member count
-    (``_pools.BarNumerators.at``). The second moments are two-pass — the returns shifted by the
-    column's exactly rounded mean, each block's shifts about their own mean — so the merge over a
-    split's blocks runs centered (level-safe). A shift, a deviation or a square past the double
+    (``_pools.BarNumerators.at``). The second moments are two-pass about each BLOCK's own offset
+    (:func:`_offsets`) — the block's shifts are exact wherever it lies within a factor of two of
+    it, then each block's shifts about their own mean — and :func:`_split_scores` merges the
+    blocks in the split's own frame, so a block keeps its spread whatever level the column's
+    other blocks sit at. Shifted by the whole COLUMN's mean instead, a block far below the
+    column's level lost its spread to that mean's ulp: one alternating 0 and 2**-56 beside blocks
+    at 1 read every shift as −0.55, a variance of 0 and a split Sharpe of NaN where it is √(19/20),
+    and two of a grid's 70 splits went unscored. A shift, a deviation or a square past the double
     range is no input to a score: :func:`_split_scores` nulls every split it reaches
     (``_representable``), so it overflows silently here."""
     n = np.bincount(b, minlength=s).astype(float)
-    with np.errstate(over="ignore", invalid="ignore"):
-        shift = r - exact_mean(r)
-        s1 = _block_sums(b, shift, s)
-        dev = shift - (s1 / np.maximum(n, 1.0))[b]
-        m2 = _block_sums(b, dev * dev, s)
     lo = np.full(s, np.inf)
     hi = np.full(s, -np.inf)
     np.minimum.at(lo, b, r)
     np.maximum.at(hi, b, r)
+    with np.errstate(over="ignore", invalid="ignore"):
+        shift = r - _offsets(lo, hi)[b]
+        s1 = _block_sums(b, shift, s)
+        dev = shift - (s1 / np.maximum(n, 1.0))[b]
+        m2 = _block_sums(b, dev * dev, s)
     return _Column(
         np.stack((n, s1, m2)),
         np.stack((lo, hi)),
@@ -153,9 +167,14 @@ def _split_scores(
     block's squared deviations about its own mean, then each block mean's about the split's —
     every term a square, so nothing cancels at any level: the raw ``Σx² − n·mean²`` form read a
     diff outcome at level 1e9 as pure rounding noise, and its column-shifted twin refused as
-    residue every split inside one regime of a column at ±0.01 with a 1e-9 spread. The second
-    moments read the rows' own returns — a row's excess is its own, only its bar's SUM is exact
-    — so the Sharpe is the exact mean over the rows' sd.
+    residue every split inside one regime of a column at ±0.01 with a 1e-9 spread. The block
+    means are placed in the split's OWN frame — each block's offset (its range midpoint,
+    :func:`_offsets`) less the split's, exact wherever the split lies within a factor of two of
+    its midpoint, plus the block's mean shift — never in the column's: shifted by the column's
+    mean, a block at 2**-56 beside blocks at 1 read its every shift as that mean's ulp, a variance
+    of 0 and NaN for √(19/20), and a grid scored 68 of its 70 splits. The second moments read the
+    rows' own returns — a row's excess is its own, only its bar's SUM is exact — so the Sharpe is
+    the exact mean over the rows' sd.
 
     A split pool with no usable dispersion scores NaN: one whose chosen blocks' min equals their
     max is EXACTLY constant, and one whose largest deviation from its mean is within
@@ -168,19 +187,21 @@ def _split_scores(
     lost the bits the Sharpe divides by.
     """
     n_b, s1_b, m2_b = (moments[:, :, i][:, :, block_idx] for i in range(3))  # (Q, C, B) each
-    lo_g = extrema[:, :, 0][:, :, block_idx].min(axis=2)  # (Q, C)
-    hi_g = extrema[:, :, 1][:, :, block_idx].max(axis=2)
+    lo_b, hi_b = (extrema[:, :, i][:, :, block_idx] for i in range(2))  # (Q, C, B) each
+    lo_g, hi_g = lo_b.min(axis=2), hi_b.max(axis=2)  # (Q, C)
     chosen = sums[:, :, block_idx].reshape(scales.size, -1)  # each column's chosen parts
     total = np.array([exact_sum(v) for v in chosen]).reshape(scales.shape)
     eps = float(np.finfo(np.float64).eps)
-    # Moments past the double range (returns past ~1e154 square out of it) and splits with fewer
-    # than two rows: `_representable` and the count gate decide every such split — an expected
-    # input, never a warning.
+    # Moments past the double range (returns past ~1e154 square out of it), an empty block's
+    # offset (inf − inf, masked below) and splits with fewer than two rows: `_representable` and
+    # the count gate decide every such split — an expected input, never a warning.
     with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
         n_g = n_b.sum(axis=2)
         mean = total / (scales * n_g)
-        m_b = s1_b / np.maximum(n_b, 1.0)
-        m = s1_b.sum(axis=2) / n_g
+        # each block's mean in the split's own frame (see the docstring); 0 on an empty block
+        frame = _offsets(lo_b, hi_b) - _offsets(lo_g, hi_g)[:, :, None]
+        m_b = np.where(n_b > 0, frame + s1_b / np.maximum(n_b, 1.0), 0.0)
+        m = (n_b * m_b).sum(axis=2) / n_g
         ss_g = m2_b.sum(axis=2) + (n_b * (m_b - m[:, :, None]) ** 2).sum(axis=2)
         var_g = ss_g / (n_g - 1.0)
         scoreable_g = (n_g >= 2) & _disperses(lo_g, hi_g, mean, eps) & _representable(mean, var_g)
