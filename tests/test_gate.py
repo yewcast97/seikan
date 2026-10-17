@@ -642,12 +642,25 @@ def test_evidence_complete_requires_every_declared_cell_on_the_record():
     assert "cells holds 2 entr(ies) but n_hypotheses_attempted=1" in check.detail
 
 
-@pytest.mark.parametrize("params", [{"zscore_window": 20, "horizon": 21}, {}])
-def test_evidence_complete_refuses_a_declared_cell_on_the_record_twice(params):
+_ASSIGNMENT = {"zscore_window": 20, "horizon": 21}
+
+
+@pytest.mark.parametrize(
+    ("params", "copy"),
+    [
+        (_ASSIGNMENT, dict(_ASSIGNMENT)),
+        ({}, {}),
+        # the second review's spelling: 1 and 1.0 are one value, and the identity read them apart
+        (_ASSIGNMENT, {"zscore_window": 20.0, "horizon": 21.0}),
+        (_ASSIGNMENT, {"horizon": "21", "zscore_window": 20}),
+    ],
+)
+def test_evidence_complete_refuses_a_declared_cell_on_the_record_twice(params, copy):
     # The review's record: a two-cell grid holding one cell twice is the right size, and every
     # check met — a declared hypothesis missing behind a copy of another. Two cells naming the
-    # same params are one hypothesis, whatever else they carry.
-    cells = [_cell(params=params), _cell(params=dict(params), n=50), _cell(params={"horizon": 5})]
+    # same params are one hypothesis, whatever else they carry and however the values are
+    # spelled (the gate reads 1, 1.0 and "1" as one count everywhere else).
+    cells = [_cell(params=params), _cell(params=copy, n=50), _cell(params={"horizon": 5})]
     report = evaluate_gate(_summary(cells=cells, n_hypotheses_attempted=3))
     check = _run(report)["evidence_complete"]
     assert not check.met

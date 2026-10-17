@@ -11,11 +11,24 @@ from seikan.gate._read import (
     _detail,
     _int,
     _mode,
+    _num,
     _str_keyed,
     _targets,
 )
 from seikan.settings import GateThresholds
 from seikan.types import OUTCOME_KINDS, TARGET_MODES
+
+
+def _assignment(params: dict[str, object]) -> tuple[tuple[str, object], ...]:
+    """A parameter assignment's identity: its items in key order, each value read as this gate
+    reads every number (:func:`_num` — ``1``, ``1.0`` and ``"1"`` are one horizon, as the DSL's
+    sweep rule compares them) and otherwise by its repr. The keys are unique, so the sort never
+    compares two values. Rendered instead (``repr(sorted(params.items()))``), ``{"horizon": 1}``
+    and ``{"horizon": 1.0}`` were two assignments, and a declared cell copied over another under
+    that spelling kept the grid's apparent completeness."""
+    return tuple(
+        sorted((k, n if (n := _num(v)) is not None else repr(v)) for k, v in params.items())
+    )
 
 
 def _check_evidence_complete(s: Mapping[str, object], t: GateThresholds) -> GateCheck:
@@ -179,14 +192,12 @@ def _check_evidence_complete(s: Mapping[str, object], t: GateThresholds) -> Gate
                 "report missing declared cells has dropped hypotheses from the search burden it "
                 "declares"
             )
-        # An assignment's identity is its sorted items — a total order over string keys, which
-        # never compares the values.
-        first: dict[str, int] = {}
+        first: dict[tuple[tuple[str, object], ...], int] = {}
         for i, cell in enumerate(cells):
             params = _str_keyed(_as_dict(cell).get("params"))
             if params is None:
                 continue
-            key = repr(sorted(params.items()))
+            key = _assignment(params)
             if key in first:
                 unmet.append(
                     f"cells[{first[key]}] and cells[{i}] name the same params {params!r} — one "

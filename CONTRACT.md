@@ -497,7 +497,9 @@ a `diff` outcome refuses as drifted input: DSL validation refuses both upstream,
 re-refuses rather than trusts) —
 countable `n_bars` and
 `n_hypotheses_attempted` ≥ 1, a string-keyed `sources` panel covering the targets EXACTLY, and a
-`cells` list holding EXACTLY `n_hypotheses_attempted` entries, no two naming the same `params` —
+`cells` list holding EXACTLY `n_hypotheses_attempted` entries, no two naming the same `params`
+(values compared as the gate reads numbers — `1`, `1.0` and `"1"` are one value; rendered, the
+spelling kept a copied cell distinct) —
 a report short of the declared grid has dropped hypotheses from the search burden it declares,
 and one holding a cell twice stands one in for a missing hypothesis at the right count (every
 check met on the review's copy), which is drifted input, not evidence); `source_coverage` (the fail-closed availability contract over the RAW decision inputs,
