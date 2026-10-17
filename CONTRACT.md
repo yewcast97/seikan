@@ -836,7 +836,17 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   either: an even median's middle pair (`rolling_agg` / `cross_agg` `median`, and `mad`) meets at
   numpy's own `(lo + hi) / 2` wherever that is finite, else at the halves' sum — exact there — so
   levels past half the double range read their median (a constant window its value and a MAD of
-  0.0), never the NaN their overflowed sum read beside a mean of 1e308.
+  0.0), never the NaN their overflowed sum read beside a mean of 1e308. Nor is a cross-section's
+  exact sum or mean: a row whose largest member reaches `2**996` is summed in a frame scaled by
+  `2**-28`, chosen off the members' magnitudes, so `cross_agg` `mean`, the `cross_mean` bench leg
+  and every exact deviation read the same in any member order (summed directly,
+  `[1e308, 1e308, −1e308, −1e308]` read NaN in that order and 0 in another), and each quotient
+  is divided back in the input frame wherever its numerator is representable there; a row that
+  frame cannot hold exactly — a member below `2**-1046` beside one past `2**996` — is NaN,
+  undecidable, never a value read off a rounded member (`cross_demean` read
+  `[1e308, −1e308, 1e-320, 0]`'s last two deviations, 7.5e-321 and −2.5e-321, as 0.0). A
+  window's running sum (`rolling_agg` `mean`) is NaN where it leaves the range on the way, in the
+  order its bars arrived.
 - **Zero dispersion is exact.** The floating-point mean of a constant DECIMAL series is not the
   constant, and its rounding residue (~1e-17) used to read as dispersion — a z-score of exactly
   ±1, a correlation of 1, a flat feed drifting off its own EMA, an EW z-score locked at
@@ -905,8 +915,8 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   1.0000000000000002 — and `mass_hhi` / `effective_n_clusters` are the correctly rounded values
   of exact arithmetic over the cluster masses, the latter within `[1, n_clusters]`.
   The means a DECISION reads are exactly rounded the same way: `rolling_agg` and `cross_agg` `mean`,
-  and the `cross_mean` bench leg (`nb.cross_means`), are the window's or the bar's exactly rounded
-  sum over its count, in any bar or member order (summed pairwise, `[1, −2**-54, −1, 2**-54, 0]`
+  and the `cross_mean` bench leg (`nb.cross_means`, `cross_agg`'s own kernel), are the window's or
+  the bar's exactly rounded sum over its count, in any bar or member order (summed pairwise, `[1, −2**-54, −1, 2**-54, 0]`
   read a mean of 1.1e-17 in one member order and 0 in another, so `cross_agg(x, mean) > 0` fired on
   the order the targets were declared in); a deviation from a cross-section's mean that is READ —
   `cross_demean` and the `cross_mean` excess — is the member's exact deviation, its numerator

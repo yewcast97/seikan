@@ -445,7 +445,10 @@ def _cross_value(vals: list[float], agg: str) -> float:
     """One cross-section's aggregate (shared by the plain and grouped references)."""
     constant = len(set(vals)) == 1
     if agg == "mean":
-        return vals[0] if constant else _exact_sum(vals) / len(vals)
+        if constant:
+            return vals[0]
+        framed = _framed(vals)
+        return math.nan if framed is None else _frame_quotient(sum(framed[0]), framed)
     if agg == "median":
         return _sorted_median(vals)
     if agg == "std":
@@ -474,14 +477,34 @@ def _row_variance(vals: list[float]) -> float:
     return sum((v - mu) * (v - mu) for v in y) / len(vals)
 
 
+def _framed(vals: list[float]) -> tuple[list[Fraction], float] | None:
+    """A cross-section's members, exactly, in its frame — scaled by ``2**-28`` where one reaches
+    ``2**996`` — beside the frame's scale; None where the frame cannot hold a member exactly."""
+    s = 2.0**-28 if max(abs(x) for x in vals) >= 2.0**996 else 1.0
+    if any(x * s / s != x for x in vals):
+        return None
+    return [Fraction(x * s) for x in vals], s
+
+
+def _frame_quotient(num: Fraction, framed: tuple[list[Fraction], float]) -> float:
+    """An exact numerator in the frame, rounded once there, over the member count — divided in
+    the input frame wherever the rounded numerator is representable there, else inside the frame
+    and scaled back."""
+    xs, s = framed
+    v = float(num)
+    return v / s / len(xs) if math.isfinite(v / s) else v / len(xs) / s
+
+
 def _row_exact_deviations(vals: list[float]) -> list[float]:
     """Each member's deviation from the cross-section's mean: its exact numerator ``k·x − S``
-    rounded once, over ``k`` — in a frame scaled by ``2**-28`` where a member reaches ``2**996``,
-    scaled back (``±inf`` past the double range)."""
-    k = len(vals)
-    s = 2.0**-28 if max(abs(x) for x in vals) >= 2.0**996 else 1.0
-    total = sum(Fraction(x * s) for x in vals)
-    return [float(k * Fraction(x * s) - total) / k / s for x in vals]
+    rounded once, over ``k`` (:func:`_frame_quotient`; ``±inf`` past the double range) — NaN
+    throughout where the row's frame cannot hold a member exactly."""
+    framed = _framed(vals)
+    if framed is None:
+        return [math.nan] * len(vals)
+    xs = framed[0]
+    total = sum(xs)
+    return [_frame_quotient(len(xs) * x - total, framed) for x in xs]
 
 
 def rolling_corr_ref(left: np.ndarray, right: np.ndarray, window: int) -> np.ndarray:

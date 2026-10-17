@@ -751,6 +751,46 @@ def test_cross_means_are_exactly_rounded_sums_over_the_count():
     assert nb.cross_means(huge, np.isfinite(huge))[0] == 1.7e308
 
 
+def test_a_cross_sections_exact_sum_is_read_in_any_member_order():
+    # Summed directly, [1e308, 1e308, −1e308, −1e308] left the double range on the way in this
+    # order: `cross_agg(x, mean)` read NaN, beside 0.0 in another order and off the bench leg. A
+    # row with a member past 2**996 is summed in a frame scaled by 2**-28 — the same frame in any
+    # member order — so every order reads the exact sum.
+    row = np.array([1e308, 1e308, -1e308, -1e308])
+    for perm in itertools.permutations(range(4)):
+        r = row[None, list(perm)]
+        f = np.isfinite(r)
+        assert nb._row_exact_sums(r, f)[0] == 0.0 and nb.cross_means(r, f)[0] == 0.0
+        np.testing.assert_array_equal(nb.cross_agg_apply_nb(r, "mean", 2), np.zeros((1, 4)))
+    # a mean whose sum is past the range: `cross_agg`'s is the bench leg's (it read NaN)
+    wide = np.array([[1e308, 1.5e308, 1e308, 1.5e308]])
+    assert np.isnan(nb._row_exact_sums(wide, np.isfinite(wide))[0])
+    np.testing.assert_array_equal(nb.cross_agg_apply_nb(wide, "mean", 2), np.full((1, 4), 1.25e308))
+    # a member the frame cannot hold exactly (below 2**-1046) leaves the row undecidable in every
+    # order — `cross_agg` read 2e-321 in one, NaN in another, and the bench leg 0.0
+    tiny = np.array([1e308, 1e308, -1e308, -1e308, 1e-320])
+    for perm in itertools.permutations(range(5)):
+        r = tiny[None, list(perm)]
+        f = np.isfinite(r)
+        assert np.isnan(nb._row_exact_sums(r, f)[0]) and np.isnan(nb.cross_means(r, f)[0])
+        assert np.isnan(nb.cross_agg_apply_nb(r, "mean", 2)).all()
+
+
+def test_cross_demean_reads_no_deviation_the_frame_rounded():
+    # Summed in the frame scaled by 2**-28, [1e308, −1e308, 1e-320, 0] rounded its small members
+    # and their deviations, 7.5e-321 and −2.5e-321, read a decided 0.0: `x == 0 AND
+    # cross_demean(x) >= 0` held for a member below the mean. The frame cannot hold 1e-320
+    # exactly, so the row is undecidable.
+    assert np.isnan(nb.cross_demean_apply_nb(np.array([[1e308, -1e308, 1e-320, 0.0]]), 2)).all()
+    # A frame that holds every member divides back in the input frame: dividing inside it, the
+    # deviations 4·2**-1046 / 5 and −2**-1046 / 5 read 1.33e-315 for 1.06e-315 and −0.0.
+    row = [1e308, -1e308, 2.0**-1046, 0.0, 0.0]
+    total = sum(map(Fraction, row))
+    got = nb.cross_demean_apply_nb(np.array([row]), 2)[0]
+    assert got[2:].tolist() == [float(Fraction(x) - total / 5) for x in row[2:]]
+    assert got[3] < 0.0 and got[:2].tolist() == [1e308, -1e308]
+
+
 def test_cross_demean_is_each_members_exact_deviation():
     # The review's row sums to exactly 0, so its first member sits AT the mean — but the offset
     # subtraction rounded two members and the first demeaned to 2.2e-17: `x == 0 AND

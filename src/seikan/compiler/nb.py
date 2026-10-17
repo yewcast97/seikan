@@ -16,7 +16,7 @@ Two implementation styles, **no vectorbt**:
   tradable signal defines — and ``event_agg``, the resettable running aggregate since it; the
   ``bars_since_event`` / ``event_value`` / ``mask`` reads off those are plain numpy), and the
   exact sums the decision-side means and deviations read (``_rolling_exact_sums``,
-  ``_row_exact_sums``, ``cross_deviations``).
+  ``_row_exact_sums``, ``cross_means``, ``cross_deviations``).
   These are scalar recurrences that don't vectorize; numba compiles the loop to machine code.
 
 The production surface is the 2D ``*_apply_nb`` form (rows × columns → rows × columns), applied per
@@ -97,8 +97,11 @@ from seikan.numeric import MIN_NORMAL, log_ratio_array
 # arrived: ``[1, −2**-54, −1, 2**-54, 0]`` sums to exactly 0 and its mean read 1.1e-17, so
 # ``cross_agg(x, mean) > 0`` fired on it — and read 0 after a permutation of the members, the
 # decision hanging on the order the targets were declared in. The mean has the exact sum's sign and
-# is 0.0 exactly where the sum is, in any member order; it is NaN where an intermediate sum leaves
-# the double range (members near it), as the direct form's overflow was.
+# is 0.0 exactly where the sum is, in any member order. A cross-section whose largest member reaches
+# ``2**996`` is summed in a frame scaled by ``2**-28`` (``_row_expansion``, chosen off the members'
+# magnitudes — the same in any order), and is NaN where that frame cannot hold a member exactly; a
+# window's running sum is NaN where it leaves the double range on the way (members near it), as the
+# direct form's overflow was.
 # The centre a window's variance is reduced about (``_window_moments``, ``_pair_moments``) stays the
 # direct two-pass form about the window's offset: no threshold compares against it, and the
 # moments, the correlation and the z-score read off it are known to the rounding of the window's
@@ -818,8 +821,9 @@ def cross_agg_apply_nb(
     cross-section itself, so every column carries it wherever at least ``max(min_valid, 2)`` targets
     are finite —
     a column whose own value is NaN still sees the group's aggregate. ``mean`` is the finite
-    members' exactly rounded sum over their count (the exact-means note above: 0.0 exactly where
-    they cancel, whatever order the targets were declared in); ``std`` is the population std
+    members' exactly rounded sum over their count, the ``cross_mean`` bench leg's
+    (:func:`cross_means`; the exact-means note above: 0.0 exactly where they cancel, whatever
+    order the targets were declared in); ``std`` is the population std
     (ddof=0, matching ``rolling_agg``); ``frac_positive`` counts finite values > 0. Inherently 2-D —
     a single column has no cross-section and returns all NaN."""
     a = np.asarray(arr, dtype=float)
@@ -833,9 +837,7 @@ def cross_agg_apply_nb(
     constant = _constant_rows(a, finite)
     with np.errstate(all="ignore"):
         if agg == "mean":
-            sums = _row_exact_sums(np.ascontiguousarray(a), np.ascontiguousarray(finite))
-            v = sums[:, None] / k
-            v = np.where(constant, np.where(finite, a, -np.inf).max(axis=1, keepdims=True), v)
+            v = cross_means(np.ascontiguousarray(a), np.ascontiguousarray(finite))[:, None]
         elif agg == "median":
             # NaN sorts last, so each row's k finite members lead its sorted copy; the middle
             # pair meets at the overflow-safe midpoint (``np.nanmedian`` bit for bit wherever
@@ -1463,39 +1465,75 @@ def _rolling_exact_sums(a: npt.NDArray[np.float64], window: int) -> npt.NDArray[
     return out
 
 
+#: Veltkamp's splitter for a double's 53 bits, ``2**27 + 1``: ``x = hi + lo`` with each half at
+#: most 26 significant bits, so its product with a member count below ``2**26`` is exact.
+_SPLITTER = 134217729.0
+#: From this magnitude a row's sum can leave the double range on the way, and a member's split or
+#: its product with the count can overflow — such a row is summed in a frame scaled by
+#: :data:`_SPLIT_DOWN` (:func:`_row_expansion`).
+_SPLIT_MAX = 2.0**996
+_SPLIT_DOWN = 2.0**-28
+
+
+@njit(cache=True)
+def _row_expansion(
+    v: npt.NDArray[np.float64], finite: npt.NDArray[np.bool_], p: npt.NDArray[np.float64]
+) -> tuple[npt.NDArray[np.float64], int, float, bool]:
+    """The exact sum of the row ``v``'s ``finite`` members as partials (:func:`_expansion_add`) in
+    the row's frame: ``(p, m, scale, over)``. A row whose largest member reaches ``2**996`` is
+    summed times ``scale = 2**-28`` — a frame read off the members' magnitudes, so the same in
+    any member order: summed directly, ``[1e308, 1e308, −1e308, −1e308]`` left the double range
+    on the way in this order and read 0 in another. ``over`` where a member marked finite is not
+    (a value lifted past the range), or where the frame cannot hold a member exactly
+    (``x · 2**-28`` rounds below ``2**-1046``): no sum, mean or deviation over the row is read
+    off a rounded member."""
+    scale = 1.0
+    for c in range(v.shape[0]):
+        if finite[c] and abs(v[c]) >= _SPLIT_MAX:
+            scale = _SPLIT_DOWN
+    m = 0
+    for c in range(v.shape[0]):
+        if finite[c]:
+            x = v[c] * scale
+            if not np.isfinite(x) or x / scale != v[c]:
+                return p, m, scale, True
+            p, m, over = _expansion_add(p, m, x)
+            if over:
+                return p, m, scale, True
+    return p, m, scale, False
+
+
+@njit(cache=True)
+def _frame_quotient(value: float, k: int, scale: float) -> float:
+    """``value`` — correctly rounded in the frame ``scale`` — over ``k``, in the input frame:
+    scaled back (exactly) and divided once wherever it is representable there, the direct
+    frame's one rounding; divided inside the frame and scaled back where it is not (a mean, or a
+    deviation, whose numerator is past the range). Divided inside the frame, a quotient below
+    ``2**-994`` rounded at the frame's subnormal grid: a deviation of −2**-1046 / 5 read −0.0."""
+    v = value / scale
+    if np.isfinite(v):
+        return v / k
+    return value / k / scale
+
+
 @njit(cache=True)
 def _row_exact_sums(
     a: npt.NDArray[np.float64], finite: npt.NDArray[np.bool_]
 ) -> npt.NDArray[np.float64]:
-    """``(rows,)``: the correctly rounded sum of each row's ``finite`` members — one expansion
-    (:func:`_expansion_add`) per row, 0.0 on an empty row; NaN where an intermediate sum leaves
-    the double range, or a member marked finite is not (a value lifted past it)."""
-    rows, cols = a.shape
+    """``(rows,)``: the correctly rounded sum of each row's ``finite`` members — one expansion per
+    row (:func:`_row_expansion`), in any member order — 0.0 on an empty row; NaN where the exact
+    sum leaves the double range, a member marked finite is not, or the row's frame cannot hold a
+    member exactly."""
+    rows = a.shape[0]
     out = np.full(rows, np.nan)
     p = np.empty(8)
     for r in range(rows):
-        m = 0
-        over = False
-        for c in range(cols):
-            if finite[r, c]:
-                v = a[r, c]
-                over = not np.isfinite(v)
-                if not over:
-                    p, m, over = _expansion_add(p, m, v)
-                if over:
-                    break
+        p, m, scale, over = _row_expansion(a[r], finite[r], p)
         if not over:
-            out[r] = _expansion_value(p, m)
+            s = _expansion_value(p, m) / scale
+            if np.isfinite(s):
+                out[r] = s
     return out
-
-
-#: Veltkamp's splitter for a double's 53 bits, ``2**27 + 1``: ``x = hi + lo`` with each half at
-#: most 26 significant bits, so its product with a member count below ``2**26`` is exact.
-_SPLITTER = 134217729.0
-#: From this magnitude a member's split, or its product with the count, can overflow — such a row
-#: is computed in a frame scaled by :data:`_SPLIT_DOWN` (:func:`cross_deviations`).
-_SPLIT_MAX = 2.0**996
-_SPLIT_DOWN = 2.0**-28
 
 
 @njit(cache=True)
@@ -1507,31 +1545,24 @@ def cross_deviations(
     EXACTLY (:func:`_expansion_add`, with ``k·x`` the products of ``x``'s two Veltkamp halves,
     each an exact double), rounded once and divided by ``k`` once: ``cross_demean``'s values and
     the runner's ``cross_mean`` excesses. A member AT the mean deviates by exactly 0.0, and every
-    deviation has the exact one's sign, whatever the members' order or magnitudes. A row whose
-    largest member reaches ``2**996`` (where the split or ``k·x`` can overflow) is computed in a
-    frame scaled by ``2**-28`` — exact save its members and deviations below ``2**-994``, whose
-    scaled bits round — and scaled back: a deviation past the double range is ``±inf`` there, for
-    the caller to test. NaN off the finite members, and on a row whose exact numerator leaves the
-    double range (none can at fewer than ``2**26`` members)."""
+    deviation is the exact one correctly rounded, whatever the members' order or magnitudes. A
+    row whose largest member reaches ``2**996`` (where the split or ``k·x`` can overflow) is
+    computed in :func:`_row_expansion`'s frame scaled by ``2**-28`` and divided back in the input
+    frame (:func:`_frame_quotient`); a deviation past the double range is ``±inf`` there, for the
+    caller to test. NaN off the finite members, on every member of a row whose frame cannot hold
+    one of them exactly — the frame rounded ``[1e308, −1e308, 1e-320, 0]``'s last two
+    deviations, 7.5e-321 and −2.5e-321, to a decided 0.0 — and on a row whose exact numerator
+    leaves the double range (none can at fewer than ``2**26`` members)."""
     rows, cols = a.shape
     out = np.full((rows, cols), np.nan)
     p = np.empty(8)
     q = np.empty(8)
     for r in range(rows):
         k = 0
-        big = 0.0
         for c in range(cols):
             if finite[r, c]:
                 k += 1
-                big = max(big, abs(a[r, c]))
-        scale = _SPLIT_DOWN if big >= _SPLIT_MAX else 1.0
-        m = 0
-        over = False
-        for c in range(cols):
-            if finite[r, c]:
-                p, m, over = _expansion_add(p, m, a[r, c] * scale)
-                if over:
-                    break
+        p, m, scale, over = _row_expansion(a[r], finite[r], p)
         if over:
             continue
         if q.shape[0] < p.shape[0]:
@@ -1548,7 +1579,7 @@ def cross_deviations(
             if not over:
                 q, n, over = _expansion_add(q, n, k * (x - hi))
             if not over:
-                out[r, c] = _expansion_value(q, n) / k / scale
+                out[r, c] = _frame_quotient(_expansion_value(q, n), k, scale)
     return out
 
 
@@ -1556,13 +1587,14 @@ def cross_deviations(
 def cross_means(
     a: npt.NDArray[np.float64], finite: npt.NDArray[np.bool_]
 ) -> npt.NDArray[np.float64]:
-    """``(rows,)``: each row's mean over its ``finite`` members — the runner's ``cross_mean``
-    bench leg, by ``cross_agg``'s ``mean`` rule: the exactly rounded sum over the count (0.0
-    exactly where the members cancel, the exact sum's sign otherwise, in any member order), and
-    a row whose members all share one value reads that value. A row whose largest member reaches
-    ``2**996`` is summed in :func:`cross_deviations`' frame scaled by ``2**-28`` and scaled back,
-    so a row of finite members never loses its mean to a sum past the double range. NaN on an
-    empty row."""
+    """``(rows,)``: each row's mean over its ``finite`` members — ``cross_agg``'s ``mean`` and the
+    runner's ``cross_mean`` bench leg: the exactly rounded sum over the count (0.0 exactly where
+    the members cancel, the exact sum's sign otherwise, in any member order), and a row whose
+    members all share one value reads that value. A row whose largest member reaches ``2**996``
+    is summed in :func:`_row_expansion`'s frame scaled by ``2**-28`` and divided back in the
+    input frame (:func:`_frame_quotient`), so a row of finite members never loses its mean to a
+    sum past the double range. NaN on an empty row and on one whose frame cannot hold a member
+    exactly."""
     rows, cols = a.shape
     out = np.full(rows, np.nan)
     p = np.empty(8)
@@ -1580,16 +1612,9 @@ def cross_means(
         if lo == hi:
             out[r] = hi
             continue
-        scale = _SPLIT_DOWN if max(hi, -lo) >= _SPLIT_MAX else 1.0
-        m = 0
-        over = False
-        for c in range(cols):
-            if finite[r, c]:
-                p, m, over = _expansion_add(p, m, a[r, c] * scale)
-                if over:
-                    break
+        p, m, scale, over = _row_expansion(a[r], finite[r], p)
         if not over:
-            out[r] = _expansion_value(p, m) / k / scale
+            out[r] = _frame_quotient(_expansion_value(p, m), k, scale)
     return out
 
 

@@ -364,8 +364,10 @@ in another.
 its numerator `k·x − S` summed exactly, rounded once over `k` — so a member at the mean reads
 exactly 0.0: about a rounded centre the first member of `[0, 1, 1, −1 − 2**-52, −1 + 2**-52]`
 demeaned to 2.2e-17, and `x == 0 AND cross_demean(x) > 0` fired. A
-mean whose running sum leaves the double range is NaN (undecidable, like an overflowed variance
-below). The centre a window's VARIANCE is taken about stays the direct two-pass form above, so a
+window's mean whose running sum leaves the double range on the way is NaN (undecidable, like an
+overflowed variance below); a cross-section with a member past `2**996` is summed in a frame
+scaled by `2**-28`, the same frame in any member order, and its mean and deviations are NaN
+(undecidable) only where that frame cannot hold a member exactly — one below `2**-1046`. The centre a window's VARIANCE is taken about stays the direct two-pass form above, so a
 `zscore` within the rounding of its window's spread of 0 can read 0 or the other sign.
 
 A window variance that OVERFLOWS (deviations past ~1.3e154, where `(x − mean) / inf` would read a
