@@ -536,7 +536,9 @@ horizon⌋)` (same-bar cross-member firings collapse in the greedy count, so the
 bound it), `pooled.n ≤ len(targets) × max(0, n_bars − 1 − horizon)` (each member fires at most once
 per bar and closes at most that many), and a `member_share.max_member_share_abs`
 that is a share is the largest of its `by_target` shares, string-keyed over the targets exactly
-(0.5 beside shares `{AAA: 1.0, BBB: 0.0}` met every check); a `pooled` key on a conjunction cell
+and summing to 1 within rounding — each share one rounded quotient of exact masses, so within
+2**-50 (0.5 beside shares `{AAA: 1.0, BBB: 0.0}` met every check, and so did 0.5 beside
+`{AAA: 0.5, BBB: 0.0}`, half the pool's mass gone from its own breakdown); a `pooled` key on a conjunction cell
 REFUSES — the runner writes pooled only in basket mode (absent, not null, on conjunction
 cells), so the configuration is the signature of a RESTAMPED basket and refusing it costs zero
 honest refusals (`evidence_complete` re-refuses `benchmark='cross_mean'` under a conjunction

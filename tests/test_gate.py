@@ -1884,6 +1884,28 @@ def test_a_basket_one_name_read_is_the_maximum_of_its_decomposition(by_target):
     assert report.cells[0].met is False
 
 
+def test_a_baskets_member_shares_conserve_the_pools_mass():
+    # The review's tamper one step on: shares {AAA: 0.5, BBB: 0.0} under a maximum of 0.5 agree
+    # with each other and met every check — half the pool's |return| mass gone from its own
+    # decomposition. Each share is one rounded quotient of exact masses, so the shares sum to 1
+    # within rounding: three thirds meet, a decomposition short of (or past) the mass refuses.
+    def _with(shares: dict[str, float]) -> dict:
+        targets = tuple(shares)
+        pooled = _pooled(
+            targets=targets,
+            n=42 * len(targets),
+            member_share={"by_target": shares, "max_member_share_abs": max(shares.values())},
+        )
+        return _basket(cells=[_basket_cell(targets=targets, pooled=pooled)], targets=targets)
+
+    check = _cell_checks(evaluate_gate(_with({"AAA": 0.5, "BBB": 0.0})))["cell_evidence"]
+    assert not check.met
+    assert "shares sum to 0.5" in check.detail
+    thirds = _cell_checks(evaluate_gate(_with(dict.fromkeys(("AAA", "BBB", "CCC"), 1 / 3))))
+    assert thirds["cell_evidence"].met
+    assert not _cell_checks(evaluate_gate(_with({"AAA": 0.6, "BBB": 0.6})))["cell_evidence"].met
+
+
 def test_a_massless_member_share_is_left_to_concentration():
     # A pool with no |return| mass carries null shares and a null maximum (the runner's zero-mass
     # rule): no breakdown contradicts the read, and concentration refuses it.

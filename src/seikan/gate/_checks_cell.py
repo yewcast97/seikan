@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 
 from seikan.gate._model import GateCheck
@@ -20,6 +21,12 @@ from seikan.gate._read import (
 )
 from seikan.settings import GateThresholds
 from seikan.types import EXIT_REASONS
+
+#: How far a basket's member shares may sum from 1. Each share is one rounded quotient of two
+#: exactly rounded |return| masses, and those roundings enter the sum weighted by the shares
+#: themselves, so the shares' exact sum is within 3·2**-53 of 1 whatever the member count;
+#: ``math.fsum`` rounds it once more. 2**-50 holds all of it.
+_SHARE_SUM_TOLERANCE = 2.0**-50
 
 
 def _cell_panels(
@@ -289,10 +296,13 @@ def _grade_member_share(
     member_share: dict[str, object], targets: list[str] | None, unmet: list[str]
 ) -> None:
     """``pooled.member_share``'s one-name read must be the maximum of the decomposition it is
-    read off: ``by_target`` is string-keyed over the targets exactly, and where
-    ``max_member_share_abs`` is a share, every member's share is one and their maximum EQUALS it
-    — the runner writes ``max(by_target.values())``. A missing panel or a null maximum (a pool
-    with no mass) is ``concentration``'s to refuse."""
+    read off, and the decomposition must conserve the mass it attributes: ``by_target`` is
+    string-keyed over the targets exactly, and where ``max_member_share_abs`` is a share, every
+    member's share is one, their maximum EQUALS it — the runner writes ``max(by_target.values())``
+    — and they sum to 1 within rounding (:data:`_SHARE_SUM_TOLERANCE`; the runner divides each
+    member's exact |return| mass by the pool's). 0.5 beside ``{AAA: 0.5, BBB: 0.0}`` agreed with
+    its maximum and met every check with half the pool's mass gone from its own breakdown. A
+    missing panel or a null maximum (a pool with no mass) is ``concentration``'s to refuse."""
     shares = _str_keyed(member_share.get("by_target"))
     if shares is None:
         unmet.append(
@@ -316,10 +326,17 @@ def _grade_member_share(
             f"pooled.member_share.by_target holds a value that is no share in [0,1] beside "
             f"max_member_share_abs={top} — drifted input"
         )
-    elif max(readable) != top:
+        return
+    if max(readable) != top:
         unmet.append(
             f"pooled.member_share.max_member_share_abs={top} is not the largest by_target share "
             f"({max(readable)}) — the one-name read and its decomposition disagree; drifted input"
+        )
+    if abs(math.fsum(readable) - 1.0) > _SHARE_SUM_TOLERANCE:
+        unmet.append(
+            f"pooled.member_share.by_target shares sum to {math.fsum(readable)} — the "
+            "decomposition does not conserve the pool's mass (each share is one rounded quotient "
+            "of exact masses, so they sum to 1 within rounding); drifted input"
         )
 
 
@@ -362,9 +379,10 @@ def _check_cell_evidence(cell: object, s: Mapping[str, object], t: GateThreshold
     max(0, n_bars − 1 − horizon)`` (each member fires at most once per bar and closes at most
     that many), and a ``member_share`` panel's
     one-name read is the largest share of its ``by_target`` decomposition, string-keyed over the
-    targets exactly (:func:`_grade_member_share` — ``max_member_share_abs`` 0.5 beside shares
-    ``{AAA: 1.0, BBB: 0.0}`` met every check, the ceiling grading a number its own breakdown
-    contradicts). Conjunction
+    targets exactly and summing to 1 within rounding (:func:`_grade_member_share` —
+    ``max_member_share_abs`` 0.5 beside shares ``{AAA: 1.0, BBB: 0.0}`` met every check, the
+    ceiling grading a number its own breakdown contradicts, and so did 0.5 beside
+    ``{AAA: 0.5, BBB: 0.0}``, half the mass gone from the breakdown). Conjunction
     cells are graded by the per-target rules — and a ``pooled`` key under a conjunction stamp
     REFUSES, because the runner writes pooled only in basket mode: the configuration is the
     signature of a restamped basket, and refusing it costs zero honest refusals. A missing or
@@ -388,8 +406,8 @@ def _check_cell_evidence(cell: object, s: Mapping[str, object], t: GateThreshold
         "pooled.n<=len(targets)×max(0,n_bars-1-horizon), member_share.by_target string-keyed "
         "over the targets "
         "exactly and, where max_member_share_abs is a share, every share in [0,1] with "
-        "max==max_member_share_abs); a pooled key on a conjunction cell refuses (a "
-        "restamped basket)"
+        "max==max_member_share_abs and sum==1 within 2**-50); a pooled key on a conjunction "
+        "cell refuses (a restamped basket)"
     )
     unmet: list[str] = []
     by_target_n: dict[str, int | None] = {}
