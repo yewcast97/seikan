@@ -81,6 +81,7 @@ def subperiod_means(
     edges: np.ndarray,
     *,
     rets_pool: np.ndarray | None = None,
+    pool_scale: int = 1,
 ) -> list[SubperiodCounts]:
     """Per segment ``{n, mean_ret}`` over a pool's closed observations, assigned by ENTRY bar.
 
@@ -88,16 +89,17 @@ def subperiod_means(
     entry bar's segment even when its forward window crosses the boundary — and nothing reads the
     result. ``mean_ret`` is None for an empty segment (no evidence, not zero).
 
-    ``rets_pool`` (row-aligned with ``rets``; default ``rets``) is what the era mean SUMS — a
-    ``cross_mean`` basket's pooled panel hands in each bar's exact excess sum
-    (``_pools.cross_mean_bar_values``): an era holds each entry bar's rows entirely, so its mean
-    is the exactly rounded sum of its bars' exact sums over its row count. ``n`` and the rows an
-    era holds stay on ``rets``; a non-finite pool value (a bar whose sum left the double range)
-    nulls its era's mean, never drops the row."""
+    ``rets_pool`` (row-aligned with ``rets``; default ``rets``) is what the era mean SUMS, over
+    ``pool_scale`` — a ``cross_mean`` basket's pooled panel hands in each bar's exact numerator
+    over the member count (``_pools.cross_mean_bar_numerators``): an era holds each entry bar's
+    rows entirely, so its mean is its bars' exact numerator sum, correctly rounded, over
+    ``pool_scale`` times its row count (``_pools.exact_mean``). ``n`` and the rows an era holds
+    stay on ``rets``; a non-finite pool value (a bar whose sum left the double range) nulls its
+    era's mean, never drops the row."""
     rets = np.asarray(rets, dtype=float)
     bars = np.asarray(entry_bars, dtype=np.int64)
     pool = rets if rets_pool is None else np.asarray(rets_pool, dtype=float)
-    if pool.shape != rets.shape:
+    if pool.shape[0] != rets.shape[0]:
         raise ValueError(
             f"rets_pool must be row-aligned with rets: shape {pool.shape} != {rets.shape}"
         )
@@ -106,5 +108,6 @@ def subperiod_means(
     out: list[SubperiodCounts] = []
     for a, b in pairwise(edges):
         seg = pool[(bars >= a) & (bars < b)]
-        out.append({"n": int(seg.size), "mean_ret": exact_mean(seg) if seg.size else None})
+        n = len(seg)
+        out.append({"n": n, "mean_ret": exact_mean(seg, pool_scale) if n else None})
     return out

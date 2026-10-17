@@ -402,15 +402,19 @@ same value (a shared or duplicated outcome feed: every per-row excess is then ex
 every read of it takes its exact value — means, quantiles and std 0.0, `rot_p` 1.0, `t_hac` /
 `hac_se`, the shape reads, `concentration` and `member_share` null); with distinct legs each
 per-row excess is that row's own rounded value, and the pooled reads that SUM whole bars read every
-bar at its EXACT excess sum instead — the bar's sum on its first closed row, 0.0 on the rest
-(`cross_mean_bar_values`, the same weighted terms, one exactly rounded sum per bar: 0 on a full
-bar, the exact rational sum elsewhere; from the trades exactly on a full bar — a bar on which
-every member has a closed row in the cell, at 0 — and to rounding elsewhere, a partial bar's sum
-needing the legs of members with no row), so the bootstrap's episode sums (same draws, same
-seed), the `subperiods` means and the `episodes` ledger and `episode_profile` means (with the
-profile's hit rate, streaks and quantiles over them) never read the rows' residue — three of six
-members firing on bars whose selected excesses cancel read a positive bootstrap interval and
-positive eras beside a `mean_ret` of exactly 0, where each now reads 0; the HAC reads the same
+bar at its EXACT excess sum instead — its numerator `N·Σe` (the same weighted terms) carried
+exactly, as the few doubles that sum to it, on the bar's first closed row and zeros on the rest
+(`cross_mean_bar_numerators`), each such read summing its bars' numerators in ONE exactly
+rounded sum over `N` times its row count: 0 on a full bar, and 0 wherever the excesses it holds
+cancel, across bars too (from the trades exactly on a full bar — a bar on which every member has
+a closed row in the cell, at 0 — and to rounding elsewhere, a partial bar's sum needing the legs
+of members with no row), so the bootstrap's episode sums (same draws, same seed), the
+`subperiods` means and the `episodes` ledger and `episode_profile` means (with the profile's hit
+rate, streaks and quantiles over them) never read the rows' residue — three of six members firing
+on bars whose selected excesses cancel read a positive bootstrap interval and positive eras
+beside a `mean_ret` of exactly 0, and one member firing per bar, three bars to an episode whose
+excesses cancel, read every episode at 9.9e-17 (each bar's sum rounded over `N` before the
+episode added it: a hit rate of 1, a win streak of 8), where each now reads 0; the HAC reads the same
 sums: its long-run variance reads the rows only through per-bar deviation sums (same-bar pairs
 at weight 1), and under `cross_mean` each bar's is its closed members' EXACT excess sum around the
 exact `mean_ret`, on every pool — so `t_hac` is `mean_ret` over `hac_se` on every pool, and a
@@ -418,8 +422,8 @@ pool whose every bar's excess sum is exactly 0 (every bar full at a zero mean, o
 whose excesses cancel on each bar, where the rounded rows' bar sums are residue — a `t_hac` of
 5.43 beside a `mean_ret` of exactly 0) has no long-run variance: `t_hac` / `hac_se` null, as on
 identical legs; the grid-level CSCV reads them too — a block holds whole bars (its purge reads
-the bar and the cell's horizon alone), so every split takes its MEAN from its bars' exact sums
-over the rows' own sd, and every split a grid of all-full cells scores is a full tie (`pbo`,
+the bar and the cell's horizon alone), so every split takes its MEAN from its blocks' exact
+numerator sums over `N` times its row count, over the rows' own sd, and every split a grid of all-full cells scores is a full tie (`pbo`,
 `lambda_mean` and `prob_oos_loss` 0.0 whenever the block scores, in any target order, where the
 rounded rows ranked their residue — every train score tied, the first-declared candidate wins
 each split, so a sparse such grid can score fewer splits, fall back to a coarser S or decline

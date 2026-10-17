@@ -25,12 +25,13 @@ from seikan.analysis.stats import (
     BUCKET_MIN_N,
     EPISODE_LIST_MAX,
     STATISTICS_VERSION,
+    BarNumerators,
     baseline_summary,
     benchmark_regression,
     cell_conditional_buckets,
     concentration,
     conditional_buckets,
-    cross_mean_bar_values,
+    cross_mean_bar_numerators,
     cross_mean_pooled_hac,
     cross_mean_pooled_mean,
     cscv_pbo,
@@ -812,15 +813,16 @@ def _full_bar_frame(order, feat, n_bars=48, seed=41):
 
 
 def _bar_pool(frame, raw, members="ABC"):
-    """The rows' bar values (``cross_mean_bar_values``) row-aligned with ``frame``: each bar's
-    exact excess sum over the members holding a row in ``frame`` on its first such member (in
-    ``members`` order), 0.0 on the others — what the runner hands the buckets as ``rets_pool``."""
+    """The rows' bar numerators (``cross_mean_bar_numerators``) row-aligned with ``frame``: each
+    bar's exact numerator over the members holding a row in ``frame`` on its first such member
+    (in ``members`` order), zeros on the others — what the runner hands the buckets as
+    ``rets_pool``, over ``pool_scale`` 3."""
     col = {m: g for g, m in enumerate(members)}
     bars = frame["entry_bar"].to_numpy(dtype=np.int64)
     member = frame["target"].map(col).to_numpy(dtype=np.int64)
     closed = np.zeros(raw.shape, dtype=bool)
     closed[bars, member] = True
-    return cross_mean_bar_values(raw, closed)[bars, member]
+    return cross_mean_bar_numerators(raw, closed).at(bars, member)
 
 
 def test_cell_buckets_read_a_whole_full_bar_at_its_exact_zero_in_any_declaration_order():
@@ -838,7 +840,9 @@ def test_cell_buckets_read_a_whole_full_bar_at_its_exact_zero_in_any_declaration
     for order in itertools.permutations("ABC"):
         frame, raw = _full_bar_frame(order, feat)
         plain = cell_conditional_buckets(frame, ["feat"])
-        out = cell_conditional_buckets(frame, ["feat"], rets_pool=_bar_pool(frame, raw, order))
+        out = cell_conditional_buckets(
+            frame, ["feat"], rets_pool=_bar_pool(frame, raw, order), pool_scale=3
+        )
         block = out["conditional_buckets"]["feat"]
         plain_block = plain["conditional_buckets"]["feat"]
         assert block["reason"] is None and len(block["buckets"]) == 4
@@ -867,7 +871,7 @@ def test_cell_buckets_bars_split_across_ordinals_are_byte_identical():
     bars = np.arange(48, dtype=float)
     feat = {"A": bars, "B": -bars, "C": rng.normal(size=48)}
     frame, raw = _full_bar_frame("ABC", feat)
-    out = cell_conditional_buckets(frame, ["feat"], rets_pool=_bar_pool(frame, raw))
+    out = cell_conditional_buckets(frame, ["feat"], rets_pool=_bar_pool(frame, raw), pool_scale=3)
     assert out == cell_conditional_buckets(frame, ["feat"])
     assert out["conditional_buckets"]["feat"]["reason"] is None
     # the rows' own returns as the pool values ARE the plain read; a misaligned pool is refused
@@ -903,14 +907,20 @@ def test_cell_buckets_read_every_bar_held_whole_at_its_exact_sum():
         codes = pd.qcut(rows["feat"], 4, labels=False, duplicates="drop").to_numpy()
         assert (codes == rows["feat"].to_numpy()).all()
 
-    out = cell_conditional_buckets(frame, ["feat"], rets_pool=pool)
+    out = cell_conditional_buckets(frame, ["feat"], rets_pool=pool, pool_scale=3)
     plain = cell_conditional_buckets(frame, ["feat"])
     block = out["conditional_buckets"]["feat"]["buckets"]
     whole = valid["entry_bar"].isin(sorted(set(range(42)) - {4, 9, 6, 10})).to_numpy()
-    sums = np.where(whole, pool[valid_rows], valid["ret"].to_numpy(dtype=float))
+    # a bucket's exact numerator: its whole bars' exact parts, every other row's return times 3
+    numerators = [
+        3 * Fraction(float(r)) if not w else sum(map(Fraction, parts))
+        for r, w, parts in zip(valid["ret"], whole, pool[valid_rows].tolist(), strict=True)
+    ]
     ordinal = valid["feat"].to_numpy()
     assert [b["mean_ret"] for b in block] == [
-        math.fsum(sums[ordinal == i].tolist()) / int((ordinal == i).sum()) for i in range(4)
+        float(sum(n for n, o in zip(numerators, ordinal, strict=True) if o == i))
+        / (3 * int((ordinal == i).sum()))
+        for i in range(4)
     ]
     assert [(b["n"], b["hit_rate"]) for b in block] == [
         (b["n"], b["hit_rate"]) for b in plain["conditional_buckets"]["feat"]["buckets"]
@@ -923,7 +933,7 @@ def test_cell_buckets_read_every_bar_held_whole_at_its_exact_sum():
         rows = frame["entry_bar"].to_numpy() == b
         legs = [Fraction(float(x)) for x in raw[b]]
         exact = sum(legs["ABC".index(m)] - sum(legs) / 3 for m in frame["target"][rows])
-        assert math.fsum(pool[rows].tolist()) == float(exact)
+        assert sum(map(Fraction, pool[rows].ravel().tolist())) == 3 * exact
 
 
 # ---- feature_outcome_association: per-(cell × feature × target) Spearman ----------
@@ -2943,6 +2953,31 @@ def test_cross_mean_pooled_mean_overflow_is_refusable_not_a_crash():
     assert np.isnan(cross_mean_pooled_mean(raw, np.array([[1, 0, 0]] * 2, dtype=bool)))
 
 
+def test_cross_mean_bar_numerators_carry_each_bar_s_numerator_exactly():
+    # A bar's numerator — N times its closed members' excess sum — is the exact sum of its
+    # weighted legs, which one double cannot hold once it needs more than 53 bits: legs spanning
+    # binades take two parts. The parts sum exactly to it on every bar and sit on the bar's first
+    # closed member (zeros on its others); a bar no member closed is zeros, one whose sum leaves
+    # the range NaN.
+    rng = np.random.RandomState(9)
+    raw = rng.uniform(0.01, 10.0, (40, 4))
+    closed = rng.random_sample((40, 4)) < 0.5
+    closed[0] = False
+    raw[1], closed[1] = [1e308, -1e308, 1e308, 0.5], [True, False, False, False]
+    num = cross_mean_bar_numerators(raw, closed)
+    assert num.parts.shape[1] >= 2
+    for t in range(2, 40):
+        legs = [Fraction(float(x)) for x in raw[t]]
+        exact = sum(4 * legs[g] - sum(legs) for g in np.flatnonzero(closed[t]))
+        assert sum(map(Fraction, num.parts[t].tolist())) == exact, t
+    assert (num.parts[0] == 0.0).all() and np.isnan(num.parts[1]).all()
+    bars, members = np.nonzero(closed)
+    rows = num.at(bars, members)
+    first = members == np.argmax(closed, axis=1)[bars]
+    np.testing.assert_array_equal(rows[first], num.parts[bars[first]])
+    assert (rows[~first] == 0.0).all()
+
+
 def _cross_mean_bar_numerators(raw, closed, mean):
     """Each closed bar's exact ``N·D_t = Σ_g (N·[closed] − k_t)·raw − k_t·N·mean``."""
     n_members = raw.shape[1]
@@ -3587,10 +3622,9 @@ def test_bootstrap_sums_the_pool_values_on_the_draw_stream_rets_alone_gives():
         perm = rng.permutation(bars.size)
         assert episode_bootstrap_ci(rets[perm], bars[perm], 5, rets_pool=pool[perm]) == want
     # rows tied on (bar, ret) may carry DIFFERENT pool values (a library caller's — the
-    # runner's never do): the values break the tie, so an episode's values add in one order and
-    # no permutation moves a bit. Each bar below holds 1e16, 1.0 and -1e16 in one of their six
-    # orders, and the cancellation makes the order visible: (1e16 + 1.0) - 1e16 is 0.0,
-    # (1e16 - 1e16) + 1.0 is 1.0.
+    # runner's never do) in the caller's order: each episode's sum is exact, so no permutation
+    # moves a bit. Each bar below holds 1e16, 1.0 and -1e16 in one of their six orders, where a
+    # running sum would show the order: (1e16 + 1.0) - 1e16 is 0.0, (1e16 - 1e16) + 1.0 is 1.0.
     big, one = 1e16, 1.0
     spread = np.array(
         [
@@ -4057,13 +4091,13 @@ def test_cscv_scored_block_carries_null_slope_reason():
     assert "oos_degradation_slope_reason" in out and out["oos_degradation_slope_reason"] is None
 
 
-def _cscv_bar_values(raw, masks, order, closed=None):
-    """``cscv_pbo``'s ``bar_values`` for ``cross_mean`` candidates over the (bars × A, B, C) legs
-    ``raw``: per candidate ``(k,)``, ``cross_mean_bar_values`` over the members in ``order``'s
-    column order, every member closed on the candidate's firing bars."""
+def _cscv_bar_numerators(raw, masks, order):
+    """``cscv_pbo``'s ``bar_numerators`` for ``cross_mean`` candidates over the (bars × A, B, C)
+    legs ``raw``: per candidate ``(k,)``, ``cross_mean_bar_numerators`` over the members in
+    ``order``'s column order, every member closed on the candidate's firing bars."""
     cols = raw[:, ["ABC".index(m) for m in order]]
     return {
-        (k,): cross_mean_bar_values(cols, np.repeat((m > 0)[:, None], len(order), axis=1))
+        (k,): cross_mean_bar_numerators(cols, np.repeat((m > 0)[:, None], len(order), axis=1))
         for k, m in enumerate(masks)
     }
 
@@ -4072,7 +4106,7 @@ def _full_bar_cscv_cells(order, n_combos=5, length=400, seed=31):
     """A ``cross_mean`` basket grid whose every candidate is ALL-FULL: members A, B, C fire
     together on each candidate's own bars, each forward column the member's leg less the bar's
     basket mean — rounded excesses whose exact per-bar sum is 0 and whose rounded sum is
-    residue. Cells run in ``order``; returned beside the candidates' ``bar_values``."""
+    residue. Cells run in ``order``; returned beside the candidates' ``bar_numerators``."""
     rng = np.random.RandomState(seed)
     raw = np.round(rng.normal(0.0, 0.02, (length, 3)), 4)
     fwd = dict(zip("ABC", (raw - raw.mean(axis=1, keepdims=True)).T, strict=True))
@@ -4086,7 +4120,7 @@ def _full_bar_cscv_cells(order, n_combos=5, length=400, seed=31):
         for k in range(n_combos)
         for tg in order
     ]
-    return cells, _cscv_bar_values(raw, masks, order)
+    return cells, _cscv_bar_numerators(raw, masks, order)
 
 
 def test_cscv_pbo_all_full_cross_mean_grid_ties_in_every_declaration_order():
@@ -4099,9 +4133,9 @@ def test_cscv_pbo_all_full_cross_mean_grid_ties_in_every_declaration_order():
     keys = ("pbo", "lambda_mean", "prob_oos_loss")
     plain_reads = set()
     for order in itertools.permutations("ABC"):
-        cells, values = _full_bar_cscv_cells(order)
+        cells, numerators = _full_bar_cscv_cells(order)
         out = cscv_pbo(
-            cells, 400, list(order), mode="basket", n_combos_declared=5, bar_values=values
+            cells, 400, list(order), mode="basket", n_combos_declared=5, bar_numerators=numerators
         )
         assert out["reason"] is None and out["n_combos"] == 5 and out["n_splits"] == 70
         assert out["pbo"] == out["lambda_mean"] == out["prob_oos_loss"] == 0.0, order
@@ -4145,9 +4179,14 @@ def test_cscv_pbo_all_full_grid_s_tied_train_winner_is_the_first_declared_candid
                 for k, m in enumerate(masks)
                 for tg in order
             ]
-            values = _cscv_bar_values(raw, masks, order)
+            numerators = _cscv_bar_numerators(raw, masks, order)
             out = cscv_pbo(
-                cells, length, list(order), mode="basket", n_combos_declared=8, bar_values=values
+                cells,
+                length,
+                list(order),
+                mode="basket",
+                n_combos_declared=8,
+                bar_numerators=numerators,
             )
             if scores:
                 assert out["reason"] is None and out["n_splits"] == 70, order
@@ -4165,11 +4204,12 @@ def test_cscv_pbo_all_full_grid_s_tied_train_winner_is_the_first_declared_candid
 
 def test_cscv_split_mean_sums_the_bars_exact_excess_sums():
     # Three candidates of three members, ten bars per block. A `cross_mean` candidate's EVERY
-    # split takes its MEAN from the per-block sums of its bars' exact excess sums (`bar_values`)
-    # over the rows' own sd: the all-full candidate's mean is exactly 0.0 on every split (its
-    # rounded rows read residue), the partial candidate's the exact sum of the excesses its
-    # split holds, rounded once per bar. A candidate the values do not key, and the whole
-    # conjunction score, are the rows' read, byte for byte.
+    # split takes its MEAN from the per-block exact sums of its bars' numerators
+    # (`bar_numerators`) over the member count, over the rows' own sd: the all-full candidate's
+    # mean is exactly 0.0 on every split (its rounded rows read residue), the partial
+    # candidate's the exact sum of the excesses its split holds, its blocks added once. A
+    # candidate the numerators do not key, and the whole conjunction score, are the rows' read,
+    # byte for byte.
     from itertools import combinations
 
     from seikan.analysis._cscv import _split_scores
@@ -4185,14 +4225,20 @@ def test_cscv_split_mean_sums_the_bars_exact_excess_sums():
     closed = [full, partial, full]
     moments, refs, extrema, sums = [], [], [], []
     for q in range(3):
-        values = cross_mean_bar_values(raw, closed[q])
+        numerators = cross_mean_bar_numerators(raw, closed[q])
         on = closed[q]
         per_member = [_split_tensors(excess[on[:, g], g], b[on[:, g]], s) for g in range(3)]
         moments.append([m[0, 0] for m, _, _ in per_member])
         refs.append([ref[0, 0] for _, ref, _ in per_member])
         extrema.append([e[0, 0] for _, _, e in per_member])
         sums.append(
-            [np.bincount(b[on[:, g]], weights=values[on[:, g], g], minlength=s) for g in range(3)]
+            [
+                [
+                    math.fsum(numerators.at(np.flatnonzero(on[:, g] & (b == k)), g).ravel())
+                    for k in range(s)
+                ]
+                for g in range(3)
+            ]
         )
     tensors = (np.array(moments), np.array(refs), np.array(extrema))
     pool = (np.array(sums), np.array([True, True, False]))
@@ -4201,9 +4247,9 @@ def test_cscv_split_mean_sums_the_bars_exact_excess_sums():
     for split in combinations(range(s), 2):
         idx = np.array(split)
         conj = _split_scores(*tensors, "conjunction", idx)
-        np.testing.assert_array_equal(_split_scores(*tensors, "conjunction", idx, pool), conj)
+        np.testing.assert_array_equal(_split_scores(*tensors, "conjunction", idx, pool, 3), conj)
         plain = _split_scores(*tensors, "basket", idx)
-        got = _split_scores(*tensors, "basket", idx, pool)
+        got = _split_scores(*tensors, "basket", idx, pool, 3)
         assert got[0] == 0.0
         residue.append(plain[0])
         assert got[2] == plain[2]  # unkeyed: the moments' own mean
@@ -4213,25 +4259,28 @@ def test_cscv_split_mean_sums_the_bars_exact_excess_sums():
         d = ref - (m[:, 1] + m[:, 0] * ref).sum() / n
         sd = np.sqrt((m[:, 2] + 2.0 * d * m[:, 1] + m[:, 0] * d * d).sum() / (n - 1.0))
         split_sum = pool[0][:, :, idx].sum(axis=(1, 2))[1]
-        assert got[1] == split_sum / n / sd
-        # — whose sum is the split's exact excess sum, to the bar sums' rounding
+        assert got[1] == split_sum / (3 * n) / sd
+        # — whose sum is the split's exact numerator, to its blocks' one addition
         held = np.isin(b, split)[:, None] & closed[1]
         exact = sum(legs[t][g] - sum(legs[t]) / 3 for t, g in zip(*np.nonzero(held), strict=True))
-        assert split_sum == pytest.approx(float(exact), rel=1e-12, abs=1e-18)
+        assert split_sum == pytest.approx(float(3 * exact), rel=1e-15, abs=1e-18)
     assert any(r != 0.0 for r in residue)  # the premise: the rounded rows read residue
 
 
-def test_cscv_pbo_bar_values_reach_no_other_read():
-    # Conjunction never reads the bar values, and a basket candidate they do not key keeps its
-    # moments' own mean: an empty mapping is the plain read, byte for byte.
+def test_cscv_pbo_bar_numerators_reach_no_other_read():
+    # Conjunction never reads the bar numerators, and a basket candidate they do not key keeps
+    # its moments' own mean: an empty mapping is the plain read, byte for byte.
     cells, length = _one_member_edge_cells()
     basket = cscv_pbo(cells, length, ["A", "B"], mode="basket", n_combos_declared=8)
     assert basket["reason"] is None
     assert (
-        cscv_pbo(cells, length, ["A", "B"], mode="basket", n_combos_declared=8, bar_values={})
+        cscv_pbo(cells, length, ["A", "B"], mode="basket", n_combos_declared=8, bar_numerators={})
         == basket
     )
-    zeros = {(k,): np.zeros((length, 2)) for k in range(8)}
+    zeros = {
+        (k,): BarNumerators(np.zeros((length, 1)), np.zeros(length, dtype=np.int64))
+        for k in range(8)
+    }
     conj = cscv_pbo(cells, length, ["A", "B"], n_combos_declared=8)
     assert conj["reason"] is None
-    assert cscv_pbo(cells, length, ["A", "B"], n_combos_declared=8, bar_values=zeros) == conj
+    assert cscv_pbo(cells, length, ["A", "B"], n_combos_declared=8, bar_numerators=zeros) == conj

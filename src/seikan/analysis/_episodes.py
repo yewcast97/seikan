@@ -65,7 +65,8 @@ class _EpisodeView(NamedTuple):
     entry: np.ndarray
     exit_: np.ndarray
     rets: np.ndarray
-    #: What an episode MEAN sums per row — ``rets`` unless the caller handed ``rets_pool``.
+    #: What an episode MEAN sums per row — ``rets`` unless the caller handed ``rets_pool`` (rows
+    #: of exact parts, or values, over the caller's ``pool_scale``).
     rets_pool: np.ndarray
     clusters: list[list[int]]
 
@@ -114,16 +115,17 @@ def _mixes_units(df: pd.DataFrame, commensurable: bool) -> bool:
     return not commensurable and "target" in df.columns and df["target"].nunique() > 1
 
 
-def _episode_means(pool: np.ndarray, clusters: list[list[int]]) -> np.ndarray:
-    """Each episode's MEAN of its rows' pool values — the per-episode read the ledger lists and
-    the profile aggregates — as the exactly rounded sum over the row count (:func:`exact_mean`):
+def _episode_means(pool: np.ndarray, clusters: list[list[int]], scale: int) -> np.ndarray:
+    """Each episode's MEAN of its rows' pool values over ``scale`` — the per-episode read the
+    ledger lists and the profile aggregates — as the exactly rounded sum over ``scale`` times the
+    row count (:func:`exact_mean`):
     the exact sum's sign, and 0.0 exactly where it is 0, because the profile COUNTS those signs
     (hit rate, streaks). Summed pairwise, eight episodes of ``[−0.5, −2**−55, 0.5, 2**−55]``
     read a mean of 6.9e-18 each — a hit rate of 1 and a win streak of 8 beside a row
     ``mean_ret`` of exactly 0. NaN where the rows' sum leaves the double range: the true mean of
     finite returns is finite, but no computed one is, and an overflowed sum claims a sign the
     episode does not have. No value, no sign: NaN → null."""
-    return np.array([exact_mean(pool[c]) for c in clusters])
+    return np.array([exact_mean(pool[c], scale) for c in clusters])
 
 
 def _herfindahl(masses: list[float]) -> tuple[float, float]:
@@ -229,6 +231,7 @@ def episode_ledger(
     cap: int = EPISODE_LIST_MAX,
     *,
     rets_pool: np.ndarray | None = None,
+    pool_scale: int = 1,
     commensurable: bool = True,
 ) -> EpisodeLedgerBlock:
     """TIME-ORDERED per-episode ledger of one cell's CLOSED rows — the narrative companion to
@@ -254,12 +257,13 @@ def episode_ledger(
     null. Evidence-only; no check reads it — the gated one-episode detector is
     ``episode_stats.max_cluster_share_abs``.
 
-    ``mean_ret`` sums ``rets_pool`` (row-aligned with ``trades``; default the rows' ``ret``) —
-    a ``cross_mean`` basket's bar values, each bar's exact excess sum on its first closed row and
-    0.0 on the rest (``_pools.cross_mean_bar_values``); an episode holds each bar's rows
-    entirely, so its mean is the exactly rounded sum of its bars' exact sums over its row count
-    (:func:`_episode_means`). It is NaN → null where that sum leaves the double range (the same
-    unknown mean ``episode_profile`` nulls its reads over), never an ``inf`` whose sign the
+    ``mean_ret`` sums ``rets_pool`` (row-aligned with ``trades``; default the rows' ``ret``)
+    over ``pool_scale`` — a ``cross_mean`` basket's bar numerators, each bar's exact parts on its
+    first closed row and zeros on the rest, over the member count
+    (``_pools.cross_mean_bar_numerators``); an episode holds each bar's rows entirely, so its
+    mean is its bars' exact numerator sum, correctly rounded, over ``pool_scale`` times its row
+    count (:func:`_episode_means`). It is NaN → null where that sum leaves the double range (the
+    same unknown mean ``episode_profile`` nulls its reads over), never an ``inf`` whose sign the
     overflow picked. The |return| shares stay on ``ret``: a row's mass is its own, not its bar's.
     Over rows that mix targets' units (:func:`_mixes_units`) every ``mean_ret``, ``share_abs``
     and ``omitted_share_abs`` is NaN → null; the episodes' extents and counts stay.
@@ -288,7 +292,7 @@ def episode_ledger(
 
     kept = clusters[: max(int(cap), 0)]
     omitted = clusters[len(kept) :]
-    means = np.full(len(kept), _NAN) if mixed else _episode_means(pool, kept)
+    means = np.full(len(kept), _NAN) if mixed else _episode_means(pool, kept, pool_scale)
     return {
         "entries": [
             {
@@ -312,7 +316,11 @@ def episode_ledger(
 
 @np.errstate(over="ignore", invalid="ignore")
 def episode_profile(
-    trades: pd.DataFrame, *, rets_pool: np.ndarray | None = None, commensurable: bool = True
+    trades: pd.DataFrame,
+    *,
+    rets_pool: np.ndarray | None = None,
+    pool_scale: int = 1,
+    commensurable: bool = True,
 ) -> EpisodeProfileBlock:
     """The episode-deduplicated TWIN of the row-level pool statistics — same family, EPISODE units.
 
@@ -329,8 +337,9 @@ def episode_profile(
     makes this the pooled episode read for free.
 
     Per-episode aggregates: ``ret`` → the MEAN of the episode's rows (the ledger's established
-    per-episode aggregate, summed off the same ``rets_pool`` as :func:`episode_ledger`'s
-    ``mean_ret`` and exactly rounded like it — :func:`_episode_means` — and the unit that stays
+    per-episode aggregate, summed off the same ``rets_pool`` / ``pool_scale`` as
+    :func:`episode_ledger`'s ``mean_ret`` and exactly rounded like it — :func:`_episode_means` —
+    and the unit that stays
     commensurable with the row-level ``mean_ret``; a SUM would scale with overlap density —
     re-importing exactly the inflation this block removes; ``mean_ret`` is their exactly
     rounded mean);
@@ -380,7 +389,9 @@ def episode_profile(
     # Clusters arrive in time order (the greedy chain opens them at strictly increasing starts),
     # so the streak walk below IS the calendar walk.
     mixed = _mixes_units(df, commensurable)
-    ret_means = np.full(len(clusters), _NAN) if mixed else _episode_means(pool, clusters)
+    ret_means = (
+        np.full(len(clusters), _NAN) if mixed else _episode_means(pool, clusters, pool_scale)
+    )
     # EPISODE-ALIGNED excursion aggregates — one slot per cluster, NaN where the cluster carries
     # no finite value in that leg (or no unit to compare them in). The quantile blocks below read
     # each leg's own finite subset (as ever), while `edge_ratio` reads the ALIGNED pair, so an

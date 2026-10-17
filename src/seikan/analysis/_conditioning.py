@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats as sps
 
-from seikan.analysis._pools import exact_mean
+from seikan.analysis._pools import exact_mean, scaled_parts
 from seikan.types import (
     BucketMonotonicity,
     BucketRecord,
@@ -175,6 +175,7 @@ def _aggregate_bucket_ordinals(
     q: int,
     bar_k: np.ndarray | None = None,
     pools: list[np.ndarray] | None = None,
+    scale: int = 1,
     *,
     commensurable: bool = True,
 ) -> list[BucketRecord]:
@@ -192,11 +193,14 @@ def _aggregate_bucket_ordinals(
     labelled ``q1..qk`` — per-target edges make interval strings target-relative and
     unprintable as one label.
 
-    ``bar_k`` / ``pools`` (a ``cross_mean`` pool's rows per bar, and each group's row-aligned bar
-    values — see :func:`cell_conditional_buckets`) put the rows of every bar wholly inside one
-    record (:func:`_whole_bars`) into that record's ``mean_ret`` through their bar values, the
-    bar's exact excess sum their rounded excesses miss by residue; ``n`` and ``hit_rate`` stay on
-    each row's own return. ``commensurable=False`` (a ``diff`` outcome: each target in its own
+    ``bar_k`` / ``pools`` / ``scale`` (a ``cross_mean`` pool's rows per bar, each group's
+    row-aligned bar numerators and the member count they are over — see
+    :func:`cell_conditional_buckets`) put the rows of every bar wholly inside one record
+    (:func:`_whole_bars`) into that record's ``mean_ret`` through their bar's exact numerator,
+    the exact excess sum their rounded excesses miss by residue. Every other row then enters as
+    its own return times ``scale``, in exact parts (``_pools.scaled_parts``), so each mean is
+    ONE exactly rounded sum over ``scale`` times its ``n``; ``n`` and ``hit_rate`` stay on each
+    row's own return. ``commensurable=False`` (a ``diff`` outcome: each target in its own
     level units) leaves every record's ``mean_ret`` NaN — a sum across the targets' units has
     none — while ``n`` and ``hit_rate``, a count and a share of signs, stand."""
     parts: list[tuple[np.ndarray, np.ndarray]] = []
@@ -230,12 +234,17 @@ def _aggregate_bucket_ordinals(
     # per-target concatenation gave, so a mean over them is the same sum, bit for bit.
     ordinals = np.concatenate([part[0] for part in parts])
     rets = np.concatenate([part[1] for part in parts])
-    # What each record's MEAN sums per row: the rows' own returns, save a whole bar's, which
-    # enter through their bar values (the bar's exact excess sum on one row, 0.0 on the rest).
-    sums = rets
+    # What each record's MEAN sums per row: the rows' own returns — or, where a bar lies whole
+    # in a record, every row in numerator units over `scale`: a whole bar's exact parts (on its
+    # first row, zeros on the rest), any other row its return times `scale`, exactly.
+    sums, sums_scale = rets, 1
     if bar_k is not None and pools is not None:
         whole = _whole_bars(np.concatenate(bar_parts), ordinals, bar_k)
-        sums = np.where(whole, np.concatenate(pools), rets)
+        if whole.any():
+            bar_pool = np.concatenate(pools)
+            sums, sums_scale = np.zeros((rets.size, max(bar_pool.shape[1], 2))), scale
+            sums[whole, : bar_pool.shape[1]] = bar_pool[whole]
+            sums[~whole, :2] = scaled_parts(rets[~whole], scale)
     records: list[BucketRecord] = []
     for i in range(k):
         in_bucket = ordinals == i
@@ -244,7 +253,7 @@ def _aggregate_bucket_ordinals(
             {
                 "bucket": f"q{i + 1}",
                 "n": int(pool.size),
-                "mean_ret": exact_mean(sums[in_bucket]) if commensurable else _NAN,
+                "mean_ret": exact_mean(sums[in_bucket], sums_scale) if commensurable else _NAN,
                 "hit_rate": float(np.mean(pool > 0)) if pool.size else _NAN,
             }
         )
@@ -258,6 +267,7 @@ def cell_conditional_buckets(
     min_n: int = BUCKET_MIN_N,
     *,
     rets_pool: np.ndarray | None = None,
+    pool_scale: int = 1,
     commensurable: bool = True,
 ) -> CellBucketPanels:
     """ONE cell's conditional-bucket view over its CLOSED rows — bucket EDGES per TARGET,
@@ -292,14 +302,16 @@ def cell_conditional_buckets(
     never across cells. Evidence-only; overlap-inflated like every trades-pool statistic, and
     "associated in this sample" is the entire claim a bucket pattern supports.
 
-    ``rets_pool`` (a ``cross_mean`` basket's bar values, row-aligned with ``trades`` — each bar's
-    EXACT excess sum on its first closed member, 0.0 on the others, the runner's pool values)
-    carries the exact bar sums into the bucket MEANS: a bar's rounded per-row excesses miss its
-    exact sum by residue, so per feature a bar whose rows ALL land in ONE ordinal — bucketed by a
-    basket-wide feature (a calendar field, a shared external feed), whose per-target edges agree
-    where the members fire on the same bars, or a one-row bar — adds its exact sum to that
-    record's mean. A bar split across ordinals, or partly unbucketed, keeps each row's own
-    return (no record holds its whole sum); ``n`` and ``hit_rate`` stay on each row's return. On
+    ``rets_pool`` / ``pool_scale`` (a ``cross_mean`` basket's bar numerators, row-aligned with
+    ``trades`` — each bar's exact parts on its first closed member, zeros on the others, over the
+    member count: ``_pools.cross_mean_bar_numerators``, the runner's pool values) carry the exact
+    bar sums into the bucket MEANS: a bar's rounded per-row excesses miss its exact sum by
+    residue, so per feature a bar whose rows ALL land in ONE ordinal — bucketed by a basket-wide
+    feature (a calendar field, a shared external feed), whose per-target edges agree where the
+    members fire on the same bars, or a one-row bar — adds its exact sum to that record's mean
+    (:func:`_aggregate_bucket_ordinals`). A bar split across ordinals, or partly unbucketed,
+    keeps each row's own return (no record holds its whole sum); ``n`` and ``hit_rate`` stay on
+    each row's return. On
     a pool whose every bar is full, bucketed by a basket-wide feature, every mean is exactly 0.0
     — no rank signal, so no ``bucket_monotonicity`` entry, in any declaration order — where the
     rounded rows ranked their residue. Only the multi-target arm
@@ -319,7 +331,7 @@ def cell_conditional_buckets(
     bar_k: np.ndarray | None = None
     if rets_pool is not None and not trades.empty:
         pool_all = np.asarray(rets_pool, dtype=float)
-        if pool_all.shape != (len(trades),):
+        if pool_all.shape[0] != len(trades):
             raise ValueError(
                 f"rets_pool must be row-aligned with trades: {pool_all.shape} != ({len(trades)},)"
             )
@@ -360,7 +372,7 @@ def cell_conditional_buckets(
                 else [pool_all[is_valid][g.index.to_numpy()] for g in groups]
             )
             records = _aggregate_bucket_ordinals(
-                groups, name, q, bar_k, pools, commensurable=commensurable
+                groups, name, q, bar_k, pools, pool_scale, commensurable=commensurable
             )
         if len(records) < 2:
             buckets_out[name] = {"buckets": [], "reason": "insufficient_distinct_values"}

@@ -45,11 +45,12 @@ import pandas as pd
 from seikan.analysis.result import EventStudyResult
 from seikan.analysis.stats import (
     STATISTICS_VERSION,
+    BarNumerators,
     baseline_summary,
     benchmark_regression,
     cell_conditional_buckets,
     concentration,
-    cross_mean_bar_values,
+    cross_mean_bar_numerators,
     cross_mean_pooled_hac,
     cross_mean_pooled_mean,
     cscv_pbo,
@@ -467,7 +468,7 @@ def _run_summary(
     cross_breadth: list[CrossBreadthEntry],
     n_combos_attempted: int,
     cells: list[SummaryCell],
-    pooled_bar_values: dict[CellKey, np.ndarray],
+    pooled_bar_numerators: dict[CellKey, BarNumerators],
 ) -> RunSummary:
     """THE summary, built as ONE literal IN EMISSION ORDER (dict insertion is the emitted key
     order): the two grid labels, versions and basis, index geometry, the declared search burden,
@@ -574,7 +575,7 @@ def _run_summary(
             off=cfg.off,
             mode=thesis.target_mode,
             n_combos_declared=len(cells),
-            bar_values=pooled_bar_values,
+            bar_numerators=pooled_bar_numerators,
         ),
         "sources": {
             tgt: source_coverage(src_avail, cfg.index, g) for g, tgt in enumerate(cfg.targets)
@@ -632,16 +633,17 @@ def _pool_panel(
     sub_windows: list[tuple[str | None, str | None]],
     *,
     rets_pool: np.ndarray | None = None,
+    pool_scale: int = 1,
 ) -> CellTargetPanel:
     """ONE pool's complete evidence panel over its CLOSED rows — the per-target panel
     ``cells[i].by_target[t]`` and, in basket mode, the pooled cross-target panel are the SAME
     builder over different row sets, so the two mirror each other by construction rather than
     by convention. ``rc`` is the pool's reliability read (or the no-evidence default).
 
-    ``rets_pool`` (row-aligned with ``closed``; default its ``ret``) is what the panel's
-    bar-closed SUMS read — the bootstrap's episode sums and the era means (the HAC is mounted
-    from ``rc``; :func:`_cells_panel`, the one caller that hands ``rets_pool`` in, replaces it
-    with the exact read off the raw legs). Every row-level read stays on ``ret``.
+    ``rets_pool`` (row-aligned with ``closed``; default its ``ret``) over ``pool_scale`` is what
+    the panel's bar-closed SUMS read — the bootstrap's episode sums and the era means (the HAC is
+    mounted from ``rc``; :func:`_cells_panel`, the one caller that hands ``rets_pool`` in,
+    replaces it with the exact read off the raw legs). Every row-level read stays on ``ret``.
 
     A pool with no closed rows still gets a full panel — n=0 and NaN statistics. An OMITTED
     target would read as "not applicable here" when what actually happened is "this cell
@@ -713,7 +715,7 @@ def _pool_panel(
         # Episode-bootstrap CI over THIS pool (evidence-only): the dependence-robust
         # counterweight to the anti-conservative t_hac / rot_p. Its episode sums add
         # `rets_pool`; its episodes, canonical order and seed stay on `ret`.
-        "boot": episode_bootstrap_ci(rets, bars, h, rets_pool=rets_pool),
+        "boot": episode_bootstrap_ci(rets, bars, h, rets_pool=rets_pool, pool_scale=pool_scale),
         # Era visibility (evidence-only): the same three eras for every cell, this pool's
         # n / mean per era — an era holds each entry bar's rows entirely, so its mean sums the
         # pool values (its rows, and `n`, stay `ret`'s).
@@ -721,7 +723,7 @@ def _pool_panel(
             {"start": w[0], "end": w[1], **seg}
             for w, seg in zip(
                 sub_windows,
-                subperiod_means(rets, bars, sub_edges, rets_pool=rets_pool),
+                subperiod_means(rets, bars, sub_edges, rets_pool=rets_pool, pool_scale=pool_scale),
                 strict=True,
             )
         ],
@@ -764,7 +766,7 @@ def _cells_panel(
     undef_by_combo: dict[ComboKey, np.ndarray],
     pooled_mean_ret: dict[CellKey, float],
     pooled_hac: dict[CellKey, tuple[float, float]],
-    pooled_bar_values: dict[CellKey, np.ndarray],
+    pooled_bar_numerators: dict[CellKey, BarNumerators],
 ) -> list[SummaryCell]:
     """The report's spine: ONE entry per DECLARED combo × horizon, in declaration order,
     non-firing combos included — every per-cell panel, evidence block and coverage ledger (the
@@ -825,9 +827,10 @@ def _cells_panel(
         # What a bar-closed SUM reads per closed row. A `cross_mean` basket's bar has an EXACT
         # excess sum off the raw legs — 0 wherever its selected excesses cancel (a full bar, a bar
         # of identical legs, any cancelling subset) — while its rounded per-row excesses sum to
-        # residue: each bar's first closed row reads its exact sum here, the bar's other rows
-        # 0.0 (`cross_mean_bar_values`, read at the row's own bar and member). None — every read
-        # on `ret` — outside `cross_mean`. Valid ONLY over row sets that hold each bar's rows
+        # residue: each bar's first closed row reads its exact numerator here, over the member
+        # count `pool_scale`, the bar's other rows zeros (`cross_mean_bar_numerators`, read at
+        # the row's own bar and member). None — every read on `ret` — outside `cross_mean`. Valid
+        # ONLY over row sets that hold each bar's rows
         # entirely or not at all: the pooled panel's bootstrap draws and eras, the cross-target
         # episodes (one bar, one window, one episode), and a bucket over a bar it holds whole
         # (the buckets find those themselves, below) — never a per-target panel, which holds one
@@ -836,12 +839,14 @@ def _cells_panel(
         # |ret| mass, tie order) keeps `ret`: a row's excess is its own, only its bar's SUM is
         # exact.
         rets_pool: np.ndarray | None = None
-        bar_values = pooled_bar_values.get(combo_key)
-        if bar_values is not None:
+        pool_scale = 1
+        numerators = pooled_bar_numerators.get(combo_key)
+        if numerators is not None:
             member = rows_closed["target"].map({t: g for g, t in enumerate(targets)})
-            rets_pool = bar_values[
+            rets_pool = numerators.at(
                 rows_closed["entry_bar"].to_numpy(dtype=np.int64), member.to_numpy(dtype=np.int64)
-            ]
+            )
+            pool_scale = len(targets)
 
         # The combo's undefined-decision mask. The lookup is by construction a hit (the declared
         # cell recorded the very combo tuple the mask was stored under); if it ever missed,
@@ -938,7 +943,13 @@ def _cells_panel(
                 for tgt in targets
             }
             pooled_panel = _pool_panel(
-                rows_closed, prc, dc["h"], sub_edges, sub_windows, rets_pool=rets_pool
+                rows_closed,
+                prc,
+                dc["h"],
+                sub_edges,
+                sub_windows,
+                rets_pool=rets_pool,
+                pool_scale=pool_scale,
             )
             if combo_key in pooled_mean_ret:
                 # `cross_mean`: the pool's excess mean from the raw legs, so the full-basket
@@ -970,7 +981,11 @@ def _cells_panel(
         # lands whole in ONE ordinal (a basket-wide feature on bars the members fire together)
         # at its exact sum, every other row at its `ret`.
         buckets = cell_conditional_buckets(
-            rows_closed, feature_names, rets_pool=rets_pool, commensurable=commensurable
+            rows_closed,
+            feature_names,
+            rets_pool=rets_pool,
+            pool_scale=pool_scale,
+            commensurable=commensurable,
         )
         cell: SummaryCell = {
             **head,
@@ -983,7 +998,10 @@ def _cells_panel(
             # mass-conserving. In basket mode the same cross-target merge makes it the pooled
             # ledger for free — and its episode means sum the pool values (`rets_pool`).
             "episodes": episode_ledger(
-                rows_closed, rets_pool=rets_pool, commensurable=commensurable
+                rows_closed,
+                rets_pool=rets_pool,
+                pool_scale=pool_scale,
+                commensurable=commensurable,
             ),
             # The episode-deduplicated TWIN of the row-level statistics (evidence-only): the
             # same frozen cross-target merge, one aggregate per episode, the same statistic
@@ -991,7 +1009,10 @@ def _cells_panel(
             # as ONE episode here, and row-vs-episode divergence is the visible cluster
             # diagnostic. Reported, never a correction.
             "episode_profile": episode_profile(
-                rows_closed, rets_pool=rets_pool, commensurable=commensurable
+                rows_closed,
+                rets_pool=rets_pool,
+                pool_scale=pool_scale,
+                commensurable=commensurable,
             ),
             "outcome_coverage": cov,
             "signal_coverage": sig,
@@ -1030,7 +1051,7 @@ class _GridResult(NamedTuple):
     cross_breadth: list[CrossBreadthEntry]
     pooled_mean_ret: dict[CellKey, float]
     pooled_hac: dict[CellKey, tuple[float, float]]
-    pooled_bar_values: dict[CellKey, np.ndarray]
+    pooled_bar_numerators: dict[CellKey, BarNumerators]
 
 
 def _measure_grid(
@@ -1108,12 +1129,12 @@ def _measure_grid(
     # support floor's `mean_ret > 0` graded that residue. Mounted as `pooled.mean_ret`. Beside
     # it the pooled HAC around that mean over every bar's exact excess sum, from the same raw
     # legs (`pooled.t_hac` / `hac_se`, so `t_hac` IS `mean_ret / hac_se`), and the cell's bar
-    # values — each bar's exact excess sum on its first closed member — which the cell's other
-    # bar-closed sums read (`_cells_panel`'s `rets_pool` and its bucket means, and the grid's
-    # CSCV split means).
+    # numerators — each bar's exact numerator on its first closed member, over the member count
+    # — which the cell's other bar-closed sums read (`_cells_panel`'s `rets_pool` and its bucket
+    # means, and the grid's CSCV split means).
     pooled_mean_ret: dict[CellKey, float] = {}
     pooled_hac: dict[CellKey, tuple[float, float]] = {}
-    pooled_bar_values: dict[CellKey, np.ndarray] = {}
+    pooled_bar_numerators: dict[CellKey, BarNumerators] = {}
     exact_pooled_mean = basket and bench_mode == "cross_mean"
     for combo, entry in vectorize.iter_param_assignments(thesis.entry, thesis.axes):
         n_combos_attempted += 1
@@ -1279,7 +1300,7 @@ def _measure_grid(
                 mean_ret = cross_mean_pooled_mean(hf.raw, closed_mask)
                 pooled_mean_ret[combo_key] = mean_ret
                 pooled_hac[combo_key] = cross_mean_pooled_hac(fwd, hf.raw, closed_mask, mean_ret, h)
-                pooled_bar_values[combo_key] = cross_mean_bar_values(hf.raw, closed_mask)
+                pooled_bar_numerators[combo_key] = cross_mean_bar_numerators(hf.raw, closed_mask)
 
     return _GridResult(
         frames=frames,
@@ -1292,7 +1313,7 @@ def _measure_grid(
         cross_breadth=cross_breadth,
         pooled_mean_ret=pooled_mean_ret,
         pooled_hac=pooled_hac,
-        pooled_bar_values=pooled_bar_values,
+        pooled_bar_numerators=pooled_bar_numerators,
     )
 
 
@@ -1505,7 +1526,7 @@ def run_backtest(thesis: Thesis, md: MarketData) -> EventStudyResult:
         undef_by_combo,
         grid.pooled_mean_ret,
         grid.pooled_hac,
-        grid.pooled_bar_values,
+        grid.pooled_bar_numerators,
     )
     # ---- the summary: the run-level stamps (what was measured, over what geometry, in which
     # algebra — everything that is a property of the run, not of any hypothesis) and the per-cell
@@ -1521,7 +1542,7 @@ def run_backtest(thesis: Thesis, md: MarketData) -> EventStudyResult:
         cross_breadth,
         n_combos_attempted,
         cells,
-        grid.pooled_bar_values,
+        grid.pooled_bar_numerators,
     )
 
     return EventStudyResult(

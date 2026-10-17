@@ -10,7 +10,7 @@ from itertools import pairwise
 import numpy as np
 
 from seikan.analysis._episodes import overlap_clusters
-from seikan.analysis._pools import _ddof1_std, exact_sum
+from seikan.analysis._pools import _ddof1_std, exact_mean, exact_sum
 from seikan.types import (
     EpisodeBootstrapCI,
 )
@@ -45,6 +45,7 @@ def episode_bootstrap_ci(
     h: int,
     *,
     rets_pool: np.ndarray | None = None,
+    pool_scale: int = 1,
     n_boot: int = BOOT_N,
     ci: float = BOOT_CI,
     min_episodes: int = BOOT_MIN_EPISODES,
@@ -75,19 +76,19 @@ def episode_bootstrap_ci(
     double nulls ``boot_se`` — each with ``reason="not_representable"``.
 
     ``rets_pool`` (row-aligned with ``rets``; default ``rets`` itself) is what the episode sums
-    ADD — a ``cross_mean`` basket's pooled panel hands in its bar values, each bar's EXACT excess
-    sum on its first closed row and 0.0 on the rest (``_pools.cross_mean_bar_values``; NaN where a
-    bar's sum left the double range, which nulls the interval like an overflowed episode sum). An
-    episode holds each bar's rows entirely (one bar, one window), so every draw sums whole bars
-    and each bar's sum survives resampling exactly. Everything else stays on ``rets``: the
-    canonical (bar, ret) order (the pool values break only the ties left in it, so row order
-    stays irrelevant), the seed digest (so the draw stream is the one ``rets`` alone would give)
-    and the episodes.
+    ADD, over ``pool_scale`` — a ``cross_mean`` basket's pooled panel hands in its bar
+    numerators, each bar's exact parts on its first closed row and zeros on the rest, over the
+    member count (``_pools.cross_mean_bar_numerators``; NaN where a bar's sum left the double
+    range, which nulls the interval like an overflowed episode sum). An episode holds each bar's
+    rows entirely (one bar, one window), so each episode sum is its bars' exact numerator sum,
+    correctly rounded, and a draw divides the sum of its episodes' sums by ``pool_scale`` times
+    its row count once. Everything else stays on ``rets``: the canonical (bar, ret) order, the
+    seed digest (so the draw stream is the one ``rets`` alone would give) and the episodes.
     """
     rets = np.asarray(rets, dtype=float)
     bars = np.asarray(entry_bars, dtype=np.int64)
     pool = rets if rets_pool is None else np.asarray(rets_pool, dtype=float)
-    if pool.shape != rets.shape:
+    if pool.shape[0] != rets.shape[0]:
         raise ValueError(
             f"rets_pool must be row-aligned with rets: shape {pool.shape} != {rets.shape}"
         )
@@ -109,13 +110,9 @@ def episode_bootstrap_ci(
     # lexsort, not a stable bars-only sort: the seed digest below hashes the sorted BYTES, so
     # tied-bar rows (the basket pooled pool) must land in one canonical order or the caller's
     # row order would pick the draw stream. (rets, bars) is canonical: within a bar, rows sort
-    # by return. `pool` rides the same permutation and only breaks ties left in (bar, ret) —
-    # rows equal in both, so the sorted bars/rets bytes and the digest stay the two-key ones,
-    # while the episode sums add in one canonical order whatever pool values a caller hands in
-    # (exact sums, `exact_sum`, whatever that order). Ordering on `pool` INSTEAD of `rets`
-    # would hand a bar's tied zeros — and with them the hashed `rets` — back to the caller's
-    # row order.
-    order = np.lexsort((rets, bars) if rets_pool is None else (pool, rets, bars))
+    # by return. `pool` rides the same permutation; rows tied on (bar, ret) may still carry
+    # different pool values in the caller's order, which no episode sum sees (each one exact).
+    order = np.lexsort((rets, bars))
     bars, rets, pool = bars[order], rets[order], pool[order]
     clusters = overlap_clusters(bars, bars + int(h))
     n_ep = len(clusters)
@@ -123,12 +120,12 @@ def episode_bootstrap_ci(
     if n_ep < min_episodes:
         out["reason"] = "insufficient_episodes"
         return out
-    if float(pool.max()) == float(pool.min()):
+    if (pool == pool[0]).all():
         out["n_boot"] = int(n_boot)
-        # Every value is equal, so `pool[0]` IS their exact mean — the `mean_ret` the pool
-        # reports (`_pools.exact_mean`), where a computed mean read an ulp off it (0.3 as
-        # 0.29999999999999993) and an overflowed sum a null interval beside `boot_se` 0.0.
-        out["ci_lo"] = out["ci_hi"] = float(pool[0])
+        # Every row adds the same value, so every draw's mean is that value — the exact mean
+        # `_pools.exact_mean` reads (`mean_ret`), where a computed mean read an ulp off it (0.3
+        # as 0.29999999999999993) and an overflowed sum a null interval beside `boot_se` 0.0.
+        out["ci_lo"] = out["ci_hi"] = exact_mean(pool, pool_scale)
         out["boot_se"] = 0.0
         return out
     # Clusters partition the sorted rows into CONTIGUOUS runs (the greedy merge walks the rows in
@@ -137,7 +134,7 @@ def episode_bootstrap_ci(
     starts = np.fromiter((c[0] for c in clusters), dtype=np.int64, count=n_ep)
     ep_counts = np.diff(np.append(starts, rets.size))
     ep_sums = np.array(
-        [exact_sum(pool[a:b]) for a, b in pairwise([*starts.tolist(), int(pool.size)])]
+        [exact_sum(pool[a:b]) for a, b in pairwise([*starts.tolist(), int(rets.size)])]
     )
 
     digest = hashlib.sha256(np.int64(h).tobytes() + bars.tobytes() + rets.tobytes()).digest()
@@ -152,7 +149,9 @@ def episode_bootstrap_ci(
         while done < n_boot:
             rows = min(rows_per_chunk, n_boot - done)
             idx = rng.integers(0, n_ep, size=(rows, n_ep))
-            stats_arr[done : done + rows] = ep_sums[idx].sum(axis=1) / ep_counts[idx].sum(axis=1)
+            stats_arr[done : done + rows] = ep_sums[idx].sum(axis=1) / (
+                pool_scale * ep_counts[idx].sum(axis=1)
+            )
             done += rows
 
     out["n_boot"] = int(n_boot)

@@ -48,9 +48,10 @@ from seikan.analysis._episodes import (
 )
 from seikan.analysis._hac import cross_mean_pooled_hac, newey_west_mean, nonoverlap_count
 from seikan.analysis._pools import (
+    BarNumerators,
     benchmark_regression,
     concentration,
-    cross_mean_bar_values,
+    cross_mean_bar_numerators,
     cross_mean_pooled_mean,
     edge_ratio,
     exact_mean,
@@ -77,12 +78,13 @@ __all__ = [
     "BUCKET_MIN_N",
     "EPISODE_LIST_MAX",
     "STATISTICS_VERSION",
+    "BarNumerators",
     "baseline_summary",
     "benchmark_regression",
     "cell_conditional_buckets",
     "concentration",
     "conditional_buckets",
-    "cross_mean_bar_values",
+    "cross_mean_bar_numerators",
     "cross_mean_pooled_hac",
     "cross_mean_pooled_mean",
     "cscv_pbo",
