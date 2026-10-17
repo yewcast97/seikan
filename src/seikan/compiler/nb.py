@@ -1126,9 +1126,9 @@ def zscore_ema_1d(
 @njit(cache=True)
 def ema_1d(arr: npt.NDArray[np.float64], alpha: float, warmup: int) -> npt.NDArray[np.float64]:
     """EMA with decay ``alpha`` (``ema_params``): seeded at the first finite value, NaN-skipping
-    (past the input's init the builder reads a NaN as a hole the series has no value after —
-    ``vectorize._transform``), NaN until ``warmup`` observations — the same warmup convention as
-    the EMA inside ``zscore_ema``.
+    (past the input's init the builder reads a NaN below decay 1 as a hole the series has no value
+    after — ``vectorize._transform``; at decay 1 every update is the input itself), NaN until
+    ``warmup`` observations — the same warmup convention as the EMA inside ``zscore_ema``.
 
     The update is a convex combination, so its exact value lies between ``e`` and ``x`` —
     strictly, for ``alpha < 1``: it never reaches ``x``. The rounded one is held there, one ulp

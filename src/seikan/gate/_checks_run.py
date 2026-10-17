@@ -220,9 +220,9 @@ def _check_source_coverage(s: Mapping[str, object], t: GateThresholds) -> GateCh
       it moves no decision and is ledgered nowhere.
     - **A warmup steps over it.** A hole inside a windowed transform's warmup leaves its windows
       NaN a while longer, so the series initializes later and the bars between read as warmup,
-      never undecided. (A transform that carries state across bars — ``ema``, ``zscore_ema``, the
-      expanding extrema — has no value from a hole in its input on, so the root reads that hole
-      undecided and ``signal_coverage`` refuses it as well.)
+      never undecided. (A transform that carries state across bars — ``ema`` below decay 1,
+      ``zscore_ema``, the expanding extrema — has no value from a hole in its input on, so the root
+      reads that hole undecided and ``signal_coverage`` refuses it as well.)
 
     Counting availability at the source puts no operator between the hole and the count. A source
     that merely STARTS LATE is warmup, not a hole (its ``first_available`` is reported as

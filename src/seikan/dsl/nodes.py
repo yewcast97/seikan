@@ -222,8 +222,8 @@ class DaysSince(_Strict):
 
 
 class EMA(_Strict):
-    # Exponentially weighted mean of ``input``, seeded at the first finite value; no value from a
-    # hole in its input on (``vectorize._transform``).
+    # Exponentially weighted mean of ``input``, seeded at the first finite value; below decay 1, no
+    # value from a hole in its input on (``vectorize._transform``).
     # EXACTLY ONE of ``window`` / ``alpha``: ``window`` sets ``alpha = 2/(window+1)`` with a
     # ``window``-observation warmup (the classic span form); ``alpha`` states the decay directly
     # (``2**-30 <= alpha <= 1`` — RiskMetrics 0.06; Wilder's 1/N smoother is ``alpha = 1/N`` with
@@ -231,8 +231,8 @@ class EMA(_Strict):
     # agree bit-exactly where ``alpha = 2/(window+1)`` for every window below 5,935,198 bars (past
     # it the float reciprocal's error outgrows ``nb.ema_params``' rounding and the alpha form can
     # warm one bar later, same values); the alpha floor, a power of two, is exactly the window
-    # ceiling (``MAX_BAR_COUNT_PARAM``). ``alpha = 1`` is the input itself. A list sweeps as
-    # ``ema_window`` / ``ema_alpha`` by which field is set.
+    # ceiling (``MAX_BAR_COUNT_PARAM``). ``alpha = 1`` is the input itself, hole for hole. A list
+    # sweeps as ``ema_window`` / ``ema_alpha`` by which field is set.
     type: Literal["ema"] = "ema"
     input: Series
     window: PosIntParam | None = None

@@ -586,12 +586,13 @@ def _init_at_lag(init: npt.NDArray[np.bool_], periods: int) -> npt.NDArray[np.bo
 
 def _carries_state(node: Series) -> bool:
     """Whether a single-input transform's value reads EVERY input bar since the input's init — a
-    recursion (``ema``, the EW ``zscore``) or an expanding extremum (``rolling_agg``,
-    ``drawdown``, ``runup``, ``bars_since_extremum`` with ``window`` omitted) — rather than a
-    trailing window or a lag."""
+    recursion (``ema`` below decay 1, the EW ``zscore``) or an expanding extremum
+    (``rolling_agg``, ``drawdown``, ``runup``, ``bars_since_extremum`` with ``window`` omitted) —
+    rather than a trailing window or a lag. An ``ema`` at decay 1 (``alpha = 1``, ``window = 1``)
+    is its input itself (``nb.ema_1d``), hole for hole."""
     match node:
-        case EMA():
-            return True
+        case EMA(window=w, alpha=a):
+            return nb.ema_params(cast("int | None", w), cast("float | None", a))[0] < 1.0
         case ZScore(mean_type=mean_type):
             return mean_type == "ema"
         case (

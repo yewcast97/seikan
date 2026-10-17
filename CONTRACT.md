@@ -758,13 +758,14 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   the input carried before its init is not its own and settles nothing): identical to its own
   finiteness latch for plain data, and what keeps a reader of a `cross_agg` broadcast into a
   member whose own input has not started from latching early (the broadcast itself waits for the
-  member's own first value). A transform that carries state across bars — `ema`, `zscore` over an
-  EW mean, and the expanding (`window`-less) `rolling_agg` / `drawdown` / `runup` /
-  `bars_since_extremum` — has no value from its input's first post-init hole on: its kernel skips
-  a NaN, and the state it carried across one (a peak the hidden bar may have set, a mean it would
-  have moved) read as decided on every later bar, a domain NaN (`log` of a non-positive value)
-  ledgered nowhere — `expanding_max(mask(log(z) > 0)) < 0.5` fired on every bar after a `z` of −1,
-  as after a 1, where a 2 stops it. So it is NaN and initialized from there: undecidable to a
+  member's own first value). A transform that carries state across bars — `ema` below decay 1
+  (at `alpha = 1` it is its input, hole for hole), `zscore` over an EW mean, and the expanding
+  (`window`-less) `rolling_agg` / `drawdown` / `runup` / `bars_since_extremum` — has no value
+  from its input's first post-init hole on: its kernel skips a NaN, and the state it carried
+  across one (a peak the hidden bar may have set, a mean it would have moved) read as decided on
+  every later bar, a domain NaN (`log` of a non-positive value) ledgered nowhere —
+  `expanding_max(mask(log(z) > 0)) < 0.5` fired on every bar after a `z` of −1, as after a 1,
+  where a 2 stops it. So it is NaN and initialized from there: undecidable to a
   threshold over it, a hole to a series computed from it (a reader still warming when it dies
   warms on), while a trailing window or a lag is decided again once it reads past the hole. A
   cross node enters a member only with an initialized input, and

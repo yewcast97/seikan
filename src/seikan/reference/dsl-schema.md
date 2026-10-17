@@ -309,9 +309,9 @@ informative once everyone already trades them.
 A HOLE — a NaN after the input has initialized: a missing value, a domain NaN like `log` of a
 non-positive value, an overflow — reaches each transform through what it reads. A trailing window
 or a lag is NaN only while it reads the hole and decided again after (a hole inside its warmup
-only delays its first value). A transform that carries state across bars — `ema`, `zscore` with
-`mean_type: "ema"`, and `rolling_agg` / `drawdown` / `runup` / `bars_since_extremum` with `window`
-omitted — has NO value from its input's first hole on: its state after the hole depends on what
+only delays its first value). A transform that carries state across bars — `ema` below
+`alpha = 1`, `zscore` with `mean_type: "ema"`, and `rolling_agg` / `drawdown` / `runup` /
+`bars_since_extremum` with `window` omitted — has NO value from its input's first hole on: its state after the hole depends on what
 the hole hid (a peak it may have set, a mean it would have moved), so it is NaN and initialized
 from there, and every decision over it is undecidable (`signal_coverage`), a hole before its first
 value included. A leading NaN, the input still warming, is warmup as everywhere.
@@ -406,17 +406,18 @@ bits (the two-pass form about its offset), and every EW z-score whose recurrence
 range reads that recurrence's value to its rounding.
 
 - `ema` (input, exactly one of `window` / `alpha`) — exponentially weighted mean of any Series,
-  seeded at the first finite value, with no value from a hole in its input on (above). `window`
-  sets `alpha = 2/(window+1)` with a
-  `window`-observation warmup (the classic span form); `alpha` states the decay directly
+  seeded at the first finite value, with no value from a hole in its input on below `alpha = 1`
+  (above). `window` sets `alpha = 2/(window+1)` with a `window`-observation warmup (the classic
+  span form); `alpha` states the decay directly
   (`2^-30 ≤ alpha ≤ 1`, e.g. RiskMetrics `0.06`) with warmup `ceil(2/alpha − 1)` observations, so
   the two forms agree bit-exactly where `alpha = 2/(window+1)` for every window below 5,935,198
   bars (past it the float reciprocal's error can warm the alpha form one bar later, same values).
   The floor `2^-30` (`9.313225746154785e-10`) is the bar-count ceiling restated — a power of two,
   its warmup is exactly `2^31 − 1` bars, the longest any window may declare (see "All windows …
   are bar counts" below) — and a smaller alpha refuses at parse (exit 3). Wilder's 1/N smoother is
-  `alpha = 1/N` with THIS seed (not an SMA seed); `alpha = 1` is the input itself. A list sweeps
-  as `ema_window` / `ema_alpha` by which field is set. Rendered `ema(x,20)` / `ema(x,a=0.06)`.
+  `alpha = 1/N` with THIS seed (not an SMA seed); `alpha = 1` (`window = 1`) is the input itself,
+  hole for hole — undefined on the hole's bar only, like the input. A list sweeps as `ema_window`
+  / `ema_alpha` by which field is set. Rendered `ema(x,20)` / `ema(x,a=0.06)`.
 - `zscore` (input, exactly one of `window` / `alpha`, mean_type `"sma"|"ema"` default `"sma"`)
   — `(x − mean) / std`: `sma` uses two-pass population moments over the last `window` bars,
   about the window's first value (so a spread at the level's ulp keeps its z, and two points

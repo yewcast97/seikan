@@ -146,9 +146,10 @@ def _ref_series(node, df) -> np.ndarray:
 
 def _ref_stateful(node) -> bool:
     """The transforms whose value reads every input bar since the input's init: the EW
-    recursions and the expanding extrema (``window`` omitted)."""
+    recursions below decay 1 (at ``alpha = 1`` / ``window = 1`` the update is the input) and the
+    expanding extrema (``window`` omitted)."""
     if node.type == "ema":
-        return True
+        return node.alpha != 1.0 and node.window != 1
     if node.type == "zscore":
         return node.mean_type == "ema"
     expanding = ("rolling_agg", "drawdown", "runup", "bars_since_extremum")
@@ -1905,6 +1906,29 @@ def test_a_windowed_or_lagged_transform_is_decided_again_past_a_hole():
     ):
         cond = ThresholdCondition(left=series, op=">", right=Constant(value=-1.0))
         np.testing.assert_array_equal(vz.undefined_mask(cond, md).ravel(), np.isin(bars, holed))
+
+
+def test_an_ema_at_decay_one_is_its_input_hole_for_hole():
+    # At alpha 1 (window 1) every EW update is the input itself, so there is no state to carry
+    # across a hole. `ema(log(x), alpha=1)` over x = 2 but a −1 on bar 20 read undefined from bar
+    # 20 on — 80 bars `log(x) > 0` decides. It is `log(x)` bit for bit: undefined on bar 20 alone
+    # and firing on the other 99. Alpha 0.9 carries state, so it has no value from the hole on.
+    x = np.full(100, 2.0)
+    x[20] = -1.0
+    md = _hole_md(x)
+    bars = np.arange(100)
+    log_x = UnaryOp(input=External(name="x"), op="log")
+    want = [f.to_numpy().ravel() for f in vz.build_series(log_x, md)]
+    for node in (EMA(input=log_x, alpha=1.0), EMA(input=log_x, window=1)):
+        got = [f.to_numpy().ravel() for f in vz.build_series(node, md)]
+        np.testing.assert_array_equal(got[0], want[0])
+        np.testing.assert_array_equal(got[1], want[1])
+        cond = ThresholdCondition(left=node, op=">", right=Constant(value=0.0))
+        np.testing.assert_array_equal(vz.undefined_mask(cond, md).ravel(), bars == 20)
+        assert int(vz.signal(cond, md).to_numpy().sum()) == 99
+    decaying = EMA(input=log_x, alpha=0.9)
+    cond = ThresholdCondition(left=decaying, op=">", right=Constant(value=0.0))
+    np.testing.assert_array_equal(vz.undefined_mask(cond, md).ravel(), bars >= 20)
 
 
 # ---- warmup has no truth value; negation waits for its whole operand -----------------------
