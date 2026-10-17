@@ -16,6 +16,7 @@ error`` turns into an exception out of the run).
 from __future__ import annotations
 
 import math
+import sys
 from fractions import Fraction
 from typing import NamedTuple
 
@@ -162,6 +163,35 @@ def exact_mean(v: np.ndarray, scale: int = 1) -> float:
     return exact_sum(v) / (scale * n)
 
 
+#: The least mass no double holds — the largest double plus half its ulp, where an exact sum rounds
+#: to inf. A pool whose |return| mass reaches it has no shares (:func:`mass_share`).
+_PAST_DOUBLE = Fraction(sys.float_info.max) + Fraction(math.ulp(sys.float_info.max)) / 2
+
+
+def exact_mass(v: np.ndarray) -> Fraction:
+    """The EXACT |return| mass of ``v`` — the rational sum of its magnitudes, taken from the
+    sum's exact parts (:func:`_exact_parts`) where a double holds it and from the terms
+    themselves past that."""
+    mag = np.abs(np.asarray(v, dtype=float)).ravel().tolist()
+    parts = _exact_parts(mag)
+    return sum(map(Fraction, mag if parts is None else parts), Fraction(0))
+
+
+def mass_share(part: Fraction, whole: Fraction) -> float:
+    """``part / whole`` — the correctly rounded value of the EXACT quotient of two masses, the
+    one share arithmetic (``top_share_abs``, the episode shares, ``member_share``). Rounded once,
+    monotonically: no share passes 1 (``part <= whole``), one pool's shares are ordered as its
+    masses are, and the largest of ``k`` shares is at least the correctly rounded ``1/k`` — which
+    the quotient of two separately rounded masses was not: three clusters of ``1 + 2**-53 −
+    2**-60`` and twice ``1 + 2**-54 + 2**-60`` read 0.33333333333333326 for a share no smaller
+    than a third. NaN where ``whole`` is 0 or no double holds it (:data:`_PAST_DOUBLE`): a zero
+    mass has no shares, and an overflowed one read ``x / inf = 0.0`` — a perfectly spread pool
+    the ceiling passes."""
+    if whole <= 0 or whole >= _PAST_DOUBLE:
+        return _NAN
+    return float(part / whole)
+
+
 def _finite_ratio(num: float, den: float) -> float:
     """``num / den`` where both operands and the quotient are finite (and ``den != 0``), else NaN.
 
@@ -267,9 +297,9 @@ def concentration(rets: np.ndarray, top_frac: float = 0.05) -> ConcentrationBloc
     (``n_nonoverlap`` shows overlap inflation, this shows MASS concentration). The per-cell
     concentration checklist reads ``top_share_abs`` against a ceiling; an empty pool yields NaN,
     which that checklist refuses rather than waves through — and so does a pool whose total
-    |return| mass leaves the double range (:func:`_finite_ratio`). Both masses are exactly
-    rounded sums, so the top's never exceeds the total's and the share never exceeds 1: summed
-    in floating point, five masses among 95 zeros read 1.0000000000000002."""
+    |return| mass leaves the double range (:func:`mass_share`). The share is the correctly
+    rounded exact quotient of exact masses, so it never exceeds 1: summed in floating point,
+    five masses among 95 zeros read 1.0000000000000002."""
     rets = np.asarray(rets, dtype=float)
     rets = rets[~np.isnan(rets)]
     n = rets.shape[0]
@@ -277,9 +307,7 @@ def concentration(rets: np.ndarray, top_frac: float = 0.05) -> ConcentrationBloc
         return {"top_share_abs": _NAN, "n_top": 0, "top_frac": float(top_frac)}
     k = max(1, math.ceil(top_frac * n))
     mag = np.sort(np.abs(rets))[::-1]
-    total = exact_sum(mag)
-    # an OVERFLOWED total mass read top/inf = 0.0 — "no concentration", which the ceiling passes
-    share = _finite_ratio(exact_sum(mag[:k]), total) if total > 0 else _NAN
+    share = mass_share(exact_mass(mag[:k]), exact_mass(mag))
     return {"top_share_abs": share, "n_top": int(k), "top_frac": float(top_frac)}
 
 

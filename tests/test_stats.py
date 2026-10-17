@@ -2493,6 +2493,73 @@ def test_episode_stats_mass_hhi_hand_computed():
     assert np.isnan(zero["mass_hhi"]) and np.isnan(zero["effective_n_clusters"])
 
 
+def test_mass_shares_are_the_correctly_rounded_exact_quotients():
+    # Three disjoint episodes whose |return| rows are [1, 127·2**-60], [1, 65·2**-60] and
+    # [1, 65·2**-60]: the first holds more than a third of the pool's mass, yet the quotient of
+    # its ROUNDED mass over the rounded total — 1.0 over 3 + 2**-51, each sum rounded the other
+    # way — read 0.33333333333333326, an ulp under the correctly rounded 1/3: a share the
+    # gate's pigeonhole floor would refuse off an honest pool. Every share is now the correctly
+    # rounded value of the exact quotient, 0.33333333333333337 here, and so at least
+    # 1/n_clusters for the largest — in episode_stats, the ledger and the top-share read alike.
+    day = pd.Timedelta(days=1)
+    base = pd.Timestamp("2021-01-01")
+    rows = [1.0, 127 * 2.0**-60, -1.0, 65 * 2.0**-60, 1.0, -65 * 2.0**-60]
+    frame = pd.DataFrame(
+        {
+            "entry_time": [base + d * day for d in (0, 1, 100, 101, 200, 201)],
+            "exit_time": [base + d * day for d in (5, 6, 105, 106, 205, 206)],
+            "ret": rows,
+        }
+    )
+    masses = [sum(map(Fraction, map(abs, rows[i : i + 2]))) for i in (0, 2, 4)]
+    total = sum(masses)
+    assert masses[0] >= total / 3
+    rounded = math.fsum(np.abs(rows[:2])) / math.fsum(np.abs(rows))  # the quotient it read
+    assert rounded == 0.33333333333333326 < 1 / 3
+    want = float(masses[0] / total)
+    assert want == 0.33333333333333337 >= 1 / 3
+    out = episode_stats(frame)
+    assert out["n_clusters"] == 3
+    assert out["max_cluster_share_abs"] == out["largest_cluster_share_abs"] == want
+    ledger = episode_ledger(frame)
+    assert [e["share_abs"] for e in ledger["entries"]] == [float(m / total) for m in masses]
+    omitted = episode_ledger(frame, cap=1)["omitted_share_abs"]
+    assert omitted == float((masses[1] + masses[2]) / total)
+    assert concentration(np.array(rows))["top_share_abs"] == float(Fraction(1) / total)
+
+
+def test_every_mass_share_is_the_exact_quotient_on_random_pools():
+    # On random pools every emitted share — the episode ceiling read and its by-count twin, the
+    # ledger's entries and the top-share read — is the correctly rounded exact quotient of the
+    # cluster's exact mass over the pool's, and the largest is at least 1/n_clusters.
+    rng = np.random.default_rng(14)
+    day = pd.Timedelta(days=1)
+    base = pd.Timestamp("2020-01-01")
+    for _ in range(40):
+        sizes = rng.integers(1, 5, int(rng.integers(2, 7)))
+        rets = [float(r) for r in rng.standard_normal(int(sizes.sum())) * 0.01]
+        days = [100 * c + r for c, size in enumerate(sizes) for r in range(size)]
+        frame = pd.DataFrame(
+            {
+                "entry_time": [base + d * day for d in days],
+                "exit_time": [base + (d + 5) * day for d in days],
+                "ret": rets,
+            }
+        )
+        chunks = np.split(np.array(rets), np.cumsum(sizes)[:-1])  # the clusters' rows
+        masses = [sum(map(Fraction, map(abs, chunk.tolist()))) for chunk in chunks]
+        total = sum(masses)
+        out = episode_stats(frame)
+        assert out["n_clusters"] == sizes.size
+        assert out["max_cluster_share_abs"] == float(max(masses) / total) >= 1.0 / sizes.size
+        assert out["largest_cluster_share_abs"] == float(masses[int(np.argmax(sizes))] / total)
+        ledger = episode_ledger(frame)
+        assert [e["share_abs"] for e in ledger["entries"]] == [float(m / total) for m in masses]
+        top = concentration(np.array(rets))
+        largest = sorted(map(Fraction, map(abs, rets)), reverse=True)[: top["n_top"]]
+        assert top["top_share_abs"] == float(sum(largest) / total)
+
+
 def test_episode_shares_and_the_hhi_pair_hold_their_bounds():
     # A zero-mass episode (three rows of 0.0) before one of [0.1, 0.1, 0.1, 0.1, 0.2]: summed
     # pairwise, the pool's mass rounded below the episode's own, and the share read

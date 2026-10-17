@@ -13,9 +13,10 @@ import pandas as pd
 
 from seikan.analysis._pools import (
     edge_ratio,
+    exact_mass,
     exact_mean,
-    exact_sum,
     mae_block,
+    mass_share,
     mfe_block,
     pool_quantiles,
     profit_factor,
@@ -128,16 +129,15 @@ def _episode_means(pool: np.ndarray, clusters: list[list[int]], scale: int) -> n
     return np.array([exact_mean(pool[c], scale) for c in clusters])
 
 
-def _herfindahl(masses: list[float]) -> tuple[float, float]:
-    """``(mass_hhi, effective_n_clusters)`` of the clusters' |return| masses — ``Σ m² / (Σ m)²``
-    and its reciprocal, each the correctly rounded value of exact arithmetic over the masses
-    (``Fraction``: every sum and product of doubles is exact there), so they hold the ranges
-    ``[1/n, 1]`` and ``[1, n]`` the shares imply. Over rounded shares a dominant cluster beside a
-    zero-mass one read 1.0000000000000004 and 0.9999999999999996, and five equal episodes of 0.3
-    an effective 5.000000000000001. Takes a positive total mass (the shares' domain rule)."""
-    m = [Fraction(x) for x in masses]
-    total = sum(m, Fraction(0))
-    square = sum((x * x for x in m), Fraction(0))
+def _herfindahl(masses: list[Fraction]) -> tuple[float, float]:
+    """``(mass_hhi, effective_n_clusters)`` of the clusters' exact |return| masses —
+    ``Σ m² / (Σ m)²`` and its reciprocal, each the correctly rounded value of exact arithmetic,
+    so they hold the ranges ``[1/n, 1]`` and ``[1, n]`` the shares imply. Over rounded shares a
+    dominant cluster beside a zero-mass one read 1.0000000000000004 and 0.9999999999999996, and
+    five equal episodes of 0.3 an effective 5.000000000000001. Takes a positive total mass (the
+    shares' domain rule)."""
+    total = sum(masses, Fraction(0))
+    square = sum((m * m for m in masses), Fraction(0))
     return float(square / total**2), float(total**2 / square)
 
 
@@ -163,8 +163,9 @@ def episode_stats(trades: pd.DataFrame, *, commensurable: bool = True) -> Episod
 
     The rows are merged ACROSS targets, so a cluster is a market episode rather than a per-target
     one: an edge that is one crisis seen through three targets must not read as three episodes.
-    Every |return| mass is an exactly rounded sum, so no cluster's exceeds the pool's and no share
-    exceeds 1, and the hhi pair is exact (:func:`_herfindahl`).
+    Every |return| mass is exact and every share the correctly rounded exact quotient
+    (``_pools.mass_share``), so no share exceeds 1, the largest is at least ``1/n_clusters``,
+    and the hhi pair is exact (:func:`_herfindahl`).
     An empty or all-NaN pool — a declared cell that never fired, which is reported and never
     dropped — returns the zero panel with NaN shares; a pool whose total |return| mass leaves the
     double range has NaN shares too (every share would read ``x / inf = 0.0``, which the
@@ -187,29 +188,25 @@ def episode_stats(trades: pd.DataFrame, *, commensurable: bool = True) -> Episod
     df, entry, rets, clusters = view.df, view.entry, view.rets, view.clusters
 
     mag = np.abs(rets)
-    total = exact_sum(mag)
-    # a zero mass has no shares, an overflowed one neither, nor one summed across units
-    shareable = 0.0 < total < math.inf and not _mixes_units(df, commensurable)
-    cluster_mass = [exact_sum(mag[c]) for c in clusters]
-    largest = max(clusters, key=len)
-    share = exact_sum(mag[largest]) / total if shareable else _NAN
+    masses = [exact_mass(mag[c]) for c in clusters]
+    total = sum(masses, Fraction(0))  # the clusters partition the rows: the pool's exact mass
+    largest = max(range(len(clusters)), key=lambda i: len(clusters[i]))
     # ONE set of cluster masses feeds the ceiling read AND its smooth Herfindahl companion — the
     # ceiling sees only the LARGEST share, so two 50% episodes sail under 0.60 while hhi = 0.5
-    # says the pool is exactly two effective episodes. NaN on a zero- or overflowed-mass pool,
-    # the shares' own domain rule (evidence-only for the hhi pair; max_cluster_share_abs is the
-    # gated read).
-    if shareable:
-        max_share = max(cluster_mass) / total
-        mass_hhi, effective = _herfindahl(cluster_mass)
+    # says the pool is exactly two effective episodes. NaN on a zero- or overflowed-mass pool
+    # (`mass_share`'s domain rule) and on one summed across units (evidence-only for the hhi
+    # pair; max_cluster_share_abs is the gated read).
+    if _mixes_units(df, commensurable):
+        share = max_share = mass_hhi = effective = _NAN
     else:
-        max_share = _NAN
-        mass_hhi = _NAN
-        effective = _NAN
-    start = _iso(entry[largest[0]]) if largest else None
+        share = mass_share(masses[largest], total)
+        max_share = mass_share(max(masses), total)
+        mass_hhi, effective = (_NAN, _NAN) if math.isnan(max_share) else _herfindahl(masses)
+    start = _iso(entry[clusters[largest][0]])
     return {
         "n": len(df),
         "n_clusters": len(clusters),
-        "largest_cluster_n": len(largest),
+        "largest_cluster_n": len(clusters[largest]),
         "largest_cluster_share_abs": share,
         "largest_cluster_start": start,
         "max_cluster_share_abs": max_share,
@@ -282,13 +279,12 @@ def episode_ledger(
     pool = view.rets_pool
     mixed = _mixes_units(view.df, commensurable)
     mag = np.abs(rets)
-    total = exact_sum(mag)
-    shareable = 0.0 < total < math.inf and not mixed
+    masses = [exact_mass(mag[c]) for c in clusters]
+    total = sum(masses, Fraction(0))
 
-    def _share(rows: list[int]) -> float:
-        # the episode_stats domain rule: no share of a zero, an overflowed or a unitless mass;
-        # exact masses, so no share exceeds 1
-        return exact_sum(mag[rows]) / total if shareable else _NAN
+    def _share(mass: Fraction) -> float:
+        # the episode_stats domain rule: no share of a zero, an overflowed or a unitless mass
+        return _NAN if mixed else mass_share(mass, total)
 
     kept = clusters[: max(int(cap), 0)]
     omitted = clusters[len(kept) :]
@@ -300,16 +296,16 @@ def episode_ledger(
                 "end": _iso(exit_[c].max()),
                 "n": len(c),
                 "mean_ret": float(m),
-                "share_abs": _share(c),
+                "share_abs": _share(mass),
             }
-            for c, m in zip(kept, means, strict=True)
+            for c, m, mass in zip(kept, means, masses[: len(kept)], strict=True)
         ],
         "n_total": len(clusters),
         "n_omitted": len(omitted),
         # 0.0 when nothing was omitted (exact conservation over an empty remainder), NaN when
         # omitted clusters exist over a zero-mass pool — same domain rule as the entry shares.
         # The share of their combined mass, never a sum of rounded shares that could pass 1.
-        "omitted_share_abs": 0.0 if not omitted else _share([i for c in omitted for i in c]),
+        "omitted_share_abs": 0.0 if not omitted else _share(sum(masses[len(kept) :], Fraction(0))),
         "cap": int(cap),
     }
 

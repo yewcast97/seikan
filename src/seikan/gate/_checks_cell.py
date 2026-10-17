@@ -22,10 +22,11 @@ from seikan.gate._read import (
 from seikan.settings import GateThresholds
 from seikan.types import EXIT_REASONS
 
-#: How far a basket's member shares may sum from 1. Each share is one rounded quotient of two
-#: exactly rounded |return| masses, and those roundings enter the sum weighted by the shares
-#: themselves, so the shares' exact sum is within 3·2**-53 of 1 whatever the member count;
-#: ``math.fsum`` rounds it once more. 2**-50 holds all of it.
+#: How far a basket's member shares may sum from 1. Each share is the correctly rounded exact
+#: quotient of its member's |return| mass over the pool's — quotients that sum to exactly 1 — and
+#: those roundings enter the sum weighted by the shares themselves, so the shares' exact sum is
+#: within 2**-53 of 1 whatever the member count; ``math.fsum`` rounds it once more. 2**-50 holds
+#: all of it.
 _SHARE_SUM_TOLERANCE = 2.0**-50
 
 

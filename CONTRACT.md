@@ -543,7 +543,7 @@ horizon⌋)` (same-bar cross-member firings collapse in the greedy count, so the
 bound it), `pooled.n ≤ len(targets) × max(0, n_bars − 1 − horizon)` (each member fires at most once
 per bar and closes at most that many), and a `member_share.max_member_share_abs`
 that is a share is the largest of its `by_target` shares, string-keyed over the targets exactly
-and summing to 1 within rounding — each share one rounded quotient of exact masses, so within
+and summing to 1 within rounding — each share the correctly rounded exact quotient of exact masses, so within
 2**-50 (0.5 beside shares `{AAA: 1.0, BBB: 0.0}` met every check, and so did 0.5 beside
 `{AAA: 0.5, BBB: 0.0}`, half the pool's mass gone from its own breakdown); a `pooled` key on a conjunction cell
 REFUSES — the runner writes pooled only in basket mode (absent, not null, on conjunction
@@ -941,9 +941,12 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   one `hac_se`: rounded per row about the pool's range midpoint, three members alternating
   `[0.8, −0.4, −0.4]` and `[0, 0, 0]` beside a fourth at `2**-52` — every bar exactly at the
   mean — read a `t_hac` of 35.7, and about the reported mean returns at `1 + k·2**-52` read an SE
-  30% high. The |return|-mass shares (`top_share_abs`, the episode shares, `member_share`)
-  divide exactly rounded masses, so no
-  share passes 1 — summed in floating point, five masses among 95 zeros read a top share of
+  30% high. The |return|-mass shares (`top_share_abs`, the episode shares, `member_share`) are
+  the correctly rounded exact quotients of exact masses, so no share passes 1, one pool's shares
+  are ordered as its masses are, and the largest of `k` is at least the rounded `1/k` — which the
+  quotient of two separately rounded masses was not: three clusters of `1 + 2**-53 − 2**-60` and
+  twice `1 + 2**-54 + 2**-60` read 0.33333333333333326 for a share no smaller than a third —
+  while summed in floating point, five masses among 95 zeros read a top share of
   1.0000000000000002 — and `mass_hhi` / `effective_n_clusters` are the correctly rounded values
   of exact arithmetic over the cluster masses, the latter within `[1, n_clusters]`.
   The means a DECISION reads are exactly rounded the same way: `rolling_agg` and `cross_agg` `mean`,

@@ -1413,8 +1413,8 @@ complete statistics are still in `summary.cells[i]` — a checklist result never
   `pooled.n <= len(targets) × max(0, n_bars − 1 − horizon)` (each member fires at most once per bar
   and closes at most that many), and a
   `member_share.max_member_share_abs` that is a share is the largest of its `by_target` shares,
-  string-keyed over the targets exactly and summing to 1 within rounding (each is one rounded
-  quotient of exact masses). A `pooled` key on a conjunction cell
+  string-keyed over the targets exactly and summing to 1 within rounding (each the correctly
+  rounded exact quotient of exact masses). A `pooled` key on a conjunction cell
   REFUSES: the engine writes `pooled` only in basket mode, so a conjunction-stamped report
   carrying one can only be a basket report whose mode stamp was rewritten — the checklist reads
   it as drifted input rather than quietly grading the friendlier rubric (a conjunction stamp

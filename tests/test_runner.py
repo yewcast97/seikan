@@ -19,6 +19,7 @@ explicit refusals over silent absences.
 from __future__ import annotations
 
 import math
+from fractions import Fraction
 from pathlib import Path
 
 import numpy as np
@@ -4533,14 +4534,14 @@ def test_cross_mean_ledger_rebuilds_from_the_trades_csv_past_its_cap(tmp_path):
             clusters[-1].append(i)
             end = max(end, exit_[i])
     mass = np.abs(ret)
-    total = math.fsum(mass)
+    total = sum(map(Fraction, mass.tolist()))  # the exact mass; a share is its exact quotient
     rebuilt = [
         {
             "start": pd.Timestamp(entry[c[0]]).isoformat(),
             "end": pd.Timestamp(exit_[c].max()).isoformat(),
             "n": len(c),
             "mean_ret": float(np.mean(pool[c])),
-            "share_abs": math.fsum(mass[c]) / total,
+            "share_abs": float(sum(map(Fraction, mass[c].tolist())) / total),
         }
         for c in clusters
     ]
@@ -4548,7 +4549,7 @@ def test_cross_mean_ledger_rebuilds_from_the_trades_csv_past_its_cap(tmp_path):
     cap = led["cap"]
     assert led["n_total"] == len(rebuilt) == 52 and led["n_omitted"] == 52 - cap
     omitted = [i for c in clusters[cap:] for i in c]
-    assert led["omitted_share_abs"] == math.fsum(mass[omitted]) / total
+    assert led["omitted_share_abs"] == float(sum(map(Fraction, mass[omitted].tolist())) / total)
     for got, want in zip(led["entries"], rebuilt[:cap], strict=True):  # bars 6..20 partial
         assert {**got, "mean_ret": None} == {**want, "mean_ret": None}
         assert got["mean_ret"] == pytest.approx(want["mean_ret"], rel=1e-15)
@@ -5497,17 +5498,16 @@ def test_basket_cells_carry_a_reconciled_pooled_block(tmp_path):
         assert pooled["mean_ret"] == pytest.approx(float(pool.mean()))
         assert pooled["hit_rate"] == pytest.approx(float((pool > 0).mean()))
         # member_share is a FULL decomposition (every declared member, never ranked): shares sum
-        # to 1, the max is the max, and each share is the member's |return| mass off the frame
+        # to 1, the max is the max, and each share is the correctly rounded exact quotient of
+        # the member's exact |return| mass off the frame over the pool's
         shares = pooled["member_share"]["by_target"]
         assert set(shares) == set(s["targets"])
         assert sum(shares.values()) == pytest.approx(1.0)
         assert pooled["member_share"]["max_member_share_abs"] == pytest.approx(max(shares.values()))
-        total_mass = float(np.abs(pool).sum())
+        total_mass = sum(map(Fraction, np.abs(pool).tolist()))
         for tgt in s["targets"]:
-            mass_t = float(
-                np.abs(closed[closed["target"] == tgt]["ret"].to_numpy(dtype=float)).sum()
-            )
-            assert shares[tgt] == pytest.approx(mass_t / total_mass)
+            member = closed[closed["target"] == tgt]["ret"].to_numpy(dtype=float)
+            assert shares[tgt] == float(sum(map(Fraction, np.abs(member).tolist())) / total_mass)
         # by_target keys UNCHANGED from conjunction — pooling adds a panel, it rewrites nothing
         for st in cell["by_target"].values():
             assert set(st) == _BY_TARGET_KEYS

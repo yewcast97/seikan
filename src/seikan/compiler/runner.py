@@ -36,6 +36,7 @@ for charting and for the coverage ledgers.
 from __future__ import annotations
 
 from collections.abc import Callable
+from fractions import Fraction
 from itertools import pairwise
 from typing import Literal, NamedTuple, NotRequired, TypedDict
 
@@ -59,10 +60,11 @@ from seikan.analysis.stats import (
     episode_ledger,
     episode_profile,
     episode_stats,
+    exact_mass,
     exact_mean,
-    exact_sum,
     feature_outcome_association,
     mae_block,
+    mass_share,
     mfe_block,
     pool_moments,
     pool_quantiles,
@@ -873,7 +875,7 @@ def _cells_panel(
         # signal itself already embodies in basket mode).
         fa: dict[str, dict[str, FeatureAssociation]] = {}
         # Per-member |return|-mass, the raw material of the basket's `member_share` decomposition.
-        mass_by_target: dict[str, float] = {}
+        mass_by_target: dict[str, Fraction] = {}
         for g, tgt in enumerate(targets):
             idx_t = target_groups.get((ci, g))
             rows_t = trades.iloc[idx_t] if idx_t is not None else empty_rows
@@ -908,7 +910,7 @@ def _cells_panel(
                 "n_bars": int(n_bars),
                 "n_undefined": int(undef[:, g].sum()),
             }
-            mass_by_target[tgt] = exact_sum(np.abs(rets_t))  # NaN past the range (see below)
+            mass_by_target[tgt] = exact_mass(rets_t)
             for fname in feature_names:
                 vals = closed_t[fname].to_numpy(dtype=float) if not closed_t.empty else np.empty(0)
                 fa.setdefault(fname, {})[tgt] = feature_outcome_association(vals, rets_t)
@@ -930,18 +932,16 @@ def _cells_panel(
             # carried the pool is exactly what an industry report needs, and is never a
             # per-member verdict.
             prc = pooled_per_cell.get(combo_key, _MISSING_RELIABILITY)
-            # The pooled rows' exactly rounded |return| mass: no member's exact mass exceeds it,
-            # so no share passes 1. An OVERFLOWED total is NaN and has no shares either — every
-            # member's would read x / inf = 0.0, a perfectly spread basket the ceiling passes —
-            # by the zero-mass rule below.
-            total_mass = exact_sum(np.abs(rows_closed["ret"].to_numpy(dtype=float)))
-            # A full decomposition over every declared member, NEVER ranked — the raw material
-            # of the "not one name" ceiling. Zero total mass → NaN shares, which the checklist
+            # The pool's exact |return| mass is its members' (the targets partition the closed
+            # rows), and each member's share the correctly rounded exact quotient (`mass_share`:
+            # no share passes 1, and they sum to 1 within one rounding each). A zero mass has no
+            # shares, nor has one past the double range (every member's would read x / inf =
+            # 0.0, a perfectly spread basket the ceiling passes): NaN, which the checklist
             # refuses rather than waves through (the empty-pool concentration precedent).
-            member_share = {
-                tgt: (mass_by_target[tgt] / total_mass if total_mass > 0 else _NAN)
-                for tgt in targets
-            }
+            total_mass = sum(mass_by_target.values(), Fraction(0))
+            # A full decomposition over every declared member, NEVER ranked — the raw material
+            # of the "not one name" ceiling.
+            member_share = {tgt: mass_share(mass_by_target[tgt], total_mass) for tgt in targets}
             pooled_panel = _pool_panel(
                 rows_closed,
                 prc,
