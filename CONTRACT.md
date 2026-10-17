@@ -159,8 +159,14 @@ paths that are one file, so neither `PRICES.csv` for `prices.csv` on a case-inse
 nor a hard link gets past it).
 That last one is the loader's refuse-never-mutate rule reaching the write side: an engine that will
 not clamp an OHLC violation does not get to overwrite the evidence it is measuring and then stamp a
-`data_digests` sha256 for bytes it deleted. Compute is likewise LAZY, matched to what was nominated:
-`--report-out` or `--trades-out` runs the full-grid event study, while a run asking ONLY for the
+`data_digests` sha256 for bytes it deleted. Every path argument — the thesis, each `--data`
+path, the four outputs, and the files `hash`, `check-data` and `describe` read — takes a leading
+`~` as the caller's home, expanded ONCE as the command line is parsed, so the loader, these
+checks, the writes and the report's `data_digests` / `outputs` paths all read the one file it
+names (`./~` is a directory literally named `~`); expanded by the checks alone, an input spelled
+`~/prices.csv` or `./~/prices.csv` was read from one file while the checks protected another, and
+a report nominated at the file read overwrote it. Compute is likewise LAZY, matched to what was
+nominated: `--report-out` or `--trades-out` runs the full-grid event study, while a run asking ONLY for the
 listing outputs (`--root-series-out` and/or `--entry-flags-out`) takes the cheaper listing path — no
 backtest, and no requirement that the index be long enough to close one observation at the longest
 horizon. Both listings are DECISION-side artifacts no forward window ever touches, so demanding the

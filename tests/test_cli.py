@@ -22,6 +22,7 @@ refusal before a byte of CSV is read.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import typing
@@ -1144,6 +1145,43 @@ def test_input_clobber_refusal_sees_through_the_path_spelling(tmp_path, capsys):
     assert code == 3
     assert doc["error"]["type"] == "usage"
     assert px.read_bytes() == before
+
+
+def test_a_leading_tilde_names_the_callers_home_at_every_consumer(tmp_path, capsys, monkeypatch):
+    # The review's collisions, beside a working directory holding a directory literally named
+    # `~`. The guards expanded `~` (and pathlib reads `./~/px.csv` as `~/px.csv`) while the
+    # loaders read the spelling literally, so they protected one file while the run read another
+    # — and a report nominated at the file it read overwrote it, exit 0. `~` is the caller's home
+    # at every consumer now, expanded once as the command line is parsed; `./~` is the literal
+    # directory. Both px.csv files exist, with different bytes, so the run says which it read.
+    home, cwd = tmp_path / "home", tmp_path / "cwd"
+    (cwd / "~").mkdir(parents=True)
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.chdir(cwd)
+    for seed, root in enumerate((home, cwd / "~")):
+        _write_ohlcv(root / "px.csv", seed=seed)
+        _write_thesis(root / "t.json")
+    kept = [home / "px.csv", home / "t.json", cwd / "~" / "px.csv", cwd / "~" / "t.json"]
+    before = {p: p.read_bytes() for p in kept}
+    for argv, out in (
+        (["~/t.json", "--data", "target=~/px.csv"], home / "px.csv"),
+        (["~/t.json", "--data", "target=./~/px.csv"], cwd / "~" / "px.csv"),
+        (["./~/t.json", "--data", "target=./~/px.csv"], cwd / "~" / "t.json"),
+        (["~/t.json", "--data", "target=~/px.csv"], home / "t.json"),
+    ):
+        code, doc = _run(capsys, ["run", *argv, "--report-out", str(out)])
+        assert code == 3 and doc["error"]["type"] == "usage", argv
+    assert {p: p.read_bytes() for p in kept} == before
+    # the run reads the home file, stamps its path and digest, and writes a `~` output home
+    code = main(["run", "~/t.json", "--data", "target=~/px.csv", "--report-out", "~/r.json"])
+    assert code == 0 and capsys.readouterr().out == ""
+    doc = json.loads((home / "r.json").read_text(encoding="utf-8"))
+    digest = doc["identity"]["data_digests"]["target"]
+    assert digest["path"] == str(home / "px.csv")
+    assert digest["sha256"] == hashlib.sha256(before[home / "px.csv"]).hexdigest()
+    assert doc["outputs"]["report"]["path"] == str(home / "r.json")
+    assert not (cwd / "~" / "r.json").exists()
 
 
 def test_run_refuses_an_output_that_would_overwrite_the_benchmark(tmp_path, capsys):

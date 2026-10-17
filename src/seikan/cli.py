@@ -353,9 +353,21 @@ def _parse_pairs(
     return pairs
 
 
+def _user_path(raw: str) -> str:
+    """A path argument as the caller means it: a leading ``~`` (or ``~user``) is that home
+    directory, expanded ONCE where the command line is parsed — every path argument and every
+    ``--data`` path — so the loader, the collision checks, the writes and the report's
+    ``data_digests`` / ``outputs`` paths all read one spelling. Nothing else is respelled (``""``
+    stays the empty path its own refusal names). Expanded only by the guards, a CSV bound as
+    ``~/prices.csv`` was read from a literal ``./~`` directory the guards never looked at, and a
+    report nominated at that file overwrote it."""
+    return os.path.expanduser(raw)
+
+
 def _parse_data_pairs(raw: list[str] | None) -> dict[str, str]:
-    """``--data KEY=PATH`` pairs → ``{key: path}``, or a usage refusal."""
-    return _parse_pairs(
+    """``--data KEY=PATH`` pairs → ``{key: path}`` (each path through :func:`_user_path`), or a
+    usage refusal."""
+    pairs = _parse_pairs(
         raw,
         flag="--data",
         value_word="path",
@@ -368,6 +380,7 @@ def _parse_data_pairs(raw: list[str] | None) -> dict[str, str]:
             "one key answers one series, and a run must not have to choose which file it read"
         ),
     )
+    return {key: _user_path(path) for key, path in pairs.items()}
 
 
 def _parse_column_pairs(raw: list[str] | None) -> dict[str, str]:
@@ -407,7 +420,7 @@ def _declared_input_paths(thesis_path: str, resolution: dict[str, str]) -> dict[
         # setdefault: one file may answer two keys (a target that is also the benchmark); the
         # FIRST key is the one a refusal message quotes, and either is equally true.
         if raw:
-            found.setdefault(Path(raw).expanduser().resolve(), field)
+            found.setdefault(Path(raw).resolve(), field)
 
     note(thesis_path, "the thesis file")
     for key, path in resolution.items():
@@ -442,7 +455,7 @@ def _check_nominated_outputs(
     for flag, raw in nominated:
         if not raw.strip():
             raise _UsageError(f"{flag} needs a file path, got an empty string", "run")
-        resolved = Path(raw).expanduser().resolve()
+        resolved = Path(raw).resolve()
         if resolved in seen:
             raise _UsageError(
                 f"{flag} and {seen[resolved]} both name {raw!r} — each output needs its own path, "
@@ -605,18 +618,8 @@ def _environment() -> dict[str, str]:
 
 
 def _nominated_outputs(args: argparse.Namespace) -> list[tuple[str, str]]:
-    """The run's nominated (flag, path) list — `~` expanded ONCE for every consumer, presence
-    (never truthiness) deciding nomination, and the zero-output request refused before the
-    thesis file is even read."""
-    # `~` means the caller's home at EVERY consumer of a nominated path — the collision check,
-    # the writability preflight, the write itself and the report's `outputs.path` stamp — so it
-    # is expanded ONCE, here. Previously the collision check expanded while the preflight and the
-    # writes took the spelling literally, so `--report-out '~/r.json'` was probed and written at
-    # a literal `./~` directory the collision check never looked at.
-    for attr in ("report_out", "trades_out", "root_series_out", "entry_flags_out"):
-        raw_path = getattr(args, attr)
-        if raw_path:
-            setattr(args, attr, str(Path(raw_path).expanduser()))
+    """The run's nominated (flag, path) list — presence (never truthiness) deciding nomination,
+    and the zero-output request refused before the thesis file is even read."""
     # Nomination is tested on PRESENCE, not truthiness: argparse hands back None for a flag that
     # was never passed and "" for one passed empty, and those are different requests — the second
     # asked for an output and named it unusably (refused in _check_nominated_outputs below), while
@@ -1009,7 +1012,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "run",
         help="measure a thesis and write the nominated outputs (silent on success)",
     )
-    p.add_argument("thesis", help="path to the thesis DSL JSON")
+    p.add_argument("thesis", type=_user_path, help="path to the thesis DSL JSON")
     p.add_argument(
         "--data",
         action="append",
@@ -1032,19 +1035,25 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--report-out",
+        type=_user_path,
         default=None,
         help="write the full JSON report to this file (always overwritten)",
     )
     p.add_argument(
-        "--trades-out", default=None, help="write the per-observation trades to this CSV"
+        "--trades-out",
+        type=_user_path,
+        default=None,
+        help="write the per-observation trades to this CSV",
     )
     p.add_argument(
         "--root-series-out",
+        type=_user_path,
         default=None,
         help="write the per-bar root-series values to this CSV (no entry flags)",
     )
     p.add_argument(
         "--entry-flags-out",
+        type=_user_path,
         default=None,
         help="write the per-bar 0/1 entry-flag matrix to this CSV (the output that "
         "carries a final-bar firing)",
@@ -1058,12 +1067,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="validate a thesis DSL and emit its canonical identity (dsl_hash + the data keys "
         "a run must bind); '-' reads the thesis from stdin",
     )
-    p.add_argument("thesis", help="path to the thesis DSL JSON, or '-' for stdin")
+    p.add_argument("thesis", type=_user_path, help="path to the thesis DSL JSON, or '-' for stdin")
     _add_pretty(p, "indent the JSON output")
     p.set_defaults(func=_cmd_hash)
 
     p = sub.add_parser("check-data", help="pre-flight CSV files against the strict data contract")
-    p.add_argument("files", nargs="+", help="CSV files to check")
+    p.add_argument("files", nargs="+", type=_user_path, help="CSV files to check")
     _add_shape(p)
     _add_pretty(p, "indent the JSON output")
     p.set_defaults(func=_cmd_check_data)
@@ -1073,7 +1082,9 @@ def _build_parser() -> argparse.ArgumentParser:
         help="profile data files — pure description (changes, dispersion, range position, "
         "missingness); measures nothing, supports no thesis",
     )
-    p.add_argument("files", nargs="+", help="CSV files to profile, in argument order")
+    p.add_argument(
+        "files", nargs="+", type=_user_path, help="CSV files to profile, in argument order"
+    )
     _add_shape(p)
     p.add_argument(
         "--windows",
