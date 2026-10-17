@@ -2164,10 +2164,10 @@ def test_cscv_pbo_basket_score_is_the_pooled_per_observation_sharpe():
     ):
         assert basket[key] == union[key]
     for key in ("pbo", "lambda_mean", "oos_degradation_slope", "prob_oos_loss"):
-        assert basket[key] == pytest.approx(union[key])
+        assert basket[key] == union[key]
 
 
-def test_cscv_pbo_basket_admits_partial_combos_and_zero_fills_absent_members():
+def test_cscv_pbo_basket_admits_partial_combos_and_absent_members_add_no_rows():
     rng = np.random.RandomState(10)
     T, h = 800, 1
     fwd_a = rng.normal(0.0, 0.01, T)
@@ -2183,10 +2183,10 @@ def test_cscv_pbo_basket_admits_partial_combos_and_zero_fills_absent_members():
     conj = cscv_pbo(cells, T, ["A", "B"], n_combos_declared=2)
     assert conj["pbo"] is None and conj["reason"] == "single_combo" and conj["n_combos"] == 1
     assert conj["n_combos_scoreable"] == 1  # combo 1 is inadmissible under conjunction
-    # basket: ≥1 member present admits combo 1; the absent member zero-fills
+    # basket: ≥1 member present admits combo 1; the absent member adds no rows to its pool
     bask = cscv_pbo(cells, T, ["A", "B"], mode="basket", n_combos_declared=2)
     assert bask["reason"] is None and bask["n_combos"] == 2 == bask["n_combos_scoreable"]
-    # zero-filled absence == a member that never fired: EXACTLY the same numbers
+    # absence == a member that never fired: EXACTLY the same numbers
     never = {"key": (1, "B"), "mask_col": np.zeros(T), "fwd_col": fwd_b, "h": h}
     assert bask == cscv_pbo([*cells, never], T, ["A", "B"], mode="basket", n_combos_declared=2)
 
@@ -3851,9 +3851,9 @@ def test_cscv_level_heavy_returns_still_score():
 
 
 def test_cscv_basket_equals_union_at_huge_level():
-    # The basket==union identity is the exactness oracle for the shifted arithmetic: the two
-    # code paths (per-member refs + exact cross-term expansion vs one column, one ref) are
-    # algebraically equal, so they must agree even at level 1e9 where the raw form cancelled.
+    # The basket's pooled column IS the union pool — the same rows in another order, and every
+    # per-column sum is exact — so the two grids agree bit for bit, even at level 1e9 where the
+    # raw one-pass form cancelled.
     rng = np.random.RandomState(9)
     T, h = 800, 1
     fwd_a = rng.normal(0.0, 0.01, T) + 1e9
@@ -3877,7 +3877,7 @@ def test_cscv_basket_equals_union_at_huge_level():
     union = cscv_pbo(union_cells, T, ["P"], n_combos_declared=6)
     assert basket["reason"] is None and union["reason"] is None
     for key in ("pbo", "lambda_mean", "oos_degradation_slope", "prob_oos_loss"):
-        assert basket[key] == pytest.approx(union[key], rel=1e-9)
+        assert basket[key] == union[key]
 
 
 def _two_level_cells(mode_targets, T=400, n_noise=4, seed=31):
@@ -3937,10 +3937,9 @@ def test_cscv_split_score_reads_exact_constancy_per_split():
     r = np.array([0.1] * 5 + [0.3] * 5)
     b = np.array([0, 0, 1, 1, 1, 2, 2, 3, 3, 3])
     moments, refs, extrema = _split_tensors(r, b)
-    for mode in ("conjunction", "basket"):
-        for blocks in ([0, 1], [2, 3]):
-            assert np.isnan(_split_scores(moments, refs, extrema, mode, np.array(blocks))).all()
-        assert np.isfinite(_split_scores(moments, refs, extrema, mode, np.array([0, 2]))).all()
+    for blocks in ([0, 1], [2, 3]):
+        assert np.isnan(_split_scores(moments, refs, extrema, np.array(blocks))).all()
+    assert np.isfinite(_split_scores(moments, refs, extrema, np.array([0, 2]))).all()
 
 
 def test_cscv_split_score_nulls_dispersion_below_rounding():
@@ -3953,29 +3952,21 @@ def test_cscv_split_score_nulls_dispersion_below_rounding():
     r[1] = np.nextafter(0.005, 1.0)
     b = np.array([0, 0, 1, 1, 1, 2, 2, 3, 3, 3])
     moments, refs, extrema = _split_tensors(r, b)
-    for mode in ("conjunction", "basket"):
-        assert np.isnan(_split_scores(moments, refs, extrema, mode, np.array([0, 1]))).all()
-        assert np.isfinite(_split_scores(moments, refs, extrema, mode, np.array([0, 2]))).all()
+    assert np.isnan(_split_scores(moments, refs, extrema, np.array([0, 1]))).all()
+    assert np.isfinite(_split_scores(moments, refs, extrema, np.array([0, 2]))).all()
 
 
 def test_cscv_split_score_of_an_overflowed_sd_is_nan_never_zero():
-    # Basket pooling through the exact cross-term expansion: two members with one observation
-    # each in block 0 (X and Y) and a 0.0 in block 1, so each column's own mean is half its
-    # block-0 value. Every expansion term and the rounding floor's sum stay finite, but their
-    # total — the pooled sum of squares (X − Y)²/2 — overflows: sd = inf and `mean / inf` scored
-    # a FINITE 0.0 Sharpe that entered the split's ranking. NaN drops it from the split instead.
+    # A column with one observation in each of two blocks, X and Y: each block's sum of squared
+    # shifts, ((X − Y)/2)², stays finite, but the split's sum of them overflows — sd = inf, and
+    # `mean / inf` scored a FINITE 0.0 Sharpe that entered the split's ranking. NaN drops it from
+    # the split instead.
     from seikan.analysis._cscv import _split_scores
 
     x, y = 1.3e154, -1.2e154
-
-    def member(v):
-        return [[1.0, 1.0], [v / 2, -v / 2], [v * v / 4, v * v / 4]]
-
-    moments = np.array([[member(x), member(y)]])
-    refs = np.array([[x / 2, y / 2]])
-    extrema = np.array([[[[x, 0.0], [x, 0.0]], [[y, 0.0], [y, 0.0]]]])
-    score = _split_scores(moments, refs, extrema, "basket", np.array([0]))
-    assert np.isnan(score).all()
+    moments, refs, extrema = _split_tensors(np.array([x, y]), np.array([0, 1]), s=2)
+    assert np.isfinite(moments).all()
+    assert np.isnan(_split_scores(moments, refs, extrema, np.array([0, 1]))).all()
 
 
 @pytest.mark.parametrize("scale", [1e156, 1e160])
@@ -4003,12 +3994,11 @@ def test_cscv_split_score_of_a_subnormal_variance_is_nan_never_a_sharpe():
     r = np.random.RandomState(8).randn(40)
     b = np.repeat(np.arange(4), 10)
     blocks = np.array([0, 2])
-    for mode in ("conjunction", "basket"):
-        score = _split_scores(*_split_tensors(r, b), mode, blocks)
-        assert np.isfinite(score).all()
-        scaled = _split_scores(*_split_tensors(r * 2.0**-500, b), mode, blocks)
-        np.testing.assert_array_equal(scaled, score)
-        assert np.isnan(_split_scores(*_split_tensors(r * 2.0**-535, b), mode, blocks)).all()
+    score = _split_scores(*_split_tensors(r, b), blocks)
+    assert np.isfinite(score).all()
+    scaled = _split_scores(*_split_tensors(r * 2.0**-500, b), blocks)
+    np.testing.assert_array_equal(scaled, score)
+    assert np.isnan(_split_scores(*_split_tensors(r * 2.0**-535, b), blocks)).all()
 
 
 def test_cscv_near_constant_split_pool_is_never_ranked():
@@ -4047,9 +4037,9 @@ def test_cscv_single_level_near_constant_pool_is_never_ranked(mode, targets):
 
 
 def test_cscv_split_score_needs_the_extrema_for_an_exact_constant_pool():
-    # A column whose mean sits within ~1e-14 of an exactly constant split's value: rebuilding
-    # the basket's pooled mean is off by ~ε·|c|, so its residue clears the rounding floor and
-    # only the per-block extrema keep the split undefined.
+    # A column whose mean sits within ~1e-14 of an exactly constant split's value: the split's
+    # mean, its shifted mean plus the column's ref, is off by ~ε·|c|, so its residue clears the
+    # rounding floor and only the per-block extrema keep the split undefined.
     from seikan.analysis._cscv import _split_scores
 
     hi = 0.21
@@ -4057,13 +4047,12 @@ def test_cscv_split_score_needs_the_extrema_for_an_exact_constant_pool():
         hi = np.nextafter(hi, 1.0)
     r = np.array([0.21] * 10 + [hi] * 10)
     moments, refs, extrema = _split_tensors(r, np.repeat(np.arange(4), 5))
-    for mode in ("basket", "conjunction"):
-        assert np.isnan(_split_scores(moments, refs, extrema, mode, np.array([0, 1]))).all()
+    assert np.isnan(_split_scores(moments, refs, extrema, np.array([0, 1]))).all()
 
 
 def test_cscv_basket_absent_member_cannot_widen_an_exact_constant_split():
-    # The same near-level fixture through cscv_pbo, combo 0's member B absent: its (+inf, -inf)
-    # extrema must leave every within-half split exactly constant.
+    # The same near-level fixture through cscv_pbo, combo 0's member B absent: it adds no rows,
+    # so every within-half split stays exactly constant.
     T, hi = 400, 0.21
     for _ in range(300):
         hi = np.nextafter(hi, 1.0)
@@ -4082,8 +4071,8 @@ def test_cscv_basket_absent_member_cannot_widen_an_exact_constant_split():
 
 
 def test_cscv_basket_absent_member_bounds_nothing():
-    # Combo 0 has member A only; its pool is constant within each half. The absent member's
-    # (+inf, -inf) extrema must not widen the pool's range into "varying".
+    # Combo 0 has member A only; its pool is constant within each half. The absent member adds
+    # nothing that could widen the pool's range into "varying".
     cells = [c for c in _two_level_cells(("A", "B")) if c["key"] != (0, "B")]
     out = cscv_pbo(cells, 400, ["A", "B"], mode="basket", n_combos_declared=5)
     assert out["reason"] is None and out["blocks"] == 8
@@ -4165,8 +4154,9 @@ def _full_bar_cscv_cells(order, n_combos=5, length=400, seed=31):
 def test_cscv_pbo_all_full_cross_mean_grid_ties_in_every_declaration_order():
     # Every candidate's every bar is full, so every split's exact pooled mean is 0: each split
     # is a full tie (λ = 0, no test loss, no train spread for the slope). Over the rounded rows
-    # each split Sharpe was residue / sd, and pbo, lambda_mean and prob_oos_loss ranked that
-    # residue in the order the targets were declared.
+    # each split Sharpe is residue / sd, and pbo, lambda_mean and prob_oos_loss rank that
+    # residue (they followed the order the targets were declared in while each member's rows
+    # summed apart).
     import itertools
 
     keys = ("pbo", "lambda_mean", "prob_oos_loss")
@@ -4182,7 +4172,8 @@ def test_cscv_pbo_all_full_cross_mean_grid_ties_in_every_declaration_order():
         assert out["oos_degradation_slope_reason"] == "degenerate_train_scores"
         plain = cscv_pbo(cells, 400, list(order), mode="basket", n_combos_declared=5)
         plain_reads.add(tuple(plain[k] for k in keys))
-    assert len(plain_reads) > 1  # the premise: the rounded rows' read follows the order
+    (plain_read,) = plain_reads  # the premise: the rounded rows rank their residue
+    assert plain_read != (0.0, 0.0, 0.0)
 
 
 def test_cscv_pbo_all_full_grid_s_tied_train_winner_is_the_first_declared_candidate():
@@ -4191,9 +4182,9 @@ def test_cscv_pbo_all_full_grid_s_tied_train_winner_is_the_first_declared_candid
     # split whose winner holds no test pool is skipped. Four candidates confined each to one
     # eighth of the sample, declared first, win every split whose train blocks hold them and
     # are absent from its test blocks: too few splits score at any S, and the block declines
-    # `insufficient_data` — identically in every TARGET order, where the rounded rows ranked
-    # residue across the candidates and scored a pbo that followed it. Declared after the broad
-    # candidates, the same grid scores every split, each a full tie.
+    # `insufficient_data` — identically in every TARGET order, where the rounded rows rank
+    # residue across the candidates and score every split. Declared after the broad candidates,
+    # the same grid scores every split, each a full tie.
     import itertools
 
     length = 160
@@ -4238,72 +4229,103 @@ def test_cscv_pbo_all_full_grid_s_tied_train_winner_is_the_first_declared_candid
             assert plain["reason"] is None
             plain_reads.add(plain["pbo"])
         assert len(reads) == 1  # the whole ledger, S included, in any target order
-        assert len(plain_reads) > 1  # the premise: the rounded rows' pbo followed it
+        assert len(plain_reads) == 1  # the rows' read is order-free too, over their residue
 
 
 def test_cscv_split_mean_sums_the_bars_exact_excess_sums():
     # Three candidates of three members, ten bars per block. A `cross_mean` candidate's EVERY
-    # split takes its MEAN from the per-block exact sums of its bars' numerators
+    # split takes its MEAN from the per-block exact sums of its pooled column's bar numerators
     # (`bar_numerators`) over the member count, over the rows' own sd: the all-full candidate's
     # mean is exactly 0.0 on every split (its rounded rows read residue), the partial
     # candidate's the exact sum of the excesses its split holds, its blocks added once. A
-    # candidate the numerators do not key, and the whole conjunction score, are the rows' read,
-    # byte for byte.
+    # candidate the numerators do not key is the rows' read, byte for byte.
     from itertools import combinations
 
-    from seikan.analysis._cscv import _split_scores
+    from seikan.analysis._cscv import _column, _split_scores
 
     rng = np.random.RandomState(47)
     s = 4
-    b = np.repeat(np.arange(s), 10)
+    b = np.repeat(np.arange(s), 10)  # each bar's block
     raw = np.round(rng.normal(0.0, 0.02, (b.size, 3)), 4)  # bar × member legs
     excess = raw - raw.mean(axis=1, keepdims=True)  # each member's rounded excess
     full = np.ones(raw.shape, dtype=bool)
     partial = rng.random(raw.shape) < 0.6
     partial[:, 0] |= ~partial.any(axis=1)  # every bar holds a closed member
     closed = [full, partial, full]
-    moments, refs, extrema, sums = [], [], [], []
-    for q in range(3):
-        numerators = cross_mean_bar_numerators(raw, closed[q])
-        on = closed[q]
-        per_member = [_split_tensors(excess[on[:, g], g], b[on[:, g]], s) for g in range(3)]
-        moments.append([m[0, 0] for m, _, _ in per_member])
-        refs.append([ref[0, 0] for _, ref, _ in per_member])
-        extrema.append([e[0, 0] for _, _, e in per_member])
-        sums.append(
-            [
-                [
-                    math.fsum(numerators.at(np.flatnonzero(on[:, g] & (b == k)), g).ravel())
-                    for k in range(s)
-                ]
-                for g in range(3)
-            ]
-        )
-    tensors = (np.array(moments), np.array(refs), np.array(extrema))
-    pool = (np.array(sums), np.array([True, True, False]))
+    columns = []
+    for on in closed:
+        bars, members = np.nonzero(on)
+        parts = cross_mean_bar_numerators(raw, on).at(bars, members)
+        columns.append(_column(b[bars], excess[bars, members], parts, s))
+    moments = np.array([[c.moments] for c in columns])
+    refs = np.array([[c.ref] for c in columns])
+    extrema = np.array([[c.extrema] for c in columns])
+    pool = (np.array([[c.pool] for c in columns]), np.array([True, True, False]))
     legs = [[Fraction(float(x)) for x in row] for row in raw]
     residue = []
     for split in combinations(range(s), 2):
         idx = np.array(split)
-        conj = _split_scores(*tensors, "conjunction", idx)
-        np.testing.assert_array_equal(_split_scores(*tensors, "conjunction", idx, pool, 3), conj)
-        plain = _split_scores(*tensors, "basket", idx)
-        got = _split_scores(*tensors, "basket", idx, pool, 3)
+        plain = _split_scores(moments, refs, extrema, idx)
+        got = _split_scores(moments, refs, extrema, idx, pool, 3)
         assert got[0] == 0.0
         residue.append(plain[0])
         assert got[2] == plain[2]  # unkeyed: the moments' own mean
-        # the partial candidate: its pool sums over n, over the rows' own reconstructed sd —
-        m, ref = tensors[0][1][:, :, idx].sum(axis=2), tensors[1][1]  # (T, 3), (T,)
-        n = m[:, 0].sum()
-        d = ref - (m[:, 1] + m[:, 0] * ref).sum() / n
-        sd = np.sqrt((m[:, 2] + 2.0 * d * m[:, 1] + m[:, 0] * d * d).sum() / (n - 1.0))
-        split_sum = pool[0][:, :, idx].sum(axis=(1, 2))[1]
+        # the partial candidate: its pool sums over 3·n, over the column's own sd —
+        m = moments[1, 0][:, idx].sum(axis=1)
+        n, mean_shift = m[0], m[1] / m[0]
+        sd = np.sqrt((m[2] - n * mean_shift * mean_shift) / (n - 1.0))
+        split_sum = pool[0][1, 0][idx].sum()
         assert got[1] == split_sum / (3 * n) / sd
         # — whose sum is the split's exact numerator, to its blocks' one addition
         held = np.isin(b, split)[:, None] & closed[1]
         exact = sum(legs[t][g] - sum(legs[t]) / 3 for t, g in zip(*np.nonzero(held), strict=True))
         assert split_sum == pytest.approx(float(3 * exact), rel=1e-15, abs=1e-18)
     assert any(r != 0.0 for r in residue)  # the premise: the rounded rows read residue
+
+
+def test_cscv_pbo_basket_candidates_holding_the_same_block_returns_tie_however_members_split():
+    # The review's grid: two candidates over two members, each holding the same six returns in
+    # every block, split between the members differently (and fired on other bars). Exact
+    # arithmetic ties every split: pbo, lambda_mean and prob_oos_loss 0.0. Scored off
+    # per-member moments — each member's rows about its own mean, pooled through the cross-term
+    # expansion — the two Sharpes parted in their last bits with the split, and this full tie
+    # read pbo 0.343, lambda_mean −0.208. A basket candidate is ONE column, its members' rows
+    # pooled: the same block sums whichever member holds a return, in any member order.
+    T, six = 800, [-0.0413, -0.0187, 0.0009, 0.0221, 0.0397, 0.0583]
+    a_holds = [  # per block, candidate 0's and candidate 1's A subsets; B holds the rest
+        ((0, 1, 2), (0, 3, 5)),
+        ((3, 4), (1, 2, 5)),
+        ((0, 5), (2, 3)),
+        ((1, 2, 4), (0, 4)),
+        ((5,), (1, 3, 4)),
+        ((0, 2, 3, 4), (5,)),
+        ((1, 3), (0, 1, 2)),
+        ((2, 4, 5), (3,)),
+    ]
+    fwd = {"A": np.zeros(T), "B": np.zeros(T)}
+    masks = {(k, m): np.zeros(T) for k in (0, 1) for m in "AB"}
+    for blk, subsets in enumerate(a_holds):
+        for k, a_subset in enumerate(subsets):
+            held = {"A": list(a_subset), "B": [v for v in range(6) if v not in a_subset]}
+            for g, m in enumerate("AB"):
+                for j, v in enumerate(held[m]):
+                    bar = 100 * blk + 3 + 45 * k + 22 * g + 3 * j
+                    fwd[m][bar], masks[(k, m)][bar] = six[v], 1.0
+    in_block = np.arange(T) // 100
+    for blk in range(8):  # the premise: both candidates hold the same returns in every block
+        for k in (0, 1):
+            rows = np.concatenate([fwd[m][(masks[(k, m)] > 0) & (in_block == blk)] for m in "AB"])
+            assert sorted(rows.tolist()) == six
+    cells = {
+        (k, m): {"key": (k, m), "mask_col": masks[(k, m)], "fwd_col": fwd[m], "h": 1}
+        for k in (0, 1)
+        for m in "AB"
+    }
+    for order in ("AB", "BA"):
+        ordered = [cells[(k, m)] for k in (0, 1) for m in order]
+        out = cscv_pbo(ordered, T, list(order), mode="basket", n_combos_declared=2)
+        assert out["reason"] is None and out["n_splits"] == 70 and out["blocks"] == 8
+        assert out["pbo"] == out["lambda_mean"] == out["prob_oos_loss"] == 0.0, order
 
 
 def test_cscv_pbo_bar_numerators_reach_no_other_read():

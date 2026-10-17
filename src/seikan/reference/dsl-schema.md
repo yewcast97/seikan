@@ -1623,8 +1623,9 @@ open to quote a statistic honestly.
   the single most relevant number to read *before* you select. Its split score mirrors the
   statistic a caller of the declared mode selects on: under conjunction each train-winner is
   scored by its WEAKEST target's per-observation Sharpe (the weakest-target rule the regime
-  implies), under basket by the POOLED per-observation Sharpe over the concatenated member
-  observations — no min, because a basket caller selects on the pooled read; under
+  implies), under basket by the per-observation Sharpe of ONE column, the members' kept rows
+  pooled — no min, because a basket caller selects on the pooled read, and candidates holding the
+  same returns in every block tie however those returns fall across members; under
   `cross_mean` its mean reads each bar at the exact excess sum the pooled panel does, so every
   split a grid of all-full cells scores is a full tie (`pbo` 0.0) — though, every train score tied,
   the first-declared candidate wins each split, and a sparse such grid can score fewer splits

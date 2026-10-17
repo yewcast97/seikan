@@ -325,9 +325,11 @@ carries the real counts, never placeholder zeros), and `n_splits <= n_splits_att
 canonical CSCV assumes — both ledgers re-checked at emission (every count non-negative, each
 chain ordered, `n_combos_declared == n_hypotheses_attempted`) beside the verdict pairing (`pbo`
 null exactly when `reason` is set), where a violation is a seikan bug (exit 4); its split
-score is mode-aware — the weakest-target per-observation Sharpe under conjunction, the pooled
-per-observation Sharpe under basket, whose mean reads each `cross_mean` bar at its exact excess
-sum — see the pooled panel), and `baseline` (the run-level unconditional base rate per
+score is mode-aware — the weakest-target per-observation Sharpe under conjunction, under basket
+the per-observation Sharpe of ONE column, the members' kept rows pooled (so candidates holding the
+same returns in every block tie however the returns fall across members — scored off per-member
+moments, two such candidates read `pbo` 0.343 for a full tie), whose mean reads each `cross_mean`
+bar at its exact excess sum — see the pooled panel), and `baseline` (the run-level unconditional base rate per
 horizon × target over every fillable anchor bar, same algebra/benchmark/direction as the cells,
 with an `exclusions` ledger pinned by `n_eligible + Σexclusions == n_anchor_bars`, a `pooled`
 row per horizon in basket, and deliberately NO uplift field — the conditional-vs-base-rate
