@@ -937,6 +937,54 @@ def test_cell_buckets_read_every_bar_held_whole_at_its_exact_sum():
         assert sum(map(Fraction, pool[rows].ravel().tolist())) == 3 * exact
 
 
+def test_cell_buckets_of_one_participating_member_read_its_one_row_bars_exactly():
+    # A cross_mean pool whose valid rows all belong to ONE member takes the single-target cut
+    # (pandas' interval labels). The only bar that cut can hold whole is a one-row bar — the
+    # basket's other members' rows sit unbucketed — and it held none: every record read its
+    # rows' rounded excesses, where the pool's every other bar-closed read (the episode means,
+    # the CSCV split means) takes each bar's exact numerator. Now each A-only bar enters its
+    # record at its exact numerator over 3, as in the multi-target arm; the labels, n and
+    # hit_rate are the frozen kernel's.
+    feat = {m: np.resize(np.arange(7, dtype=float), 48) for m in "ABC"}
+    frame, raw = _full_bar_frame("ABC", feat)
+    alone = frame[frame["target"] == "A"].reset_index(drop=True)  # B and C never fired
+    pool = _bar_pool(alone, raw)
+    out = cell_conditional_buckets(alone, ["feat"], rets_pool=pool, pool_scale=3)
+    plain = cell_conditional_buckets(alone, ["feat"])
+    block = out["conditional_buckets"]["feat"]["buckets"]
+    codes = pd.qcut(alone["feat"], 4, labels=False, duplicates="drop").to_numpy()
+    want = [
+        float(sum(map(Fraction, pool[codes == i].ravel().tolist()))) / (3 * int((codes == i).sum()))
+        for i in range(4)
+    ]
+    assert [b["mean_ret"] for b in block] == want
+    plain_block = plain["conditional_buckets"]["feat"]["buckets"]
+    assert [b["mean_ret"] for b in plain_block] != want  # the premise: rounded rows carry residue
+    assert [(b["bucket"], b["n"], b["hit_rate"]) for b in block] == [
+        (b["bucket"], b["n"], b["hit_rate"]) for b in plain_block
+    ]
+    assert block[0]["bucket"].startswith("(")  # the kernel's interval labels, not q1..q4
+    # B holds a row on bars 0..9 too, its feature missing: those bars are not whole (a row of
+    # theirs is unbucketed), so A's row there keeps its return; every other bar stays exact.
+    both = frame[(frame["target"] == "A") | ((frame["target"] == "B") & (frame["entry_bar"] < 10))]
+    both = both.reset_index(drop=True)
+    both.loc[both["target"] == "B", "feat"] = np.nan
+    pool2 = _bar_pool(both, raw)
+    out2 = cell_conditional_buckets(both, ["feat"], rets_pool=pool2, pool_scale=3)
+    a_rows = (both["target"] == "A").to_numpy()
+    kept = both["entry_bar"].to_numpy()[a_rows] < 10
+    numerators = [
+        3 * Fraction(float(r)) if k else sum(map(Fraction, parts))
+        for r, k, parts in zip(both["ret"][a_rows], kept, pool2[a_rows].tolist(), strict=True)
+    ]
+    codes2 = pd.qcut(both["feat"][a_rows], 4, labels=False, duplicates="drop").to_numpy()
+    assert [b["mean_ret"] for b in out2["conditional_buckets"]["feat"]["buckets"]] == [
+        float(sum(n for n, c in zip(numerators, codes2, strict=True) if c == i))
+        / (3 * int((codes2 == i).sum()))
+        for i in range(4)
+    ]
+
+
 # ---- feature_outcome_association: per-(cell × feature × target) Spearman ----------
 
 

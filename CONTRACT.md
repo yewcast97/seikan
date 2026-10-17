@@ -440,7 +440,10 @@ each split, so a sparse such grid can score fewer splits, fall back to a coarser
 `insufficient_data`); so do the cell's `conditional_buckets` means over a bar whose rows all land
 in ONE bucket (bucketed by a basket-wide feature — a `calendar` field, a shared `external` feed —
 an all-full pool reads every bucket mean 0.0 and no `bucket_monotonicity`, in any declaration
-order), while a bar the per-target edges split across buckets, or partly unbucketed, keeps each
+order; a one-row bar included, whichever member's rows the feature bucketed — a pool whose valid
+rows were one member's read every bucket mean off the rounded rows, where its episode means and
+split means read the bars' exact sums), while a bar the per-target edges split across buckets, or
+partly unbucketed, keeps each
 row's own excess there (no bucket holds its whole sum); `rot_p` counts
 the identity's ties only where the demeaning's residue (~ε·|raw|) sits inside its FFT tie band
 (a basket-wide ENTRY on ordinary dispersed legs reads 1 — every member fires on the same bars,

@@ -1247,8 +1247,9 @@ and int64 nanosecond counts silently round in IEEE-754 consumers.)
     coarser S or decline `insufficient_data`. So do the cell's `conditional_buckets` means over
     a bar whose rows all land in ONE bucket: bucketed by a basket-wide feature (a `calendar`
     field, a shared `external` feed) an all-full pool reads every bucket mean 0.0 and no
-    `bucket_monotonicity`, in any declaration order, while a bar the per-target edges split
-    across buckets, or partly unbucketed, keeps each row's own excess there. The
+    `bucket_monotonicity`, in any declaration order — a one-row bar included, whichever
+    member's rows the feature bucketed — while a bar the per-target edges split across
+    buckets, or partly unbucketed, keeps each row's own excess there. The
     row-level reads — the dispersion, quantile and shape reads, `hit_rate`, `profit_factor`,
     |return| mass shares, a bucket's `n` and `hit_rate` — keep each row's ordinary rounding) —
     and a selective signal's

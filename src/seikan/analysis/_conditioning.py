@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
+from typing import NamedTuple
 
 import numpy as np
 import pandas as pd
@@ -20,18 +22,34 @@ from seikan.types import (
 _NAN = float("nan")
 
 
-def _bucket_records(table: pd.DataFrame) -> list[BucketRecord]:
-    """JSON-friendly records from a ``conditional_buckets`` table (index = the qcut interval,
-    or the bucket ordinal where pandas cannot print it)."""
-    return [
-        {
-            "bucket": str(idx),
-            "n": int(row["n"]),
-            "mean_ret": float(row["mean_ret"]),
-            "hit_rate": float(row["hit_rate"]),
-        }
-        for idx, row in table.iterrows()
-    ]
+def _records(
+    categories: Sequence[object],
+    codes: np.ndarray,
+    rets: np.ndarray,
+    sums: np.ndarray,
+    scale: int,
+    commensurable: bool,
+) -> list[BucketRecord]:
+    """One record per populated category, in order — the ONE record arithmetic of every bucket
+    panel: ``n`` and ``hit_rate`` over the rows' own returns, ``mean_ret`` the exactly rounded sum
+    of what the rows add (``sums``, :func:`_bucket_sums`) over ``scale`` times ``n`` — NaN under
+    ``commensurable=False`` (several targets' level units add to nothing). ``codes`` is each
+    row's category index (−1 where no bin holds the row)."""
+    records: list[BucketRecord] = []
+    for i, label in enumerate(categories):
+        in_bucket = codes == i
+        if not in_bucket.any():
+            continue
+        pool = rets[in_bucket]
+        records.append(
+            {
+                "bucket": str(label),
+                "n": int(pool.size),
+                "mean_ret": exact_mean(sums[in_bucket], scale) if commensurable else _NAN,
+                "hit_rate": float(np.mean(pool > 0)),
+            }
+        )
+    return records
 
 
 def _bucket_monotonicity(records: list[BucketRecord]) -> BucketMonotonicity | None:
@@ -88,7 +106,7 @@ def _qcut_index(values: pd.Series, q: int) -> tuple[np.ndarray, np.ndarray | Non
     return np.asarray(halved, dtype=float), None
 
 
-def _qcut_buckets(values: pd.Series, q: int) -> pd.Series | pd.Categorical:
+def _qcut_buckets(values: pd.Series, q: int) -> pd.Categorical:
     """The kernel's bucket key over one pool's feature values: pandas' interval categorical
     wherever its labels print the bins faithfully, else each populated bin's ordinal ``q1..qk``.
 
@@ -103,14 +121,15 @@ def _qcut_buckets(values: pd.Series, q: int) -> pd.Series | pd.Categorical:
     and always beside a halved pool's bins — each populated bin takes its ordinal, the multi-
     target arm's label for an interval no string can print. A non-finite feature is pandas'
     read, as ever."""
-    if not np.isfinite(values.to_numpy(dtype=float)).all():
-        return pd.qcut(values, q=q, duplicates="drop")
+    arr = values.to_numpy(dtype=float)
+    if not np.isfinite(arr).all():
+        return pd.qcut(arr, q=q, duplicates="drop")
     index, edges = _qcut_index(values, q)
     if edges is not None:
         try:
             with np.errstate(over="ignore", invalid="ignore"):  # the rendering, judged below
-                buckets = pd.qcut(values, q=q, duplicates="drop")
-            cats = buckets.cat.categories
+                buckets = pd.qcut(arr, q=q, duplicates="drop")
+            cats = buckets.categories
             breaks = np.append(cats.left.to_numpy()[:1], cats.right.to_numpy())
             if len(cats) == len(edges) - 1 and np.isfinite(breaks).all():
                 return buckets
@@ -120,6 +139,13 @@ def _qcut_buckets(values: pd.Series, q: int) -> pd.Series | pd.Categorical:
     ordinal = np.where(np.isnan(index), -1, np.searchsorted(held, index))
     names = [f"q{i + 1}" for i in range(held.size)]
     return pd.Categorical.from_codes(ordinal, categories=names, ordered=True)
+
+
+def _bucket_keys(values: pd.Series, q: int) -> tuple[list[object], np.ndarray]:
+    """One pool's bucket KEYS (:func:`_qcut_buckets`): the categories, ascending, and each row's
+    category index (−1 where no bin holds the row)."""
+    buckets = _qcut_buckets(values, q)
+    return list(buckets.categories), np.asarray(buckets.codes, dtype=np.int64)
 
 
 def conditional_buckets(trades: pd.DataFrame, feature: str, q: int = 4) -> pd.DataFrame:
@@ -137,15 +163,13 @@ def conditional_buckets(trades: pd.DataFrame, feature: str, q: int = 4) -> pd.Da
     valid = trades[trades[feature].notna() & trades["ret"].notna()]
     if valid.empty:
         return pd.DataFrame(columns=["n", "mean_ret", "hit_rate"])
-    buckets = _qcut_buckets(valid[feature], q)
-    grouped = valid.groupby(buckets, observed=True)["ret"]
-    return pd.DataFrame(
-        {
-            "n": grouped.size(),
-            "mean_ret": grouped.apply(lambda s: exact_mean(s.to_numpy(dtype=float))),
-            "hit_rate": grouped.apply(lambda s: float((s > 0).mean())),
-        }
-    )
+    categories, codes = _bucket_keys(valid[feature], q)
+    rets = valid["ret"].to_numpy(dtype=float)
+    records = _records(categories, codes, rets, rets, 1, True)
+    populated = [c for i, c in enumerate(categories) if (codes == i).any()]  # the records' keys
+    index = pd.CategoricalIndex(populated, categories=categories, ordered=True, name=feature)
+    columns = ["bucket", "n", "mean_ret", "hit_rate"]
+    return pd.DataFrame(records, index=index, columns=columns).drop(columns="bucket")
 
 
 #: Minimum valid (feature, ret) rows for a cell's bucket panel to attempt a qcut at all. Below it
@@ -154,28 +178,61 @@ def conditional_buckets(trades: pd.DataFrame, feature: str, q: int = 4) -> pd.Da
 BUCKET_MIN_N = 20
 
 
-def _whole_bars(bars: np.ndarray, ordinals: np.ndarray, bar_k: np.ndarray) -> np.ndarray:
-    """The rows (aligned with ``bars`` / ``ordinals``) of every bar whose rows are ALL here and
-    share ONE bucket ordinal — ``bar_k[b]`` is the number of rows bar ``b`` holds in the cell's
-    pool. Only such a bar's rows enter one record together, where their sum is the bar's exact
-    excess sum; no record holds the whole sum of a bar split across ordinals, or of one with a
-    row the feature left unbucketed, so each of its rows keeps its return."""
+class _BarPool(NamedTuple):
+    """A ``cross_mean`` pool's bar numerators over one feature's valid rows, in those rows' order:
+    each row's entry ``bar``, its bar's exact numerator ``parts`` (on the bar's first closed
+    member, zeros on the others — ``_pools.BarNumerators.at``), ``bar_k`` (the rows every bar
+    holds in the cell's WHOLE pool) and the member count ``scale`` the numerators are over."""
+
+    bars: np.ndarray
+    parts: np.ndarray
+    bar_k: np.ndarray
+    scale: int
+
+    def rows(self, order: np.ndarray) -> _BarPool:
+        """The same pool over the rows at ``order``, in that order."""
+        return self._replace(bars=self.bars[order], parts=self.parts[order])
+
+
+def _whole_bars(bars: np.ndarray, codes: np.ndarray, bar_k: np.ndarray) -> np.ndarray:
+    """The rows (aligned with ``bars`` / ``codes``) of every bar whose rows are ALL here and
+    share ONE bucket — ``bar_k[b]`` is the number of rows bar ``b`` holds in the cell's pool.
+    Only such a bar's rows enter one record together, where their sum is the bar's exact excess
+    sum; no record holds the whole sum of a bar split across buckets, or of one with a row the
+    feature left unbucketed, so each of its rows keeps its return."""
     held, inv, n_here = np.unique(bars, return_inverse=True, return_counts=True)
     lo = np.full(held.size, np.iinfo(np.int64).max)
     hi = np.full(held.size, np.iinfo(np.int64).min)
-    np.minimum.at(lo, inv, ordinals)
-    np.maximum.at(hi, inv, ordinals)
-    whole: np.ndarray = ((n_here == bar_k[held]) & (lo == hi))[inv]
+    np.minimum.at(lo, inv, codes)
+    np.maximum.at(hi, inv, codes)
+    whole: np.ndarray = ((n_here == bar_k[held]) & (lo == hi) & (lo >= 0))[inv]
     return whole
+
+
+def _bucket_sums(
+    rets: np.ndarray, codes: np.ndarray, pool: _BarPool | None
+) -> tuple[np.ndarray, int]:
+    """What each record's MEAN sums per row, and the scale it is over: the rows' own returns —
+    or, where a bar lies whole in a record (:func:`_whole_bars`), every row in numerator units
+    over the pool's ``scale``: a whole bar's exact parts (on its first row, zeros on the rest),
+    any other row its return times ``scale``, exactly (``_pools.scaled_parts``) — so each mean is
+    ONE exactly rounded sum over ``scale`` times its ``n``."""
+    if pool is None:
+        return rets, 1
+    whole = _whole_bars(pool.bars, codes, pool.bar_k)
+    if not whole.any():
+        return rets, 1
+    sums = np.zeros((rets.size, max(pool.parts.shape[1], 2)))
+    sums[whole, : pool.parts.shape[1]] = pool.parts[whole]
+    sums[~whole, :2] = scaled_parts(rets[~whole], pool.scale)
+    return sums, pool.scale
 
 
 def _aggregate_bucket_ordinals(
     groups: list[pd.DataFrame],
     name: str,
     q: int,
-    bar_k: np.ndarray | None = None,
-    pools: list[np.ndarray] | None = None,
-    scale: int = 1,
+    pool: _BarPool | None,
     *,
     commensurable: bool = True,
 ) -> list[BucketRecord]:
@@ -184,27 +241,23 @@ def _aggregate_bucket_ordinals(
 
     Each participating target's rows are cut on their OWN quantile edges (the kernel's
     ``qcut(q, duplicates="drop")`` rule), codes compressed to populated-bucket ordinals, and
-    ordinal ``i``'s record pools the union rows with exact row-level statistics (``n`` summed,
-    ``hit_rate`` over the pooled returns, ``mean_ret`` their exactly rounded mean). Returns
-    ``[]`` — the caller's ``insufficient_distinct_values`` refusal — when any participating
-    target forms fewer than 2 populated buckets, fails the qcut outright, or forms a DIFFERENT
+    ordinal ``i``'s record pools the union rows (:func:`_records`: ``n`` summed, ``hit_rate``
+    over the pooled returns, ``mean_ret`` their exactly rounded mean). Returns ``[]`` — the
+    caller's ``insufficient_distinct_values`` refusal — when any participating target forms
+    fewer than 2 populated buckets, fails the qcut outright, or forms a DIFFERENT
     populated-bucket count than a sibling: no silent partial pools, ever (a panel that quietly
     dropped a member's rows would move with data quality, not with the hypothesis). Records are
     labelled ``q1..qk`` — per-target edges make interval strings target-relative and
     unprintable as one label.
 
-    ``bar_k`` / ``pools`` / ``scale`` (a ``cross_mean`` pool's rows per bar, each group's
-    row-aligned bar numerators and the member count they are over — see
-    :func:`cell_conditional_buckets`) put the rows of every bar wholly inside one record
-    (:func:`_whole_bars`) into that record's ``mean_ret`` through their bar's exact numerator,
-    the exact excess sum their rounded excesses miss by residue. Every other row then enters as
-    its own return times ``scale``, in exact parts (``_pools.scaled_parts``), so each mean is
-    ONE exactly rounded sum over ``scale`` times its ``n``; ``n`` and ``hit_rate`` stay on each
-    row's own return. ``commensurable=False`` (a ``diff`` outcome: each target in its own
-    level units) leaves every record's ``mean_ret`` NaN — a sum across the targets' units has
-    none — while ``n`` and ``hit_rate``, a count and a share of signs, stand."""
-    parts: list[tuple[np.ndarray, np.ndarray]] = []
-    bar_parts: list[np.ndarray] = []
+    ``pool`` (a ``cross_mean`` pool's bar numerators over the valid rows, which the groups index
+    — see :func:`cell_conditional_buckets`) puts the rows of every bar wholly inside one record
+    into that record's ``mean_ret`` through their bar's exact numerator (:func:`_bucket_sums`),
+    the exact excess sum their rounded excesses miss by residue. ``commensurable=False`` (a
+    ``diff`` outcome: each target in its own level units) leaves every record's ``mean_ret``
+    NaN — a sum across the targets' units has none — while ``n`` and ``hit_rate``, a count and a
+    share of signs, stand."""
+    ordinals: list[np.ndarray] = []
     bucket_counts: set[int] = set()
     for group in groups:
         try:
@@ -220,44 +273,20 @@ def _aggregate_bucket_ordinals(
         # A row no bin holds (a constant feature's single edge) is NaN here, -1 as a code.
         codes = np.where(np.isnan(cut), -1.0, cut).astype(int)
         uniq, ordinal = np.unique(codes, return_inverse=True)
-        k = int(uniq.size)
-        if k < 2:
+        if uniq.size < 2:
             return []
-        bucket_counts.add(k)
-        parts.append((ordinal, group["ret"].to_numpy(dtype=float)))
-        if bar_k is not None:
-            bar_parts.append(group["entry_bar"].to_numpy(dtype=np.int64))
+        bucket_counts.add(int(uniq.size))
+        ordinals.append(ordinal)
     if len(bucket_counts) != 1:
         return []
     k = bucket_counts.pop()
     # The union rows in target-then-row order: a record's rows are the very sequence the
     # per-target concatenation gave, so a mean over them is the same sum, bit for bit.
-    ordinals = np.concatenate([part[0] for part in parts])
-    rets = np.concatenate([part[1] for part in parts])
-    # What each record's MEAN sums per row: the rows' own returns — or, where a bar lies whole
-    # in a record, every row in numerator units over `scale`: a whole bar's exact parts (on its
-    # first row, zeros on the rest), any other row its return times `scale`, exactly.
-    sums, sums_scale = rets, 1
-    if bar_k is not None and pools is not None:
-        whole = _whole_bars(np.concatenate(bar_parts), ordinals, bar_k)
-        if whole.any():
-            bar_pool = np.concatenate(pools)
-            sums, sums_scale = np.zeros((rets.size, max(bar_pool.shape[1], 2))), scale
-            sums[whole, : bar_pool.shape[1]] = bar_pool[whole]
-            sums[~whole, :2] = scaled_parts(rets[~whole], scale)
-    records: list[BucketRecord] = []
-    for i in range(k):
-        in_bucket = ordinals == i
-        pool = rets[in_bucket]
-        records.append(
-            {
-                "bucket": f"q{i + 1}",
-                "n": int(pool.size),
-                "mean_ret": exact_mean(sums[in_bucket], sums_scale) if commensurable else _NAN,
-                "hit_rate": float(np.mean(pool > 0)) if pool.size else _NAN,
-            }
-        )
-    return records
+    order = np.concatenate([group.index.to_numpy() for group in groups])
+    codes = np.concatenate(ordinals)
+    rets = np.concatenate([group["ret"].to_numpy(dtype=float) for group in groups])
+    sums, scale = _bucket_sums(rets, codes, None if pool is None else pool.rows(order))
+    return _records([f"q{i + 1}" for i in range(k)], codes, rets, sums, scale, commensurable)
 
 
 def cell_conditional_buckets(
@@ -306,17 +335,18 @@ def cell_conditional_buckets(
     ``trades`` — each bar's exact parts on its first closed member, zeros on the others, over the
     member count: ``_pools.cross_mean_bar_numerators``, the runner's pool values) carry the exact
     bar sums into the bucket MEANS: a bar's rounded per-row excesses miss its exact sum by
-    residue, so per feature a bar whose rows ALL land in ONE ordinal — bucketed by a basket-wide
+    residue, so per feature a bar whose rows ALL land in ONE bucket — bucketed by a basket-wide
     feature (a calendar field, a shared external feed), whose per-target edges agree where the
     members fire on the same bars, or a one-row bar — adds its exact sum to that record's mean
-    (:func:`_aggregate_bucket_ordinals`). A bar split across ordinals, or partly unbucketed,
-    keeps each row's own return (no record holds its whole sum); ``n`` and ``hit_rate`` stay on
-    each row's return. On
-    a pool whose every bar is full, bucketed by a basket-wide feature, every mean is exactly 0.0
-    — no rank signal, so no ``bucket_monotonicity`` entry, in any declaration order — where the
-    rounded rows ranked their residue. Only the multi-target arm
-    reads it: with one participating target the frozen kernel's records pass through, and they
-    hold no whole multi-row bar (a basket's other members' rows sit unbucketed there).
+    (:func:`_bucket_sums`, in BOTH arms: with one participating target the only bar the cut can
+    hold whole is a one-row bar, the basket's other members' rows sitting unbucketed there, and
+    it enters at its exact numerator like any other — read off the rounded row, a one-member
+    pool's every bucket mean carried residue the pool's episode means and CSCV split means did
+    not). A bar split across buckets, or partly unbucketed, keeps each row's own return (no
+    record holds its whole sum); ``n`` and ``hit_rate`` stay on each row's return. On a pool
+    whose every bar is full, bucketed by a basket-wide feature, every mean is exactly 0.0 — no
+    rank signal, so no ``bucket_monotonicity`` entry, in any declaration order — where the
+    rounded rows ranked their residue.
 
     ``commensurable=False`` (a ``diff`` outcome, each target in its own level units) nulls the
     multi-target arm's ``mean_ret`` (:func:`_aggregate_bucket_ordinals`) — its records pool
@@ -352,28 +382,32 @@ def cell_conditional_buckets(
         if n_valid < min_n:
             buckets_out[name] = {"buckets": [], "reason": "insufficient_observations"}
             continue
+        pool = (
+            None
+            if pool_all is None or bar_k is None
+            else _BarPool(
+                valid["entry_bar"].to_numpy(dtype=np.int64), pool_all[is_valid], bar_k, pool_scale
+            )
+        )
         groups = (
             [group for _, group in valid.groupby("target", sort=False)]
             if "target" in valid.columns
             else [valid]
         )
         if len(groups) == 1:
-            # One participating target: the frozen kernel's records verbatim, interval labels
-            # included — bit-identical to the pre-v3 pooled path on every single-target cell
-            # whose edges pandas can print.
+            # One participating target: the frozen kernel's cut, interval labels included —
+            # bit-identical to the pre-v3 pooled path on every single-target cell whose edges
+            # pandas can print — over the same record arithmetic as the multi-target arm.
             try:
-                records = _bucket_records(conditional_buckets(groups[0], name, q=q))
+                categories, codes = _bucket_keys(valid[name], q)
             except ValueError:
                 records = []  # qcut could not form real bins — same refusal as < 2 buckets
+            else:
+                rets = valid["ret"].to_numpy(dtype=float)
+                sums, scale = _bucket_sums(rets, codes, pool)
+                records = _records(categories, codes, rets, sums, scale, True)
         else:
-            pools = (
-                None
-                if pool_all is None
-                else [pool_all[is_valid][g.index.to_numpy()] for g in groups]
-            )
-            records = _aggregate_bucket_ordinals(
-                groups, name, q, bar_k, pools, pool_scale, commensurable=commensurable
-            )
+            records = _aggregate_bucket_ordinals(groups, name, q, pool, commensurable=commensurable)
         if len(records) < 2:
             buckets_out[name] = {"buckets": [], "reason": "insufficient_distinct_values"}
             continue
