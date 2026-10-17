@@ -367,14 +367,17 @@ def _resolve_run_config(thesis: Thesis, md: MarketData) -> _RunConfig:
     # across sweep combos (e.g. transforms a constant-threshold sweep leaves untouched) are built
     # once, and ``api.list_entries`` over the same ``md`` rebuilds nothing this backtest built.
 
-    # Entry-time feature snapshots — any scalar-param Series, taken at the firing (decision) bar.
+    # Entry-time feature snapshots — any scalar-param Series, taken at the firing (decision) bar
+    # where it is initialized. A value it carries before its init (a `cross_agg` broadcast into a
+    # member whose own input has not started, a series computed from one) is no observation of
+    # that member, as the decision side reads it: the snapshot is NaN there.
     # `is not None`, never truthiness: an explicitly-empty features dict is refused at DSL
     # validation, so the ONLY spelling of "use the defaults" is the omitted field.
     feature_nodes = thesis.params.features if thesis.params.features is not None else _FEATURE_NODES
-    features: dict[str, np.ndarray] = {
-        name: vectorize.build_series(node, md)[0].to_numpy(dtype=float)
-        for name, node in feature_nodes.items()
-    }
+    features: dict[str, np.ndarray] = {}
+    for name, node in feature_nodes.items():
+        value, init = vectorize.build_series(node, md)
+        features[name] = np.where(init.to_numpy(dtype=bool), value.to_numpy(dtype=float), np.nan)
     feature_names = list(feature_nodes)
 
     # Horizon is the forward measurement window. A scalar runs one window; a list sweeps it as its

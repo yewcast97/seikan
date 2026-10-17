@@ -773,7 +773,9 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   cross-section, so a member whose input reads a broadcast its own data has not joined is neither
   ranked, demeaned nor averaged against its siblings (nor counted in their `cross_breadth` `k`),
   and a rank or deviation whose label has had no value since its init ledgers that stretch, like
-  every reader of the label. Negation's full warmup follows the same bars: a condition embedded
+  every reader of the label. A feature snapshot reads the same channel: a firing on a bar where
+  the feature's series has not initialized snapshots NaN, never the value it carries there, and
+  enters no association or bucket. Negation's full warmup follows the same bars: a condition embedded
   in a `shift`ed or `change`d operand must be past warmup on the bar the lag reads, one embedded
   in an event snapshot's input on its event bar (`not(shift(bars_since_event(or(A, B)), 20) >
   1000)` waits for A twenty bars longer, as `lag(not(…), 20)` does). Over thresholds on

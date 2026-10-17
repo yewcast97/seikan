@@ -1088,7 +1088,9 @@ return over `horizon` bars. Firing bars whose horizon runs past the data end are
 **Conditional features** — `features`: `{name: <Series>}` snapshots an extra entry-time series per
 observation (any **scalar-param** Series, including `external` feeds — declare them in `data.external`)
 so each cell buckets its returns by it (the per-cell `conditional_buckets`),
-testing whether the edge is regime-conditional. Defaults to built-in momentum (`ret_5`, `ret_20`)
+testing whether the edge is regime-conditional. A firing on a bar where the feature's series has
+not initialized snapshots NaN — a `cross_agg` broadcast into a member whose own input has not
+started is no observation of that member — and enters no bucket or association. Defaults to built-in momentum (`ret_5`, `ret_20`)
 + realized-vol (`vol_14` = `rolling_agg(change(close, kind="log"), 14, "std")`) snapshots when
 unset. When given, the dict must be NON-EMPTY — `{}` would behave exactly like the omitted field
 while hashing differently, so omit the field entirely for the defaults. Features are scanned by the cross-node mode rule exactly as the entry is: a
@@ -1169,7 +1171,7 @@ episode's mass over the cell's, each an exactly rounded sum). The columns:
 | `bars_to_positive` / `bars_to_trough` | recovery / trough timing over the window; empty when censored |
 | `exit_reason` | `horizon` (closed) · `open` (end-of-data censoring, structural) · `no_outcome` / `no_benchmark` (data holes — the checklist refuses them) |
 | `is_open` | True iff censored; censored rows are excluded from every statistic |
-| *features* | trailing entry-time feature snapshots at the FIRING bar (defaults `ret_5`, `ret_20`, `vol_14`) |
+| *features* | trailing entry-time feature snapshots at the FIRING bar (defaults `ret_5`, `ret_20`, `vol_14`); empty where the feature's series has not initialized |
 
 (There are no epoch-nanosecond twins of `entry_time`/`exit_time`: the ISO times are the record,
 and int64 nanosecond counts silently round in IEEE-754 consumers.)

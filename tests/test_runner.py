@@ -3821,6 +3821,59 @@ def test_cross_agg_member_cannot_fire_before_its_own_series_exists(tmp_path):
     assert all(sig[t]["n_undefined"] == 0 for t in ("A", "B", "C"))
 
 
+def test_a_feature_snapshot_is_taken_only_where_its_series_is_initialized(tmp_path):
+    # The same seam on the feature side. `cross_agg(rolling_agg(close, 10, "mean"), "mean")`
+    # broadcasts A and B's breadth into C from bar 9, but C's own input — its 10-bar mean, its
+    # half of the cross-section — starts at bar K + 9: the value C carries before that is not its
+    # observation, and no decision latches on it. The snapshot read it anyway, so C's firings on
+    # bars K..K+8 carried the broadcast into the trades, its association and its buckets. They
+    # snapshot NaN; A's and B's snapshots are unchanged.
+    n, K = 80, 20
+    idx = pd.date_range("2021-01-01", periods=n, freq="1D")
+    rng = np.random.RandomState(3)
+    opens = {
+        "A": 10.0 + rng.randn(n).cumsum() * 0.1,
+        "B": 20.0 + rng.randn(n).cumsum() * 0.1,
+        "C": np.concatenate([np.full(K, np.nan), 30.0 + rng.randn(n - K).cumsum() * 0.1]),
+    }
+    files = {m: _write_bars(tmp_path / f"{m}.csv", px, idx) for m, px in opens.items()}
+    close = {"type": "field", "column": "close"}
+    mean10 = {"type": "rolling_agg", "window": 10, "agg": "mean", "input": close}
+    thesis = Thesis.model_validate(
+        {
+            "name": "late_feature",
+            "target_mode": "basket",
+            "data": {"targets": list(files)},
+            "entry": {
+                "type": "threshold",
+                "left": close,
+                "op": ">",
+                "right": {"type": "constant", "value": 0.0},
+            },
+            "params": {
+                "horizon": 1,
+                "features": {"breadth": {"type": "cross_agg", "agg": "mean", "input": mean10}},
+            },
+        }
+    )
+    res = run_backtest(thesis, load(thesis, files))
+    trades = res.trades
+    late = trades[trades["target"] == "C"]
+    bars = late["entry_bar"].to_numpy(dtype=np.int64)
+    snap = late["breadth"].to_numpy(dtype=float)
+    assert bars.min() == K  # C fires from its own first bar, before its feature input starts
+    np.testing.assert_array_equal(np.isfinite(snap), bars >= K + 9)
+    early = trades[trades["target"] != "C"]
+    np.testing.assert_array_equal(np.isfinite(early["breadth"]), early["entry_bar"] >= 9)
+    closed = late[~late["is_open"]]
+    cell = res.summary["cells"][0]
+    assert cell["feature_association"]["breadth"]["C"]["n"] == int(
+        (closed["entry_bar"] >= K + 9).sum()
+    )
+    n_bucketed = sum(b["n"] for b in cell["conditional_buckets"]["breadth"]["buckets"])
+    assert n_bucketed == int(np.isfinite(trades.loc[~trades["is_open"], "breadth"]).sum())
+
+
 def test_cross_mean_excess_is_antisymmetric_for_two_targets(tmp_path):
     # `benchmark: "cross_mean"` (basket-only) demeans each member's signed forward return by the
     # basket mean at every bar, so with two members the excesses are EXACTLY opposite bar by bar:
