@@ -422,8 +422,10 @@ range reads that recurrence's value to its rounding.
   / `ema_alpha` by which field is set. Rendered `ema(x,20)` / `ema(x,a=0.06)`.
 - `zscore` (input, exactly one of `window` / `alpha`, mean_type `"sma"|"ema"` default `"sma"`)
   — `(x − mean) / std`: `sma` uses two-pass population moments over the last `window` bars,
-  about the window's first value (so a spread at the level's ulp keeps its z, and two points
-  read at most ±1);
+  about the window's first value (so a spread at the level's ulp keeps its z), clipped to the
+  population bound `±√(window − 1)` — two points read at most ±1, and `window − 1` equal values
+  beside one other sit exactly on the bound, where the ratio's rounding read 2.0000000000000004
+  for an exact 2 and `zscore(close, 5) > 2` fired;
   `ema` uses the West EW recurrence with the EMA's own two forms. `alpha` is only valid with
   `mean_type: "ema"` and must be `< 1` (`alpha = 1` leaves zero EW variance). Sweeps as
   `zscore_window` / `zscore_alpha`.

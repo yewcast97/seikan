@@ -1333,6 +1333,35 @@ def test_zscore_sma_overflowed_variance_is_nan_and_an_underflowed_one_is_lifted(
         _rtol(ref.zscore_sma(x * 2.0**k, 3), want)
 
 
+def test_zscore_sma_never_exceeds_its_population_bound():
+    # No member of a window deviates from its mean by more than √(w−1) population stds, and a
+    # window of w−1 equal values beside one other sits exactly ON that bound: the ratio's last
+    # rounding read 2.0000000000000004 for the exact 2 of [100, 100, 100, 100, 100.3], and
+    # `zscore(close, 5) > 2` fired on every such window of a ten-bar cycle — 60 closed
+    # observations of an impossible predicate. The z is clipped to the bound, as the EW z-score
+    # and a correlation are to theirs; a window within it keeps every bit, and one whose rounding
+    # fell an ulp SHORT of the bound keeps that too ([100, 100, 93] at w = 3) — the clip is the
+    # exact bound, not a landing.
+    review = np.array([100.0, 100.0, 100.0, 100.0, 100.3])
+    assert zscore_sma_1d(review, 5)[-1] == 2.0
+    assert ref.zscore_sma(review, 5)[-1] == 2.0
+    cycle = np.resize([100.0, 100.0, 100.0, 100.0, 100.3, 100.6, 100.9, 100.0, 100.0, 100.0], 600)
+    z = zscore_sma_1d(cycle, 5)
+    assert not (z > 2.0).any() and (z == 2.0).sum() == 60
+    for w in (3, 5, 10):
+        bound = math.sqrt(w - 1)
+        for step in (0.3, 1e-9, 7.0):  # the one other value, above and below the held ones
+            for sign in (1.0, -1.0):
+                edge = np.r_[np.full(w - 1, 100.0), 100.0 + sign * step]
+                got = zscore_sma_1d(edge, w)[-1]
+                assert np.sign(got) == sign and bound - math.ulp(bound) <= abs(got) <= bound
+                assert ref.zscore_sma(edge, w)[-1] == got
+        walk = _rand(400, seed=w)
+        inside = zscore_sma_1d(walk, w)[w - 1 :]
+        assert (np.abs(inside) <= bound).all()
+        np.testing.assert_array_equal(zscore_sma_1d(walk, w), ref.zscore_sma(walk, w))
+
+
 def _geometric_ew_z(alpha: float, r: float) -> float:
     """The EW z-score a geometric input ``c·r**t`` converges to in exact arithmetic: the mean
     settles at ``k = α·r / (r − 1 + α)`` times the input and the variance at ``σ`` times its

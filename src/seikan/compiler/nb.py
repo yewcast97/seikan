@@ -293,6 +293,12 @@ def zscore_sma_apply_nb(arr: npt.NDArray[np.float64], window: int) -> npt.NDArra
     # A constant window has no dispersion to standardize by — undefined, whatever residual the
     # mean's rounding leaves (see the zero-dispersion note above).
     varies = ~_constant_windows(a, window)
+    # The population bound (Samuelson): no member of a window deviates from its mean by more than
+    # √(w−1) population stds, and a window of w−1 equal values beside one other sits ON it — where
+    # the ratio's last rounding carried it past: [100, 100, 100, 100, 100.3] read 2.0000000000000004
+    # for an exact 2, and `zscore(close, 5) > 2` fired on every such window. Clipped, as the EW
+    # z-score is to its own bound and a correlation to [−1, 1].
+    bound = math.sqrt(window - 1)
     lifted: npt.NDArray[np.float64] | None = None  # built on the first batch that needs it
     for rows in _window_batches(win.shape):
         w = win[rows]
@@ -316,7 +322,7 @@ def zscore_sma_apply_nb(arr: npt.NDArray[np.float64], window: int) -> npt.NDArra
         # `_normal(var)`: squared deviations past ~1.3e154 overflow the variance to inf, and the
         # z-score `(x − mean) / inf` is a FINITE 0.0 that `isfinite(z)` cannot catch.
         ok = finite_all & varies[rows] & _normal(var) & np.isfinite(z)
-        out[window - 1 :][rows] = np.where(ok, z, np.nan)
+        out[window - 1 :][rows] = np.where(ok, np.clip(z, -bound, bound), np.nan)
     return out
 
 

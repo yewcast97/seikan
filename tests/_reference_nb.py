@@ -73,6 +73,7 @@ def zscore_sma(arr: np.ndarray, window: int) -> np.ndarray:
     out = np.full(n, np.nan, dtype=np.float64)
     if window < 2 or window > n:
         return out
+    bound = math.sqrt(window - 1)  # the population bound: w − 1 equal values beside one sit on it
     for i in range(window - 1, n):
         s = 0.0
         cnt = 0
@@ -95,7 +96,7 @@ def zscore_sma(arr: np.ndarray, window: int) -> np.ndarray:
             continue  # an overflowed variance
         z = dev / math.sqrt(var)
         if np.isfinite(z):
-            out[i] = z
+            out[i] = min(max(z, -bound), bound)
     return out
 
 
