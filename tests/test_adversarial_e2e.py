@@ -140,7 +140,7 @@ def golden(tmp_path, capsys):
 def test_golden_baseline_meets_its_cell(golden, capsys):
     code, doc = _run(capsys, golden, ["run", str(golden / "t.json")], {"target": golden / "px.csv"})
     assert code == 0
-    assert doc["gate"]["policy_version"] == 3
+    assert doc["gate"]["policy_version"] == 4
     # The envelope version is the CLI's own constant (its literal pin lives in test_cli.py);
     # this suite pins the CONTRACT stamps — the estimator and checklist revisions — literally.
     assert doc["report_schema_version"] == REPORT_SCHEMA_VERSION

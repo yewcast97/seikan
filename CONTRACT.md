@@ -259,8 +259,9 @@ document carrying it exists only because `--report-out` asked for it — and the
 LAST, after every other nominated output has landed, so a document enumerating files that never
 appeared is not a state this CLI can reach. There is no top-level `n`: a scalar observation count
 would have to be some cell's, and naming one cell is the selection this engine does not perform.
-`policy_version` (**3** — v3: a never-available source refuses, and the support floor reads
-the renamed `n_nonoverlap`) names the checklist semantics (two cell results compare only
+`policy_version` (**4** — v4: a cell names its horizon, which bounds its non-overlapping
+counts; v3: a never-available source refuses, and the support floor reads the renamed
+`n_nonoverlap`) names the checklist semantics (two cell results compare only
 under the same version); `summary.statistics_version` (**5** — v2 ADDED evidence: the p05/p95
 quantile tails, the promoted per-cell shape reads, `benchmark_regression`, `timing` and the
 episode-deduplicated `episode_profile`; v3 CORRECTED: the excursion/trough window stops reading
@@ -457,7 +458,7 @@ DECLARED grid recorded before anything about firing is known, never off the trad
 a non-firing hypothesis is precisely the one whose absence makes a surviving cell look inevitable.
 `gate.cells[i]` is index-aligned with `summary.cells[i]`.
 
-**The checklist contract (policy v3 — ONE checklist, applied to every cell independently)**:
+**The checklist contract (policy v4 — ONE checklist, applied to every cell independently)**:
 three run-level checks reported once in `run_checks`, five per-cell checks in every
 `cells[i].checks`, each `{name, met, observed, threshold, detail}`. A cell's
 `met` is the conjunction of its own five checks AND all three run-level checks — an unmet
@@ -511,18 +512,22 @@ hole, and `first_available` is evidence, never a refusal; no knob); and `search_
 (`n_hypotheses_attempted` — the DECLARED grid, which non-firing combos cannot shrink — ≤ 64, the
 ONLY multiplicity input this policy carries).
 
-The five PER-CELL checks: `cell_evidence` (the entry is a dict with a dict `params`; `by_target`,
+The five PER-CELL checks: `cell_evidence` (the entry is a dict with a dict `params` naming a
+countable `horizon ≥ 1`; `by_target`,
 `outcome_coverage` and `signal_coverage` are string-keyed and cover the targets EXACTLY — a
 silently dropped target leaves this check unmet rather than escaping notice by absence; every
 count is countable and
 non-negative; the ledger arithmetic holds per target (`sum(exit_reasons) == n_attempted`,
 `n_closed == exit_reasons["horizon"]`); and the panels RECONCILE — `by_target[t].n ==
-outcome_coverage[t].n_closed`, `n_nonoverlap ≤ n`, `episode_stats.n` == the per-target total,
+outcome_coverage[t].n_closed`, `n_nonoverlap ≤ n`, `n_nonoverlap ≤ max(0, ⌊(n_bars − 2) /
+horizon⌋)` (a firing fills at the next bar's open and closes `horizon` bars later: 40 windows of
+21 bars claimed in a 600-bar index, where 28 fit, is no run's output), `episode_stats.n` == the per-target total,
 `signal_coverage[t].n_bars == summary.n_bars`: an internally impossible cell is drifted input, not
 something to grade. Basket cells must ADDITIONALLY carry the `pooled` dict their own rubric
 grades, reconciling with the member panels: `pooled.n ==` the per-target total (one pool, fully
-attributed), `pooled.n_nonoverlap ≤ pooled.n`, `pooled.n_nonoverlap ≤ n_bars` (same-bar cross-member firings
-collapse in the greedy count, so it is bounded by the bar clock), `pooled.n ≤ n_bars ×
+attributed), `pooled.n_nonoverlap ≤ pooled.n`, `pooled.n_nonoverlap ≤ max(0, ⌊(n_bars − 2) /
+horizon⌋)` (same-bar cross-member firings collapse in the greedy count, so the bar clock's windows
+bound it), `pooled.n ≤ n_bars ×
 len(targets)` (each member fires at most once per bar); a `pooled` key on a conjunction cell
 REFUSES — the runner writes pooled only in basket mode (absent, not null, on conjunction
 cells), so the configuration is the signature of a RESTAMPED basket and refusing it costs zero
@@ -1101,7 +1106,7 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   input, `_checks_run`/`_checks_cell` the checks, `_evaluate` `evaluate_gate`: the per-cell
   checklist (3 run-level + 5
   per-cell checks, each `{name, met, observed, threshold, detail}`;
-  `POLICY_VERSION` 3 stamped into every report; the thresholds handed in are REVALIDATED by
+  `POLICY_VERSION` 4 stamped into every report; the thresholds handed in are REVALIDATED by
   reconstruction at entry, so a mutated or loosened object cannot bend the checklist at the library
   boundary). The policy contract: stamped evidence verification (`statistics_version` +
   `gate_evidence_basis == "full_sample"` + a readable `target_mode` stamp — the rubric selector,

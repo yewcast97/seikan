@@ -354,7 +354,7 @@ def test_every_declared_cell_carries_the_same_five_checks_in_order():
 def test_report_serializes_to_the_declared_shape():
     doc = evaluate_gate(_summary()).to_dict()
     assert set(doc) == {"policy_version", "n_cells", "n_met", "run_checks", "cells"}
-    assert doc["policy_version"] == POLICY_VERSION == 3
+    assert doc["policy_version"] == POLICY_VERSION == 4
     assert doc["n_cells"] == 1
     assert doc["n_met"] == 1
     assert [c["name"] for c in doc["run_checks"]] == _RUN_NAMES
@@ -994,6 +994,15 @@ def test_cell_evidence_requires_dict_params():
     assert "params is not a dict" in check.detail
 
 
+@pytest.mark.parametrize("params", [{}, {"zscore_window": 20}, {"horizon": 0}, {"horizon": 2.5}])
+def test_cell_evidence_requires_a_countable_horizon(params):
+    # The engine names every cell's horizon: a cell that does not name the window it measured is
+    # not reproducible, and its non-overlapping count has nothing to be bounded by.
+    check = _cell_checks(evaluate_gate(_summary(cells=[_cell(params=params)])))["cell_evidence"]
+    assert not check.met
+    assert "params.horizon=" in check.detail
+
+
 @pytest.mark.parametrize("panel", ["by_target", "outcome_coverage", "signal_coverage"])
 def test_cell_evidence_requires_each_panel(panel):
     cell = _cell()
@@ -1084,6 +1093,16 @@ def test_cell_evidence_n_nonoverlap_cannot_exceed_n():
     check = _cell_checks(evaluate_gate(_summary(cells=[cell])))["cell_evidence"]
     assert not check.met
     assert "n_nonoverlap=99" in check.detail
+
+
+def test_cell_evidence_n_nonoverlap_is_bounded_by_the_horizons_windows():
+    # A firing fills at the next bar's open and closes 21 bars later, so a 600-bar index closes
+    # at most ⌊(600 − 2) / 21⌋ = 28 non-overlapping windows; the review's 40 (of n = 42) passed.
+    check = _cell_checks(evaluate_gate(_summary(cells=[_cell(n_nonoverlap=40)])))["cell_evidence"]
+    assert not check.met
+    assert "n_nonoverlap=40 exceeds 28" in check.detail
+    full = _cell_checks(evaluate_gate(_summary(cells=[_cell(n_nonoverlap=28)])))
+    assert full["cell_evidence"].met
 
 
 def test_cell_evidence_episode_panel_must_total_the_per_target_counts():
@@ -1758,14 +1777,14 @@ def test_pooled_n_nonoverlap_cannot_exceed_pooled_n():
     assert "pooled.n_nonoverlap=99" in check.detail
 
 
-def test_pooled_n_nonoverlap_is_bounded_by_the_bar_clock():
-    # Same-bar firings across members collapse to ONE greedy episode, so pooled.n_nonoverlap can
-    # never
-    # outrun the index even though pooled.n legitimately can (up to n_bars × members).
-    cell = _basket_cell(n=350, pooled=_pooled(n=700, n_nonoverlap=601))
+def test_pooled_n_nonoverlap_is_bounded_by_the_horizons_windows():
+    # Same-bar firings across members collapse to ONE greedy window, so pooled.n_nonoverlap obeys
+    # the bar clock's own window count — ⌊(600 − 2) / 21⌋ = 28 at the cell's horizon — even
+    # though pooled.n legitimately can reach n_bars × members. Bounded by n_bars alone, 29 passed.
+    cell = _basket_cell(n=350, pooled=_pooled(n=700, n_nonoverlap=29))
     check = _cell_checks(evaluate_gate(_basket(cells=[cell])))["cell_evidence"]
     assert not check.met
-    assert f"n_bars={_N_BARS}" in check.detail
+    assert "pooled.n_nonoverlap=29 exceeds 28" in check.detail
 
 
 def test_pooled_n_cannot_exceed_bars_times_members():
@@ -1777,8 +1796,9 @@ def test_pooled_n_cannot_exceed_bars_times_members():
 
 
 def test_a_basket_cell_exactly_filling_the_bar_clock_still_reconciles():
-    # Boundary inclusive: every member firing on every bar is legitimate geometry.
-    cell = _basket_cell(n=_N_BARS, pooled=_pooled(n=2 * _N_BARS, n_nonoverlap=_N_BARS))
+    # Boundary inclusive: every member firing on every bar, its windows filling the bar clock at
+    # the cell's horizon (⌊(600 − 2) / 21⌋ = 28), is legitimate geometry.
+    cell = _basket_cell(n=_N_BARS, pooled=_pooled(n=2 * _N_BARS, n_nonoverlap=28))
     check = _cell_checks(evaluate_gate(_basket(cells=[cell])))["cell_evidence"]
     assert check.met
 

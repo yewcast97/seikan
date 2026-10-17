@@ -1313,7 +1313,7 @@ and int64 nanosecond counts silently round in IEEE-754 consumers.)
 - **`gate.cells`** — index-aligned with `summary.cells` (`gate.cells[i]` grades
   `summary.cells[i]`). Each carries `cell_id`, `params`, `met`, and `checks` — five
   `{name, met, observed, threshold, detail}` records, always all five, never
-  short-circuited. Alongside: `gate.policy_version` (3), `gate.n_cells`, `gate.n_met`, and
+  short-circuited. Alongside: `gate.policy_version` (4), `gate.n_cells`, `gate.n_met`, and
   `gate.run_checks` (three run-level records reported once).
 
 A cell's `met` already includes the run-level checks — an unmet run-level check leaves every cell
@@ -1388,13 +1388,17 @@ complete statistics are still in `summary.cells[i]` — a checklist result never
 
 ### The five per-cell checks
 
-- `cell_evidence` — the cell's panels are present, string-keyed, cover your targets exactly, and
-  RECONCILE with each other (`by_target.n == outcome_coverage.n_closed`, `n_nonoverlap <= n`,
+- `cell_evidence` — the cell's `params` name a countable `horizon >= 1`, its panels are present,
+  string-keyed, cover your targets exactly, and RECONCILE with each other
+  (`by_target.n == outcome_coverage.n_closed`, `n_nonoverlap <= n` and
+  `n_nonoverlap <= max(0, (n_bars − 2) // horizon)` — a firing fills at the next bar's open and
+  closes `horizon` bars later, so no more non-overlapping windows close inside the index —
   `episode_stats.n` == the per-target total, `signal_coverage.n_bars == summary.n_bars`). Basket
   cells must ADDITIONALLY carry the `pooled` dict their own rubric grades, reconciling with the
   member panels: `pooled.n ==` the sum of `by_target.n` (one pool, fully attributed),
-  `pooled.n_nonoverlap <= pooled.n`, `pooled.n_nonoverlap <= n_bars` (the greedy count collapses same-bar
-  cross-member firings, so it is bounded by the bar clock), and `pooled.n <= n_bars ×
+  `pooled.n_nonoverlap <= pooled.n`, `pooled.n_nonoverlap <= max(0, (n_bars − 2) // horizon)` (the
+  greedy count collapses same-bar cross-member firings, so the bar clock's windows bound it), and
+  `pooled.n <= n_bars ×
   len(targets)` (each member fires at most once per bar). A `pooled` key on a conjunction cell
   REFUSES: the engine writes `pooled` only in basket mode, so a conjunction-stamped report
   carrying one can only be a basket report whose mode stamp was rewritten — the checklist reads

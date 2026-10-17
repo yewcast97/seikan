@@ -57,14 +57,14 @@ METRIC_ROLES: dict[str, JsonValue] = {
     },
     "cell_checks": {
         "cell_evidence": [
-            "cells[*].params",
+            "cells[*].params (a countable horizon >= 1)",
             "cells[*].by_target[*].{n,n_nonoverlap}",
             "cells[*].outcome_coverage[*].{n_attempted,n_closed,exit_reasons}",
             "cells[*].signal_coverage[*].n_bars",
             "cells[*].episode_stats.n",
             "cells[*].pooled.{n,n_nonoverlap} (basket only — pooled.n == sum of by_target.n, "
-            "pooled.n_nonoverlap <= pooled.n, pooled.n_nonoverlap <= n_bars, pooled.n <= n_bars × "
-            "targets; "
+            "pooled.n_nonoverlap <= pooled.n, pooled.n_nonoverlap <= max(0, (n_bars − 2) // "
+            "horizon), pooled.n <= n_bars × targets; "
             "a pooled key on a conjunction cell REFUSES as a restamped basket)",
             "targets + n_bars + target_mode (the cross-panel reconciliation references)",
         ],
@@ -484,14 +484,16 @@ METRIC_ROLES_DOC: dict[str, JsonValue] = {
         "Arithmetic: exit reasons sum to n_attempted and n_closed == exit_reasons.horizon — a "
         "ledger anyone can re-check. Reconciliation: by_target.n == outcome_coverage.n_closed, "
         "n_nonoverlap <= n (non-overlapping windows cannot outnumber observations), "
-        "episode_stats.n == the "
+        "n_nonoverlap <= max(0, (n_bars − 2) // horizon) (a firing fills at the next bar's open "
+        "and closes params.horizon bars later, so no more non-overlapping windows close inside "
+        "the index), episode_stats.n == the "
         "per-target total (the concentration and support panels must describe one pool), and "
         "signal_coverage.n_bars == summary.n_bars (the decision ledger spans the whole index by "
         "construction). Basket cells must additionally carry the pooled dict their own rubric "
         "grades, reconciling with the member panels: pooled.n == the per-target total, "
-        "pooled.n_nonoverlap <= pooled.n, pooled.n_nonoverlap <= n_bars (same-bar cross-member "
-        "firings "
-        "collapse in the greedy count), pooled.n <= n_bars × len(targets) (each member fires "
+        "pooled.n_nonoverlap <= pooled.n, pooled.n_nonoverlap <= max(0, (n_bars − 2) // "
+        "horizon) (same-bar cross-member firings collapse in the greedy count), "
+        "pooled.n <= n_bars × len(targets) (each member fires "
         "at most once per bar); a pooled key on a conjunction cell REFUSES — the runner "
         "writes pooled only in basket mode, so the configuration is the signature of a "
         "restamped basket and refusing it costs zero honest refusals; a missing target_mode "
@@ -1545,18 +1547,19 @@ GATE_CONTRACT_DOC: dict[str, JsonValue] = {
     "cell_checks": {
         "cell_evidence": (
             "the cell entry is a dict with a dict params (its identity — the axes plus the "
-            "horizon, always present); by_target, outcome_coverage and signal_coverage are "
+            "horizon, always present, a countable horizon >= 1); by_target, outcome_coverage "
+            "and signal_coverage are "
             "string-keyed and cover the target set EXACTLY (a silently dropped target leaves "
             "this check unmet rather than escaping notice by absence); every count is countable "
             "and non-negative; the "
             "ledger arithmetic holds per target (sum(exit_reasons) == n_attempted, n_closed == "
             "exit_reasons.horizon); and the panels RECONCILE — by_target.n == "
-            "outcome_coverage.n_closed, n_nonoverlap <= n, episode_stats.n == the per-target "
-            "total, "
+            "outcome_coverage.n_closed, n_nonoverlap <= n, n_nonoverlap <= max(0, (n_bars − "
+            "2) // horizon), episode_stats.n == the per-target total, "
             "signal_coverage.n_bars == summary.n_bars. Basket cells additionally carry the "
             "pooled dict their rubric grades, reconciling with the member panels (pooled.n == "
             "the per-target total, pooled.n_nonoverlap <= pooled.n, pooled.n_nonoverlap <= "
-            "n_bars, pooled.n "
+            "max(0, (n_bars − 2) // horizon), pooled.n "
             "<= n_bars × len(targets)); a pooled key on a conjunction cell REFUSES as a "
             "restamped basket (the runner writes pooled only in basket mode), and a "
             "missing target_mode stamp refuses. An internally impossible summary is "

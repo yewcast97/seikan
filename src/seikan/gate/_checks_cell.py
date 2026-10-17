@@ -91,10 +91,12 @@ def _grade_by_target(
     by_tgt: dict[str, object],
     cov: dict[str, object],
     run_bars: int | None,
+    windows: int | None,
     by_target_n: dict[str, int | None],
     unmet: list[str],
 ) -> tuple[int, bool]:
-    """Per-target support-panel counts + their reconciliation against the coverage ledger.
+    """Per-target support-panel counts + their reconciliation against the coverage ledger and the
+    most non-overlapping windows the cell's horizon closes inside the index (``windows``).
     Returns ``(per-target n total, readable)``."""
     total = 0
     readable = True
@@ -122,6 +124,12 @@ def _grade_by_target(
             unmet.append(
                 f"by_target[{tgt}]: n_nonoverlap={n_nonoverlap} exceeds n={n} — "
                 "non-overlapping windows cannot outnumber observations; drifted input"
+            )
+        elif windows is not None and n_nonoverlap > windows:
+            unmet.append(
+                f"by_target[{tgt}]: n_nonoverlap={n_nonoverlap} exceeds {windows}, the most "
+                "non-overlapping windows of the cell's horizon that close inside the index; "
+                "drifted input"
             )
         pool = cov.get(tgt)
         pool = _as_dict(pool)
@@ -189,14 +197,16 @@ def _grade_pooled(
     mode: str | None,
     targets: list[str] | None,
     run_bars: int | None,
+    windows: int | None,
     by_target_n_total: int,
     n_total_readable: bool,
     observed: dict[str, object],
     unmet: list[str],
 ) -> None:
     """The mode-dispatched pooled-panel contract: a basket cell must carry one that reconciles
-    with the member panels and the bar clock; a conjunction cell carrying one is the signature
-    of a restamped basket and refuses."""
+    with the member panels and the bar clock (``windows``, the most non-overlapping windows the
+    cell's horizon closes inside the index); a conjunction cell carrying one is the signature of
+    a restamped basket and refuses."""
     if mode == "conjunction" and "pooled" in cell:
         # The runner writes `pooled` ONLY in basket mode — absent, not null, on
         # conjunction cells — so a conjunction-stamped cell carrying one is not stray noise but
@@ -248,11 +258,12 @@ def _grade_pooled(
                         f"pooled.n_nonoverlap={p_eff} exceeds pooled.n={p_n} — "
                         "non-overlapping windows cannot outnumber observations; drifted input"
                     )
-                if run_bars is not None and p_eff > run_bars:
+                if windows is not None and p_eff > windows:
                     unmet.append(
-                        f"pooled.n_nonoverlap={p_eff} exceeds the index's n_bars={run_bars} — the "
-                        "greedy non-overlapping count collapses same-bar cross-member "
-                        "firings, so it is bounded by the bar clock; drifted input"
+                        f"pooled.n_nonoverlap={p_eff} exceeds {windows}, the most non-overlapping "
+                        "windows of the cell's horizon that close inside the index — the greedy "
+                        "count collapses same-bar cross-member firings, so the bar clock bounds "
+                        "it; drifted input"
                     )
 
 
@@ -260,7 +271,8 @@ def _check_cell_evidence(cell: object, s: Mapping[str, object], t: GateThreshold
     """The cell must carry the evidence its own checks grade, and its panels must AGREE.
 
     Shape: the entry is a dict with a dict ``params`` (the cell's identity — axes plus the
-    horizon, always present), and its three per-target panels (``by_target``,
+    horizon, always present) naming a countable ``horizon >= 1`` (a cell that does not name the
+    window it measured is not reproducible), and its three per-target panels (``by_target``,
     ``outcome_coverage``, ``signal_coverage``) are string-keyed and cover the regime EXACTLY (a
     silently dropped target must fail here, not pass by absence).
 
@@ -269,10 +281,13 @@ def _check_cell_evidence(cell: object, s: Mapping[str, object], t: GateThreshold
 
     Reconciliation: the panels describe the SAME rows, so ``support`` reading ``by_target[t].n``
     and ``outcome_coverage`` counting the closed firings that produced it must agree;
-    ``n_nonoverlap <=
-    n`` (non-overlapping windows cannot outnumber observations); the cell's ``episode_stats.n`` is
-    the per-target total (the concentration panel and the support panel must describe one pool);
-    and ``signal_coverage[t].n_bars`` is the run's ``n_bars`` (the decision ledger spans the whole
+    ``n_nonoverlap <= n`` (non-overlapping windows cannot outnumber observations) and ``n_nonoverlap
+    <= max(0, (n_bars − 2) // horizon)`` — a firing fills at the next bar's open and closes
+    ``horizon`` bars later, so a closed window starts by bar ``n_bars − 2 − horizon`` and the
+    greedy count's windows sit ``horizon`` bars apart: 40 windows of 21 bars in a 600-bar index
+    claimed more than the 28 that fit; the cell's ``episode_stats.n`` is the per-target total (the
+    concentration panel and the support panel must describe one pool); and
+    ``signal_coverage[t].n_bars`` is the run's ``n_bars`` (the decision ledger spans the whole
     index — pure geometry, not a property of the data). A summary claiming 42 observations over a
     ledger holding one is internally impossible, and an impossible summary is drifted input, not
     something to grade.
@@ -280,10 +295,10 @@ def _check_cell_evidence(cell: object, s: Mapping[str, object], t: GateThreshold
     Basket cells (``target_mode == "basket"``) additionally carry the ``pooled`` cross-target
     panel their own ``support``/``concentration`` reads grade, and it must reconcile with the
     member panels: ``pooled.n == sum of by_target.n`` (one pool, fully attributed),
-    ``pooled.n_nonoverlap <= pooled.n``, ``pooled.n_nonoverlap <= n_bars`` (the greedy
-    non-overlapping count
-    collapses same-bar cross-member firings, so it is bounded by the bar clock), and
-    ``pooled.n <= n_bars × len(targets)`` (each member fires at most once per bar). Conjunction
+    ``pooled.n_nonoverlap <= pooled.n``, ``pooled.n_nonoverlap <= max(0, (n_bars − 2) //
+    horizon)`` (the greedy non-overlapping count collapses same-bar cross-member firings, so the
+    bar clock's windows bound it as they bound each target's), and ``pooled.n <= n_bars ×
+    len(targets)`` (each member fires at most once per bar). Conjunction
     cells are graded by the per-target rules — and a ``pooled`` key under a conjunction stamp
     REFUSES, because the runner writes pooled only in basket mode: the configuration is the
     signature of a restamped basket, and refusing it costs zero honest refusals. A missing or
@@ -292,15 +307,16 @@ def _check_cell_evidence(cell: object, s: Mapping[str, object], t: GateThreshold
     run_bars = _int(s.get("n_bars"))
     mode = _mode(s)
     threshold = (
-        "cell is a dict with dict params; by_target, outcome_coverage and signal_coverage "
-        "string-keyed and covering summary targets exactly; all counts countable and "
-        "non-negative; per target sum(exit_reasons)==n_attempted and n_closed==exit_reasons"
-        "[horizon]; panels reconcile (by_target.n==outcome_coverage.n_closed, n_nonoverlap<=n, "
+        "cell is a dict with dict params naming a countable horizon>=1; by_target, "
+        "outcome_coverage and signal_coverage string-keyed and covering summary targets exactly; "
+        "all counts countable and non-negative; per target sum(exit_reasons)==n_attempted and "
+        "n_closed==exit_reasons[horizon]; panels reconcile (by_target.n==outcome_coverage."
+        "n_closed, n_nonoverlap<=n, n_nonoverlap<=max(0,(n_bars-2)//horizon), "
         "episode_stats.n==sum of by_target.n, signal_coverage.n_bars==summary.n_bars); "
         "target_mode readable (the stamp says whether a pooled panel is part of the cell's "
         "contract); basket cells additionally carry a pooled dict that reconciles "
         "(pooled.n==sum of by_target.n, pooled.n_nonoverlap<=pooled.n, "
-        "pooled.n_nonoverlap<=n_bars, "
+        "pooled.n_nonoverlap<=max(0,(n_bars-2)//horizon), "
         "pooled.n<=n_bars×len(targets)); a pooled key on a conjunction cell refuses (a "
         "restamped basket)"
     )
@@ -323,6 +339,7 @@ def _check_cell_evidence(cell: object, s: Mapping[str, object], t: GateThreshold
             ),
         )
     params = cell.get("params")
+    horizon: int | None = None
     if not isinstance(params, dict):
         unmet.append(
             f"params is not a dict ({type(params).__name__}) — the cell does not name the "
@@ -330,6 +347,17 @@ def _check_cell_evidence(cell: object, s: Mapping[str, object], t: GateThreshold
         )
     else:
         observed["params"] = params
+        horizon = _int(params.get("horizon"))
+        if horizon is None or horizon < 1:
+            unmet.append(
+                f"params.horizon={params.get('horizon')!r} is not a count >= 1 — the cell does "
+                "not name the window it measured; drifted input"
+            )
+            horizon = None
+    # A firing fills at the next bar's open and closes `horizon` bars later, so a closed window
+    # starts by bar n_bars − 2 − horizon, and the greedy non-overlapping windows sit `horizon`
+    # bars apart: at most this many close inside the index, per target and pooled.
+    windows = None if run_bars is None or horizon is None else max(0, (run_bars - 2) // horizon)
     targets = _targets(s)
     tset = set(targets) if targets else None
     by_tgt, cov, sig = _cell_panels(cell)
@@ -370,12 +398,14 @@ def _check_cell_evidence(cell: object, s: Mapping[str, object], t: GateThreshold
     # The five graded sections below share the unmet list, in this order — append order is
     # emitted text.
     readable_cov = _grade_outcome_ledger(cov, run_bars, unmet)
-    by_target_n_total, readable_bt = _grade_by_target(by_tgt, cov, run_bars, by_target_n, unmet)
+    by_target_n_total, readable_bt = _grade_by_target(
+        by_tgt, cov, run_bars, windows, by_target_n, unmet
+    )
     n_total_readable = bool(cov) and bool(by_tgt) and readable_cov and readable_bt
     _grade_signal_geometry(sig, run_bars, unmet)
     _grade_episode_total(cell, by_target_n_total, n_total_readable, observed, unmet)
     _grade_pooled(
-        cell, mode, targets, run_bars, by_target_n_total, n_total_readable, observed, unmet
+        cell, mode, targets, run_bars, windows, by_target_n_total, n_total_readable, observed, unmet
     )
     return GateCheck(
         name="cell_evidence",

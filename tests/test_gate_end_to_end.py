@@ -189,7 +189,7 @@ def test_the_gate_report_carries_no_verdict(tmp_path):
     _planted_dip_series(path, 1000, 5, 9)
     doc = evaluate_gate(_run(path), GateThresholds()).to_dict()
     assert set(doc) == {"policy_version", "n_cells", "n_met", "run_checks", "cells"}
-    assert doc["policy_version"] == 3
+    assert doc["policy_version"] == 4
     assert "verdict" not in json.dumps(doc)
     assert not {"passed", "n_passed"} & set(_keys_deep(doc))
     assert [c["name"] for c in doc["run_checks"]] == [

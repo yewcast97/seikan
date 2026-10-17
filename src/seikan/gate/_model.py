@@ -16,7 +16,7 @@ from seikan.types import (
 #: moves, so two results are comparable only when their policy versions match. It names the
 #: CHECKLIST semantics — ``seikan_version`` names the package and ``analysis.STATISTICS_VERSION``
 #: the estimators the checklist reads.
-POLICY_VERSION = 3
+POLICY_VERSION = 4
 
 
 @dataclass(frozen=True)

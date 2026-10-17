@@ -552,7 +552,7 @@ def test_gate_section_shape_carries_no_verdict(tmp_path, capsys):
     _code, doc = _run_report(capsys, tmp_path, ["run", str(thesis), *_target(px)])
     gate = doc["gate"]
     assert set(gate) == {"policy_version", "n_cells", "n_met", "run_checks", "cells"}
-    assert gate["policy_version"] == 3
+    assert gate["policy_version"] == 4
     assert "verdict" not in json.dumps(gate)
     assert len(gate["run_checks"]) == 3
     assert [c["name"] for c in gate["run_checks"]] == [
