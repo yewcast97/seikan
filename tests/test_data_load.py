@@ -539,3 +539,57 @@ def test_feed_age_is_pandas_timedelta_division_bit_for_bit_in_range(units):
         got = _feed_age_days(native, bars)
         np.testing.assert_array_equal(got.to_numpy(), want.to_numpy())
         assert np.isnan(got.iloc[0]) and (got.loc[native.index[:10]] == 0.0).all()
+
+
+def test_feed_anchoring_is_exact_tick_arithmetic_past_the_nanosecond_clock(tmp_path):
+    # The review's case: a feed holding a print at 2500-01-01 — a microsecond clock, past the
+    # nanosecond range — beside nanosecond bars in 2026. The asof anchor was pandas' reindex-ffill,
+    # which promoted the feed clock to nanoseconds and refused the load (OutOfBoundsDatetime, a
+    # ValueError, so spec_data_mismatch at exit 2) over a print no bar ever reads, after check-data
+    # had accepted both files; the feed age beside it was already exact ticks. In exact ticks
+    # every bar reads the 2026 print, and the age agrees with the position.
+    from seikan.compiler.data import _anchor_feed, _feed_age_days
+
+    bars = pd.date_range("2026-01-01T00:00:00.000000001", periods=4, freq="1D")
+    feed = pd.Series([2.0, 999.0], index=pd.DatetimeIndex(["2026-01-01", "2500-01-01"]), name="f")
+    assert bars.unit == "ns" and feed.index.unit != "ns"
+    anchored = _anchor_feed(feed, bars)
+    np.testing.assert_array_equal(anchored.to_numpy(), [2.0, 2.0, 2.0, 2.0])
+    assert anchored.index.equals(bars) and anchored.name == "f"
+    np.testing.assert_array_equal(np.floor(_feed_age_days(feed, bars).to_numpy()), [0, 1, 2, 3])
+    # through the loader, the thesis the review ran: the feed reads 2 on every bar
+    pd.DataFrame(
+        {"open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": 1.0},
+        index=pd.Index(bars, name="datetime"),
+    ).to_csv(tmp_path / "target.csv")
+    pd.DataFrame({"datetime": ["2026-01-01", "2500-01-01"], "f": [2.0, 999.0]}).to_csv(
+        tmp_path / "f.csv", index=False
+    )
+    md = load(
+        _thesis(external={"f": {}}), {"target": tmp_path / "target.csv", "f": tmp_path / "f.csv"}
+    )
+    np.testing.assert_array_equal(md.external_values("f")[:, 0], [2.0, 2.0, 2.0, 2.0])
+    assert list(md.externals_native["f"].index) == list(feed.index)
+
+
+@pytest.mark.parametrize("units", [("us", "us"), ("us", "ns"), ("ns", "us"), ("s", "ms")])
+def test_feed_anchoring_is_pandas_reindex_ffill_bit_for_bit_in_range(units):
+    # Wherever the int64 comparison held, the anchored value is the very one pandas' backward
+    # asof (reindex-ffill) gave: the latest print at or before each bar, NaN before the first —
+    # a bar ON a stamp reads that stamp's print, never the next.
+    from seikan.compiler.data import _anchor_feed
+
+    rng = np.random.default_rng(len(units[0]) * 11 + len(units[1]))
+    base = pd.Timestamp("1990-01-01").value
+    for _ in range(50):
+        f = np.unique(base + rng.integers(0, 4 * 10**17, 30) // 10**9 * 10**9)
+        t = np.unique(np.r_[base - 10**12, f[:10], base + rng.integers(0, 10**18, 40)])
+        native = pd.Series(
+            rng.standard_normal(f.size),
+            index=pd.DatetimeIndex(f.astype("datetime64[ns]")).as_unit(units[1]),
+            name="v",
+        )
+        bars = pd.DatetimeIndex(t.astype("datetime64[ns]")).as_unit(units[0])
+        got = _anchor_feed(native, bars)
+        pd.testing.assert_series_equal(got, native.reindex(bars, method="ffill"))
+        assert np.isnan(got.iloc[0]) and (got.loc[native.index[:10]] == native.iloc[:10]).all()
