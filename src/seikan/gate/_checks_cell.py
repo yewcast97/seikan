@@ -192,15 +192,20 @@ def _grade_episode_stats(
     unmet: list[str],
 ) -> None:
     """``episode_stats.n`` must equal the per-target total — the concentration panel and the
-    support panel must describe ONE pool — and the ceiling read ``max_cluster_share_abs``, the
-    largest |return|-mass share held by any cluster, must agree with its own panel: it is at least
-    ``largest_cluster_share_abs`` (the largest-BY-COUNT cluster's share, one of the shares it is
-    the maximum of; both are quotients of exact masses over the pool's, so rounding keeps their
-    order) and exactly 1.0 where ``n_clusters`` is 1 (the one cluster's mass IS the pool's — the
-    same exact sum over itself). The review's tamper, one cluster at ``largest_cluster_share_abs``
-    1.0 beside a ``max_cluster_share_abs`` of 0.5, met the one-episode ceiling. A null maximum (a
-    pool with no mass, an overflowed one, incommensurable units) is ``concentration``'s to
-    refuse; the ``episodes`` ledger, evidence-only and truncated at its cap, is not read."""
+    support panel must describe ONE pool — ``n_clusters`` must be a count the pool can hold (at
+    most ``n``, and 0 exactly on an empty pool: every closed row lies in one cluster), and the
+    ceiling read ``max_cluster_share_abs``, the largest |return|-mass share held by any cluster,
+    must agree with its own panel: it is at least ``largest_cluster_share_abs`` (the
+    largest-BY-COUNT cluster's share, one of the shares it is the maximum of) and at least
+    ``1 / n_clusters`` (the largest of ``n_clusters`` shares of one mass is at least their mean —
+    exactly 1 with one cluster). Both rules are exact: every share is the correctly rounded exact
+    quotient of exact masses, as ``1 / n_clusters`` is of its integers, and rounding is monotone
+    — the quotient of two separately rounded masses was not (0.33333333333333326 for a third,
+    which this floor would have refused off an honest pool). The review's tampers: one cluster
+    at ``largest_cluster_share_abs`` 1.0 beside a ``max_cluster_share_abs`` of 0.5, and two
+    clusters at 0.30 each where the other holds 0.70. A null maximum (a pool with no mass, an
+    overflowed one, incommensurable units) is ``concentration``'s to refuse; the ``episodes``
+    ledger, evidence-only and truncated at its cap, is not read."""
     ep = cell.get("episode_stats")
     if not isinstance(ep, dict):
         unmet.append(
@@ -217,6 +222,17 @@ def _grade_episode_stats(
             f"episode_stats.n={ep_n} != the per-target total {by_target_n_total} — the "
             "concentration panel and the support panel describe different pools; drifted input"
         )
+    n_clusters = _int(ep.get("n_clusters"))
+    if n_clusters is None or n_clusters < 0:
+        unmet.append(
+            f"episode_stats.n_clusters={ep.get('n_clusters')!r} is not a count — drifted input"
+        )
+    elif ep_n is not None and ep_n >= 0 and (n_clusters > ep_n or (n_clusters == 0) != (ep_n == 0)):
+        unmet.append(
+            f"episode_stats.n_clusters={n_clusters} beside n={ep_n} — every closed row lies in "
+            "exactly one cluster, so a pool of n rows holds between 1 and n clusters (none when "
+            "empty); drifted input"
+        )
     top = _prob(ep.get("max_cluster_share_abs"))
     if top is None:
         return
@@ -227,10 +243,11 @@ def _grade_episode_stats(
             f"{largest} — the largest share held by any cluster cannot be below the "
             "largest-by-count cluster's; drifted input"
         )
-    if _int(ep.get("n_clusters")) == 1 and top != 1.0:
+    if n_clusters is not None and n_clusters >= 1 and top < 1.0 / n_clusters:
         unmet.append(
-            f"episode_stats.max_cluster_share_abs={top} beside n_clusters=1 — one cluster holds "
-            "the pool's whole mass, so its share is exactly 1; drifted input"
+            f"episode_stats.max_cluster_share_abs={top} is below 1/n_clusters={1.0 / n_clusters} "
+            f"— the largest of {n_clusters} share(s) of one mass is at least their mean (exactly "
+            "1 with one cluster); drifted input"
         )
 
 
@@ -387,8 +404,9 @@ def _check_cell_evidence(cell: object, s: Mapping[str, object], t: GateThreshold
     greedy count's windows sit ``horizon`` bars apart among the closed observations: 40 windows
     of 21 bars in a 600-bar index claimed more than the 28 that fit; the cell's
     ``episode_stats.n`` is the per-target total (the concentration panel and the support panel
-    must describe one pool) and its ``max_cluster_share_abs`` agrees with its own panel — at least
-    ``largest_cluster_share_abs``, exactly 1 with one cluster (:func:`_grade_episode_stats`); and
+    must describe one pool), its ``n_clusters`` a count the pool can hold, and its
+    ``max_cluster_share_abs`` agrees with its own panel — at least ``largest_cluster_share_abs``
+    and at least ``1 / n_clusters`` (:func:`_grade_episode_stats`); and
     ``signal_coverage[t].n_bars`` is the run's ``n_bars`` (the
     decision ledger spans the whole index — pure geometry, not a property of the data). A summary
     claiming 42 observations over a ledger holding one is internally impossible, and an
@@ -422,9 +440,9 @@ def _check_cell_evidence(cell: object, s: Mapping[str, object], t: GateThreshold
         "n_closed<=max(0,n_bars-1-horizon) (a firing fills at the next bar's open and closes "
         "horizon bars later); panels reconcile (by_target.n==outcome_coverage.n_closed, "
         "n<=max(0,n_bars-1-horizon), n_nonoverlap<=n, n_nonoverlap<=max(0,(n_bars-2)//horizon), "
-        "episode_stats.n==sum of by_target.n, "
-        "episode_stats.max_cluster_share_abs>=largest_cluster_share_abs and ==1 where "
-        "n_clusters==1, signal_coverage.n_bars==summary.n_bars); "
+        "episode_stats.n==sum of by_target.n, episode_stats.n_clusters a count in 0..n (0 iff "
+        "n==0), episode_stats.max_cluster_share_abs>=largest_cluster_share_abs and "
+        ">=1/n_clusters (==1 with one cluster), signal_coverage.n_bars==summary.n_bars); "
         "target_mode readable (the stamp says whether a pooled panel is part of the cell's "
         "contract); basket cells additionally carry a pooled dict that reconciles "
         "(pooled.n==sum of by_target.n, pooled.n_nonoverlap<=pooled.n, "

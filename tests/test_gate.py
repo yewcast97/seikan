@@ -128,8 +128,9 @@ def _cell(
     """One declared parameter × horizon cell whose panels reconcile by construction.
 
     ``n`` drives the graded count, the ledger's attempted/closed counts and the episode panel's
-    per-target total together — the reconciliation ``cell_evidence`` enforces — so a test that
-    wants to break ONE check moves that check's own field and nothing else.
+    per-target total (and the cluster count a pool that size can hold) together — the
+    reconciliation ``cell_evidence`` enforces — so a test that wants to break ONE check moves
+    that check's own field and nothing else.
     """
     tg = list(targets)
     n_nonoverlap = min(14, n) if n_nonoverlap is None else n_nonoverlap
@@ -147,8 +148,8 @@ def _cell(
         },
         "episode_stats": {
             "n": n * len(tg),
-            "n_clusters": 12,
-            "largest_cluster_n": 5,
+            "n_clusters": min(12, n * len(tg)),
+            "largest_cluster_n": min(5, n * len(tg)),
             "largest_cluster_share_abs": cluster_share,
             "largest_cluster_start": None,
             "max_cluster_share_abs": cluster_share,
@@ -1166,7 +1167,7 @@ def test_the_episode_ceiling_read_cannot_fall_below_its_own_panel():
     check = _cell_checks(evaluate_gate(_summary(cells=[cell])))["cell_evidence"]
     assert not check.met
     assert "below largest_cluster_share_abs=1.0" in check.detail
-    assert "beside n_clusters=1" in check.detail
+    assert "below 1/n_clusters=1.0" in check.detail
     # several clusters: the by-count cluster's share alone bounds the maximum from below
     cell = _cell()
     cell["episode_stats"].update({"largest_cluster_share_abs": 0.3, "max_cluster_share_abs": 0.2})
@@ -1178,6 +1179,49 @@ def test_the_episode_ceiling_read_cannot_fall_below_its_own_panel():
     cell["episode_stats"].update({"largest_cluster_share_abs": None, "max_cluster_share_abs": None})
     checks = _cell_checks(evaluate_gate(_summary(cells=[cell])))
     assert checks["cell_evidence"].met and not checks["concentration"].met
+
+
+def test_the_episode_ceiling_read_is_at_least_the_clusters_mean_share():
+    # The review's tamper: two clusters at 0.30 each — the other holds 0.70 of the mass — met the
+    # ceiling, and so did three at 0.2. The largest of n_clusters shares of one mass is at least
+    # their mean, and since every share is the correctly rounded exact quotient of exact masses
+    # (as 1/n_clusters is of its integers) the floor is exact: the boundary pool whose largest
+    # cluster holds exactly a third reads 0.33333333333333337 and meets it, where the quotient
+    # of two rounded masses, an ulp under, would have been refused off an honest pool.
+    tampers = [(2, 0.30, 0.30), (3, 0.2, 0.2), (3, 0.2, 0.33333333333333326), (1, 0.5, 0.5)]
+    for n_clusters, largest, top in tampers:
+        cell = _cell(cluster_share=largest)
+        cell["episode_stats"].update({"n_clusters": n_clusters, "max_cluster_share_abs": top})
+        check = _cell_checks(evaluate_gate(_summary(cells=[cell])))["cell_evidence"]
+        assert not check.met, (n_clusters, top)
+        assert f"below 1/n_clusters={1.0 / n_clusters}" in check.detail
+    honest = [(2, 0.30, 0.70), (3, 0.2, 0.33333333333333337), (3, 1 / 3, 1 / 3), (1, 1.0, 1.0)]
+    for n_clusters, largest, top in honest:
+        cell = _cell(cluster_share=largest)
+        cell["episode_stats"].update({"n_clusters": n_clusters, "max_cluster_share_abs": top})
+        assert _cell_checks(evaluate_gate(_summary(cells=[cell])))["cell_evidence"].met
+
+
+@pytest.mark.parametrize("bad", [0, -1, 43, "junk", None, 1.5, float("nan")])
+def test_the_episode_cluster_count_is_a_count_the_pool_can_hold(bad):
+    # n_clusters of 0, -1, "junk" and null met every check beside 42 rows — and the one-cluster
+    # rule read nothing off them. Every closed row lies in exactly one cluster: a pool of n rows
+    # holds 1..n clusters, an empty one none.
+    cell = _cell()  # n = 42
+    cell["episode_stats"]["n_clusters"] = bad
+    check = _cell_checks(evaluate_gate(_summary(cells=[cell])))["cell_evidence"]
+    assert not check.met
+    assert "n_clusters" in check.detail
+    assert ("not a count" in check.detail) == (not isinstance(bad, int) or bad < 0)
+    # every count up to n is legal, and an empty pool clusters into nothing
+    full = _cell()
+    full["episode_stats"]["n_clusters"] = 42
+    assert _cell_checks(evaluate_gate(_summary(cells=[full])))["cell_evidence"].met
+    empty = _cell(n=0)
+    empty["episode_stats"].update(
+        {"n_clusters": 0, "largest_cluster_share_abs": None, "max_cluster_share_abs": None}
+    )
+    assert _cell_checks(evaluate_gate(_summary(cells=[empty])))["cell_evidence"].met
 
 
 def test_cell_evidence_requires_an_episode_panel():
