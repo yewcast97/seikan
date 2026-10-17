@@ -659,12 +659,12 @@ def test_cell_conditional_buckets_single_target_column_is_identical():
 
 
 def test_cell_conditional_bucket_means_past_the_double_range_are_nan():
-    # Finite returns of ~1e308 four to a bucket: each bucket's sum overflows, and its mean read
-    # ±inf — a value the emitted contract (a plain float) then refused, and a sign the overflow
-    # picked. NaN → null instead, on the one-target path and on the ordinal path alike, while a
-    # bucket whose sum stays in range keeps its bits.
+    # Finite returns of 1e308 and 1.5e308 in the lower three buckets: each one's sum overflows,
+    # and its mean read ±inf — a value the emitted contract (a plain float) then refused, and a
+    # sign the overflow picked. NaN → null instead, on the one-target path and on the ordinal
+    # path alike, while a bucket whose sum stays in range keeps its bits.
     feat = np.arange(24, dtype=float)
-    rets = np.where(feat < 18, 1e308, 0.25)  # buckets 1-3 overflow; the top one is 0.25
+    rets = np.where(feat < 18, np.where(feat % 2 == 0, 1e308, 1.5e308), 0.25)
     one = cell_conditional_buckets(_episodes(list(rets), feature=list(feat)), ["feat"])
     two = cell_conditional_buckets(
         pd.DataFrame(
@@ -827,9 +827,9 @@ def test_cell_buckets_read_a_whole_full_bar_at_its_exact_zero_in_any_declaration
     # An all-full cross_mean pool bucketed by a basket-wide feature (the bar's weekday, the same
     # for every member): every member's quartile edges agree, so every bar's rows land in ONE
     # ordinal and every record is whole bars — whose exact mean is 0.0. Averaged over the
-    # rounded rows it was residue (~1e-19), and the residue ranked: a bucket_monotonicity whose
-    # rho moved with nothing but the order the targets were declared in. The counts and hit
-    # rates stay row-level: each row's excess is its own.
+    # rounded rows it is residue (~1e-19), and the residue ranks: a bucket_monotonicity whose
+    # rho (pairwise sums) moved with nothing but the order the targets were declared in. The
+    # counts and hit rates stay row-level: each row's excess is its own.
     import itertools
 
     dow = np.arange(48) % 4
@@ -854,9 +854,9 @@ def test_cell_buckets_read_a_whole_full_bar_at_its_exact_zero_in_any_declaration
                 str(plain["bucket_monotonicity"]),
             )
         )
-    # the premise: over the rounded rows the means are residue, ranked by declaration order
+    # the premise: over the rounded rows the means are residue, and the residue ranks
     assert any(m != 0.0 for means, _ in plain_reads for m in means)
-    assert len({mono for _, mono in plain_reads}) > 1
+    assert all(mono != "{}" for _, mono in plain_reads)
 
 
 def test_cell_buckets_bars_split_across_ordinals_are_byte_identical():
@@ -909,7 +909,9 @@ def test_cell_buckets_read_every_bar_held_whole_at_its_exact_sum():
     whole = valid["entry_bar"].isin(sorted(set(range(42)) - {4, 9, 6, 10})).to_numpy()
     sums = np.where(whole, pool[valid_rows], valid["ret"].to_numpy(dtype=float))
     ordinal = valid["feat"].to_numpy()
-    assert [b["mean_ret"] for b in block] == [float(np.mean(sums[ordinal == i])) for i in range(4)]
+    assert [b["mean_ret"] for b in block] == [
+        math.fsum(sums[ordinal == i].tolist()) / int((ordinal == i).sum()) for i in range(4)
+    ]
     assert [(b["n"], b["hit_rate"]) for b in block] == [
         (b["n"], b["hit_rate"]) for b in plain["conditional_buckets"]["feat"]["buckets"]
     ]
@@ -3626,12 +3628,53 @@ def test_bootstrap_over_full_bar_zeros_is_exactly_zero():
 
 
 def test_constant_pool_has_no_bucket_monotonicity():
-    # Bucket means of a constant pool round apart (bucket sizes differ); that is no rank signal.
+    # A constant pool's bucket means are its value, every one (their pairwise sums rounded apart
+    # with the bucket sizes): no rank signal.
     rng = np.random.RandomState(3)
     trades = pd.DataFrame({"ret": np.full(45, 0.7), "feat": rng.normal(0.0, 1.0, 45)})
     out = cell_conditional_buckets(trades, ["feat"])
     assert out["conditional_buckets"]["feat"]["reason"] is None
+    assert {b["mean_ret"] for b in out["conditional_buckets"]["feat"]["buckets"]} == {0.7}
     assert "feat" not in out["bucket_monotonicity"]
+
+
+#: The same six returns in four orders whose floating-point means rise: pandas' grouped mean reads
+#: -9.3e-18, -4.6e-18, 0 and 4.6e-18, numpy's over each order twice 0, 2.3e-18, 4.6e-18 and
+#: 6.9e-18. Every exact mean is 0.
+_ZERO_SUM_ORDERS = (
+    (-0.1, 0.2, 0.3, 0.1, -0.3, -0.2),
+    (-0.3, -0.2, -0.1, 0.3, 0.1, 0.2),
+    (-0.3, -0.2, -0.1, 0.2, 0.1, 0.3),
+    (0.3, 0.1, 0.2, -0.3, -0.2, -0.1),
+)
+
+
+@pytest.mark.parametrize("targets", [("A",), ("A", "B")], ids=["one_target", "ordinals"])
+def test_buckets_holding_the_same_returns_read_the_same_mean(targets):
+    # Four buckets of the same six returns, each in another row order: the rounded means rose
+    # with the order and ranked as a perfectly monotone edge (rho 1.0) on the one-target kernel
+    # and on the ordinal arm alike. The bucket means are exactly rounded: 0.0 each, no rank
+    # signal.
+    rets = np.concatenate(_ZERO_SUM_ORDERS)
+    rounded = (
+        pd.Series(rets).groupby(np.repeat(np.arange(4), 6)).mean().tolist()
+        if len(targets) == 1
+        else [float(np.mean(np.tile(order, 2))) for order in _ZERO_SUM_ORDERS]
+    )
+    assert rounded == sorted(set(rounded))  # the premise: four rising means
+    trades = pd.DataFrame(
+        {
+            "target": np.repeat(targets, rets.size),
+            "feat": np.tile(np.arange(rets.size, dtype=float), len(targets)),
+            "ret": np.tile(rets, len(targets)),
+        }
+    )
+    out = cell_conditional_buckets(trades, ["feat"])
+    block = out["conditional_buckets"]["feat"]
+    assert block["reason"] is None
+    assert [b["n"] for b in block["buckets"]] == [6 * len(targets)] * 4
+    assert [b["mean_ret"] for b in block["buckets"]] == [0.0] * 4
+    assert out["bucket_monotonicity"] == {}
 
 
 @pytest.mark.parametrize(("c", "n"), [(0.1, 3), (0.1, 25), (0.007, 5), (0.007, 40)])

@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats as sps
 
+from seikan.analysis._pools import exact_mean
 from seikan.types import (
     BucketMonotonicity,
     BucketRecord,
@@ -19,13 +20,6 @@ from seikan.types import (
 _NAN = float("nan")
 
 
-def _finite_mean(mean: float) -> float:
-    """A bucket's mean, NaN where its returns' sum left the double range: the true mean of
-    finite returns is finite, the computed ``±inf`` (or ``inf − inf``) is no value — nor even a
-    sign, the overflow having picked it — so it is NaN → null, never a number that ranks."""
-    return mean if math.isfinite(mean) else _NAN
-
-
 def _bucket_records(table: pd.DataFrame) -> list[BucketRecord]:
     """JSON-friendly records from a ``conditional_buckets`` table (index = the qcut interval,
     or the bucket ordinal where pandas cannot print it)."""
@@ -33,7 +27,7 @@ def _bucket_records(table: pd.DataFrame) -> list[BucketRecord]:
         {
             "bucket": str(idx),
             "n": int(row["n"]),
-            "mean_ret": _finite_mean(float(row["mean_ret"])),
+            "mean_ret": float(row["mean_ret"]),
             "hit_rate": float(row["hit_rate"]),
         }
         for idx, row in table.iterrows()
@@ -134,7 +128,9 @@ def conditional_buckets(trades: pd.DataFrame, feature: str, q: int = 4) -> pd.Da
     Tests whether the signal's edge is conditional on the feature (monotonicity across buckets).
     Per-target edges are the caller's job (:func:`cell_conditional_buckets`); this kernel cuts
     exactly the frame it is handed. The index is the qcut interval, or the populated bucket's
-    ordinal ``q1..qk`` where pandas cannot print an edge (:func:`_qcut_buckets`).
+    ordinal ``q1..qk`` where pandas cannot print an edge (:func:`_qcut_buckets`). ``mean_ret`` is
+    the bucket's exactly rounded mean (``_pools.exact_mean``): buckets holding the same returns
+    read the same mean in any row order, NaN where the sum leaves the double range.
     """
     if feature not in trades.columns:
         raise KeyError(f"feature {feature!r} not in trades columns")
@@ -146,7 +142,7 @@ def conditional_buckets(trades: pd.DataFrame, feature: str, q: int = 4) -> pd.Da
     return pd.DataFrame(
         {
             "n": grouped.size(),
-            "mean_ret": grouped.mean(),
+            "mean_ret": grouped.apply(lambda s: exact_mean(s.to_numpy(dtype=float))),
             "hit_rate": grouped.apply(lambda s: float((s > 0).mean())),
         }
     )
@@ -188,12 +184,13 @@ def _aggregate_bucket_ordinals(
     Each participating target's rows are cut on their OWN quantile edges (the kernel's
     ``qcut(q, duplicates="drop")`` rule), codes compressed to populated-bucket ordinals, and
     ordinal ``i``'s record pools the union rows with exact row-level statistics (``n`` summed,
-    ``mean_ret``/``hit_rate`` over the pooled returns). Returns ``[]`` — the caller's
-    ``insufficient_distinct_values`` refusal — when any participating target forms fewer than 2
-    populated buckets, fails the qcut outright, or forms a DIFFERENT populated-bucket count than
-    a sibling: no silent partial pools, ever (a panel that quietly dropped a member's rows would
-    move with data quality, not with the hypothesis). Records are labelled ``q1..qk`` — per-
-    target edges make interval strings target-relative and unprintable as one label.
+    ``hit_rate`` over the pooled returns, ``mean_ret`` their exactly rounded mean). Returns
+    ``[]`` — the caller's ``insufficient_distinct_values`` refusal — when any participating
+    target forms fewer than 2 populated buckets, fails the qcut outright, or forms a DIFFERENT
+    populated-bucket count than a sibling: no silent partial pools, ever (a panel that quietly
+    dropped a member's rows would move with data quality, not with the hypothesis). Records are
+    labelled ``q1..qk`` — per-target edges make interval strings target-relative and
+    unprintable as one label.
 
     ``bar_k`` / ``pools`` (a ``cross_mean`` pool's rows per bar, and each group's row-aligned bar
     values — see :func:`cell_conditional_buckets`) put the rows of every bar wholly inside one
@@ -243,13 +240,11 @@ def _aggregate_bucket_ordinals(
     for i in range(k):
         in_bucket = ordinals == i
         pool = rets[in_bucket]
-        with np.errstate(over="ignore", invalid="ignore"):  # a sum past the range: NaN below
-            mean = float(np.mean(sums[in_bucket])) if pool.size and commensurable else _NAN
         records.append(
             {
                 "bucket": f"q{i + 1}",
                 "n": int(pool.size),
-                "mean_ret": _finite_mean(mean),
+                "mean_ret": exact_mean(sums[in_bucket]) if commensurable else _NAN,
                 "hit_rate": float(np.mean(pool > 0)) if pool.size else _NAN,
             }
         )
@@ -304,10 +299,10 @@ def cell_conditional_buckets(
     basket-wide feature (a calendar field, a shared external feed), whose per-target edges agree
     where the members fire on the same bars, or a one-row bar — adds its exact sum to that
     record's mean. A bar split across ordinals, or partly unbucketed, keeps each row's own
-    return (no record holds its whole sum); ``n``, ``hit_rate`` and the constant-pool test stay
-    on each row's return. On a pool whose every bar is full, bucketed by a basket-wide feature,
-    every mean is exactly 0.0 — no rank signal, so no ``bucket_monotonicity`` entry, in any
-    declaration order — where the rounded rows ranked their residue. Only the multi-target arm
+    return (no record holds its whole sum); ``n`` and ``hit_rate`` stay on each row's return. On
+    a pool whose every bar is full, bucketed by a basket-wide feature, every mean is exactly 0.0
+    — no rank signal, so no ``bucket_monotonicity`` entry, in any declaration order — where the
+    rounded rows ranked their residue. Only the multi-target arm
     reads it: with one participating target the frozen kernel's records pass through, and they
     hold no whole multi-row bar (a basket's other members' rows sit unbucketed there).
 
@@ -371,13 +366,7 @@ def cell_conditional_buckets(
             buckets_out[name] = {"buckets": [], "reason": "insufficient_distinct_values"}
             continue
         buckets_out[name] = {"buckets": records, "reason": None}
-        # A pool whose returns are all equal carries no rank signal, whatever ulp-scale spread
-        # its bucket means' rounding shows (bucket sizes differ, so their means round apart).
-        mono = (
-            None
-            if float(valid["ret"].min()) == float(valid["ret"].max())
-            else _bucket_monotonicity(records)
-        )
+        mono = _bucket_monotonicity(records)
         if mono is not None:
             mono_out[name] = mono
     return {"conditional_buckets": buckets_out, "bucket_monotonicity": mono_out}

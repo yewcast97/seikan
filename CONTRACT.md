@@ -868,10 +868,12 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   panel). So are the episode panels' per-episode means and `episode_profile.mean_ret` over them,
   whose signs the hit rate and the streaks count — summed pairwise, eight episodes of
   `[−0.5, −2**-55, 0.5, 2**-55]` read 6.9e-18 each, a hit rate of 1 and a win streak of 8 beside
-  a `mean_ret` of 0. The evidence-only means elsewhere (bootstrap draws, buckets) stay the
-  arithmetic mean, save that each bootstrap episode's sum is exactly rounded too — summed in
-  floating point, eight episodes of `[1, −2**54, −1, 2**54]` read a zero-width interval at 0.25
-  beside a `mean_ret` of 0; a draw's sum over its episodes' sums stays ordinary arithmetic. CSCV's
+  a `mean_ret` of 0 — and the conditional buckets' means, whose order `bucket_monotonicity`
+  ranks: summed in floating point, four buckets holding `[−0.3, −0.2, −0.1, 0.1, 0.2, 0.3]` in
+  four row orders read four rising means and a `rho` of 1. The bootstrap's draws stay the
+  arithmetic mean, save that each episode's sum is exactly rounded too — summed in floating
+  point, eight episodes of `[1, −2**54, −1, 2**54]` read a zero-width interval at 0.25 beside a
+  `mean_ret` of 0; a draw's sum over its episodes' sums stays ordinary arithmetic. CSCV's
   block moments are exactly rounded sums (a column's returns about its exactly rounded mean, and
   their squares), the same doubles in any row order: two candidates holding the same returns in
   every block, in other orders, ranked apart by row-order rounding (`pbo` 0.571 for a grid of

@@ -1287,9 +1287,12 @@ and int64 nanosecond counts silently round in IEEE-754 consumers.)
     never across cells (see "Not in the report"). Refusals are
     explicit, never absent:
     `no_closed_observations` / `insufficient_observations` (below 20 valid rows) /
-    `insufficient_distinct_values`. `bucket_monotonicity` carries a Spearman `rho` + `sign` per
+    `insufficient_distinct_values`. Each `mean_ret` is the bucket's exactly rounded sum over its
+    `n`, so buckets holding the same returns read the same mean in any row order.
+    `bucket_monotonicity` carries a Spearman `rho` + `sign` per
     feature that bucketed with ≥ 3 populated buckets — none where a bucket's `mean_ret` is null,
-    its returns' sum having left the double range. Under a `cross_mean` basket a bar whose rows
+    its returns' sum having left the double range, or where every mean is equal. Under a
+    `cross_mean` basket a bar whose rows
     all land in one bucket enters that bucket's `mean_ret` at its exact excess sum — 0 on a full
     bar (see `pooled`).
   - `feature_association` — per (feature × target): Spearman `rho` between the entry-time
