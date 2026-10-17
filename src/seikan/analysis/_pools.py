@@ -16,6 +16,7 @@ error`` turns into an exception out of the run).
 from __future__ import annotations
 
 import math
+from fractions import Fraction
 from typing import NamedTuple
 
 import numpy as np
@@ -106,16 +107,28 @@ def _ddof1_std(v: np.ndarray) -> float:
     return math.sqrt(var) if _normal(var) else _NAN
 
 
-def exact_sum(v: np.ndarray) -> float:
-    """``v``'s EXACTLY ROUNDED sum (``math.fsum``) over every entry — one double whatever order
-    the values come in; over a pool of parts rows (:func:`exact_mean`) the exact sum of the rows'
-    values times ``scale``. NaN where the exact sum leaves the double range or meets ``inf − inf``
-    (``fsum`` raises there) — a sum with no value, which every caller's finiteness test
-    decides."""
+def _fsum(values: list[float]) -> float:
+    """The EXACTLY ROUNDED sum of ``values`` — ``math.fsum``, one double whatever order they come
+    in. ``fsum`` accumulates in doubles and raises where a running partial leaves the range even
+    when the exact sum has a double (``[1e308, 1e308, −1e308, −1e308]`` raised, and read NaN,
+    where the other order read 0.0): there the sum is retaken as exact rationals and rounded
+    once. NaN where the exact sum itself leaves the double range, or meets a non-finite term
+    (``inf − inf``) — a sum with no value, which every caller's finiteness test decides."""
     try:
-        return math.fsum(v.ravel().tolist())
-    except (OverflowError, ValueError):
+        return math.fsum(values)
+    except OverflowError:
+        try:
+            return float(sum(map(Fraction, values)))
+        except (OverflowError, ValueError):  # the exact sum past the range; a non-finite term
+            return _NAN
+    except ValueError:  # inf − inf
         return _NAN
+
+
+def exact_sum(v: np.ndarray) -> float:
+    """``v``'s EXACTLY ROUNDED sum over every entry (:func:`_fsum`); over a pool of parts rows
+    (:func:`exact_mean`) the exact sum of the rows' values times ``scale``."""
+    return _fsum(v.ravel().tolist())
 
 
 def exact_mean(v: np.ndarray, scale: int = 1) -> float:
@@ -130,8 +143,8 @@ def exact_mean(v: np.ndarray, scale: int = 1) -> float:
     floor's ``mean_ret > 0`` graded. ``math.fsum`` is the correctly rounded sum, so the mean has
     the exact sum's sign and is ``0.0`` exactly where it is 0; an all-equal pool's mean is its
     value. NaN on an empty pool, on a non-finite value, and where the exact sum leaves the
-    double range (``fsum`` raises rather than returning inf) — an overflowed mean is no
-    evidence, as everywhere in this module.
+    double range (:func:`_fsum`) — an overflowed mean is no evidence, as everywhere in this
+    module.
 
     ``v`` may instead be ``n`` ROWS of exact parts (n × J), each row's value its parts' exact
     sum over the integer ``scale`` — a ``cross_mean`` bar's numerator over the member count
@@ -434,11 +447,8 @@ def cross_mean_pooled_mean(raw: np.ndarray, closed: np.ndarray) -> float:
     _, _, wh, wl = _cross_mean_weighted_parts(raw, c)
     if not (np.isfinite(wh).all() and np.isfinite(wl).all()):
         return _NAN
-    try:
-        total = math.fsum([*wh.ravel().tolist(), *wl.ravel().tolist()])
-    except OverflowError:  # the exact total leaves the double range
-        return _NAN
-    return float(total / (wh.shape[1] * n))
+    # NaN where the exact total leaves the double range
+    return float(_fsum([*wh.ravel().tolist(), *wl.ravel().tolist()]) / (wh.shape[1] * n))
 
 
 def _cross_mean_weighted_parts(
@@ -469,13 +479,10 @@ def _exact_parts(terms: list[float]) -> list[float] | None:
     total correctly rounded. ``None`` where a term is not finite or the sum leaves the double
     range."""
     parts: list[float] = []
-    try:
-        while part := math.fsum([*terms, *(-p for p in parts)]):
-            if not math.isfinite(part):
-                return None
-            parts.append(part)
-    except (OverflowError, ValueError):  # past the range; inf − inf
-        return None
+    while part := _fsum([*terms, *(-p for p in parts)]):
+        if not math.isfinite(part):  # a non-finite term; the exact sum past the range
+            return None
+        parts.append(part)
     return parts
 
 

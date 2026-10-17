@@ -41,6 +41,7 @@ from seikan.analysis.stats import (
     episode_profile,
     episode_stats,
     exact_mean,
+    exact_sum,
     feature_outcome_association,
     newey_west_mean,
     nonoverlap_count,
@@ -1277,6 +1278,29 @@ def test_exact_mean_keeps_the_exact_sum_sign_and_zero():
     # an ordinary pool reads the correctly rounded sum over n
     v = np.random.RandomState(2).normal(0.0, 0.01, 1000)
     assert exact_mean(v) == math.fsum(v.tolist()) / 1000
+
+
+def test_exact_sums_are_the_same_double_in_any_order_at_the_range():
+    # math.fsum accumulates in doubles and raises where a running partial leaves the range even
+    # when the exact sum has a double: [1e308, 1e308, −1e308, −1e308] raised ("intermediate
+    # overflow in fsum") and exact_sum read NaN, while the alternating order read 0.0 — the same
+    # 80 closed diff returns of a run gave a null mean in one bar order and 0.0 in another. The
+    # sum is retaken as exact rationals there; a sum that genuinely leaves the range stays NaN.
+    paired = np.array([1e308, 1e308, -1e308, -1e308])
+    alternating = np.array([1e308, -1e308, 1e308, -1e308])
+    with pytest.raises(OverflowError):
+        math.fsum(paired.tolist())  # the defect's source
+    assert exact_sum(paired) == exact_sum(alternating) == 0.0
+    assert exact_mean(np.tile(paired, 20)) == exact_mean(np.tile(alternating, 20)) == 0.0
+    assert exact_sum(np.array([1e308, 1e308, -1e308, 1.0])) == 1e308
+    assert math.isnan(exact_sum(np.array([1.7e308, 1.7e308, 1.0])))
+    # the bar-closed sums read the same primitive: a cross_mean pool whose weighted legs cancel
+    # across bars at the range reads its exact pooled mean whichever bars come first
+    legs = np.array([8e307, -8e307])
+    raw = np.array([legs, legs, -legs, -legs])  # the closed excesses sum to exactly 0
+    closed = np.array([[True, False]] * 4)
+    assert cross_mean_pooled_mean(raw, closed) == 0.0
+    assert cross_mean_pooled_mean(raw[[0, 2, 1, 3]], closed) == 0.0
 
 
 def test_newey_west_emits_no_p_value():

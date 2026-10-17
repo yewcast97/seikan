@@ -6,7 +6,14 @@ import math
 
 import numpy as np
 
-from seikan.analysis._pools import BarNumerators, _near_constant, _normal, exact_mean
+from seikan.analysis._pools import (
+    BarNumerators,
+    _fsum,
+    _near_constant,
+    _normal,
+    exact_mean,
+    exact_sum,
+)
 
 _NAN = float("nan")
 
@@ -132,7 +139,7 @@ def _hac_from_bar_sums(
 
     ``(NaN, NaN)`` — no estimate — wherever the pool has no positive long-run variance to read:
     every bar exactly at the mean (one bar above all, whose sum ``Σr − n·μ`` is 0 whatever its
-    rows), a quadratic form past the double range (``math.fsum`` raises past it), or a variance
+    rows), a quadratic form past the double range (NaN — :func:`exact_sum`), or a variance
     ``s/n`` that is not a normal double (:func:`_normal`): past the range ``mean / inf`` is a
     FINITE t of 0.0 — an overflow must read as no estimate, never as "no edge" — and below
     ~1e-154 the products underflow, into lost bits or an SE of exactly 0.0.
@@ -140,19 +147,15 @@ def _hac_from_bar_sums(
     if not np.any(d_bar):
         return (_NAN, _NAN)
     with np.errstate(over="ignore", invalid="ignore"):
-        try:
-            lags = [math.fsum((d_bar * d_bar).tolist())]  # gamma_0
-            for k in range(1, u.shape[0]):
-                w = 1.0 - (u[k:] - u[:-k]).astype(float) / h
-                m = w > 0.0
-                if not m.any():
-                    # gaps at bar lag k are nondecreasing in k (sorted bars): no later pair
-                    # overlaps
-                    break
-                lags.append(2.0 * math.fsum((w[m] * d_bar[k:][m] * d_bar[:-k][m]).tolist()))
-            s = math.fsum(lags)
-        except (OverflowError, ValueError):
-            return (_NAN, _NAN)
+        lags = [exact_sum(d_bar * d_bar)]  # gamma_0
+        for k in range(1, u.shape[0]):
+            w = 1.0 - (u[k:] - u[:-k]).astype(float) / h
+            m = w > 0.0
+            if not m.any():
+                # gaps at bar lag k are nondecreasing in k (sorted bars): no later pair overlaps
+                break
+            lags.append(2.0 * exact_sum(w[m] * d_bar[k:][m] * d_bar[:-k][m]))
+        s = _fsum(lags)
     v = s / (n - 1.0) / n
     if not _normal(v):
         return (_NAN, _NAN)
