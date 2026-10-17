@@ -16,7 +16,7 @@ import pytest
 from scipy import stats as sps
 
 from seikan.analysis._conditioning import _bucket_monotonicity
-from seikan.analysis._cscv import _degradation_slope
+from seikan.analysis._cscv import _column, _degradation_slope, _split_scores
 from seikan.analysis._hac import _bar_deviation_sums
 from seikan.analysis._pools import _near_constant
 from seikan.analysis._rotation import _fwd_ffts, _rotation_num_den, _tail_p
@@ -3909,21 +3909,10 @@ def test_cscv_constant_split_pool_is_never_ranked(mode, targets):
 
 
 def _split_tensors(r, b, s=4):
-    """One candidate × one member, built the way ``cscv_pbo`` builds them: block moments of the
-    returns shifted by the column's own mean, and the per-block extrema."""
-    ref_v = float(r.mean())
-    sh = r - ref_v
-    moments = np.stack(
-        [
-            np.bincount(b, minlength=s).astype(float),
-            np.bincount(b, weights=sh, minlength=s),
-            np.bincount(b, weights=sh * sh, minlength=s),
-        ]
-    )[None, None]
-    lo, hi = np.full(s, np.inf), np.full(s, -np.inf)
-    np.minimum.at(lo, b, r)
-    np.maximum.at(hi, b, r)
-    return moments, np.array([[ref_v]]), np.stack([lo, hi])[None, None]
+    """One candidate × one member, stacked the way ``cscv_pbo`` stacks them for
+    ``_split_scores``: the column's moments, extrema, exact block sums and scale."""
+    c = _column(b, r, r[:, None], 1, s)
+    return c.moments[None, None], c.extrema[None, None], c.sums[None, None], np.array([[c.scale]])
 
 
 def test_cscv_split_score_reads_exact_constancy_per_split():
@@ -3932,41 +3921,35 @@ def test_cscv_split_score_reads_exact_constancy_per_split():
     # its reconstructed variance is residue that once scored a Sharpe of ~7.6e7; the per-block
     # extrema (and the rounding floor behind them) leave it undefined, while a split mixing the
     # two levels varies and scores.
-    from seikan.analysis._cscv import _split_scores
-
     r = np.array([0.1] * 5 + [0.3] * 5)
     b = np.array([0, 0, 1, 1, 1, 2, 2, 3, 3, 3])
-    moments, refs, extrema = _split_tensors(r, b)
+    tensors = _split_tensors(r, b)
     for blocks in ([0, 1], [2, 3]):
-        assert np.isnan(_split_scores(moments, refs, extrema, np.array(blocks))).all()
-    assert np.isfinite(_split_scores(moments, refs, extrema, np.array([0, 2]))).all()
+        assert np.isnan(_split_scores(*tensors, np.array(blocks))).all()
+    assert np.isfinite(_split_scores(*tensors, np.array([0, 2]))).all()
 
 
 def test_cscv_split_score_nulls_dispersion_below_rounding():
-    # One ulp of spread inside a split pool is below what the shifted accumulation can resolve:
-    # the centered sum of squares is cancellation residue, and the split reads NaN like an
-    # exactly constant one (the extrema alone would let it through as "varying").
-    from seikan.analysis._cscv import _split_scores
-
+    # One ulp of spread inside a split pool is rounding, not dispersion: within 10 ulps of the
+    # split's mean, it reads NaN like an exactly constant pool (the extrema alone would let it
+    # through as "varying").
     r = np.array([0.005] * 5 + [0.022] * 5)
     r[1] = np.nextafter(0.005, 1.0)
     b = np.array([0, 0, 1, 1, 1, 2, 2, 3, 3, 3])
-    moments, refs, extrema = _split_tensors(r, b)
-    assert np.isnan(_split_scores(moments, refs, extrema, np.array([0, 1]))).all()
-    assert np.isfinite(_split_scores(moments, refs, extrema, np.array([0, 2]))).all()
+    tensors = _split_tensors(r, b)
+    assert np.isnan(_split_scores(*tensors, np.array([0, 1]))).all()
+    assert np.isfinite(_split_scores(*tensors, np.array([0, 2]))).all()
 
 
 def test_cscv_split_score_of_an_overflowed_sd_is_nan_never_zero():
-    # A column with one observation in each of two blocks, X and Y: each block's sum of squared
-    # shifts, ((X − Y)/2)², stays finite, but the split's sum of them overflows — sd = inf, and
-    # `mean / inf` scored a FINITE 0.0 Sharpe that entered the split's ranking. NaN drops it from
-    # the split instead.
-    from seikan.analysis._cscv import _split_scores
-
+    # A column with one observation in each of two blocks, X and Y: each block's moments stay
+    # finite, but the merge's term for the block means' spread, 2·((X − Y)/2)², overflows — sd =
+    # inf, and `mean / inf` scored a FINITE 0.0 Sharpe that entered the split's ranking. NaN
+    # drops it from the split instead.
     x, y = 1.3e154, -1.2e154
-    moments, refs, extrema = _split_tensors(np.array([x, y]), np.array([0, 1]), s=2)
-    assert np.isfinite(moments).all()
-    assert np.isnan(_split_scores(moments, refs, extrema, np.array([0, 1]))).all()
+    tensors = _split_tensors(np.array([x, y]), np.array([0, 1]), s=2)
+    assert all(np.isfinite(t).all() for t in tensors)
+    assert np.isnan(_split_scores(*tensors, np.array([0, 1]))).all()
 
 
 @pytest.mark.parametrize("scale", [1e156, 1e160])
@@ -3989,8 +3972,6 @@ def test_cscv_split_score_of_a_subnormal_variance_is_nan_never_a_sharpe():
     # sum of squares is tested against has itself underflowed to 0.0: the Sharpe was read off a
     # variance that had lost its bits — 0.13804 for 0.13853. While the variance stays normal the
     # power-of-two scale keeps every bit of the score.
-    from seikan.analysis._cscv import _split_scores
-
     r = np.random.RandomState(8).randn(40)
     b = np.repeat(np.arange(4), 10)
     blocks = np.array([0, 2])
@@ -4036,18 +4017,81 @@ def test_cscv_single_level_near_constant_pool_is_never_ranked(mode, targets):
     assert out["reason"] is None and out["n_candidates_min"] == 4
 
 
-def test_cscv_split_score_needs_the_extrema_for_an_exact_constant_pool():
-    # A column whose mean sits within ~1e-14 of an exactly constant split's value: the split's
-    # mean, its shifted mean plus the column's ref, is off by ~ε·|c|, so its residue clears the
-    # rounding floor and only the per-block extrema keep the split undefined.
-    from seikan.analysis._cscv import _split_scores
-
+def test_cscv_split_score_of_an_exact_constant_pool_near_the_column_mean_is_nan():
+    # A column whose mean sits within ~1e-14 of an exactly constant split's value: the split
+    # pool has no dispersion, whatever residue its merged variance carries.
     hi = 0.21
     for _ in range(103):
         hi = np.nextafter(hi, 1.0)
     r = np.array([0.21] * 10 + [hi] * 10)
-    moments, refs, extrema = _split_tensors(r, np.repeat(np.arange(4), 5))
-    assert np.isnan(_split_scores(moments, refs, extrema, np.array([0, 1]))).all()
+    tensors = _split_tensors(r, np.repeat(np.arange(4), 5))
+    assert np.isnan(_split_scores(*tensors, np.array([0, 1]))).all()
+
+
+def test_cscv_pbo_split_means_carry_their_rows_exact_sign():
+    # The review's grid: two candidates over returns cycling through ±0.1, ±0.2, ±0.3, 0.01
+    # higher in the second half — A on the first six bars of every block, B on the next twelve.
+    # No split's exact mean is negative, and the split over the first half's blocks is exactly
+    # 0 for both, a tie. Rebuilt as the split's mean shift plus the column's mean, that 0 read
+    # −2.6e-18 for each over its own sd: a test loss for the train winner, its rank turned —
+    # pbo 2/70, prob_oos_loss 1/70.
+    T, S = 480, 8
+    ret = np.tile([-0.3, -0.2, -0.1, 0.1, 0.2, 0.3], T // 6)
+    ret[T // 2 :] += 0.01
+    cells = []
+    for k, (first, width) in enumerate(((0, 6), (6, 12))):
+        m = np.zeros(T)
+        for g in range(S):
+            bars = slice(60 * g + first, 60 * g + first + width)
+            m[bars] = 1.0
+            block_sum = sum(Fraction(float(x)) for x in ret[bars])
+            assert block_sum == 0 if g < S // 2 else block_sum > 0  # the premise
+        cells.append({"key": (k, "t"), "mask_col": m, "fwd_col": ret, "h": 1})
+    out = cscv_pbo(cells, T, ["t"], n_combos_declared=2)
+    assert out["reason"] is None and out["n_splits"] == 70
+    assert out["prob_oos_loss"] == 0.0 and out["pbo"] == 1 / 70
+
+
+def test_cscv_split_mean_is_the_rows_exact_sum_across_blocks():
+    # Block sums 2**55, 2, −2**55 and −2: the split over blocks 0-3 holds rows summing to
+    # exactly 0, so its Sharpe is 0.0. Added over the blocks in floating point, 2**55 swallowed
+    # the 2 before its partner arrived, and the split's mean read −0.25.
+    r = np.array([2.0**54, 1.0, -(2.0**54), -1.0, 0.5, -0.5, 0.25, -0.25] * 2)
+    tensors = _split_tensors(r, np.tile(np.arange(8), 2), s=8)
+    assert _split_scores(*tensors, np.arange(4))[0] == 0.0
+
+
+def test_cscv_split_pool_inside_one_regime_still_scores():
+    # Combo 0 sits at 0.005 on the first half of the bars and at 0.022 on the second, each with
+    # a 1e-9 spread: a split inside one half has real dispersion, 1e-7 of its level. Its one-pass
+    # sum of squares about the WHOLE column's mean was the difference of two sums ~1e14 times
+    # larger, and the accumulation-error gate refused it in both splits that hold one half; the
+    # merged block moments score it in every split.
+    cells = _two_level_cells(("t",))
+    noise = np.random.RandomState(4).normal(0.0, 1e-9, 400)
+    for cell in cells:
+        if cell["key"][0] == 0:
+            cell["fwd_col"] = cell["fwd_col"] + noise
+    out = cscv_pbo(cells, 400, ["t"], n_combos_declared=5)
+    assert out["reason"] is None and out["n_splits"] == 70
+    assert out["n_candidates_min"] == 5
+
+
+def test_cscv_split_variance_merges_the_block_moments_at_any_level():
+    # Every split's Sharpe off the merged block moments against exact arithmetic, at level 1e9,
+    # where the raw one-pass Σx² − n·mean² form cancelled to rounding noise.
+    from itertools import combinations
+
+    rng = np.random.RandomState(12)
+    r = np.round(rng.normal(0.0, 0.01, 60), 6) + 1e9
+    b = rng.randint(0, 8, 60)
+    tensors = _split_tensors(r, b, s=8)
+    for split in combinations(range(8), 4):
+        held = [Fraction(float(x)) for x in r[np.isin(b, split)]]
+        mean = sum(held) / len(held)
+        var = sum((x - mean) ** 2 for x in held) / (len(held) - 1)
+        got = _split_scores(*tensors, np.array(split))[0]
+        assert got == pytest.approx(float(mean) / math.sqrt(var), rel=1e-12)
 
 
 def test_cscv_basket_absent_member_cannot_widen_an_exact_constant_split():
@@ -4233,15 +4277,12 @@ def test_cscv_pbo_all_full_grid_s_tied_train_winner_is_the_first_declared_candid
 
 
 def test_cscv_split_mean_sums_the_bars_exact_excess_sums():
-    # Three candidates of three members, ten bars per block. A `cross_mean` candidate's EVERY
-    # split takes its MEAN from the per-block exact sums of its pooled column's bar numerators
-    # (`bar_numerators`) over the member count, over the rows' own sd: the all-full candidate's
-    # mean is exactly 0.0 on every split (its rounded rows read residue), the partial
-    # candidate's the exact sum of the excesses its split holds, its blocks added once. A
-    # candidate the numerators do not key is the rows' read, byte for byte.
+    # Two candidates of three members, ten bars per block. A `cross_mean` candidate's EVERY
+    # split takes its MEAN from its pooled column's bar numerators (`bar_numerators`) over the
+    # member count, over the rows' own sd: the all-full candidate's mean is exactly 0.0 on every
+    # split, the partial candidate's the exact sum of the excesses its split holds. The all-full
+    # rows summed as their own returns (a candidate the numerators do not key) read residue.
     from itertools import combinations
-
-    from seikan.analysis._cscv import _column, _split_scores
 
     rng = np.random.RandomState(47)
     s = 4
@@ -4251,35 +4292,32 @@ def test_cscv_split_mean_sums_the_bars_exact_excess_sums():
     full = np.ones(raw.shape, dtype=bool)
     partial = rng.random(raw.shape) < 0.6
     partial[:, 0] |= ~partial.any(axis=1)  # every bar holds a closed member
-    closed = [full, partial, full]
     columns = []
-    for on in closed:
+    for on in (full, partial):
         bars, members = np.nonzero(on)
         parts = cross_mean_bar_numerators(raw, on).at(bars, members)
-        columns.append(_column(b[bars], excess[bars, members], parts, s))
-    moments = np.array([[c.moments] for c in columns])
-    refs = np.array([[c.ref] for c in columns])
-    extrema = np.array([[c.extrema] for c in columns])
-    pool = (np.array([[c.pool] for c in columns]), np.array([True, True, False]))
+        columns.append(_column(b[bars], excess[bars, members], parts, 3, s))
+    rows = excess[np.nonzero(full)]
+    columns.append(_column(b[np.nonzero(full)[0]], rows, rows[:, None], 1, s))
+    j = max(c.sums.shape[1] for c in columns)
+    tensors = (
+        np.array([[c.moments] for c in columns]),
+        np.array([[c.extrema] for c in columns]),
+        np.array([[np.pad(c.sums, ((0, 0), (0, j - c.sums.shape[1])))] for c in columns]),
+        np.array([[c.scale] for c in columns]),
+    )
     legs = [[Fraction(float(x)) for x in row] for row in raw]
     residue = []
     for split in combinations(range(s), 2):
-        idx = np.array(split)
-        plain = _split_scores(moments, refs, extrema, idx)
-        got = _split_scores(moments, refs, extrema, idx, pool, 3)
+        got = _split_scores(*tensors, np.array(split))
         assert got[0] == 0.0
-        residue.append(plain[0])
-        assert got[2] == plain[2]  # unkeyed: the moments' own mean
-        # the partial candidate: its pool sums over 3·n, over the column's own sd —
-        m = moments[1, 0][:, idx].sum(axis=1)
-        n, mean_shift = m[0], m[1] / m[0]
-        sd = np.sqrt((m[2] - n * mean_shift * mean_shift) / (n - 1.0))
-        split_sum = pool[0][1, 0][idx].sum()
-        assert got[1] == split_sum / (3 * n) / sd
-        # — whose sum is the split's exact numerator, to its blocks' one addition
-        held = np.isin(b, split)[:, None] & closed[1]
-        exact = sum(legs[t][g] - sum(legs[t]) / 3 for t, g in zip(*np.nonzero(held), strict=True))
-        assert split_sum == pytest.approx(float(3 * exact), rel=1e-15, abs=1e-18)
+        residue.append(got[2])
+        # the partial candidate: the exact excess sum its split holds, over its rows' own sd
+        held = list(zip(*np.nonzero(np.isin(b, split)[:, None] & partial), strict=True))
+        exact = sum(legs[t][g] - sum(legs[t]) / 3 for t, g in held) / len(held)
+        own = [Fraction(float(excess[t, g])) for t, g in held]
+        var = sum((x - sum(own) / len(own)) ** 2 for x in own) / (len(own) - 1)
+        assert got[1] == pytest.approx(float(exact) / math.sqrt(var), rel=1e-14)
     assert any(r != 0.0 for r in residue)  # the premise: the rounded rows read residue
 
 
@@ -4329,8 +4367,8 @@ def test_cscv_pbo_basket_candidates_holding_the_same_block_returns_tie_however_m
 
 
 def test_cscv_pbo_bar_numerators_reach_no_other_read():
-    # Conjunction never reads the bar numerators, and a basket candidate they do not key keeps
-    # its moments' own mean: an empty mapping is the plain read, byte for byte.
+    # Conjunction never reads the bar numerators, and a basket candidate they do not key sums
+    # its own rows: an empty mapping is the plain read, byte for byte.
     cells, length = _one_member_edge_cells()
     basket = cscv_pbo(cells, length, ["A", "B"], mode="basket", n_combos_declared=8)
     assert basket["reason"] is None

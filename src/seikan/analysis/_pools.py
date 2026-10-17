@@ -479,6 +479,20 @@ def _exact_parts(terms: list[float]) -> list[float] | None:
     return parts
 
 
+def parts_table(groups: list[list[float]]) -> np.ndarray:
+    """(groups × J): each group's :func:`_exact_parts`, zero-padded to the longest — a NaN row
+    where it has none (a non-finite term, a sum past the double range). One ``math.fsum`` over any
+    rows' parts is the exactly rounded sum of their groups' terms (NaN over a NaN row)."""
+    by_group = [_exact_parts(terms) for terms in groups]
+    table = np.zeros((len(by_group), max([1, *(len(p) for p in by_group if p is not None)])))
+    for g, parts in enumerate(by_group):
+        if parts is None:
+            table[g] = np.nan
+        else:
+            table[g, : len(parts)] = parts
+    return table
+
+
 class BarNumerators(NamedTuple):
     """A ``cross_mean`` basket pool's bar NUMERATORS (:func:`cross_mean_bar_numerators`):
     ``parts`` (bars × J) holds each bar's numerator ``N·Σ_{closed g} e_tg`` EXACTLY, as the
@@ -515,13 +529,9 @@ def cross_mean_bar_numerators(raw: np.ndarray, closed: np.ndarray) -> BarNumerat
     a partial bar. Every row-level read keeps the row's own ``ret``."""
     c = np.asarray(closed, dtype=bool)
     rows, _k, wh, wl = _cross_mean_weighted_parts(raw, c)
-    by_bar = [_exact_parts([*hi, *lo]) for hi, lo in zip(wh.tolist(), wl.tolist(), strict=True)]
-    parts = np.zeros((c.shape[0], max([1, *(len(p) for p in by_bar if p is not None)])))
-    for t, bar_parts in zip(rows.tolist(), by_bar, strict=True):
-        if bar_parts is None:
-            parts[t] = np.nan
-        else:
-            parts[t, : len(bar_parts)] = bar_parts
+    by_bar = parts_table([[*hi, *lo] for hi, lo in zip(wh.tolist(), wl.tolist(), strict=True)])
+    parts = np.zeros((c.shape[0], by_bar.shape[1]))
+    parts[rows] = by_bar
     return BarNumerators(parts, np.argmax(c, axis=1))
 
 

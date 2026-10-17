@@ -430,8 +430,8 @@ pool whose every bar's excess sum is exactly 0 (every bar full at a zero mean, o
 whose excesses cancel on each bar, where the rounded rows' bar sums are residue — a `t_hac` of
 5.43 beside a `mean_ret` of exactly 0) has no long-run variance: `t_hac` / `hac_se` null, as on
 identical legs; the grid-level CSCV reads them too — a block holds whole bars (its purge reads
-the bar and the cell's horizon alone), so every split takes its MEAN from its blocks' exact
-numerator sums over `N` times its row count, over the rows' own sd, and every split a grid of all-full cells scores is a full tie (`pbo`,
+the bar and the cell's horizon alone), so every split's MEAN is the exactly rounded sum of its
+rows' bar numerators over `N` times its row count, over the rows' own sd, and every split a grid of all-full cells scores is a full tie (`pbo`,
 `lambda_mean` and `prob_oos_loss` 0.0 whenever the block scores, in any target order, where the
 rounded rows ranked their residue — every train score tied, the first-declared candidate wins
 each split, so a sparse such grid can score fewer splits, fall back to a coarser S or decline
@@ -869,8 +869,8 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   k = 0..21, read skewness 0.666 for 0), the benchmark regression declines a (near-)constant
   bench leg (and fits `beta` exactly 0 on a constant raw leg, while a raw leg that varies is
   fitted however small its spread — its deviations about its offset are exact), and a CSCV
-  split scores NaN when its pool is exactly constant (the per-block extrema), within the HAC's
-  ~10 ulps, or has a centered sum of squares within its own accumulation error. The pool MEANS the checklist grades, and their direct twins — the legs,
+  split scores NaN when its pool is exactly constant (the per-block extrema) or within the HAC's
+  ~10 ulps. The pool MEANS the checklist grades, and their direct twins — the legs,
   the eras, the baseline, the HAC's `t` numerator — are the exactly rounded sum over `n` (`math.fsum`):
   the exact sum's sign, exactly 0.0 where it is 0 (a pairwise float sum lost a term a larger one
   swallowed before its cancelling partner arrived — an exact zero read as a positive mean), and a
@@ -885,11 +885,15 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   four row orders read four rising means and a `rho` of 1. The bootstrap's draws stay the
   arithmetic mean, save that each episode's sum is exactly rounded too — summed in floating
   point, eight episodes of `[1, −2**54, −1, 2**54]` read a zero-width interval at 0.25 beside a
-  `mean_ret` of 0; a draw's sum over its episodes' sums stays ordinary arithmetic. CSCV's
-  block moments are exactly rounded sums (a column's returns about its exactly rounded mean, and
-  their squares), the same doubles in any row order: two candidates holding the same returns in
-  every block, in other orders, ranked apart by row-order rounding (`pbo` 0.571 for a grid of
-  full ties); a split's sum over its blocks stays ordinary arithmetic. The HAC's per-bar deviation
+  `mean_ret` of 0; a draw's sum over its episodes' sums stays ordinary arithmetic. A CSCV
+  split's mean is its rows' exactly rounded sum over their count, one `math.fsum` over its
+  blocks' exact parts — rebuilt from the column's mean, an exact 0 read −2.6e-18 and two
+  candidates cycling through ±0.3 read `pbo` 2/70 and `prob_oos_loss` 1/70 for 1/70 and 0 —
+  and its block moments are exactly rounded sums (a column's returns about its exactly rounded
+  mean, each block's deviations from the block's mean squared), the same doubles in any row
+  order: two candidates holding the same returns in every block, in other orders, ranked apart
+  by row-order rounding (`pbo` 0.571 for a grid of full ties). A split's variance merges its
+  blocks' moments (`Σ m2_b + Σ n_b·(m_b − m)²`, every term a square, ordinary arithmetic). The HAC's per-bar deviation
   sums are exact about the pool's EXACT mean, each rounded once (the returns read as integers over
   one power-of-two denominator), so a bar at the mean reads 0 and a pool and its translate read
   one `hac_se`: rounded per row about the pool's range midpoint, three members alternating

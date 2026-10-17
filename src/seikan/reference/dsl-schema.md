@@ -1630,7 +1630,9 @@ open to quote a statistic honestly.
   split a grid of all-full cells scores is a full tie (`pbo` 0.0) — though, every train score tied,
   the first-declared candidate wins each split, and a sparse such grid can score fewer splits
   or decline `insufficient_data`. Every block moment is an exactly rounded sum, the same in any
-  row order, so two candidates holding the same returns in every block tie on every split.
+  row order, so two candidates holding the same returns in every block tie on every split, and
+  every split's mean is its rows' exactly rounded sum over their count — the exact sum's sign,
+  0.0 where the rows cancel, however they fall across blocks.
 - A sweep-axis read — is an effect a plateau across a swept axis or a lone spike, the honest
   analogue of family-wise machinery this engine does not carry — is yours to form from
   `cells[*].params` against `cells[*].by_target[t].mean_ret`, PER HORIZON. There is no rollup
