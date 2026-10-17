@@ -13,6 +13,8 @@ import numpy as np
 from seikan.analysis._pools import (
     _NEAR_CONSTANT_ULPS,
     BarNumerators,
+    _near_constant,
+    _normal,
     exact_mean,
     exact_sum,
     parts_table,
@@ -195,18 +197,23 @@ def _degradation_slope(
     """Centered OLS slope of the splits' (train-winner, its test score) pairs, or
     ``(None, "degenerate_train_scores")`` when the train scores carry no usable spread.
 
-    The degeneracy test is SCALE-RELATIVE (10 ulps of the scores' magnitude), not exact-zero:
-    a grid of near-clones passes an exact-zero test into a rank-deficient fit whose min-norm
-    slope is an arbitrary number (numpy's polyfit additionally warned "poorly conditioned" —
-    ~0.5 on one probe). The slope of an undefined regression is null with its reason said out
+    The degeneracy test is SCALE-RELATIVE — the pools' zero-dispersion gate
+    (``_pools._near_constant``: a spread within 10 ulps of the scores' exactly rounded mean) —
+    not exact-zero: a grid of near-clones passes an exact-zero test into a rank-deficient fit
+    whose min-norm slope is an arbitrary number (numpy's polyfit additionally warned "poorly
+    conditioned" — ~0.5 on one probe). Nor absolute: floored at a magnitude of 1, it read train
+    scores spread from 0 to 3.5e-16 as degenerate and nulled an exact slope of −1. Their centered
+    sum of squares must be a normal double too (``_pools._normal``): below it the fit divides by
+    bits it has lost. The slope of an undefined regression is null with its reason said out
     loud, never a number. The well-conditioned path is the plain centered OLS identity
     cov(tr, te)/var(tr) — no Vandermonde, no RankWarning channel at all."""
-    scale = max(1.0, float(np.max(np.abs(tr_a))))
-    if float(np.std(tr_a)) <= 10.0 * float(np.finfo(np.float64).eps) * scale:
+    mean = exact_mean(tr_a)
+    tr_c = tr_a - mean
+    ss = float(tr_c @ tr_c)
+    if _near_constant(tr_a, mean) or not _normal(ss):
         return None, "degenerate_train_scores"
-    tr_c = tr_a - tr_a.mean()
     te_c = te_a - te_a.mean()
-    return float((tr_c @ te_c) / (tr_c @ tr_c)), None
+    return float(tr_c @ te_c) / ss, None
 
 
 def cscv_pbo(

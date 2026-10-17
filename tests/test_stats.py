@@ -4154,6 +4154,14 @@ def test_oos_degradation_slope_matches_centered_ols_and_reason():
     tr_flat[3] += 1e-10
     slope, reason = _degradation_slope(tr_flat, np.linspace(0.0, 1.0, 8))
     assert slope is None and reason == "degenerate_train_scores"
+    # Small scores with real spread are no degenerate fit: floored at a magnitude of 1, the test
+    # read these as constant and nulled their exact slope of −1.
+    tr_small = np.array([0.0, 3.471605e-16, 1e-16, 2e-16, 2.5e-16, 0.5e-16, 1.5e-16, 3e-16])
+    slope, reason = _degradation_slope(tr_small, -tr_small)
+    assert reason is None and slope == pytest.approx(-1.0)
+    # A spread whose square leaves the normal range has lost the bits the fit divides by.
+    slope, reason = _degradation_slope(np.arange(4.0) * 1e-300, np.arange(4.0))
+    assert slope is None and reason == "degenerate_train_scores"
 
 
 def test_cscv_scored_block_carries_null_slope_reason():
