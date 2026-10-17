@@ -64,7 +64,9 @@ METRIC_ROLES: dict[str, JsonValue] = {
             "arithmetic, and the next-open geometry: n_attempted <= n_bars − 1, n_closed <= "
             "max(0, n_bars − 1 − horizon))",
             "cells[*].signal_coverage[*].n_bars",
-            "cells[*].episode_stats.n",
+            "cells[*].episode_stats.{n,n_clusters,largest_cluster_share_abs,max_cluster_share_abs} "
+            "(n == the per-target total; the ceiling read is at least the largest-by-count "
+            "cluster's share and exactly 1 with one cluster)",
             "cells[*].pooled.{n,n_nonoverlap} (basket only — pooled.n == sum of by_target.n, "
             "pooled.n_nonoverlap <= pooled.n, pooled.n_nonoverlap <= max(0, (n_bars − 2) // "
             "horizon), pooled.n <= len(targets) × max(0, n_bars − 1 − horizon); "
@@ -152,7 +154,9 @@ METRIC_ROLES: dict[str, JsonValue] = {
         "k_min/k_median/k_max, first_full_bar. The effective-universe ledger: member warmup "
         "legally thins k, and this panel is what makes the thinning visible; [] outside "
         "basket)",
-        "episode_stats beyond the two fields the checklist reads (n, max_cluster_share_abs)",
+        "episode_stats beyond the two fields the checklist grades (n, max_cluster_share_abs; "
+        "cell_evidence reads n_clusters and largest_cluster_share_abs only to reconcile the "
+        "ceiling read)",
         "summary.baseline (run-level unconditional base rate per horizon × target — plus a "
         "pooled row in basket; the conditional-vs-base-rate comparison is the caller's, and "
         "no uplift field ever exists)",
@@ -498,7 +502,9 @@ METRIC_ROLES_DOC: dict[str, JsonValue] = {
         "n_nonoverlap <= n (non-overlapping windows cannot outnumber observations), "
         "n_nonoverlap <= max(0, (n_bars − 2) // horizon) (the greedy count's windows sit "
         "horizon bars apart among the closed observations), episode_stats.n == the "
-        "per-target total (the concentration and support panels must describe one pool), and "
+        "per-target total (the concentration and support panels must describe one pool), "
+        "episode_stats.max_cluster_share_abs >= largest_cluster_share_abs and == 1 where "
+        "n_clusters == 1 (the ceiling read agrees with its own panel), and "
         "signal_coverage.n_bars == summary.n_bars (the decision ledger spans the whole index by "
         "construction). Basket cells must additionally carry the pooled dict their own rubric "
         "grades, reconciling with the member panels: pooled.n == the per-target total, "
@@ -605,9 +611,10 @@ METRIC_ROLES_DOC: dict[str, JsonValue] = {
         "double range (not_representable); a one-regressor attribution, never a factor model, "
         "and the overlapping rows inflate the fit exactly as they inflate every row-level "
         "read)",
-        "episode_stats beyond the two fields the checklist reads (n, max_cluster_share_abs): "
+        "episode_stats beyond the two fields the checklist grades (n, max_cluster_share_abs): "
         "n_clusters, the earliest entry, and the cluster-mass profile are a regime-clustering "
-        "diagnostic",
+        "diagnostic (cell_evidence reads n_clusters and largest_cluster_share_abs only to "
+        "reconcile the ceiling read against them)",
         "per-cell by_target boot (the episode-bootstrap percentile CI for the "
         "pool mean: overlap-connected [t, t+h) episodes resampled with replacement, so "
         "within-episode dependence is preserved exactly and the interval is as wide as the "
@@ -1316,8 +1323,10 @@ REPORT_FIELDS: dict[str, JsonValue] = {
         "episode_stats": (
             "cross-target merged episode clusters over the cell's closed rows: {n, n_clusters, "
             "largest_cluster_n, largest_cluster_share_abs, largest_cluster_start, "
-            "max_cluster_share_abs, mass_hhi, effective_n_clusters} — the checklist reads only "
-            "n and max_cluster_share_abs; the hhi pair is the smooth evidence-only companion; "
+            "max_cluster_share_abs, mass_hhi, effective_n_clusters} — the checklist grades only "
+            "n and max_cluster_share_abs (cell_evidence reads n_clusters and "
+            "largest_cluster_share_abs to reconcile the ceiling read: at least that share, "
+            "exactly 1 with one cluster); the hhi pair is the smooth evidence-only companion; "
             "every share is null over a diff outcome's rows of several targets, each in its own "
             "level units"
         ),
@@ -1577,7 +1586,9 @@ GATE_CONTRACT_DOC: dict[str, JsonValue] = {
             "n_closed <= max(0, n_bars − 1 − horizon)); and the panels RECONCILE — by_target.n "
             "== outcome_coverage.n_closed (held to the same closed ceiling), n_nonoverlap <= n, "
             "n_nonoverlap <= max(0, (n_bars − 2) // horizon), episode_stats.n == the per-target "
-            "total, signal_coverage.n_bars == summary.n_bars. Basket cells additionally carry "
+            "total, episode_stats.max_cluster_share_abs >= largest_cluster_share_abs (== 1 with "
+            "one cluster), signal_coverage.n_bars == summary.n_bars. Basket cells additionally "
+            "carry "
             "the pooled dict their rubric grades, reconciling with the member panels (pooled.n "
             "== the per-target total, pooled.n_nonoverlap <= pooled.n, pooled.n_nonoverlap <= "
             "max(0, (n_bars − 2) // horizon), pooled.n "
@@ -1641,7 +1652,8 @@ GATE_CONTRACT_DOC: dict[str, JsonValue] = {
         "descriptives, the per-target boot "
         "episode-bootstrap CI and subperiods era panel, the run-level bar_spacing stamp and "
         "baseline panel, the "
-        "episode_stats panel beyond the two fields the checklist reads, the per-cell episodes "
+        "episode_stats panel beyond the two fields the checklist grades (n_clusters and "
+        "largest_cluster_share_abs read only to reconcile the ceiling read), the per-cell episodes "
         "ledger, conditional_buckets/bucket_monotonicity and feature_association, and — in "
         "basket — every pooled field beyond {n, n_nonoverlap, mean_ret, "
         "concentration.top_share_abs, member_share} (member_share.by_target read only to "

@@ -528,6 +528,8 @@ the panels RECONCILE — `by_target[t].n == outcome_coverage[t].n_closed` (held 
 ceiling), `n_nonoverlap ≤ n`, `n_nonoverlap ≤ max(0, ⌊(n_bars − 2) /
 horizon⌋)` (the greedy count's windows sit `horizon` bars apart among the closed observations: 40
 windows of 21 bars claimed in a 600-bar index, where 28 fit, is no run's output), `episode_stats.n` == the per-target total,
+`episode_stats.max_cluster_share_abs ≥ largest_cluster_share_abs` and `== 1` where `n_clusters ==
+1` (the ceiling read agrees with its own panel),
 `signal_coverage[t].n_bars == summary.n_bars`: an internally impossible cell is drifted input, not
 something to grade. Basket cells must ADDITIONALLY carry the `pooled` dict their own rubric
 grades, reconciling with the member panels: `pooled.n ==` the per-target total (one pool, fully
@@ -581,7 +583,9 @@ conjunction over every regime target's
 `concentration.top_share_abs` AND the cell's `episode_stats.max_cluster_share_abs` (the largest
 |return|-mass share held by any one cluster — distinct from the `largest_cluster_n` /
 `largest_cluster_share_abs` / `largest_cluster_start` triple, which describes the largest cluster
-BY ROW COUNT and is evidence only), the largest
+BY ROW COUNT and is evidence only — save that `cell_evidence` holds the ceiling read to at least
+that share, and to exactly 1 with one cluster: a maximum of 0.5 beside one cluster at 1.0 met the
+ceiling), the largest
 merged cross-target episode cluster — a one-episode edge refuses; under basket the pooled read
 REPLACES the per-target layer (`pooled.concentration.top_share_abs`), the episode-cluster
 ceiling stays ("not one crisis"), and `pooled.member_share.max_member_share_abs` joins them —

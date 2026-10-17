@@ -1136,6 +1136,37 @@ def test_cell_evidence_episode_panel_must_total_the_per_target_counts():
     assert "per-target total" in check.detail
 
 
+def test_the_episode_ceiling_read_cannot_fall_below_its_own_panel():
+    # The review's tamper: one cluster carrying every row (largest_cluster_share_abs 1.0), its
+    # max_cluster_share_abs rewritten to 0.5 — the one-episode ceiling graded the rewritten
+    # number and nothing read it against the panel it sits in. The maximum over the clusters'
+    # shares is at least the largest-by-count cluster's, and one cluster's share is exactly 1.
+    cell = _cell()
+    cell["episode_stats"].update(
+        {
+            "n_clusters": 1,
+            "largest_cluster_n": 42,
+            "largest_cluster_share_abs": 1.0,
+            "max_cluster_share_abs": 0.5,
+        }
+    )
+    check = _cell_checks(evaluate_gate(_summary(cells=[cell])))["cell_evidence"]
+    assert not check.met
+    assert "below largest_cluster_share_abs=1.0" in check.detail
+    assert "beside n_clusters=1" in check.detail
+    # several clusters: the by-count cluster's share alone bounds the maximum from below
+    cell = _cell()
+    cell["episode_stats"].update({"largest_cluster_share_abs": 0.3, "max_cluster_share_abs": 0.2})
+    check = _cell_checks(evaluate_gate(_summary(cells=[cell])))["cell_evidence"]
+    assert not check.met
+    assert "below largest_cluster_share_abs=0.3" in check.detail
+    # a null maximum — a massless, overflowed or unit-mixing pool — stays concentration's to refuse
+    cell = _cell()
+    cell["episode_stats"].update({"largest_cluster_share_abs": None, "max_cluster_share_abs": None})
+    checks = _cell_checks(evaluate_gate(_summary(cells=[cell])))
+    assert checks["cell_evidence"].met and not checks["concentration"].met
+
+
 def test_cell_evidence_requires_an_episode_panel():
     cell = _cell()
     del cell["episode_stats"]

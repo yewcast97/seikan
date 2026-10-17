@@ -1270,7 +1270,9 @@ and int64 nanosecond counts silently round in IEEE-754 consumers.)
     cluster — is the one-episode detector the checklist reads; `largest_cluster_n`,
     `largest_cluster_share_abs` and `largest_cluster_start` describe the largest cluster BY
     ROW COUNT (its size, its mass share, its earliest entry) — a different "largest", so the
-    two shares need not agree — and `mass_hhi` / `effective_n_clusters` are the ceiling's
+    two shares need not agree, though the ceiling read is never below the by-count share and is
+    exactly 1 with one cluster (`cell_evidence` holds it to its panel) — and `mass_hhi` /
+    `effective_n_clusters` are the ceiling's
     smooth companions. Every mass is an exactly rounded sum, so no share passes 1, and the hhi
     pair is exact (`effective_n_clusters` within `[1, n_clusters]`). (In basket mode the same
     cross-target merge makes it the pooled episode read for free.)
@@ -1398,7 +1400,8 @@ complete statistics are still in `summary.cells[i]` — a checklist result never
   `horizon` bars later, so the final bar anchors nothing and only so many observations close
   inside the index, `by_target.n` held to the same ceiling; `n_nonoverlap <= n` and
   `n_nonoverlap <= max(0, (n_bars − 2) // horizon)` — the greedy count's windows sit `horizon` bars
-  apart among them; `episode_stats.n` == the per-target total,
+  apart among them; `episode_stats.n` == the per-target total and its `max_cluster_share_abs` is
+  at least `largest_cluster_share_abs` and exactly 1 where `n_clusters == 1`;
   `signal_coverage.n_bars == summary.n_bars`). Basket
   cells must ADDITIONALLY carry the `pooled` dict their own rubric grades, reconciling with the
   member panels: `pooled.n ==` the sum of `by_target.n` (one pool, fully attributed),
