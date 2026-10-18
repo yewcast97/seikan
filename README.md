@@ -75,7 +75,7 @@ Exit codes describe how far the RUN got, never how the evidence looked:
 |---|---|
 | 0 | the command completed — for `run`, every nominated output was written (the per-cell results live inside `gate.cells`; exit 0 is not a verdict) |
 | 2 | input data failed strict validation (see `data_report`) |
-| 3 | invalid request — a usage error, an invalid thesis DSL or threshold set, or an unusable output path |
+| 3 | invalid request — a usage error, an unreadable or invalid thesis or threshold set, or an unusable output path |
 | 4 | internal error |
 
 It declares two data keys — the target `PX`, and `benchmark`, which `params.benchmark: "market"`

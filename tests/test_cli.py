@@ -858,6 +858,55 @@ def test_hash_invalid_thesis_is_the_ordinary_dsl_invalid_envelope(tmp_path, caps
     assert code == 3 and doc["error"]["type"] == "dsl_invalid"
 
 
+_UNREADABLE_THESES = {
+    "not_utf8": b'{"name": "caf\xe9"}',
+    "int_past_the_digit_limit": b'{"name": "x", "params": {"horizon": ' + b"9" * 5000 + b"}}",
+    "nested_past_the_recursion_limit": b"[" * 100_000 + b"]" * 100_000,
+}
+
+
+@pytest.mark.parametrize("case", sorted(_UNREADABLE_THESES))
+@pytest.mark.parametrize("source", ["hash", "hash -", "run"])
+def test_unreadable_thesis_bytes_are_the_ordinary_dsl_invalid_envelope(
+    tmp_path, capsys, monkeypatch, case, source
+):
+    # Bytes that are no JSON document — not UTF-8, an integer past Python's 4,300-digit
+    # conversion limit, nesting past the recursion limit — are an invalid request like any
+    # malformed thesis, from a file or from stdin: exit 3 `dsl_invalid`. Each escaped the
+    # parse's handlers as exit 4 `internal`, a traceback on stderr.
+    thesis = tmp_path / "t.json"
+    thesis.write_bytes(_UNREADABLE_THESES[case])
+    if source == "hash -":
+        _stdin_bytes(monkeypatch, thesis.read_bytes())
+        argv = ["hash", "-"]
+    elif source == "hash":
+        argv = ["hash", str(thesis)]
+    else:
+        px = _write_ohlcv(tmp_path / "px.csv")
+        argv = ["run", str(thesis), *_target(px), "--report-out", str(tmp_path / "r.json")]
+    code = main(argv)
+    captured = capsys.readouterr()
+    doc = json.loads(captured.out)
+    assert code == 3
+    assert doc["command"] == argv[0] and doc["error"]["type"] == "dsl_invalid"
+    assert "Traceback" not in captured.err
+
+
+@pytest.mark.parametrize("command", ["hash", "run"])
+def test_a_thesis_path_naming_a_directory_is_dsl_invalid(tmp_path, capsys, command):
+    # A path that names no readable FILE is the missing file's tier (exit 3), not exit 4: only
+    # FileNotFoundError was caught, so a directory read as IsADirectoryError, `internal`.
+    argv = [command, str(tmp_path)]
+    if command == "run":
+        argv += [
+            *_target(_write_ohlcv(tmp_path / "px.csv")),
+            "--report-out",
+            str(tmp_path / "r.json"),
+        ]
+    code, doc = _run(capsys, argv)
+    assert code == 3 and doc["error"]["type"] == "dsl_invalid"
+
+
 def test_hash_is_deterministic(tmp_path, capsys):
     thesis = _write_thesis(tmp_path / "t.json")
     code_a, doc_a = _run(capsys, ["hash", str(thesis)])

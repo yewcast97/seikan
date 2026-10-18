@@ -1145,7 +1145,7 @@ stack is not fully reconstructible) → `data_report` → `outputs` → `summary
 **The exit code is not a verdict.** Exit 0 means the run finished and every nominated output was
 written — the report, when you asked for one, is complete — whatever every cell says. (2 = data
 invalid, 3 = invalid request — a usage error, including a run that nominates no output at all, an
-invalid thesis DSL or gate-threshold set, or an unusable nominated output path: empty, unwritable,
+unreadable or invalid thesis or gate-threshold set, or an unusable nominated output path: empty, unwritable,
 named by two flags at once, or naming one of your own input CSVs — nominate four DISTINCT paths,
 none of them a file the thesis reads, 4 = internal. `seikan schema` → `exit_codes` is the
 machine-readable list.)

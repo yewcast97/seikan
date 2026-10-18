@@ -76,8 +76,8 @@ seikan hash <thesis.json|->      validate the thesis DSL and emit its canonical 
                                  `params.benchmark == "market"` — so a host can assemble
                                  the whole invocation from this one document, no Python
                                  required. `-` reads the thesis from stdin. Touches no
-                                 data file; an invalid document is the ordinary exit 3
-                                 `dsl_invalid` envelope.
+                                 data file; an unreadable or invalid document is the
+                                 ordinary exit 3 `dsl_invalid` envelope.
 seikan check-data <files...>     pre-flight CSVs against the strict data contract. Exit 0/2.
                                  `--shape ohlcv|series` demands a shape instead of detecting
                                  it; `--pretty` indents the document (every subcommand takes
@@ -185,7 +185,8 @@ failed strict validation (`data_report` says exactly what and where — includin
 these particular bytes cannot honor) · **3** invalid request — an argparse usage error (INCLUDING a
 run that nominates no output at all, a `--data` mapping that does not answer the thesis's declared
 keys exactly, and a `--column` bound to a key the thesis never declares or to `benchmark`), an
-invalid thesis DSL or gate-threshold set, or an unusable nominated output path — empty, unwritable,
+unreadable or invalid thesis — a path naming no readable file, bytes that are not strict UTF-8
+JSON, an invalid DSL — or gate-threshold set, or an unusable nominated output path — empty, unwritable,
 named by two flags at once, or naming one of the run's own inputs — the last group checked before
 the O(grid × length) work rather than after it (`usage` / `dsl_invalid` / `thresholds_invalid`
 envelopes) · **4** internal error. Every seikan-DETECTED error prints a machine-readable JSON

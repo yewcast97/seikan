@@ -1711,9 +1711,10 @@ EXIT_CODES: dict[str, JsonValue] = {
     "2": "input data failed strict validation (see data_report)",
     "3": (
         "invalid request — an argparse usage error (including a run that nominates no output), an "
-        "invalid thesis DSL or gate-threshold set, or an unusable nominated output path: one that "
-        "is empty, unwritable, named by two flags at once, or names one of the thesis's own input "
-        "CSVs (usage / dsl_invalid / thresholds_invalid envelope)"
+        "unreadable or invalid thesis (a path naming no readable file, bytes that are not strict "
+        "UTF-8 JSON, an invalid DSL) or gate-threshold set, or an unusable nominated output path: "
+        "one that is empty, unwritable, named by two flags at once, or names one of the thesis's "
+        "own input CSVs (usage / dsl_invalid / thresholds_invalid envelope)"
     ),
     "4": "internal error",
 }

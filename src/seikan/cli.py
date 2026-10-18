@@ -59,10 +59,10 @@ Subcommands:
 
 Exit codes: 0 run completed — every nominated output was written · 2 input data failed strict
 validation · 3 invalid request — an argparse usage error (including a run
-that nominates no output), an invalid thesis DSL or gate-threshold set, or an unusable nominated
-output path (``usage`` / ``dsl_invalid`` / ``thresholds_invalid`` envelopes; the thresholds one
-also covers unknown ``SEIKAN_*`` env vars, a hard error) · 4 internal error. Every seikan-DETECTED
-error emits a machine-readable JSON envelope on stdout — ``{seikan_version,
+that nominates no output), an unreadable or invalid thesis or gate-threshold set, or an unusable
+nominated output path (``usage`` / ``dsl_invalid`` / ``thresholds_invalid`` envelopes; the
+thresholds one also covers unknown ``SEIKAN_*`` env vars, a hard error) · 4 internal error. Every
+seikan-DETECTED error emits a machine-readable JSON envelope on stdout — ``{seikan_version,
 report_schema_version, command, error}`` with ``error = {type, message, errors?}``. For ``run``
 that envelope is the ONLY thing that ever reaches stdout, since its outputs are files;
 ``check-data``, ``describe`` and ``schema`` still emit their own document there on success — the
@@ -532,38 +532,33 @@ def _preflight_outputs(
             p.unlink(missing_ok=True)
 
 
-class _ThesisFileNotFoundError(FileNotFoundError):
-    """A missing thesis file → exit 3 (invalid request). A missing *output* directory is caught
-    separately by ``_preflight_outputs`` (also exit 3), so an ordinary ``FileNotFoundError`` never
-    reaches the exit-4 internal handler."""
-
-
-class _NonFiniteJsonError(ValueError):
-    """A ``NaN``/``Infinity`` literal in the thesis file. JSON proper has no such literals;
-    Python's decoder accepts them as an extension, which would admit a threshold that makes every
-    comparison undecidable and a ``dsl_hash`` computed over a token no strict parser can read
-    back. A thesis with no recoverable identity is not a thesis."""
+class _ThesisUnreadableError(ValueError):
+    """A thesis that cannot be read as a document → exit 3, the ordinary ``dsl_invalid``
+    envelope (an invalid request, never an internal error): a path that names no readable file
+    (missing, a directory, no permission), bytes that are not UTF-8, or text that is not strict
+    JSON — malformed, a ``NaN``/``Infinity`` literal, an object key given twice, an integer past
+    Python's digit limit, nesting past the recursion limit. A missing *output* directory is
+    caught separately by ``_preflight_outputs`` (also exit 3)."""
 
 
 def _reject_non_finite(literal: str) -> NoReturn:
-    raise _NonFiniteJsonError(
+    # JSON proper has no NaN/Infinity; Python's decoder accepts them as an extension, which would
+    # admit a threshold that makes every comparison undecidable and a `dsl_hash` computed over a
+    # token no strict parser can read back. A thesis with no recoverable identity is not a thesis.
+    raise _ThesisUnreadableError(
         f"thesis contains the non-standard JSON literal {literal!r} — numeric values must be "
         "finite (JSON has no NaN/Infinity; a non-finite threshold decides nothing)"
     )
 
 
-class _DuplicateJsonKeyError(ValueError):
-    """A repeated object key in the thesis file. Python's decoder silently keeps the LAST
-    occurrence, so ``extra="forbid"`` never sees the shadowed spelling and the hash names a
-    document whose earlier key the author may have believed was in force. Two claims under one
-    key is not a thesis."""
-
-
 def _refuse_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    # Python's decoder silently keeps the LAST occurrence of a key, so `extra="forbid"` never sees
+    # the shadowed spelling and the hash names a document whose earlier key the author may have
+    # believed was in force. Two claims under one key is not a thesis.
     obj: dict[str, object] = {}
     for key, value in pairs:
         if key in obj:
-            raise _DuplicateJsonKeyError(
+            raise _ThesisUnreadableError(
                 f"thesis contains the JSON object key {key!r} more than once — a repeated key "
                 "silently discards its earlier value (last-key-wins), so which claim the "
                 "document makes would depend on the parser"
@@ -572,22 +567,28 @@ def _refuse_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]
     return obj
 
 
-def _parse_thesis_text(text: str) -> tuple[DslDocument, Thesis]:
-    """The ONE thesis parse: strict JSON (no non-finite literals, no duplicate object keys at any
-    depth) followed by DSL validation — shared by the file and stdin paths so the two cannot
-    drift."""
-    raw = json.loads(
-        text, parse_constant=_reject_non_finite, object_pairs_hook=_refuse_duplicate_keys
-    )
+def _parse_thesis(data: bytes) -> tuple[DslDocument, Thesis]:
+    """The ONE thesis parse: UTF-8 bytes, strict JSON (no non-finite literals, no duplicate
+    object keys at any depth), then DSL validation — shared by the file and stdin paths so the
+    two cannot drift. Everything short of a JSON document is a :class:`_ThesisUnreadableError`
+    (a ``UnicodeDecodeError`` is a ``ValueError`` too)."""
+    try:
+        raw = json.loads(
+            data.decode("utf-8"),
+            parse_constant=_reject_non_finite,
+            object_pairs_hook=_refuse_duplicate_keys,
+        )
+    except (ValueError, RecursionError) as exc:
+        raise _ThesisUnreadableError(str(exc)) from exc
     return raw, Thesis.model_validate(raw)
 
 
 def _load_thesis(path: str) -> tuple[DslDocument, Thesis]:
     try:
-        text = Path(path).read_text(encoding="utf-8")
-    except FileNotFoundError as exc:
-        raise _ThesisFileNotFoundError(str(exc)) from exc
-    return _parse_thesis_text(text)
+        data = Path(path).read_bytes()
+    except OSError as exc:
+        raise _ThesisUnreadableError(str(exc)) from exc
+    return _parse_thesis(data)
 
 
 def _add_threshold_flags(p: argparse.ArgumentParser) -> None:
@@ -816,7 +817,7 @@ def _report_text(
 
 def _cmd_run(args: argparse.Namespace) -> int:
     nominated = _nominated_outputs(args)
-    raw, thesis = _load_thesis(args.thesis)  # ValidationError/JSONDecodeError → exit 3 in main()
+    raw, thesis = _load_thesis(args.thesis)  # unreadable or invalid → exit 3 in main()
     mapping = _parse_data_pairs(args.data)
     columns = _parse_column_pairs(args.column)
     files, thresholds = _validate_request(args, thesis, mapping, columns, nominated)
@@ -860,11 +861,11 @@ def _cmd_hash(args: argparse.Namespace) -> int:
     # rides the ordinary exit-3 `dsl_invalid` envelope out of main(); nothing here touches data
     # files or writes anything.
     if args.thesis == "-":
-        # Decode the BYTES as UTF-8 explicitly, exactly like `_load_thesis` does for a file:
+        # Read the BYTES, which `_parse_thesis` decodes as UTF-8 exactly as it does a file's:
         # `sys.stdin.read()` would decode with the locale (surrogateescape, never raising), so
         # the same thesis bytes piped under a C/ASCII locale would silently hash to a DIFFERENT
         # identity than the file path — two identities for one document, both exit 0.
-        raw, thesis = _parse_thesis_text(sys.stdin.buffer.read().decode("utf-8"))
+        raw, thesis = _parse_thesis(sys.stdin.buffer.read())
     else:
         raw, thesis = _load_thesis(args.thesis)
     doc = _base_doc("hash")
@@ -1193,13 +1194,7 @@ def main(argv: list[str] | None = None) -> int:
             f"seikan: invalid gate thresholds ({exc})\n",
             pretty=getattr(args, "pretty", False),
         )
-    except (
-        ValidationError,
-        json.JSONDecodeError,
-        _NonFiniteJsonError,
-        _DuplicateJsonKeyError,
-        _ThesisFileNotFoundError,
-    ) as exc:
+    except (ValidationError, _ThesisUnreadableError) as exc:
         error: ErrorEnvelope
         if isinstance(exc, ValidationError):
             # A multi-line pydantic message is noisy as the envelope `message`; take the first line
