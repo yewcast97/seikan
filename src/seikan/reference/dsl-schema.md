@@ -1591,17 +1591,19 @@ open to quote a statistic honestly.
 - `by_target[t].boot` — the EPISODE-BOOTSTRAP percentile CI for the pool mean:
   the cell's closed observations cluster into overlap-connected `[t, t+h)` episodes (per target),
   2000 draws resample the episodes with replacement, and the block carries `{method, ci_level,
-  n_boot, n_episodes, ci_lo, ci_hi, boot_se, reason}`. This is the dependence-robust counterweight
-  to `t_hac`/`rot_p`: within-episode dependence is preserved exactly, so the interval is as wide
-  as the EPISODE count warrants — a clustered pool with `n = 80` but 6 episodes gets an honestly
-  wide CI. Deterministic (content-seeded); fewer than 5 episodes → null fields with a `reason`
+  n_boot, n_episodes, ci_lo, ci_hi, boot_se, reason}`. Within-episode dependence is preserved
+  exactly, so a clustered pool with `n = 80` but 6 episodes is resampled as 6 units, not 80 — but
+  the interval is a PERCENTILE interval and undercovers on few episodes: under an iid null at
+  horizon 1, ~16% of its 95% intervals exclude the true mean at 5 episodes, ~11% at 8 and ~6% at
+  30. Deterministic (content-seeded); fewer than 5 episodes → null fields with a `reason`
   instead of a degenerate interval, and so does a read past the double range (`reason:
   "not_representable"` — an episode sum or draw that overflowed nulls the interval and `boot_se`
   together, a draws' variance outside the normal range `boot_se` alone); a constant pool's
   interval is its value — the pool's exact mean, its `mean_ret` — with `boot_se` exactly 0.0.
   KNOWN CAVEAT: it assumes episode INDEPENDENCE —
-  adjacent episodes still correlate through slow volatility regimes — so it is less
-  anti-conservative than `t_hac`, not calibrated.
+  adjacent episodes still correlate through slow volatility regimes — and it is not calibrated,
+  with no ordering against `t_hac` either way: on an overlapping pool of many episodes it sits
+  nearer nominal than `t_hac`, on few episodes further from it.
 - `by_target[t].subperiods` — the pool's `{start, end, n, mean_ret}` over three
   equal-bar eras of the shared index (entry-bar assignment, no purging). Era VISIBILITY, not a
   holdout: it shows whether an edge lived in one era, and nothing selects on it.

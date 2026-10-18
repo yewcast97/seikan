@@ -129,8 +129,8 @@ METRIC_ROLES: dict[str, JsonValue] = {
         "== mean_ret_raw is a re-checkable identity; null fields + reason when unbenchmarked, "
         "thin or degenerate; see caveats.benchmark_regression)",
         "per-cell by_target boot (episode-bootstrap CI {method, ci_level, n_boot, n_episodes, "
-        "ci_lo, ci_hi, boot_se, reason} — the dependence-robust counterweight to t_hac/rot_p; "
-        "see caveats.boot)",
+        "ci_lo, ci_hi, boot_se, reason} — a percentile interval over resampled overlap "
+        "episodes, uncalibrated like t_hac/rot_p; see caveats.boot)",
         "per-cell by_target subperiods (three equal-bar eras [{start, end, n, mean_ret}] — "
         "descriptive era visibility; nothing selects on it)",
         "per-cell by_target ret_quantiles {p05,p10,p25,p50,p75,p90,p95} + worst_ret / best_ret "
@@ -286,9 +286,10 @@ METRIC_ROLES: dict[str, JsonValue] = {
             "anti-conservative, ~10-12% rejection at nominal 5% under an iid-innovation null"
         ),
         "boot": (
-            "the episode bootstrap assumes episode INDEPENDENCE; adjacent episodes still "
-            "correlate through volatility regimes — less anti-conservative than t_hac, not "
-            "calibrated"
+            "a percentile interval over resampled episodes: assumes episode INDEPENDENCE "
+            "(adjacent episodes still co-move through volatility regimes) and undercovers on few "
+            "(iid null: ~16% of 95% intervals miss the mean at 5 episodes, ~6% at 30); not "
+            "calibrated, no ordering vs t_hac either way"
         ),
         "pbo": (
             "CSCV over the SCOREABLE grid — only combos that fired with a closed pool enter "
@@ -638,10 +639,11 @@ METRIC_ROLES_DOC: dict[str, JsonValue] = {
         "reconcile the ceiling read against them)",
         "per-cell by_target boot (the episode-bootstrap percentile CI for the "
         "pool mean: overlap-connected [t, t+h) episodes resampled with replacement, so "
-        "within-episode dependence is preserved exactly and the interval is as wide as the "
-        "EPISODE count warrants; deterministic, content-seeded; below 5 episodes it reports "
-        "null fields with a reason instead of a degenerate interval, and past the double range "
-        "with reason not_representable)",
+        "within-episode dependence is preserved exactly, while independence between episodes "
+        "is assumed and the percentile interval undercovers on few of them (caveats.boot); "
+        "deterministic, content-seeded; below 5 episodes it reports null fields with a reason "
+        "instead of a degenerate interval, and past the double range with reason "
+        "not_representable)",
         "per-cell by_target subperiods (n / mean_ret over three equal-bar eras "
         "of the shared index, entry-bar assignment, NO purging: era visibility, not a holdout, "
         "and nothing selects on it)",
@@ -790,12 +792,17 @@ METRIC_ROLES_DOC: dict[str, JsonValue] = {
             "fixes the tail's shape, not the SE's scale."
         ),
         "boot": (
-            "The episode bootstrap resamples overlap-connected episodes as exchangeable units, "
-            "which is honest about within-episode dependence but assumes independence BETWEEN "
-            "episodes — adjacent episodes still co-move through slow volatility regimes, so the "
-            "CI is less anti-conservative than t_hac, not calibrated. Below 5 episodes there is "
-            "no resampling distribution worth reporting and the block says so with a reason — "
-            "as it does past the double range (not_representable)."
+            "The episode bootstrap is a percentile interval over overlap-connected episodes "
+            "resampled as exchangeable units: honest about within-episode dependence, it "
+            "assumes independence BETWEEN episodes — adjacent episodes still co-move through "
+            "slow volatility regimes — and, like any percentile interval, undercovers on few "
+            "of them: under an iid null at horizon 1, ~16% of its 95% intervals exclude the "
+            "true mean at 5 episodes, ~11% at 8 and ~6% at 30, where the HAC t at "
+            "df = n − 1 reads ~5%. It is not calibrated and has no ordering against t_hac "
+            "either way: on an overlapping pool of many episodes it sits nearer nominal than "
+            "t_hac, on few episodes further from it. Below 5 episodes there is no resampling "
+            "distribution worth reporting and the block says so with a reason — as it does "
+            "past the double range (not_representable)."
         ),
         "pbo": (
             "CSCV describes the SCOREABLE grid, never one cell, and cannot see DSL variants "

@@ -628,10 +628,10 @@ always evaluated and always reported.
 
 The uncalibrated statistics are EVIDENCE, never inputs: `rot_p` (the rotation null over-certifies
 under signal-aligned volatility regimes), `t_hac`/`hac_se` (the overlap HAC understates its SE),
-the per-cell `boot` episode-bootstrap CI (the dependence-robust counterweight to those two —
-resamples overlap-connected episodes, so it is honest about clustered pools, but it assumes
-episode independence and is itself uncalibrated), the `subperiods` era panel, `bar_spacing`,
-the order-statistic blocks (`ret_quantiles`/`worst_ret`/`best_ret` — the median-against-mean
+the per-cell `boot` episode-bootstrap CI (a percentile interval over resampled overlap-connected
+episodes — honest about within-episode overlap, but it assumes independence between episodes,
+undercovers on few of them and has no ordering against `t_hac` either way), the `subperiods` era
+panel, `bar_spacing`, the order-statistic blocks (`ret_quantiles`/`worst_ret`/`best_ret` — the median-against-mean
 read that exposes a pool a few spikes carried, which `concentration` structurally cannot, since
 mild right skew concentrates no mass in one episode — and `mae_quantiles`/`mfe_quantiles` with
 their subset means, RAW

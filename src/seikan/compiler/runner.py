@@ -714,9 +714,9 @@ def _pool_panel(
         # |return|-mass concentration of THIS pool: a target riding one whale event cannot pass
         # through the regime claim on another target's breadth.
         "concentration": concentration(rets),
-        # Episode-bootstrap CI over THIS pool (evidence-only): the dependence-robust
-        # counterweight to the anti-conservative t_hac / rot_p. Its episode sums add
-        # `rets_pool`; its episodes, canonical order and seed stay on `ret`.
+        # Episode-bootstrap CI over THIS pool (evidence-only, uncalibrated — see
+        # `analysis._bootstrap`). Its episode sums add `rets_pool`; its episodes, canonical
+        # order and seed stay on `ret`.
         "boot": episode_bootstrap_ci(rets, bars, h, rets_pool=rets_pool, pool_scale=pool_scale),
         # Era visibility (evidence-only): the same three eras for every cell, this pool's
         # n / mean per era — an era holds each entry bar's rows entirely, so its mean sums the

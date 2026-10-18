@@ -656,6 +656,12 @@ def test_report_metric_roles_compact_with_claim(tmp_path, capsys):
         isinstance(v, str) and "\n" not in v and len(v) < 300 for v in roles["caveats"].values()
     )
     assert "anti-conservative" in roles["caveats"]["t_hac"]
+    # a percentile interval over few episodes undercovers (iid null, horizon 1: ~16% of 95%
+    # intervals miss at 5 episodes, where the HAC t at df n − 1 reads ~5%), so the caveat says
+    # so and claims no ordering against t_hac — it read "less anti-conservative than t_hac"
+    boot = roles["caveats"]["boot"]
+    assert "INDEPENDENCE" in boot and "undercovers on few" in boot
+    assert "anti-conservative" not in boot
     assert "gross of costs" in roles["caveats"]["mean_ret"]
     assert set(roles["cell_checks"]) == {
         "cell_evidence",
@@ -3332,6 +3338,8 @@ def test_schema_metric_roles_is_the_compact_map_prose_rides_gate_contract(tmp_pa
     # the long caveat mechanics stay schema-side; the compact one-liners ride every report
     assert set(rationale["caveats"]) == set(roles["caveats"])
     assert "sqrt(2/3)" in rationale["caveats"]["t_hac"]
+    assert "undercovers on few" in rationale["caveats"]["boot"]
+    assert "less anti-conservative" not in json.dumps(schema_doc)
 
 
 def test_schema_immune_to_broken_env(capsys, monkeypatch):

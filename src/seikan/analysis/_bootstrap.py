@@ -1,5 +1,7 @@
-"""The per-cell episode bootstrap CI — the dependence-robust counterweight to the row-level
-reads."""
+"""The per-cell episode bootstrap CI — a percentile interval over resampled overlap episodes:
+honest about within-episode overlap, it assumes independence BETWEEN episodes and undercovers on
+few of them (under an iid null at horizon 1, ~16% of its 95% intervals exclude the true mean at
+5 episodes, ~6% at 30). Not calibrated, and no ordering against ``t_hac`` either way."""
 
 from __future__ import annotations
 
