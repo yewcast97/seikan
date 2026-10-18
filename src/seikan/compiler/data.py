@@ -5,7 +5,8 @@ A load takes TWO inputs, because the DSL names its series without locating them:
 :class:`~seikan.dsl.schema.DataSpec` (which series, what each one MEANS to the thesis) and a
 :class:`DataFiles` (which CSV each named series is, and which column of it, both supplied at
 invocation). :func:`resolve_data_files` builds the second from a flat ``{key: path}`` mapping plus
-an optional ``{key: column}`` one, and is the only thing that checks the two agree.
+an optional ``{key: column}`` one, checking it against the thesis, and :func:`load_market_data`
+re-checks the path bindings against the declaration it loads.
 
 Each target (one CSV file) becomes a column; all targets are aligned on their common DatetimeIndex
 (inner join) so a single vectorized backtest can run them together. External (alternative-data)
@@ -30,7 +31,7 @@ from __future__ import annotations
 import bisect
 import dataclasses
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import NamedTuple, NoReturn
 
@@ -99,9 +100,10 @@ class MarketData:
     # join info + coverage warnings). It describes the load and is never written after it: a
     # result's own report is a copy carrying that thesis's horizon warning (``api``).
     report: DataReport | None = None
-    # The data declaration this load answered (``load_market_data``'s ``spec``): the feeds are
-    # aligned under its lags and window, so ``api.compile_thesis`` / ``list_entries`` refuse a
-    # thesis declaring other data. None on a hand-built instance — its builder's own claim.
+    # The data declaration this load answered (``load_market_data``'s ``spec``, whose targets and
+    # feeds are exactly the ones loaded): the feeds are aligned under its lags and window, so
+    # ``api.compile_thesis`` / ``list_entries`` refuse a thesis declaring other data. None on a
+    # hand-built instance — its builder's own claim.
     spec: DataSpec | None = None
     # The evaluation memos for ``vectorize.build_series`` / ``build_condition`` /
     # ``condition_arrays``, each keyed by the node's canonical JSON — one typed dict per channel
@@ -426,8 +428,8 @@ class DataFiles:
     The DSL names its series and never locates them (see :class:`~seikan.dsl.schema.DataSpec`), so
     this is the other half of a load — built by :func:`resolve_data_files` from the ``--data
     KEY=PATH`` pairs and the ``--column KEY=COL`` ones, or by a library caller directly. Nothing
-    here is validated against the thesis; resolution did that, and a hand-built instance is the
-    caller's own promise.
+    here is validated on construction; resolution checks it against the thesis, and
+    :func:`load_market_data` re-checks the path bindings against the declaration it loads.
     """
 
     #: target name → CSV path, in declaration order.
@@ -444,6 +446,22 @@ class DataFiles:
     #: case-insensitively against the file's (lowercased) headers when the file is read, so a name
     #: that no column answers refuses there (exit 2), not here.
     columns: dict[str, str] = dataclasses.field(default_factory=dict)
+
+
+def _key_mismatch(declared: Sequence[str], bound: Iterable[str]) -> str:
+    """How the ``bound`` keys fail to answer ``declared`` exactly — ``missing [...]`` in
+    declaration order, then ``unknown [...]`` sorted — or ``""`` when they answer it."""
+    given = set(bound)
+    missing = [key for key in declared if key not in given]
+    unknown = sorted(given - set(declared))
+    return "; ".join(
+        part
+        for part in (
+            f"missing {missing}" if missing else "",
+            f"unknown {unknown}" if unknown else "",
+        )
+        if part
+    )
 
 
 def resolve_data_files(
@@ -467,17 +485,8 @@ def resolve_data_files(
     listing the columns the file actually has) rather than here.
     """
     required = thesis.data_keys()
-    missing = [key for key in required if key not in mapping]
-    unknown = sorted(set(mapping) - set(required))
-    if missing or unknown:
-        detail = "; ".join(
-            part
-            for part in (
-                f"missing {missing}" if missing else "",
-                f"unknown {unknown}" if unknown else "",
-            )
-            if part
-        )
+    detail = _key_mismatch(required, mapping)
+    if detail:
         raise ValueError(
             f"the data mapping does not answer this thesis's declared series ({detail}); "
             f"it reads {required}"
@@ -529,19 +538,56 @@ def _shared_feed_path(paths: str | dict[str, str], fname: str) -> str:
     return paths
 
 
-def _per_target_feed_paths(paths: str | dict[str, str], fname: str) -> dict[str, str]:
+def _per_target_feed_paths(
+    paths: str | dict[str, str], fname: str, targets: Sequence[str]
+) -> dict[str, str]:
     """The ``{target → path}`` map a per-target feed binds, one derived ``<feed>@<target>`` key per
-    target. The mirror of :func:`_shared_feed_path` — see it for why the shape is checked at all."""
+    declared target and no other. The mirror of :func:`_shared_feed_path` — see it for why the
+    shape is checked at all."""
     if not isinstance(paths, dict):
         raise ValueError(
             f"external feed {fname!r} is declared per_target but its path binding is the single "
             f"path {paths!r}; bind one path per target under '{fname}@<target>'"
         )
+    detail = _key_mismatch(targets, paths)
+    if detail:
+        raise ValueError(
+            f"external feed {fname!r} is declared per_target but its path binding does not answer "
+            f"the targets ({detail}); bind one path per target of {list(targets)} under "
+            f"'{fname}@<target>'"
+        )
     return paths
 
 
 def load_market_data(spec: DataSpec, files: DataFiles) -> MarketData:
-    targets = files.targets  # {name -> path}; keys resolved against the spec by resolve_data_files
+    """Read, check and align the files ``files`` binds to the data declaration ``spec`` — every
+    file through the strict reader, one :class:`~seikan.dataio.DataError` carrying the complete
+    per-file report on any violation.
+
+    The bindings must answer ``spec`` EXACTLY — a path for every declared target and feed (one per
+    target for a per-target feed) and for nothing else — or the load refuses up front
+    (``ValueError``, before a file is read). The load is stamped with its declaration
+    (``MarketData.spec``, which :func:`~seikan.api.compile_thesis` and
+    :func:`~seikan.api.list_entries` compare against the thesis), so bindings resolved for another
+    declaration would load a target set the stamp misstates: an A-only resolution loaded under an
+    A + B declaration measured A alone as the A + B thesis. The targets load in the declaration's
+    order, whatever order ``files`` lists them in.
+    """
+    detail = "; ".join(
+        f"{what} {part}"
+        for what, declared, bound in (
+            ("targets", spec.targets, files.targets),
+            ("feeds", list(spec.external), files.feeds),
+        )
+        if (part := _key_mismatch(declared, bound))
+    )
+    if detail:
+        raise ValueError(
+            f"the data files do not answer the declaration they are loaded under ({detail}); it "
+            f"declares targets {spec.targets} and feeds {list(spec.external)} — bind them with "
+            f"resolve_data_files for the thesis being loaded"
+        )
+    targets = {name: files.targets[name] for name in spec.targets}  # {name -> path}, declared order
     feed_specs = dict(spec.external)
     feed_paths: dict[str, str | dict[str, str]] = files.feeds
     # Every binding this load reads, in report order — each target, each feed (a per-target feed
@@ -552,7 +598,7 @@ def load_market_data(spec: DataSpec, files: DataFiles) -> MarketData:
     ]
     for fname, feed in feed_specs.items():
         if feed.per_target:
-            member_paths = _per_target_feed_paths(feed_paths[fname], fname)
+            member_paths = _per_target_feed_paths(feed_paths[fname], fname, spec.targets)
             bindings += [
                 ((fname, name), member_paths[name], f"external:{fname}:{name}", None)
                 for name in targets
@@ -685,7 +731,7 @@ def load_market_data(spec: DataSpec, files: DataFiles) -> MarketData:
                 # the per-member ``--data <feed>@<target>=PATH`` that already exists: whoever may
                 # point two members at two files may also point them at two column headers. The
                 # single DSL ``column`` could only say one name for the whole family.
-                member_paths = _per_target_feed_paths(paths, fname)
+                member_paths = _per_target_feed_paths(paths, fname, names)
                 natives = {
                     name: _prepare_feed(
                         raw_feeds[fname][name],

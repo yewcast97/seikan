@@ -1216,9 +1216,12 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   `load_market_data(thesis.data, files)` (both re-exported here — this module is the public API's
   one home and the loader its front door; `canonical_dsl_hash` is re-exported here too, so a host
   computing a thesis's identity imports it from the public home, never from `gate`) and hands the
-  materialized `MarketData` — a load of the thesis's own data declaration: both entry points
-  refuse (`ValueError`) one loaded under another `thesis.data`, its feeds aligned under other lags
-  and window — to `compile_thesis(thesis, md)`
+  materialized `MarketData` — a load of the thesis's own data declaration: the loader refuses
+  (`ValueError`, before a file is read) bindings that do not answer the declaration it loads —
+  every declared target and feed bound, one path per target for a per-target feed, nothing else
+  — and loads the targets in its order, and both entry points refuse (`ValueError`) one loaded
+  under another `thesis.data`, its feeds aligned under other lags and window — to
+  `compile_thesis(thesis, md)`
   (sufficiency → `run_backtest`; never loads; the result's `data_report` is its own — the load's
   report, or a copy carrying this horizon's `barely_sufficient` warning, `md.report` never
   written) and/or
@@ -1255,8 +1258,8 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   mirrors the engine resolver) and `render` (presentation-only labels for Series and
   Conditions).
   `compiler/` — data loading (`resolve_data_files` is where the invocation's `--data` /
-  `--column` pairs meet the thesis's declared keys, and the only thing that checks the two
-  agree; the loader reads each distinct path once, every key bound to it parsing that snapshot,
+  `--column` pairs meet the thesis's declared keys and checks the two agree, the loader
+  re-checking the path bindings against the declaration it loads; the loader reads each distinct path once, every key bound to it parsing that snapshot,
   and returns frames over READ-ONLY buffers — a tripwire for the in-place value write, which raises
   instead of serving stale memo results; pandas cannot freeze a frame against a replaced column, a
   breach of the no-mutation contract that `MarketData.clear_memo()` resets — and retains each feed's native post-lag prints as `MarketData.externals_native`

@@ -70,8 +70,10 @@ def _ensure_loaded_for(md: MarketData, thesis: Thesis) -> None:
     """Refuse a ``MarketData`` loaded under another data declaration than ``thesis.data``: its
     feeds are aligned under THAT declaration's lags, window and targets, and so are the memos
     riding it, so a thesis declaring a 1-day lag measured on a lag-0 load reads every feed a bar
-    early — evidence under a declaration it was never read under. A hand-built ``MarketData``
-    (no ``spec``) is its builder's own claim."""
+    early — evidence under a declaration it was never read under. The loader refuses bindings
+    that do not answer the declaration it loads, so ``md.targets`` and the loaded feeds are
+    ``md.spec``'s own and comparing declarations compares what was loaded. A hand-built
+    ``MarketData`` (no ``spec``) is its builder's own claim."""
     if md.spec is not None and md.spec != thesis.data:
         raise ValueError(
             "the MarketData was loaded under another data declaration than this thesis's "
@@ -132,7 +134,8 @@ def compile_thesis(thesis: Thesis, md: MarketData) -> EventStudyResult:
     :class:`~seikan.dataio.DataError` with a complete per-file report on any violation) — one load
     can serve both this function and
     :func:`list_entries`, and it must be a load of THIS thesis's data declaration (``ValueError``
-    otherwise: its feeds are aligned under the lags and window it was loaded with). The
+    otherwise: its feeds are aligned under the lags and window it was loaded with, and the loader
+    has already refused bindings that do not answer that declaration). The
     measurement-side guards live HERE: an index too short to close one observation at the
     longest horizon refuses, as does a ``volume`` read against volume-less data
     (``params.features`` included). A barely-sufficient index is recorded as a join warning in

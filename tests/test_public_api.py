@@ -9,7 +9,7 @@ import pandas as pd
 import pytest
 
 import seikan
-from tests._helpers import bars
+from tests._helpers import bars, lt
 
 
 def test_package_surface_runs_a_thesis_end_to_end(tmp_path):
@@ -121,3 +121,64 @@ def test_a_load_answers_one_data_declaration(tmp_path):
     loaded.data.external["f"] = late.data.external["f"]
     with pytest.raises(ValueError, match="another data declaration"):
         seikan.compile_thesis(loaded, md)
+
+
+def test_a_load_refuses_bindings_that_do_not_answer_its_declaration(tmp_path):
+    # Both entry points compare the declaration a load is stamped with (``MarketData.spec``), so
+    # the load must be of exactly what that declaration names. The review's misuse: bindings
+    # resolved for an A-only thesis, loaded under the A + B declaration, read A alone stamped as
+    # A + B, and the A + B thesis's one cell was met on A's +0.23% mean where the honest load
+    # (B at −0.28%) leaves it unmet. The loader refuses before a file is read — the A path names
+    # no file, so a read would have raised its DataError instead.
+    a = bars(tmp_path / "A.csv", [100.0 + 0.25 * i for i in range(80)])
+    b = bars(tmp_path / "B.csv", [100.0 - 0.25 * i for i in range(80)])
+    a_only, both = (
+        seikan.Thesis.model_validate(
+            {"name": "ab", "data": {"targets": targets}, "entry": lt(1e9), "params": {"horizon": 1}}
+        )
+        for targets in (["A"], ["A", "B"])
+    )
+    unread = seikan.resolve_data_files(a_only, {"A": str(tmp_path / "absent.csv")})
+    with pytest.raises(ValueError, match=r"targets missing \['B'\]"):
+        seikan.load_market_data(both.data, unread)
+    # bindings that answer the declaration load its targets in its order, whatever order they
+    # list them in
+    md = seikan.load_market_data(both.data, seikan.DataFiles(targets={"B": str(b), "A": str(a)}))
+    assert md.targets == ["A", "B"]
+    by_target = seikan.compile_thesis(both, md).summary["cells"][0]["by_target"]
+    assert list(by_target) == ["A", "B"] and by_target["B"]["mean_ret"] < 0
+
+
+def test_a_load_refuses_feed_bindings_that_do_not_answer_its_declaration(tmp_path):
+    # A hand-built ``DataFiles`` is held to the declaration's feeds the same way: a feed the
+    # declaration lacks loaded silently, and a declared feed left unbound, or a per-target feed's
+    # map short of a member, died with a ``KeyError`` deep in the load instead of a refusal.
+    targets = {
+        name: str(bars(tmp_path / f"{name}.csv", [100.0 + i for i in range(40)])) for name in "AB"
+    }
+    feed = tmp_path / "f.csv"
+    idx = pd.date_range("2021-01-01", periods=40, freq="1D", name="datetime")
+    pd.DataFrame({"f": np.arange(40.0)}, index=idx).to_csv(feed)
+
+    def declared(external):
+        reads_f = {"type": "external", "name": "f"} if external else {"type": "field"}
+        entry = {**lt(0), "left": reads_f}
+        return seikan.Thesis.model_validate(
+            {"name": "feeds", "data": {"targets": ["A", "B"], "external": external}, "entry": entry}
+        ).data
+
+    shared, per_target = declared({"f": {}}), declared({"f": {"per_target": True}})
+    f = str(feed)
+    for spec, feeds, refusal in (
+        (declared({}), {"f": f}, r"feeds unknown \['f'\]"),
+        (shared, {}, r"feeds missing \['f'\]"),
+        (shared, {"f": {"A": f, "B": f}}, r"'f' is declared shared"),
+        (per_target, {"f": f}, r"'f' is declared per_target but its path binding is the single"),
+        (per_target, {"f": {"A": f}}, r"'f' is declared per_target .*missing \['B'\]"),
+        (per_target, {"f": {"A": f, "B": f, "C": f}}, r"declared per_target .*unknown \['C'\]"),
+    ):
+        with pytest.raises(ValueError, match=refusal):
+            seikan.load_market_data(spec, seikan.DataFiles(targets=targets, feeds=feeds))
+    for spec, feeds in ((shared, {"f": f}), (per_target, {"f": {"B": f, "A": f}})):
+        md = seikan.load_market_data(spec, seikan.DataFiles(targets=targets, feeds=feeds))
+        assert md.targets == ["A", "B"] and "f" in md.externals
