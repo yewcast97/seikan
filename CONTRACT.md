@@ -255,9 +255,9 @@ nomination order — `report` → `trades` → `root_series` → `entry_flags` �
 this run actually nominated, each with its `path` plus, for each CSV, `rows_written`; a flat
 `trades_rows_written`/`trades_path` pair could only ever describe one of four
 files and say nothing about the three it did not name. It always contains `report`, since the
-document carrying it exists only because `--report-out` asked for it — and the report is written
-LAST, after every other nominated output has landed, so a document enumerating files that never
-appeared is not a state this CLI can reach. There is no top-level `n`: a scalar observation count
+document carrying it exists only because `--report-out` asked for it — and the report is published
+LAST, after every other nominated output has landed (staged outputs, below), so a document
+enumerating files that never appeared is not a state this CLI can reach. There is no top-level `n`: a scalar observation count
 would have to be some cell's, and naming one cell is the selection this engine does not perform.
 `policy_version` (**4** — v4: a cell names its horizon, which bounds its non-overlapping
 counts, no two cells name one assignment, and a basket's one-name read is the largest share of
@@ -1112,12 +1112,15 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   column names (without, or even with, the full set when a series read is demanded) refuses:
   it would be broadcast into all four price slots while every OHLC integrity invariant is
   skipped. A lone OHLC-named column (a bare `close`) is an ordinary series file.
-- **Atomic outputs.** Every nominated output writes to a temp file in the target's own
-  directory and lands via one `os.replace`, so a crash or ENOSPC mid-write can never leave a
-  truncated file wearing the nominated name; a symlinked nomination is written through — the
-  file it names takes the output (created where the link dangles) and the link stays; the
-  report is still written LAST, after every other nominated output, and
-  serialization/contract-validation still precede any file side effect.
+- **Staged outputs.** Every nominated output is written to a temp file in its target's own
+  directory, and a run's files are published together — each by one `os.replace`, the report
+  last — only once the last of them is written: a crash, ENOSPC or contract-validation failure
+  anywhere before that leaves every target as it was (a previous run's report is never left
+  beside this run's CSVs), and no truncated file ever wears a nominated name. The renames
+  themselves are the one window staging cannot close: one failing leaves the files renamed
+  before it beside the previous report — never a report vouching for a file that did not land.
+  A symlinked nomination is written through — the file it names takes the output (created where
+  the link dangles) and the link stays.
 
 ### module map (`src/seikan/`)
 
@@ -1220,7 +1223,8 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
 - `serialize.py` — JSON-safe views (`serialize_result` returns the summary verbatim, never trades)
   + the caller-nominated CSV writers (`write_trades_csv` for `--trades-out`,
   `write_root_series_csv` for `--root-series-out`, `write_entry_flags_csv` for
-  `--entry-flags-out`); nothing it produces rides stdout.
+  `--entry-flags-out`) + `staged_outputs`, the stage-then-publish every `run` output goes
+  through; nothing it produces rides stdout.
 - `dsl/` — the thesis DSL (pydantic, `extra="forbid"`, strict, frozen; a `DataSpec` NAMES
   series and locates none of them, and `BacktestParams` carries no sampling knob of any kind, so
   the DSL can express neither where its data lives nor a partition of it that some cells see and

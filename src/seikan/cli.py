@@ -118,9 +118,9 @@ from seikan.dsl.schema import Thesis
 from seikan.emitted import validate_emitted
 from seikan.gate import canonical_dsl_hash, evaluate_gate
 from seikan.serialize import (
-    atomic_output,
     json_safe,
     serialize_result,
+    staged_outputs,
     write_entry_flags_csv,
     write_root_series_csv,
     write_trades_csv,
@@ -489,8 +489,9 @@ def _preflight_outputs(
 
     Non-destructive: every file the probe had to create is removed again, on every exit — for a
     dangling symlink that is the file created at its target, the link itself left in place. A
-    MID-run write failure still surfaces as exit 4 — this only preflights the obvious cases
-    (missing directory, unwritable path, a path that is itself a directory)."""
+    MID-run write failure still surfaces as exit 4, every nominated file as it was
+    (``serialize.staged_outputs``) — this only preflights the obvious cases (missing directory,
+    unwritable path, a path that is itself a directory)."""
     created: list[Path] = []
     try:
         probed: list[tuple[str, str, os.stat_result]] = []
@@ -683,18 +684,18 @@ def _validate_request(
 
 
 def _write_lazy_outputs(
-    args: argparse.Namespace, thesis: Thesis, md: MarketData
+    args: argparse.Namespace, thesis: Thesis, md: MarketData, stage: Callable[[str], str]
 ) -> tuple[EventStudyResult | None, dict[str, OutputEntry]]:
     """Compute-follows-nomination: the backtest for report/trades, ONE listing call for the two
-    per-bar CSVs, `outputs` keyed in nomination order (the report's entry first even though its
-    file lands last). ``md`` is the run's ONE materialized MarketData — compile_thesis and
-    list_entries take it as a required parameter and never load, and the evaluation memo rides
-    it (the memos riding ``md``), so every series/condition is built at most once, whichever path
-    asks first.
+    per-bar CSVs, each CSV written to its ``stage``d temporary, `outputs` keyed in nomination
+    order (the report's entry first even though its file is staged last). ``md`` is the run's ONE
+    materialized MarketData — compile_thesis and list_entries take it as a required parameter and
+    never load, and the evaluation memo rides it (the memos riding ``md``), so every
+    series/condition is built at most once, whichever path asks first.
     """
     # `outputs` is keyed in NOMINATION order — report, trades, root_series, entry_flags — so the
-    # report's own entry is inserted first even though its file is written last (see the
-    # write-order note below).
+    # report's own entry is inserted first even though its file is staged last (see
+    # `_cmd_run`).
     outputs: dict[str, OutputEntry] = {}
     if args.report_out is not None:
         outputs["report"] = {"path": args.report_out}
@@ -705,7 +706,7 @@ def _write_lazy_outputs(
         if args.trades_out is not None:
             outputs["trades"] = {
                 "path": args.trades_out,
-                "rows_written": write_trades_csv(result, args.trades_out),
+                "rows_written": write_trades_csv(result, stage(args.trades_out)),
             }
     if args.root_series_out is not None or args.entry_flags_out is not None:
         # ONE listing call serves BOTH per-bar outputs: root_series (the decision INPUTS) and
@@ -715,21 +716,102 @@ def _write_lazy_outputs(
         # backtest rebuilds no series or condition at all. When both
         # kinds of output are nominated the backtest runs FIRST, so every DataError surfaces from
         # the strict path (its guards are a superset of the listing's — horizon sufficiency,
-        # features included in the volume check) and a refused run writes no listing CSV.
+        # features included in the volume check).
         listing = list_entries(thesis, md)
         # root_series first, so `outputs` keeps its declared key order whichever flags were passed.
         if args.root_series_out is not None:
             outputs["root_series"] = {
                 "path": args.root_series_out,
-                "rows_written": write_root_series_csv(listing.root_series, args.root_series_out),
+                "rows_written": write_root_series_csv(
+                    listing.root_series, stage(args.root_series_out)
+                ),
             }
         if args.entry_flags_out is not None:
             outputs["entry_flags"] = {
                 "path": args.entry_flags_out,
-                "rows_written": write_entry_flags_csv(listing.entry_flags, args.entry_flags_out),
+                "rows_written": write_entry_flags_csv(
+                    listing.entry_flags, stage(args.entry_flags_out)
+                ),
             }
 
     return result, outputs
+
+
+def _report_text(
+    args: argparse.Namespace,
+    raw: DslDocument,
+    result: EventStudyResult | None,
+    outputs: dict[str, OutputEntry],
+    mapping: dict[str, str],
+    columns: dict[str, str],
+    thresholds: GateThresholds,
+) -> str:
+    """The ``run`` document for ``--report-out``, serialized and contract-validated."""
+    # Nominating --report-out ran the study, and compile_thesis always attaches the strict-read
+    # data_report to what it returns — so both are present here BY CONSTRUCTION. Checked with a
+    # real raise (never `assert`, which `python -O` strips): if the lazy-compute branches are
+    # ever rearranged, this is the exit-4 internal envelope instead of a report with a hole where
+    # its identity should be.
+    if result is None or result.data_report is None:
+        raise RuntimeError("--report-out nominated but the event study did not run")
+    dsl_hash = canonical_dsl_hash(raw)
+    payload = serialize_result(result)
+    doc = _base_doc("run")
+    # The identity layer: everything needed to know WHICH exam ran on WHICH inputs — a changed
+    # rule set (dsl_hash), data byte (data_digests), exam knob (thresholds) or knob PROVENANCE
+    # is a visibly distinct exam. thresholds_canonical lives here (an identity fact), not in the
+    # gate. The version/command triple lives at the top level (every document carries it).
+    # Digests are keyed by the LOGICAL key, not by path: the key is what the thesis declares
+    # and what two runs can be compared on, while the path is where this invocation happened to
+    # find the bytes. Path, column and hash all ride the entry — "the series the thesis calls
+    # NVDA was this file, read out of this column, and it hashed to this" — so a re-run over
+    # re-pulled data is a legible diff rather than a renamed row. `column` is ALWAYS present
+    # and null when the key bound none: a stamp that appears only sometimes reads as a
+    # different document rather than as a different answer, and "no column was bound, so the
+    # file named its own" is a fact about the run worth stating out loud. The sha256 is looked
+    # up BY PATH on purpose — it is a property of the file's bytes, so two keys answered by one
+    # file correctly share one digest while keeping their own column — the loader reads each
+    # distinct path once (`dataio.StrictCsvReader`), so every key bound to it measured the
+    # bytes that digest names.
+    digest_by_path = {f["path"]: f["sha256"] for f in result.data_report.get("files", [])}
+    doc["identity"] = {
+        "name": payload["name"],
+        "dsl_hash": dsl_hash,
+        "data_digests": {
+            key: {
+                "path": path,
+                "column": columns.get(key),
+                "sha256": digest_by_path.get(path),
+            }
+            for key, path in mapping.items()
+        },
+        "thresholds": thresholds.snapshot(),
+        "thresholds_canonical": thresholds.is_canonical(),
+        "thresholds_provenance": _thresholds_provenance(args),
+        # The numeric stack the numbers were computed under: floating-point results are a
+        # property of (inputs, code, libraries), and a report reproducible only against an
+        # unstated stack is not fully reconstructible. seikan's own version already rides
+        # the top-level header of every document.
+        "environment": _environment(),
+    }
+    doc["data_report"] = result.data_report
+    doc["outputs"] = outputs
+    # HONESTY INVARIANT: the engine summary is embedded VERBATIM before the checklist runs — the
+    # checklist renders a per-cell result ABOUT it and can never filter a parameter × horizon
+    # cell out of it, non-firing and failing cells included. It cannot change the exit code
+    # either: `_cmd_run` returns EXIT_OK unconditionally, so the only thing a checklist result
+    # moves is the content of `gate`. Reporting and grading stay strictly separable.
+    doc["summary"] = payload["summary"]
+    try:
+        # The checklist revalidates the thresholds it is handed. Unreachable from
+        # here — `_thresholds` built them through the same constructor — but a loosened exam is
+        # a thresholds problem, not a DSL one, so keep it off main()'s generic dsl_invalid
+        # branch.
+        doc["gate"] = evaluate_gate(result.summary, thresholds).to_dict()
+    except ValidationError as exc:
+        raise _thresholds_invalid(exc) from exc
+    doc["metric_roles"] = METRIC_ROLES
+    return _dumps(doc, args.pretty, validate_as="run")
 
 
 def _cmd_run(args: argparse.Namespace) -> int:
@@ -744,81 +826,19 @@ def _cmd_run(args: argparse.Namespace) -> int:
     # after every exit-3 refusal and before any O(grid × length) compute, so a strict-CSV
     # violation is still exit 2 ahead of all measurement work.
     md = load_market_data(thesis.data, files)  # DataError → exit 2 in main()
-    result, outputs = _write_lazy_outputs(args, thesis, md)
-    if args.report_out is not None:
-        # Nominating --report-out ran the study above, and compile_thesis always attaches the
-        # strict-read data_report to what it returns — so both are present here BY CONSTRUCTION.
-        # Checked with a real raise (never `assert`, which `python -O` strips): if the
-        # lazy-compute branches above are ever rearranged, this is the exit-4 internal envelope
-        # instead of a report with a hole where its identity should be.
-        if result is None or result.data_report is None:
-            raise RuntimeError("--report-out nominated but the event study did not run")
-        dsl_hash = canonical_dsl_hash(raw)
-        payload = serialize_result(result)
-        doc = _base_doc("run")
-        # The identity layer: everything needed to know WHICH exam ran on WHICH inputs — a changed
-        # rule set (dsl_hash), data byte (data_digests), exam knob (thresholds) or knob PROVENANCE
-        # is a visibly distinct exam. thresholds_canonical lives here (an identity fact), not in the
-        # gate. The version/command triple lives at the top level (every document carries it).
-        # Digests are keyed by the LOGICAL key, not by path: the key is what the thesis declares
-        # and what two runs can be compared on, while the path is where this invocation happened to
-        # find the bytes. Path, column and hash all ride the entry — "the series the thesis calls
-        # NVDA was this file, read out of this column, and it hashed to this" — so a re-run over
-        # re-pulled data is a legible diff rather than a renamed row. `column` is ALWAYS present
-        # and null when the key bound none: a stamp that appears only sometimes reads as a
-        # different document rather than as a different answer, and "no column was bound, so the
-        # file named its own" is a fact about the run worth stating out loud. The sha256 is looked
-        # up BY PATH on purpose — it is a property of the file's bytes, so two keys answered by one
-        # file correctly share one digest while keeping their own column — the loader reads each
-        # distinct path once (`dataio.StrictCsvReader`), so every key bound to it measured the
-        # bytes that digest names.
-        digest_by_path = {f["path"]: f["sha256"] for f in result.data_report.get("files", [])}
-        doc["identity"] = {
-            "name": payload["name"],
-            "dsl_hash": dsl_hash,
-            "data_digests": {
-                key: {
-                    "path": path,
-                    "column": columns.get(key),
-                    "sha256": digest_by_path.get(path),
-                }
-                for key, path in mapping.items()
-            },
-            "thresholds": thresholds.snapshot(),
-            "thresholds_canonical": thresholds.is_canonical(),
-            "thresholds_provenance": _thresholds_provenance(args),
-            # The numeric stack the numbers were computed under: floating-point results are a
-            # property of (inputs, code, libraries), and a report reproducible only against an
-            # unstated stack is not fully reconstructible. seikan's own version already rides
-            # the top-level header of every document.
-            "environment": _environment(),
-        }
-        doc["data_report"] = result.data_report
-        doc["outputs"] = outputs
-        # HONESTY INVARIANT: the engine summary is embedded VERBATIM before the checklist runs — the
-        # checklist renders a per-cell result ABOUT it and can never filter a parameter × horizon
-        # cell out of it, non-firing and failing cells included. It cannot change the exit code
-        # either: the code below returns EXIT_OK unconditionally, so the only thing a checklist
-        # result moves is the content of `gate`. Reporting and grading stay strictly separable.
-        doc["summary"] = payload["summary"]
-        try:
-            # The checklist revalidates the thresholds it is handed. Unreachable from
-            # here — `_thresholds` built them through the same constructor — but a loosened exam is
-            # a thresholds problem, not a DSL one, so keep it off main()'s generic dsl_invalid
-            # branch.
-            doc["gate"] = evaluate_gate(result.summary, thresholds).to_dict()
-        except ValidationError as exc:
-            raise _thresholds_invalid(exc) from exc
-        doc["metric_roles"] = METRIC_ROLES
-        # The report is written LAST, after every other nominated output landed: it ENUMERATES
-        # those outputs, and a mid-run write failure on an earlier one must not leave behind a
-        # report claiming files that do not exist. A failed report write is the honest failure mode
-        # — the CSVs are on disk and no document vouches for anything. Serialization (and its
-        # contract validation) still runs BEFORE any file side effect; the atomic tmp+rename means
-        # a failure mid-write can never leave a truncated document wearing the nominated name.
-        text = _dumps(doc, args.pretty, validate_as="run")
-        with atomic_output(args.report_out) as tmp:
-            Path(tmp).write_text(text, encoding="utf-8")
+    # Every nominated file is STAGED — written to a temporary beside its target — and published
+    # only once the last of them, the report, is written: a failure anywhere before that (a CSV
+    # or report write error, ENOSPC, the report refusing its contract validation, a refused run)
+    # leaves every target as it was, so a previous run's report is never left beside this run's
+    # CSVs by a failed write. The report is staged LAST and so renamed last: it ENUMERATES the
+    # other outputs, so it never vouches for a file that did not land. The renames themselves
+    # are the one window staging cannot close — one failing leaves the files renamed before it
+    # beside the previous report.
+    with staged_outputs() as stage:
+        result, outputs = _write_lazy_outputs(args, thesis, md, stage)
+        if args.report_out is not None:
+            text = _report_text(args, raw, result, outputs, mapping, columns, thresholds)
+            Path(stage(args.report_out)).write_text(text, encoding="utf-8")
 
     # Every nominated output was written, which is the whole of what this command promises — and
     # nothing went to stdout. Per-cell results live in `gate.cells` and NEVER reach the exit code:

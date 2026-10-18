@@ -9,7 +9,8 @@ a separate section of the report. Every output is a caller-nominated FILE — th
 (``--report-out``), the per-observation trades via ``write_trades_csv`` (``--trades-out``), the
 per-bar root-series value matrix via ``write_root_series_csv`` (``--root-series-out``), and the
 per-bar 0/1 entry-flag matrix via ``write_entry_flags_csv`` (``--entry-flags-out``); nothing
-rides stdout.
+rides stdout. The writers write the path they are handed; the CLI hands them the temporaries of
+``staged_outputs``, which publishes a run's files together once the last of them is written.
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ from __future__ import annotations
 import math
 import os
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -30,28 +31,40 @@ if TYPE_CHECKING:
 
 
 @contextmanager
-def atomic_output(path: str) -> Iterator[str]:
-    """Write-then-rename atomicity for every caller-nominated output file.
+def staged_outputs() -> Iterator[Callable[[str], str]]:
+    """Stage-then-publish for one run's caller-nominated output files.
 
-    The TARGET is ``path`` with its symlinks resolved, so a link is written through, never
+    Yields ``stage(path)``, which returns a temporary path in the TARGET's own directory
+    (``os.replace`` is atomic only within one filesystem) for the caller to write that output to.
+    The target is ``path`` with its symlinks resolved, so a link is written through, never
     replaced: the file it names takes the output (created where the link dangles) and the link
-    stays — the file the CLI preflight's collision checks, which follow links, compared. Yields a
-    temporary path in the target's own directory (``os.replace`` is atomic only within one
-    filesystem); on success the temp file replaces the target in one step, on failure it is
-    removed and whatever the target held before — possibly a previous run's good output — survives
-    intact. A crash or ENOSPC mid-write can therefore never leave a truncated report or CSV
-    wearing the nominated name. Deliberately no fsync: the guarantee bought here is
+    stays — the file the CLI preflight's collision checks, which follow links, compared. Nothing
+    is published until the block exits cleanly; then every staged file replaces its target by one
+    ``os.replace``, in staging order. A failure before that — a write error, ENOSPC, a report
+    refusing its contract validation — removes every temporary and leaves every target as it
+    was, so a previous run's outputs survive together and no crash mid-write leaves a truncated
+    file wearing a nominated name. Publication is a sequence of renames, not one transaction: a
+    rename that fails leaves the files staged before it published and the rest, the report
+    (staged last) among them, as they were. Deliberately no fsync: the guarantee bought here is
     no-torn-files, not power-loss durability.
     """
-    target = Path(path).resolve()
-    fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=target.name + ".", suffix=".tmp")
-    os.close(fd)
+    staged: list[tuple[str, Path]] = []
+
+    def stage(path: str) -> str:
+        target = Path(path).resolve()
+        fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=target.name + ".", suffix=".tmp")
+        os.close(fd)
+        staged.append((tmp, target))
+        return tmp
+
     try:
-        yield tmp
-        os.replace(tmp, target)
+        yield stage
+        for tmp, target in staged:
+            os.replace(tmp, target)
     finally:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
+        for tmp, _ in staged:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
 
 
 def json_safe(value: object) -> Any:
@@ -124,8 +137,7 @@ def write_trades_csv(result: EventStudyResult, path: str) -> int:
     ``is_open``/``exit_reason``. Nothing is subset to a cell here; the caller regroups on the level
     columns.
     """
-    with atomic_output(path) as tmp:
-        result.trades.to_csv(tmp, index=False)
+    result.trades.to_csv(path, index=False)
     return len(result.trades)
 
 
@@ -178,8 +190,6 @@ def write_entry_flags_csv(frame: pd.DataFrame, path: str) -> int:
 
 
 def _write_indexed_csv(frame: pd.DataFrame, path: str) -> int:
-    """The one datetime-indexed CSV write both per-bar listings share (atomic, like every
-    output)."""
-    with atomic_output(path) as tmp:
-        frame.to_csv(tmp, index_label="datetime")
+    """The one datetime-indexed CSV write both per-bar listings share."""
+    frame.to_csv(path, index_label="datetime")
     return len(frame)

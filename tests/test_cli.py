@@ -482,7 +482,7 @@ def test_report_layers_in_fixed_order(tmp_path, capsys):
 def test_outputs_enumerates_every_nominated_file_in_nomination_order(tmp_path, capsys):
     # `outputs` is keyed report → trades → root_series → entry_flags whatever order the flags
     # arrived in, and each entry names the path actually written plus (for the CSVs) the rows that
-    # landed in it. The report is written LAST but listed FIRST: it VOUCHES for the other files.
+    # landed in it. The report is published LAST but listed FIRST: it VOUCHES for the other files.
     px = _write_ohlcv(tmp_path / "px.csv")
     thesis = _write_thesis(tmp_path / "t.json")
     report, trades, root_series, flags = (
@@ -2008,7 +2008,7 @@ def test_report_plus_entry_flags_on_a_short_index_exits_2_and_writes_no_flags(tm
     #
     # The state this forecloses is the interesting one: a run that exits 2 having already written a
     # flags CSV. That file would be an output of a run that failed — enumerated by no report (the
-    # report is written last, so a refused run vouches for nothing) and described by no exit code,
+    # report is published last, so a refused run vouches for nothing) and described by no exit code,
     # since 2 says the data was refused, not "one of the two nominated outputs landed anyway". A run
     # that refuses leaves the filesystem exactly as it found it, whichever outputs were nominated.
     px = _write_ohlcv(tmp_path / "short.csv", n=6)
@@ -2604,7 +2604,7 @@ def test_in_gate_threshold_revalidation_maps_to_exit_3(tmp_path, capsys):
         monkey.undo()
     assert code == 3
     assert doc["error"]["type"] == "thresholds_invalid"
-    assert not out.exists()  # the report is written last: a failed grading writes no document
+    assert not out.exists()  # nothing is published before the report: a failed grading writes none
 
 
 def test_non_canonical_thresholds_stamped(tmp_path, capsys):
@@ -3531,6 +3531,38 @@ def test_failed_report_write_leaves_previous_report_intact(tmp_path, capsys, mon
     assert code == 4  # a mid-run write failure is the documented internal tier
     assert doc["error"]["type"] == "internal"
     assert out.read_text(encoding="utf-8") == "PRECIOUS"
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_a_failed_report_leaves_every_previous_output_intact(tmp_path, capsys, monkeypatch):
+    # Staging: every nominated file is written beside its target and published only once the
+    # report, the last of them, is written — so a report that fails (here its contract
+    # validation) leaves the previous run's report AND its CSVs as they were. The CSVs were
+    # replaced before the report was serialized, which left the previous report enumerating this
+    # run's files.
+    from seikan.emitted import ReportContractError
+
+    def _refuse(command, doc):
+        raise ReportContractError("out of contract")
+
+    px = _write_ohlcv(tmp_path / "px.csv")
+    thesis = _write_thesis(tmp_path / "t.json")
+    names = {
+        "--report-out": "report.json",
+        "--trades-out": "trades.csv",
+        "--root-series-out": "roots.csv",
+        "--entry-flags-out": "flags.csv",
+    }
+    argv = ["run", str(thesis), *_target(px)]
+    for flag, name in names.items():
+        (tmp_path / name).write_text(f"PREVIOUS {name}", encoding="utf-8")
+        argv += [flag, str(tmp_path / name)]
+    monkeypatch.setattr("seikan.cli.validate_emitted", _refuse)
+    code, doc = _run(capsys, argv)
+    assert code == 4
+    assert doc["error"]["type"] == "internal"
+    for name in names.values():
+        assert (tmp_path / name).read_text(encoding="utf-8") == f"PREVIOUS {name}"
     assert not list(tmp_path.glob("*.tmp"))
 
 

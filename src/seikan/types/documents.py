@@ -91,7 +91,7 @@ class OutputEntry(TypedDict):
     """One file a run wrote — an entry of the report's ``outputs``, keyed in NOMINATION order.
 
     ``rows_written`` rides every CSV output; the report's own entry carries the path alone, since
-    the report is what enumerates the others and is written last.
+    the report is what enumerates the others and is published last.
     """
 
     path: str
