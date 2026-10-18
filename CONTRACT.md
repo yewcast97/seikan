@@ -988,7 +988,15 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   bar, read z = +1.55e-16 (−1.55e-16 with a 0.7 first), and `close == 0.9 AND zscore(close, 5) > 0`
   fired where `close > rolling_agg(close, 5, mean)` did not. A z-score has its exact deviation's
   sign and is 0.0 exactly at the mean; its magnitude carries the rounding of the window's
-  variance, still taken about the direct two-pass centre (below).
+  variance, still taken about the direct two-pass centre (below). A `rolling_corr` reads its
+  covariance's sign, so its moments are exact too: `k·Σa² − (Σa)²`, `k·Σb² − (Σb)²` and
+  `k·Σab − ΣaΣb` summed exactly in a frame per leg and window (its largest magnitude scaled by a
+  power of two to `2**400`), where nothing leaves the double range, each rounded once — about the
+  windows' offsets `[1.1, 0.7, 1.1, 0.7, 0.9]` against `[0.7, 0.7, 1.1, 1.1, 0.9]`, which covary by
+  exactly 0, read a correlation of 4.3e-17 and `x == 0.9 AND rolling_corr(x, y, 5) > 0` fired. A
+  correlation has the exact covariance's sign, is 0.0 where it is, and is exactly invariant under
+  scaling either leg by a power of two; a window holding a nonzero member below `2**-880` of its
+  leg's largest has no exact square in the frame and is NaN (undecidable).
   A post-warmup zero-dispersion bar
   is UNDECIDABLE like `x / 0`: its NaN lands in `signal_coverage`, never fires — guard a z-score
   of a series that can sit flat with `rolling_agg(x, N, std) > 0`. "Equal" means bit-identical: a
@@ -998,7 +1006,7 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   pool's range midpoint (`numeric.midrange`: the pools' `std_ret`, `boot_se` and baseline std, the
   benchmark regression's second moments, `describe`'s dispersion stds)
   — bit for bit (the SMA z-score over its exact numerator, above), while its
-  variances and, for `rolling_corr`, their product are normal doubles (the next bullet): centered
+  variance is a normal double (the next bullet): centered
   on the rounded mean of the raw values, a spread at its level's ulp was lost to that mean's
   rounding (`[2**52, 2**52 + 1]` read a window std of 0.707 for 0.5, a two-point z-score of
   1.414, past its bound of 1, and a ddof=1 `std_ret` of 1.0 for 0.707; legs clustered 31 and 62
@@ -1018,27 +1026,28 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
 - **Out-of-range dispersion is no dispersion, nor a lost one.** The finite-or-NaN line holds for
   INTERMEDIATES too, not only results: `x / inf` is a finite 0.0, so no check on a result can see a
   quotient whose divisor overflowed. A window variance that OVERFLOWED (deviations past ~1.3e154)
-  read `rolling_corr(x, x)` as 0 at 1e80 and a z-score as 0: it is NaN wherever it is divided by or
-  reported, and that NaN lands where any overflow's does ("Finite or NaN, everywhere"):
+  read `rolling_corr(x, x)` as 0 at 1e80 (its exact moments are framed now, above) and a z-score as
+  0: it is NaN wherever it is divided by or reported, and that NaN lands where any overflow's does
+  ("Finite or NaN, everywhere"):
   undecidable on a bar after its series initialized, the series' warmup before — like a leading
   `x / 0`, a z-score of plain data whose every window overflows, its first included, never
   initializes, never fires and is counted by no ledger (`source_coverage` included: its raw
   leaves are all there). One that fell BELOW the normal range (deviations under
   ~1.5e-154) is no overflow but a precision loss, and ordinary data reaches it — an `ema` of a
   change decays geometrically through it over a held stretch: its squares lost their bits (a
-  z-score past its bound `√(w−1)`, a correlation off in its third digit) or vanished into the `0.0`
-  an all-equal window owns (the guard `std > 0` False on moving data). Such a VARYING window is
-  recomputed on its values lifted by `2**600` — exact, scaling up by a power of two never rounds —
-  in the direct form's own summation order, so its `zscore` (`mean_type: "sma"`, the lifted
-  values' exact deviation over their std), `rolling_corr` and `std` (`rolling_agg`, `cross_agg`)
-  are the values they have in an unbounded exponent range; a `std` under the smallest subnormal
-  floors there, so `std > 0` holds on every
-  varying window, exactly where the SMA z-score it guards is defined. The correlation's variance
-  PRODUCT of two normal variances is taken in an unbounded exponent range too, so
-  `rolling_corr(x, x)` is exactly 1 at 1e80, at 1e-85 and on subnormal values as at 1; and a
-  correlation is clipped to `[−1, 1]`, the regression's `r2` to at most 1 — an exactly linear
-  window's or pool's rounding read 1.0000000000000002 (`rolling_corr(x, 3x + 7, 3) > 1` fired on
-  it) — and the SMA `zscore` to its population bound `±√(w−1)`, which a window of `w − 1` equal
+  z-score past its bound `√(w−1)`) or vanished into the `0.0` an all-equal window owns (the guard
+  `std > 0` False on moving data). Such a VARYING window is recomputed on its values lifted by
+  `2**600` — exact, scaling up by a power of two never rounds — in the direct form's own
+  summation order, so its `zscore` (`mean_type: "sma"`, the lifted values' exact deviation over
+  their std) and `std` (`rolling_agg`, `cross_agg`) are the values they have in an unbounded
+  exponent range; a `std` under the smallest subnormal floors there, so `std > 0` holds on every
+  varying window, exactly where the SMA z-score it guards is defined. A `rolling_corr` needs no
+  lift — its exact moments are framed (above) and the root of their variance product is taken
+  with the exponents moved out — so `rolling_corr(x, x)` is exactly 1 at any scale, 1e300 and
+  subnormal values included; and a correlation is clipped to `[−1, 1]`, the regression's `r2` to
+  at most 1 — an exactly linear window's or pool's rounding read 1.0000000000000002
+  (`rolling_corr(x, 3x + 7, 3) > 1` fired on it) — and the SMA `zscore` to its population bound
+  `±√(w−1)`, which a window of `w − 1` equal
   values beside one other sits ON: the ratio's rounding read 2.0000000000000004 for the exact 2 of
   `[100, 100, 100, 100, 100.3]`, and `zscore(close, 5) > 2` fired on every such window. The EW
   `zscore` carries its variance in a recurrence, which runs in a frame lifted by `2**600` once that
@@ -1083,10 +1092,10 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   (`diff`, `pct` and `log` alike) and its trailing volume mean are scaled by a power of two where
   their squares or sum leave the range (a varying series never reads std 0.0, `last_to_mean` never
   `x / inf`, and finite levels never a null std while their 1-bar changes and the std itself are
-  representable doubles). Every window and pool whose variances and, for `rolling_corr`, their
-  product are normal doubles, and whose sums and means stay finite, keeps its direct form's bits
-  (a window's or a pool's: the two-pass form about its offset; the SMA z-score over its exact
-  numerator), and every EW z-score whose
+  representable doubles). Every window and pool whose variances are normal doubles, and whose
+  sums and means stay finite, keeps its direct form's bits (a window's or a pool's: the two-pass
+  form about its offset; the SMA z-score over its exact numerator; a `rolling_corr` is its exact
+  moments', above), and every EW z-score whose
   recurrence stays in the normal range reads that recurrence's value to its rounding.
 - **Strict, frozen DSL.** Types are strict (no str/bool/float coerces to an int, no str to a
   bool; int stays legal for a float field — JSON has one number type), instances are frozen

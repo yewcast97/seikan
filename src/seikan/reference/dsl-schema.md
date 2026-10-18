@@ -343,9 +343,9 @@ can sit flat (a rate pinned at its floor) with `and(rolling_agg(x, N, "std") > 0
 bit-identical: a spread built from decimal levels that move in lockstep (`y1 − y2`) carries residue
 at the operands' scale, which is variation as far as any kernel can tell. Every window with any
 variation is the direct two-pass form about its OWN offset — its first value; a cross-section's
-range midpoint — bit for bit (the SMA `zscore` over its exact numerator, below), while its
-variances and, for `rolling_corr`, their product are
-normal doubles (below): centered on the rounded mean of the raw values instead, a spread at its
+range midpoint — bit for bit (the SMA `zscore` over its exact numerator, a `rolling_corr` off its
+exact moments, below), while its variance is a
+normal double (below): centered on the rounded mean of the raw values instead, a spread at its
 level's ulp was lost to that mean's rounding (`[2**52, 2**52 + 1]` read a std of 0.707 for 0.5, a
 two-point z-score of 1.414 that `zscore(x, 2) > 1.1` fired on, and three points correlating 0.577
 for an exact 1). The report's pool reads take the same rule — `std_ret`, `boot_se`, the baseline's
@@ -375,10 +375,17 @@ scaled by `2**-28`, the same frame in any member order, and its mean and deviati
 once — so a bar at its window's mean reads exactly 0.0 (about the direct two-pass centre,
 `[1.1, 0.7, 1.1, 0.7, 0.9]` read +1.55e-16 and `close == 0.9 AND zscore(close, 5) > 0` fired); the
 centre a window's VARIANCE is taken about stays the direct two-pass form above, so a z-score's
-magnitude carries that variance's rounding, never its sign.
+magnitude carries that variance's rounding, never its sign. A `rolling_corr` reads its covariance's
+sign, so its moments are exact too — `k·Σa² − (Σa)²`, `k·Σb² − (Σb)²` and `k·Σab − ΣaΣb` summed
+exactly in a frame per leg and window (its largest magnitude scaled by a power of two to `2**400`),
+each rounded once: `[1.1, 0.7, 1.1, 0.7, 0.9]` against `[0.7, 0.7, 1.1, 1.1, 0.9]` covary by
+exactly 0 and read 0.0 (4.3e-17 about the windows' offsets, where `x == 0.9 AND rolling_corr(x, y,
+5) > 0` fired); a correlation is exactly invariant under scaling either leg by a power of two, and
+a window holding a nonzero member below `2**-880` of its leg's largest has no exact square in the
+frame — NaN (undecidable).
 
 A window variance that OVERFLOWS (deviations past ~1.3e154, where `(x − mean) / inf` would read a
-finite 0) reads NaN in a `std`, a `zscore` (`mean_type: "sma"`) and a `rolling_corr`, and that NaN
+finite 0) reads NaN in a `std` and a `zscore` (`mean_type: "sma"`), and that NaN
 lands where an `x / 0` would: UNDECIDABLE on a bar after the series has initialized, the series'
 warmup before it. A series initializes no earlier than its first finite value, so a z-score whose
 every window overflows, its first included (`zscore` of levels near 1e160), never initializes: it
@@ -396,9 +403,10 @@ through it over a held stretch — whose squares lose their bits (a z-score past
 or vanish into the `0.0` an all-equal window owns. Such a VARYING window is recomputed on its values
 lifted by `2**600` (exact) in the same summation order, so it reads the value the direct form has in
 an unbounded exponent range: a `std` under the smallest subnormal floors there — `std > 0` holds on
-every varying window, exactly where its SMA z-score is defined — and `rolling_corr` takes the
-product of two normal variances the same way, so `rolling_corr(x, x)` is exactly 1 at 1e80, at
-1e-85 and on subnormal values as at 1. The EW `zscore` keeps its variance in a recurrence, which
+every varying window, exactly where its SMA z-score is defined. A `rolling_corr` needs no lift: its
+exact moments are framed (above) and the root of their variance product is taken with the
+exponents moved out, so `rolling_corr(x, x)` is exactly 1 at any scale, 1e300 and subnormal values
+included. The EW `zscore` keeps its variance in a recurrence, which
 runs lifted by `2**600` (exact) once that variance nears the range, so it too reads the recurrence's
 value in an unbounded exponent range: past its warmup (save an overflow carried forward) it is
 defined on every window `std > 0` admits, a hold included however long, at its value — never NaN
@@ -410,8 +418,9 @@ few ulps whose update landed the mean ON the new value (the LANDING GAP — an `
 a held price), or an input moved onto the mean, read z 0.0 off a deviation it could not know, and
 at α ≥ 0.5 turned undefined once that hold's variance rounded to 0.0 (~490 held bars after a
 two-ulp step at α 0.75) — `signal_coverage` refused holds exact arithmetic decides. Every window
-whose variances and, for `rolling_corr`, their product are normal doubles keeps its direct form's
-bits (the two-pass form about its offset), and every EW z-score whose recurrence stays in that
+whose variance is a normal double keeps its direct form's bits (the two-pass form about its
+offset; the SMA `zscore` over its exact numerator; a `rolling_corr` is its exact moments'), and
+every EW z-score whose recurrence stays in that
 range reads that recurrence's value to its rounding.
 
 - `ema` (input, exactly one of `window` / `alpha`) — exponentially weighted mean of any Series,
@@ -494,12 +503,13 @@ range reads that recurrence's value to its rounding.
 - `rolling_corr` (`left`, `right`, `window` ≥ 3) — trailing-window Pearson correlation of two
   Series. Per-target TIME-axis only (ranking across the targets at a bar is `cross_rank`, basket
   mode). NaN unless the whole window
-  is finite in BOTH inputs AND both window stds > 0 (zero-variance → NaN, never ±1). Scale-safe:
-  a leg whose variance fell below the normal range is lifted and the product of two variances
-  taken in an unbounded exponent range, so `rolling_corr(x, x)` is exactly 1 at 1e80, 1e-85 and
-  on subnormal values as at 1; a leg whose variance overflowed (deviations past ~1.3e154) is
-  NaN. The value is clipped to `[−1, 1]` (numpy's `corrcoef` rule): an exactly linear window's
-  rounding read 1.0000000000000002, which `rolling_corr(x, 3x + 7, 3) > 1` fired on. Counts as one
+  is finite in BOTH inputs AND both legs vary (a constant leg → NaN, never ±1). Exact: its
+  moments are summed exactly in a frame per leg and window and rounded once (above), so it has
+  the exact covariance's sign, reads 0.0 where that is 0, and `rolling_corr(x, x)` is exactly 1
+  at any scale, 1e300 and subnormal values included; a window holding a nonzero member below
+  `2**-880` of its leg's largest is NaN. The value is clipped to `[−1, 1]` (numpy's `corrcoef`
+  rule): an exactly linear window's rounding read 1.0000000000000002, which
+  `rolling_corr(x, 3x + 7, 3) > 1` fired on. Counts as one
   operator level with two children. Recipe for "corr(stock daily return, Δ option EOD IV30)":
   declare the IV feed in `data.external`, then
   `rolling_corr(change(close), change(iv30, kind="diff"), window)`.

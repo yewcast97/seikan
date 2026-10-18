@@ -1420,6 +1420,50 @@ def test_rolling_corr_never_fires_past_its_bound(tmp_path):
         assert (res.summary["cells"][0]["by_target"]["target"]["n"] > 0) is fires
 
 
+def test_rolling_corr_of_an_exactly_uncorrelated_window_is_zero(tmp_path):
+    # [1.1, 0.7, 1.1, 0.7, 0.9] against [0.7, 0.7, 1.1, 1.1, 0.9] covary by exactly 0: the
+    # direct two-pass moments read a correlation of 4.3e-17, and on a ten-bar cycle
+    # `close == 0.9 AND rolling_corr(close, y, 5) > 0` fired 60 times. The moments are exact
+    # arithmetic's, each rounded once — the correlation is 0.0 and it fires on none.
+    px = _bars(tmp_path / "px.csv", [1.1, 0.7, 1.1, 0.7, 0.9, 1.0, 1.2, 0.8, 1.0, 1.3] * 60)
+    idx = pd.date_range("2021-01-01", periods=600, freq="1D", name="datetime")
+    y = [0.7, 0.7, 1.1, 1.1, 0.9, 1.0, 0.9, 1.2, 1.1, 0.8] * 60
+    pd.Series(y, index=idx, name="y").to_frame().to_csv(tmp_path / "y.csv")
+    close = {"type": "field", "column": "close"}
+    corr = {
+        "type": "rolling_corr",
+        "left": close,
+        "right": {"type": "external", "name": "y"},
+        "window": 5,
+    }
+    thesis = Thesis.model_validate(
+        {
+            "name": "uncorrelated",
+            "data": {"targets": ["target"], "external": {"y": {}}},
+            "entry": {
+                "type": "and",
+                "conditions": [
+                    {
+                        "type": "threshold",
+                        "left": close,
+                        "op": "==",
+                        "right": {"type": "constant", "value": 0.9},
+                    },
+                    {
+                        "type": "threshold",
+                        "left": corr,
+                        "op": ">",
+                        "right": {"type": "constant", "value": 0.0},
+                    },
+                ],
+            },
+            "params": {"horizon": 1},
+        }
+    )
+    files = {"target": px, "y": tmp_path / "y.csv"}
+    assert run_backtest(thesis, load(thesis, files)).trades.empty
+
+
 def test_per_target_external_matches_shared_form(tmp_path):
     idx = pd.date_range("2020-01-01", periods=160, freq="D")
     for sym, seed in [("AAA", 1), ("BBB", 2)]:

@@ -8,15 +8,16 @@ exact answers — mean the value, std / deviations 0.0, z-score and correlation 
 whatever the floating-point mean of a constant decimal window rounds to. A window variance that
 overflowed is NaN wherever it is divided by or reported; a VARYING window whose variance fell below
 the normal range (subnormal, or 0.0) is recomputed on its values lifted by ``2**_LIFT`` — exact —
-its std floored at the smallest subnormal; the correlation's variance PRODUCT of two normal
-variances is taken in an unbounded exponent range (:func:`_sqrt_product`); and the EW z-score's
+its std floored at the smallest subnormal; the correlation's moments are exact rationals, each
+leg scaled by a power of two into its window's frame and each moment rounded once, their variance
+product taken in an unbounded exponent range (:func:`_sqrt_product`); and the EW z-score's
 recurrence, on a mean compensated by TwoSum, runs in a frame lifted by a power of two once its
 variance nears that range. Every
-window moment is taken about the window's own offset (its first value; a cross-section's is the
+window variance is taken about the window's own offset (its first value; a cross-section's is the
 midpoint of its range), never about the rounded mean of the raw values, and every MEAN a decision
 reads (``rolling_agg`` / ``cross_agg`` / ``event_agg`` ``mean``) is the exact rational sum over the
-count, rounded once — NaN where that sum overflows; a cross-section's demeaned member is its exact
-deviation ``x − S/k`` (exact rationals) rounded once.
+count, rounded once — NaN where that sum overflows; a cross-section's demeaned member, and the SMA
+z-score's numerator, is its exact deviation ``x − S/k`` (exact rationals) rounded once.
 """
 
 from __future__ import annotations
@@ -527,24 +528,22 @@ def _row_exact_deviations(vals: list[float]) -> list[float]:
     return [_frame_quotient(len(xs) * x - total, framed) for x in xs]
 
 
+#: The frame the exact correlation moments are rounded in, per leg and window: the window's largest
+#: magnitude scaled by a power of two into ``[2**399, 2**400)``. A window holding a nonzero member
+#: below ``2**-480`` there — ``2**-880`` of its largest — has no exact moments in it: NaN.
+_CORR_TOP = 400
+_CORR_FLOOR = Fraction(2) ** -480
+
+
 def rolling_corr_ref(left: np.ndarray, right: np.ndarray, window: int) -> np.ndarray:
     """Row-loop reference for the trailing-window Pearson correlation of two 1D series.
 
-    Population moments (ddof=0), NaN unless the whole window is finite in BOTH inputs AND both
-    windows vary (neither constant) AND neither variance overflowed — a leg whose variance fell
-    below the normal range is lifted by ``2**_LIFT`` first — clipped to ``[−1, 1]``; matches
-    ``nb.rolling_corr_apply_nb``.
+    The moments ``k·Σa² − (Σa)²``, ``k·Σb² − (Σb)²`` and ``k·Σab − ΣaΣb`` in exact rationals, each
+    leg scaled into its window's frame (:func:`_corr_frame`) and each moment rounded once; NaN
+    unless the whole window is finite in BOTH inputs, both variances are nonzero (neither leg is
+    constant) and both frames hold every member; the ratio over :func:`_sqrt_product`, clipped
+    to ``[−1, 1]``; matches ``nb.rolling_corr_apply_nb``.
     """
-
-    def moments(a: np.ndarray, b: np.ndarray) -> tuple[float, float, float]:
-        with np.errstate(over="ignore", invalid="ignore"):
-            da = (a - a[0]) - (a - a[0]).mean()
-            db = (b - b[0]) - (b - b[0]).mean()
-            va = float(np.mean(da * da))
-            vb = float(np.mean(db * db))
-            cov = float(np.mean(da * db))
-        return va, vb, cov
-
     n = left.shape[0]
     out = np.full(n, np.nan, dtype=np.float64)
     if window < 3 or window > n:
@@ -552,21 +551,29 @@ def rolling_corr_ref(left: np.ndarray, right: np.ndarray, window: int) -> np.nda
     for i in range(window - 1, n):
         a = left[i - window + 1 : i + 1]
         b = right[i - window + 1 : i + 1]
-        if np.isnan(a).any() or np.isnan(b).any():
+        if not (np.isfinite(a).all() and np.isfinite(b).all()):
             continue
-        if len(set(a.tolist())) == 1 or len(set(b.tolist())) == 1:
+        fa, fb = _corr_frame(a), _corr_frame(b)
+        if fa is None or fb is None:
             continue
-        va, vb, cov = moments(a, b)
-        if va < _MIN_NORMAL or vb < _MIN_NORMAL:  # a VARYING leg's squares underflowed: lift it
-            a = np.ldexp(a, _LIFT) if va < _MIN_NORMAL else a
-            b = np.ldexp(b, _LIFT) if vb < _MIN_NORMAL else b
-            va, vb, cov = moments(a, b)
-        if not (_MIN_NORMAL <= va < math.inf and _MIN_NORMAL <= vb < math.inf):
-            continue
-        r = cov / _sqrt_product(va, vb)
-        if math.isfinite(r):
-            out[i] = min(max(r, -1.0), 1.0)  # an exactly linear window's rounding stays at ±1
+        sa, sb = sum(fa), sum(fb)
+        va = float(window * sum(x * x for x in fa) - sa * sa)
+        vb = float(window * sum(y * y for y in fb) - sb * sb)
+        if va > 0.0 and vb > 0.0:
+            cov = float(window * sum(x * y for x, y in zip(fa, fb, strict=True)) - sa * sb)
+            out[i] = min(max(cov / _sqrt_product(va, vb), -1.0), 1.0)
     return out
+
+
+def _corr_frame(vals: np.ndarray) -> list[Fraction] | None:
+    """A window's values as exact rationals scaled into its correlation frame — None where a
+    nonzero one falls below the floor there."""
+    top = float(np.max(np.abs(vals)))
+    shift = 0 if top == 0.0 else _CORR_TOP - math.frexp(top)[1]
+    scaled = [Fraction(float(v)) * Fraction(2) ** shift for v in vals]
+    if any(x != 0 and abs(x) < _CORR_FLOOR for x in scaled):
+        return None
+    return scaled
 
 
 def _sqrt_product(a: float, b: float) -> float:

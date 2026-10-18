@@ -3,9 +3,9 @@
 Two implementation styles, **no vectorbt**:
 
 * **Vectorized numpy** for the windowed/elementwise kernels — z-score (SMA), percentile,
-  rolling/expanding agg, drawdown/runup, change (pct/log/diff), shift, unary op, rolling
-  Pearson correlation of two series, and the cross-sectional rank/demean/aggregate (axis=1,
-  across the target columns at each bar — the only kernels with no 1-D form). Windowed kernels
+  rolling/expanding agg, drawdown/runup, change (pct/log/diff), shift, unary op, and the
+  cross-sectional rank/demean/aggregate (axis=1, across the target columns at each bar — the
+  only kernels with no 1-D form). Windowed kernels
   use ``numpy.lib.stride_tricks.sliding_window_view`` (a window requires every bar finite, else
   NaN), reduced in bounded row batches (``_window_batches``); elementwise ones use plain lag
   slicing. No Python time-loop.
@@ -16,8 +16,9 @@ Two implementation styles, **no vectorbt**:
   tradable signal defines — and ``event_agg``, the resettable running aggregate since it; the
   ``bars_since_event`` / ``event_value`` / ``mask`` reads off those are plain numpy), and the
   exact sums the decision-side means and deviations read (``_rolling_exact_means``,
-  ``_row_exact_sums``, ``cross_means``, ``cross_deviations``), each quotient over a count rounded
-  once (``_expansion_quotient``).
+  ``_rolling_exact_deviations``, ``_row_exact_sums``, ``cross_means``, ``cross_deviations``), each
+  quotient over a count rounded once (``_expansion_quotient``), and the rolling Pearson
+  correlation of two series off its exact moments (``rolling_corr_apply_nb``).
   These are scalar recurrences that don't vectorize; numba compiles the loop to machine code.
 
 The production surface is the 2D ``*_apply_nb`` form (rows × columns → rows × columns), applied per
@@ -53,7 +54,7 @@ from seikan.numeric import MIN_NORMAL, log_ratio_array
 # BOUNDED window stacks: the trailing windows are a ``(rows − window + 1, cols, window)`` view, and
 # every reduction over it — a moment, a sort, a comparison, even the ``isnan(...).any`` gate —
 # materializes temporaries of that whole size: a peak of 162 MiB for 2,000 bars × 16 targets at
-# window 252 (a 0.24 MiB input; 270 MiB for a correlation), ~13–22 GiB at 5,000 × 500. The
+# window 252 (a 0.24 MiB input), ~13–22 GiB at 5,000 × 500. The
 # kernels reduce the view in row batches of at most ``_WINDOW_STACK`` values
 # (``_window_batches``). A batch is a basic slice of the view, with its strides, so numpy reduces
 # each window in the same order and every output keeps its bits; what reads the whole input (the
@@ -113,9 +114,18 @@ from seikan.numeric import MIN_NORMAL, log_ratio_array
 # direct two-pass centre ``[1.1, 0.7, 1.1, 0.7, 0.9]``'s last bar read +1.55e-16 (−1.55e-16 with
 # a 0.7 first), and ``close == 0.9 AND zscore(close, 5) > 0`` fired where ``close >
 # rolling_agg(close, 5, mean)`` did not. The centre a window's VARIANCE is reduced about
-# (``_window_variance``, ``_pair_moments``) stays the direct two-pass form about the window's
-# offset: no threshold compares against it, and the z-score's magnitude and the correlation read
-# off it are known to the rounding of the window's own spread.
+# (``_window_variance``) stays the direct two-pass form about the window's offset: no threshold
+# compares against it, and the z-score's magnitude is known to the rounding of the window's own
+# spread. A CORRELATION reads its covariance's sign, so its moments are exact too
+# (``_rolling_corr_1d``): ``k·Σa² − (Σa)²``, ``k·Σb² − (Σb)²`` and ``k·Σab − ΣaΣb`` summed
+# exactly — five sliding expansions, every product two doubles (``_two_product``) — in a frame per
+# leg and window (the window's largest magnitude scaled by a power of two to ``2**400``) where
+# nothing leaves the double range, each rounded once. About the windows' offsets the direct
+# moments read 4.3e-17 for the exact 0 of ``[1.1, 0.7, 1.1, 0.7, 0.9]`` against ``[0.7, 0.7, 1.1,
+# 1.1, 0.9]``, and ``x == 0.9 AND rolling_corr(x, y, 5) > 0`` fired; exact, a correlation has the
+# covariance's sign, is 0.0 where it is, and is exactly invariant under power-of-two scaling of
+# either leg. A window holding a nonzero member below ``2**-880`` of its leg's largest has no
+# exact square in the frame and is NaN — the stated boundary, ``_row_expansion``'s rule.
 #
 # OUT-OF-RANGE intermediates: sanitizing the RESULT is not enough where an out-of-range intermediate
 # yields a FINITE one — ``x / inf`` is 0.0, so a correlation whose variance product overflowed read
@@ -127,16 +137,16 @@ from seikan.numeric import MIN_NORMAL, log_ratio_array
 # that fell BELOW the normal range is no overflow but a precision loss, and ordinary data reaches
 # it: an ``ema`` of a change decays geometrically through it over a held stretch. The squares of
 # deviations under ~1.5e-154 round to multiples of the smallest subnormal or to 0.0, reading a
-# z-score past its population bound ``√(w−1)``, a correlation off in its third digit, or a varying
-# window's std as the 0.0 an all-equal window owns. Such a VARYING window is recomputed LIFTED by
-# ``2**_LIFT`` (``_lifted_windows``): scaling up by a power of two never rounds, and the lifted
-# windows keep the direct form's layout — the same summation order — so every moment is the direct
-# one times its power of two (the z-score's numerator the lifted values' exact deviation), and the
-# z-score, correlation and std are the values they have in an unbounded exponent range (a std
-# under the smallest subnormal floors there: a varying window is never zero dispersion). The
-# correlation's variance PRODUCT of two normal variances is taken with the exponents moved out
-# wherever it leaves the normal range (``_sqrt_product``), to the same exactness. Every window
-# whose variances and, for ``rolling_corr``, their product are normal doubles keeps every bit. The
+# z-score past its population bound ``√(w−1)`` or a varying window's std as the 0.0 an all-equal
+# window owns. Such a VARYING window is recomputed LIFTED by ``2**_LIFT`` (``_lifted_windows``):
+# scaling up by a power of two never rounds, and the lifted windows keep the direct form's layout
+# — the same summation order — so every moment is the direct one times its power of two (the
+# z-score's numerator the lifted values' exact deviation), and the z-score and std are the values
+# they have in an unbounded exponent range (a std under the smallest subnormal floors there: a
+# varying window is never zero dispersion). Every window whose variance is a normal double keeps
+# every bit. A correlation needs no lift — its exact moments are taken in a frame where nothing
+# leaves the range (the exact-means note above), and the root of their variance product with the
+# exponents moved out (``_sqrt_product``) — so ``corr(x, x)`` is exactly 1 at any scale. The
 # EW z-score (``zscore_ema_1d``) carries its variance in a recurrence,
 # which the same rule reaches by moving the whole recurrence into a frame lifted by ``2**_LIFT``
 # once its variance nears the range (``_EW_LIFT_VAR``): its z is the recurrence's value in an
@@ -152,10 +162,10 @@ from seikan.numeric import MIN_NORMAL, log_ratio_array
 # window is not the constant (``(0.1 + 0.1 + 0.1) / 3 != 0.1``), so without the exact test the
 # residual minted a z-score of exactly ±1 and a correlation of 1 out of a constant series. The
 # recurrences hold the same line (``ema_1d``, ``zscore_ema_1d``, ``event_agg_1d``). Every window
-# with any variation whose variances and, for ``rolling_corr``, their product are normal doubles
-# is the direct two-pass form about its offset, bit for bit (the SMA z-score over its exact
-# numerator; a correlation clipped to ``[−1, 1]``,
-# where an exactly linear window's rounding carried it past; ``ema_1d`` differs from its plain
+# with any variation whose variance is a normal double is the direct two-pass form about its
+# offset, bit for bit (the SMA z-score over its exact numerator; a correlation is its exact
+# moments', clipped to ``[−1, 1]`` where their roundings carried an exactly linear window past
+# it; ``ema_1d`` differs from its plain
 # update only on the steps whose rounded update left its exact interval, and the EW z-score carries
 # its mean compensated — the plain West recurrence's value to its rounding, not bit for bit; the
 # out-of-range windows and the lifted EW frame are the note above);
@@ -237,35 +247,6 @@ def _lifted_windows(a: npt.NDArray[np.float64], window: int) -> npt.NDArray[np.f
     multi-column window view in another order than a contiguous stack). Members past ~2**424
     overflow; no window read off the lift holds one (``_LIFT``). Callers silence the overflow."""
     return sliding_window_view(np.ldexp(a, _LIFT), window, axis=0)
-
-
-def _sqrt_product(
-    a: npt.NDArray[np.float64], b: npt.NDArray[np.float64]
-) -> npt.NDArray[np.float64]:
-    """``sqrt(a·b)`` of two positive NORMAL arrays (the caller's :func:`_normal` gate), overflow-
-    and underflow-safe; any other element's result is unspecified, for that gate to discard.
-
-    The direct ``sqrt(a·b)`` wherever the product is a normal double — bit for bit. Elsewhere the
-    product overflowed (``corr(x, x)`` at 1e80 scale divided by ``inf``) or fell below the normal
-    range (to 0.0 or a subnormal, a precision loss neither factor has), so each factor's exponent
-    is taken out first (``frexp``, made even so the root halves it exactly) and put back after the
-    root (``ldexp``). Power-of-two scaling of a normal factor never rounds, so the result is
-    EXACTLY the direct form's value in an unbounded exponent range — not ``sqrt(a)·sqrt(b)``,
-    which rounds twice and reads ``corr(x, x)`` one ulp off 1.0 on about half of all scales. It is
-    exact only because the factors are: a SUBNORMAL factor has already lost its bits, and moving
-    its exponent recovers none of them. ``analysis._pools._r2`` is the scalar twin (r²'s
-    variance product) — a change to the rule changes both."""
-    with np.errstate(all="ignore"):
-        prod = a * b
-        ma, ea = np.frexp(a)
-        mb, eb = np.frexp(b)
-        ma, ea = np.ldexp(ma, ea & 1), ea - (ea & 1)
-        mb, eb = np.ldexp(mb, eb & 1), eb - (eb & 1)
-        scaled = np.ldexp(np.sqrt(ma * mb), (ea + eb) // 2)
-        out: npt.NDArray[np.float64] = np.where(
-            np.isfinite(prod) & (prod >= MIN_NORMAL), np.sqrt(prod), scaled
-        )
-    return out
 
 
 def _midpoint(lo: npt.NDArray[np.float64], hi: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
@@ -577,92 +558,38 @@ def bars_since_extremum_apply_nb(
     return out
 
 
-def _pair_moments(
-    wa: npt.NDArray[np.float64], wb: npt.NDArray[np.float64]
-) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
-    """The two population variances and the covariance of two aligned window stacks, two-pass
-    (centered) over the LAST axis, each leg about its own window offset — the correlation's direct
-    form (:func:`_window_variance` says why the offset: three points ``[2**52, 2**52 + 1, 2**52 +
-    1]`` against ``[0, 1, 1]`` correlate exactly 1.0, and read 0.577 about the raw mean)."""
-    ya = wa - wa[..., :1]
-    yb = wb - wb[..., :1]
-    da = ya - ya.mean(axis=-1)[..., None]
-    db = yb - yb.mean(axis=-1)[..., None]
-    va: npt.NDArray[np.float64] = (da**2).mean(axis=-1)
-    vb: npt.NDArray[np.float64] = (db**2).mean(axis=-1)
-    cov: npt.NDArray[np.float64] = (da * db).mean(axis=-1)
-    return va, vb, cov
-
-
 def rolling_corr_apply_nb(
     left: npt.NDArray[np.float64], right: npt.NDArray[np.float64], window: int
 ) -> npt.NDArray[np.float64]:
-    """Trailing-window Pearson correlation of two (rows × targets) series.
+    """Trailing-window Pearson correlation of two (rows × targets) series — exact arithmetic's
+    moments, each rounded once.
 
-    NaN unless the whole window is finite in BOTH inputs AND both window stds > 0 (zero-variance
-    → NaN, never ±1; an exactly constant window is zero-variance whatever its computed variance's
-    rounding residual) — the standard NaN-gating contract. Population moments (ddof=0) over the
-    window, matching ``rolling_agg`` std.
+    NaN unless the whole window is finite in BOTH inputs and both legs vary: a constant leg
+    (bit-identical values) has an exactly zero variance — undefined, never ±1. Per window the
+    moments ``k·Σa² − (Σa)²``, ``k·Σb² − (Σb)²`` and ``k·Σab − ΣaΣb`` (``k²`` times the
+    population variances and covariance) are summed EXACTLY and rounded once
+    (:func:`_rolling_corr_1d`), each leg in a frame scaled by a power of two off its
+    window's largest magnitude, where nothing leaves the double range: the correlation has
+    exact arithmetic's sign, is 0.0 exactly where the covariance is, and is exactly invariant
+    under scaling either leg by a power of two — ``corr(x, x)`` is 1 at any scale, subnormal
+    values included. About the windows' offsets the direct two-pass moments read 4.3e-17 for
+    the exact 0 of ``[1.1, 0.7, 1.1, 0.7, 0.9]`` against ``[0.7, 0.7, 1.1, 1.1, 0.9]``, and
+    ``x == 0.9 AND rolling_corr(x, y, 5) > 0`` fired. A window holding a nonzero member below
+    ``2**-880`` of its leg's largest has no exact moments in the frame: NaN.
 
-    Scale-safe (the out-of-range note above): the denominator ``sqrt(va·vb)`` is
-    :func:`_sqrt_product`, so a window whose variance PRODUCT leaves the double range while both
-    variances are normal doubles — where ``corr(x, x)`` read 0.0 at 1e80 scale and NaN at 1e-85 —
-    divides by the direct form's exact value; and a VARYING leg whose own variance fell below the
-    normal range (deviations under ~1.5e-154, where its lost bits read a correlation off in its
-    third digit, or NaN off a variance of 0.0) is recomputed lifted, the other leg as it is, so
-    the window reads the correlation the direct form has in an unbounded exponent range. Every
-    window whose variances and their product are normal doubles keeps every bit. A leg whose
-    variance OVERFLOWED (deviations past ~1.3e154) is NaN: ``cov / inf`` read a finite 0.0.
-
-    The correlation is clipped to ``[−1, 1]``, numpy's ``corrcoef`` and scipy's ``pearsonr``
-    rule: the rounding of an exactly linear window carries the computed ratio an ulp or two past
-    its bound (``y = 3x + 7`` over ``[−83, 70, −13]`` read 1.0000000000000002, and
-    ``rolling_corr(x, y) > 1`` fired where it is unreachable). The clip binds only where the
-    ratio left the range.
+    The ratio over ``sqrt(va·vb)`` is :func:`_sqrt_product`'s, exponent-safe, and it is clipped
+    to ``[−1, 1]``, numpy's ``corrcoef`` and scipy's ``pearsonr`` rule: the three roundings can
+    carry an exactly linear window an ulp past its bound (the direct form read ``y = 3x + 7``
+    over ``[−83, 70, −13]`` as 1.0000000000000002, and ``rolling_corr(x, y) > 1`` fired where it
+    is unreachable). The clip binds only where the ratio left the range.
     """
     a = np.asarray(left, dtype=float)
     b = np.asarray(right, dtype=float)
     if a.shape != b.shape:
         raise ValueError(f"rolling_corr shape mismatch: {a.shape} vs {b.shape}")
-    out = np.full(a.shape, np.nan)
-    n = a.shape[0]
-    if window < 3 or window > n:
-        return out
-    wa = sliding_window_view(a, window, axis=0)
-    wb = sliding_window_view(b, window, axis=0)
-    varies = ~_constant_windows(a, window) & ~_constant_windows(b, window)
-    # both legs' lifted windows, built on the first batch that needs them
-    lifted: tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]] | None = None
-    for rows in _window_batches(wa.shape):
-        xa, xb = wa[rows], wb[rows]
-        finite_all = ~(np.isnan(xa) | np.isnan(xb)).any(axis=-1)
-        with np.errstate(all="ignore"):
-            va, vb, cov = _pair_moments(xa, xb)
-            # Each leg is lifted only on the windows where IT lost its variance: lifting a leg
-            # whose variance is normal could overflow its squares (an ordinary leg beside a
-            # decayed one).
-            lost_a = finite_all & varies[rows] & (va < MIN_NORMAL)
-            lost_b = finite_all & varies[rows] & (vb < MIN_NORMAL)
-            if lost_a.any() or lost_b.any():
-                if lifted is None:
-                    lifted = _lifted_windows(a, window), _lifted_windows(b, window)
-                la, lb = lifted[0][rows], lifted[1][rows]
-                for lost, ya, yb in (
-                    (lost_a & ~lost_b, la, xb),
-                    (~lost_a & lost_b, xa, lb),
-                    (lost_a & lost_b, la, lb),
-                ):
-                    if lost.any():
-                        lva, lvb, lcov = _pair_moments(ya, yb)
-                        va = np.where(lost, lva, va)
-                        vb = np.where(lost, lvb, vb)
-                        cov = np.where(lost, lcov, cov)
-            corr = np.clip(cov / _sqrt_product(va, vb), -1.0, 1.0)
-        # `_normal(va)` / `_normal(vb)`: an overflowed variance divides `cov` by inf — a FINITE
-        # ±0.0 that `isfinite(corr)` cannot catch (it still catches a covariance at the ceiling).
-        ok = finite_all & varies[rows] & _normal(va) & _normal(vb) & np.isfinite(corr)
-        out[window - 1 :][rows] = np.where(ok, corr, np.nan)
-    return out
+    if window < 3 or window > a.shape[0]:
+        return np.full(a.shape, np.nan)
+    return _rolling_corr(np.ascontiguousarray(a), np.ascontiguousarray(b), window)
 
 
 def change_apply_nb(
@@ -1456,8 +1383,10 @@ def _even(q: float) -> bool:
 def _two_product(a: float, b: float) -> tuple[float, float]:
     """``(p, e)``: ``p = fl(a·b)`` and its error ``e``, ``a·b = p + e`` EXACTLY — Dekker's
     product of the factors' Veltkamp halves (:data:`_SPLITTER`). Exact wherever neither factor
-    reaches :data:`_SPLIT_MAX` (whose split can overflow) and ``p`` is finite, for a count times
-    a double (:func:`_expansion_quotient`, :func:`_rolling_exact_1d`) down to the subnormals."""
+    reaches :data:`_SPLIT_MAX` (whose split can overflow), ``p`` is finite, and the factors'
+    lowest bits multiply to no less than the smallest subnormal, so no partial product loses
+    one: a count times any double (:func:`_expansion_quotient`, :func:`_rolling_exact_1d`), and
+    every product in the correlation frame (:data:`_CORR_TOP`)."""
     p = a * b
     t = a * _SPLITTER
     ah = t - (t - a)
@@ -1603,6 +1532,187 @@ def _rolling_exact_deviations(a: npt.NDArray[np.float64], window: int) -> npt.ND
     out = np.empty_like(a)
     for j in range(a.shape[1]):
         out[:, j] = _rolling_exact_1d(a[:, j], window, True)
+    return out
+
+
+#: The frame an exact correlation's moments are summed in, per leg and window
+#: (:func:`_rolling_corr_1d`): the window's largest magnitude scaled by a power of two into
+#: ``[2**399, 2**400)``. Members at or above :data:`_CORR_FLOOR` there are multiples of
+#: ``2**-532``, so every product of them, or of the sums' partials, lies on a ``2**-1064`` grid and
+#: :func:`_two_product` holds it exactly; no sum, square or moment passes ``2**863`` at any window
+#: up to the bar-count ceiling, so no expansion addition overflows. A nonzero member below the
+#: floor — ``2**-880`` of its window's largest — has no exact square there: the window is NaN.
+_CORR_TOP = 400
+_CORR_FLOOR = 2.0**-480
+
+
+@njit(cache=True)
+def _add_product(
+    p: npt.NDArray[np.float64], m: int, u: float, v: float
+) -> tuple[npt.NDArray[np.float64], int]:
+    """``u·v`` added into the partials ``p[:m]`` exactly, as :func:`_two_product`'s two doubles
+    (inside the correlation frame, where no addition can overflow)."""
+    hi, lo = _two_product(u, v)
+    p, m, _ = _expansion_add(p, m, hi)
+    p, m, _ = _expansion_add(p, m, lo)
+    return p, m
+
+
+@njit(cache=True)
+def _framed_moment(
+    k: int,
+    x: npt.NDArray[np.float64],
+    mx: int,
+    y: npt.NDArray[np.float64],
+    my: int,
+    z: npt.NDArray[np.float64],
+    mz: int,
+    acc: npt.NDArray[np.float64],
+) -> tuple[float, npt.NDArray[np.float64]]:
+    """``k·X − Y·Z`` rounded once, for the exact sums the partials ``x[:mx]``, ``y[:my]`` and
+    ``z[:mz]`` hold: every product of partials exact (:func:`_add_product`), all of them summed
+    into the one expansion ``acc`` (scratch, returned grown) and rounded by
+    :func:`_expansion_value`."""
+    n = 0
+    for i in range(mx):
+        acc, n = _add_product(acc, n, float(k), x[i])
+    for i in range(my):
+        for j in range(mz):
+            acc, n = _add_product(acc, n, -y[i], z[j])
+    return _expansion_value(acc, n), acc
+
+
+@njit(cache=True)
+def _corr_frame(v: float) -> int:
+    """The power of two scaling ``|v|`` into ``[2**(_CORR_TOP − 1), 2**_CORR_TOP)`` — 0 for 0."""
+    return 0 if v == 0.0 else _CORR_TOP - math.frexp(v)[1]
+
+
+@njit(cache=True)
+def _sqrt_product(a: float, b: float) -> float:
+    """``sqrt(a·b)`` of two positive NORMAL doubles — two variances — overflow- and
+    underflow-safe: the direct ``sqrt(a·b)`` wherever the product is a normal double, bit for
+    bit; elsewhere it overflowed or fell below the normal range (to 0.0 or a subnormal, a
+    precision loss neither factor has), so each factor's exponent is taken out first (``frexp``,
+    made even so the root halves it exactly) and put back after the root (``ldexp``). Power-of-two
+    scaling of a normal factor never rounds, so the result is EXACTLY the direct form's value in
+    an unbounded exponent range — not ``sqrt(a)·sqrt(b)``, which rounds twice and read
+    ``corr(x, x)`` one ulp off 1.0 on about half of all scales. ``analysis._pools._r2`` is the
+    scalar twin (r²'s variance product) — a change to the rule changes both."""
+    p = a * b
+    if MIN_NORMAL <= p < math.inf:
+        return math.sqrt(p)
+    ma, ea = math.frexp(a)
+    mb, eb = math.frexp(b)
+    ma, ea = math.ldexp(ma, ea & 1), ea - (ea & 1)
+    mb, eb = math.ldexp(mb, eb & 1), eb - (eb & 1)
+    return math.ldexp(math.sqrt(ma * mb), (ea + eb) // 2)
+
+
+@njit(cache=True)
+def _rolling_corr_1d(
+    a: npt.NDArray[np.float64],
+    b: npt.NDArray[np.float64],
+    window: int,
+    out: npt.NDArray[np.float64],
+) -> None:
+    """At the last bar of each trailing ``window`` of the pair ``(a, b)``, into ``out`` (left as
+    given elsewhere): the correlation ``cov / sqrt(va·vb)`` (:func:`_sqrt_product`) clipped to
+    ``[−1, 1]``, its moments ``va = k·Σa² − (Σa)²``, ``vb = k·Σb² − (Σb)²`` and
+    ``cov = k·Σab − ΣaΣb`` those of the legs scaled into their frames (:data:`_CORR_TOP`), each
+    EXACT and rounded once (:func:`_framed_moment`) — wherever the window holds ``window`` finite
+    pairs, no nonzero member below :data:`_CORR_FLOOR` in its frame, and two varying legs (a
+    nonzero variance there is at least ``2**692``: normal).
+
+    Five SLIDING expansions — Σa, Σb, Σa², Σb², Σab, every product as :func:`_two_product`'s two
+    doubles — take back the pair leaving the window and add the one entering, O(rows) whatever
+    the window. Each leg's frame follows its window's largest magnitude, the head of a monotonic
+    deque of the finite pairs' bars; where either frame moves (that magnitude changed binade) the
+    five expansions are rebuilt from the window in the new frames, O(window), and the members
+    below the floor recounted, so every window's moments are its own whatever came before it."""
+    n = a.shape[0]
+    sa = np.empty(8)
+    sb = np.empty(8)
+    qa = np.empty(8)
+    qb = np.empty(8)
+    ab = np.empty(8)
+    acc = np.empty(16)
+    msa = msb = mqa = mqb = mab = 0
+    dqa = np.empty(n, dtype=np.int64)  # bars of the window's finite pairs, |a| strictly falling
+    dqb = np.empty(n, dtype=np.int64)
+    ha = ta = hb = tb = 0
+    fa = fb = 0  # the legs' frames: a member enters the sums as ldexp(x, f)
+    pairs = 0  # finite pairs in the window
+    tiny = 0  # nonzero members below the floor in their frames (scaled down to 0.0 included)
+    for i in range(n):
+        first = i - window + 1
+        if first > 0:
+            j = first - 1  # the pair leaving the window
+            if np.isfinite(a[j]) and np.isfinite(b[j]):
+                pairs -= 1
+                xa = math.ldexp(a[j], fa)
+                xb = math.ldexp(b[j], fb)
+                if a[j] != 0.0 and abs(xa) < _CORR_FLOOR:
+                    tiny -= 1
+                if b[j] != 0.0 and abs(xb) < _CORR_FLOOR:
+                    tiny -= 1
+                sa, msa, _ = _expansion_add(sa, msa, -xa)
+                sb, msb, _ = _expansion_add(sb, msb, -xb)
+                qa, mqa = _add_product(qa, mqa, -xa, xa)
+                qb, mqb = _add_product(qb, mqb, -xb, xb)
+                ab, mab = _add_product(ab, mab, -xa, xb)
+        if np.isfinite(a[i]) and np.isfinite(b[i]):
+            pairs += 1
+            while ta > ha and abs(a[dqa[ta - 1]]) <= abs(a[i]):
+                ta -= 1
+            dqa[ta] = i
+            ta += 1
+            while tb > hb and abs(b[dqb[tb - 1]]) <= abs(b[i]):
+                tb -= 1
+            dqb[tb] = i
+            tb += 1
+        while ha < ta and dqa[ha] < first:
+            ha += 1
+        while hb < tb and dqb[hb] < first:
+            hb += 1
+        ga = _corr_frame(a[dqa[ha]]) if ha < ta else 0
+        gb = _corr_frame(b[dqb[hb]]) if hb < tb else 0
+        start = i  # add the entering pair — or, the frame moved, the whole window afresh
+        if ga != fa or gb != fb:
+            fa, fb = ga, gb
+            msa = msb = mqa = mqb = mab = 0
+            tiny = 0
+            start = max(first, 0)
+        for j in range(start, i + 1):
+            if np.isfinite(a[j]) and np.isfinite(b[j]):
+                xa = math.ldexp(a[j], fa)
+                xb = math.ldexp(b[j], fb)
+                if a[j] != 0.0 and abs(xa) < _CORR_FLOOR:
+                    tiny += 1
+                if b[j] != 0.0 and abs(xb) < _CORR_FLOOR:
+                    tiny += 1
+                sa, msa, _ = _expansion_add(sa, msa, xa)
+                sb, msb, _ = _expansion_add(sb, msb, xb)
+                qa, mqa = _add_product(qa, mqa, xa, xa)
+                qb, mqb = _add_product(qb, mqb, xb, xb)
+                ab, mab = _add_product(ab, mab, xa, xb)
+        if first < 0 or pairs < window or tiny > 0:
+            continue
+        va, acc = _framed_moment(window, qa, mqa, sa, msa, sa, msa, acc)
+        vb, acc = _framed_moment(window, qb, mqb, sb, msb, sb, msb, acc)
+        if va > 0.0 and vb > 0.0:
+            cov, acc = _framed_moment(window, ab, mab, sa, msa, sb, msb, acc)
+            out[i] = min(max(cov / _sqrt_product(va, vb), -1.0), 1.0)
+
+
+@njit(cache=True)
+def _rolling_corr(
+    a: npt.NDArray[np.float64], b: npt.NDArray[np.float64], window: int
+) -> npt.NDArray[np.float64]:
+    """2-D :func:`_rolling_corr_1d` per column pair, NaN where a window has no correlation."""
+    out = np.full(a.shape, np.nan)
+    for j in range(a.shape[1]):
+        _rolling_corr_1d(a[:, j], b[:, j], window, out[:, j])
     return out
 
 

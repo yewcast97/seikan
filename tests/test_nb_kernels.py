@@ -495,16 +495,16 @@ def test_rolling_corr_shape_mismatch_raises():
 
 
 @pytest.mark.parametrize(
-    "scale", [1e80, 1e150, 2.0**500, 1e-85, 1e-150, 2.0**-500, 1e-160, 2.0**-1000, 5e-324]
+    "scale",
+    [1e300, 1e160, 1e80, 1e150, 2.0**500, 1e-85, 1e-150, 2.0**-500, 1e-160, 2.0**-1000, 5e-324],
 )
 def test_rolling_corr_of_a_series_with_itself_is_exactly_one_at_any_scale(scale):
     # The review's probe: at 1e80 the variance PRODUCT overflowed and `cov / inf` read a finite
     # 0.0 — a perfect correlation reported as none; at 1e-85 it underflowed to 0 and read NaN.
-    # Taken with the exponents moved out, the denominator is the direct form's exact value
-    # (sqrt(va²) == va), so corr(x, x) is exactly 1.0 at every scale whose variances are normal
-    # doubles (deviations up to ~1.3e154), as it is at 1 — and below that range (1e-160 down to
-    # subnormal values, where the variances themselves underflowed and read NaN) the lifted
-    # window's variances are normal again.
+    # The moments are exact in each window's own frame and equal (cov == va == vb), and the
+    # denominator is taken with the exponents moved out (sqrt(va²) == va), so corr(x, x) is
+    # exactly 1.0 at every scale, past the range of the variances (1e160, 1e300) and down to
+    # subnormal values, as it is at 1.
     x = np.array([1.0, 3.0, 2.0, 5.0, 4.0, 7.0, 6.0])
     want = [np.nan, np.nan] + [1.0] * 5
     np.testing.assert_array_equal(rolling_corr_1d(scale * x, scale * x, 3), want)
@@ -513,9 +513,9 @@ def test_rolling_corr_of_a_series_with_itself_is_exactly_one_at_any_scale(scale)
 
 @pytest.mark.parametrize("k", [270, 500, -280, -500])
 def test_rolling_corr_is_exactly_scale_invariant_past_the_variance_product_range(k):
-    # Scaling both legs by 2**k scales every moment exactly, so the exponent-safe denominator
-    # returns the SAME bits as the unscaled windows — with the variance product near 2**(4k),
-    # far past the double range both ways (the direct form read 0.0 above it, NaN below).
+    # Scaling both legs by 2**k leaves every window's framed moments as they were, so the pair
+    # reads the SAME bits as the unscaled windows — with the variance product near 2**(4k), far
+    # past the double range both ways (the direct form read 0.0 above it, NaN below).
     rng = np.random.RandomState(14)
     a = rng.randn(60)
     b = 0.5 * a + rng.randn(60)
@@ -524,6 +524,42 @@ def test_rolling_corr_is_exactly_scale_invariant_past_the_variance_product_range
     s = 2.0**k
     np.testing.assert_array_equal(rolling_corr_1d(a * s, b * s, 10), base)
     _assert(ref.rolling_corr_ref(a * s, b * s, 10), base)
+
+
+def test_rolling_corr_is_exact_arithmetics_rounded_once():
+    # [1.1, 0.7, 1.1, 0.7, 0.9] against [0.7, 0.7, 1.1, 1.1, 0.9] covary by exactly 0, and the
+    # direct two-pass moments about the windows' offsets read a correlation of 4.3e-17 — its
+    # sign following the order of the first four bars. Each moment is exact arithmetic's in its
+    # window's frame, rounded once: 0.0 in every order, and across binades, zeros, holes and a
+    # spike entering and leaving the windows (the frame moving with it), the correlation of the
+    # exact moments, bit for bit. A member below 2**-880 of its window's largest has no exact
+    # square in the frame: NaN while it is in the window, its neighbours' windows as they were.
+    xs, ys = [1.1, 0.7, 1.1, 0.7], [0.7, 0.7, 1.1, 1.1]
+    for order in itertools.permutations(range(4)):
+        x = [xs[i] for i in order] + [0.9]
+        y = [ys[i] for i in order] + [0.9]
+        assert rolling_corr_1d(x, y, 5)[-1] == 0.0
+    rng = np.random.default_rng(37)
+    for trial in range(150):
+        n = int(rng.integers(5, 40))
+        w = int(rng.integers(3, min(n, 10) + 1))
+        a = rng.normal(size=n) * 2.0 ** int(rng.integers(-1074, 1000))
+        b = rng.normal(size=n) * 2.0 ** int(rng.integers(-1074, 1000))
+        if trial % 3 == 0:  # decimal data, exact cancellations
+            a = np.round(rng.normal(size=n), 1)
+            b = np.round(rng.normal(size=n), 1)
+        a[rng.random(n) < 0.08] = np.nan
+        a[rng.random(n) < 0.1] = 0.0
+        if trial % 4 == 0:
+            a[int(rng.integers(n))] = 2.0 ** int(rng.integers(0, 1000))
+        np.testing.assert_array_equal(rolling_corr_1d(a, b, w), ref.rolling_corr_ref(a, b, w))
+    x = np.array([1.0, 3.0, 0.0, 5.0, 4.0, 6.0, 2.0])
+    y = np.array([2.0, 1.0, 4.0, 3.0, 6.0, 5.0, 7.0])
+    x[2] = 2.0**-850  # inside the frame of windows topping at 3, 5 and 5
+    assert np.isfinite(rolling_corr_1d(x, y, 3)[2:]).all()
+    x[2] = 2.0**-900
+    np.testing.assert_array_equal(np.isnan(rolling_corr_1d(x, y, 3)), [1, 1, 1, 1, 1, 0, 0])
+    np.testing.assert_array_equal(rolling_corr_1d(x, y, 3), ref.rolling_corr_ref(x, y, 3))
 
 
 def test_rolling_corr_never_leaves_its_range():
@@ -551,22 +587,24 @@ def test_rolling_corr_never_leaves_its_range():
     assert on_bound > 0
 
 
-def test_rolling_corr_overflowed_variance_is_nan_never_zero():
-    # corr(1e160·x, x): the LEFT variance itself overflows (deviations past ~1.3e154), and
-    # `cov / sqrt(inf · vb)` read a finite 0.0 — "uncorrelated" for a perfectly correlated pair.
-    # A variance past the double range is no dispersion estimate: NaN, landing where `x / 0` does.
+def test_rolling_corr_past_the_variance_range_reads_the_unscaled_correlation():
+    # corr(1e160·x, x): the LEFT leg's deviations (past ~1.3e154) squared past the double range,
+    # and `cov / sqrt(inf · vb)` read a finite 0.0 — "uncorrelated" for a perfectly correlated
+    # pair — then, NaN-gated, an undecidable bar. Each leg's moments are exact in its window's
+    # own frame, where nothing leaves the range: the pair reads exactly 1, as unscaled.
     x = np.array([1.0, 3.0, 2.0, 5.0, 4.0, 7.0])
-    for left, right in ((1e160 * x, x), (x, 1e160 * x)):
-        np.testing.assert_array_equal(rolling_corr_1d(left, right, 3), np.full(6, np.nan))
-        np.testing.assert_array_equal(ref.rolling_corr_ref(left, right, 3), np.full(6, np.nan))
+    want = [np.nan, np.nan, 1.0, 1.0, 1.0, 1.0]
+    for left, right in ((1e160 * x, x), (x, 1e160 * x), (2.0**1000 * x, 2.0**-1000 * x)):
+        np.testing.assert_array_equal(rolling_corr_1d(left, right, 3), want)
+        np.testing.assert_array_equal(ref.rolling_corr_ref(left, right, 3), want)
 
 
 def test_rolling_corr_with_an_underflowed_variance_reads_the_unscaled_correlation():
     # Deviations of ~1e-161 square into the SUBNORMAL range: the variances (and the covariance)
     # rounded to a few multiples of 5e-324. Divided by the direct product where that stayed
     # normal (a wide right leg), they read 0.99745 for 0.99968; at 2**-1000 every square vanished
-    # and the window read NaN. The leg whose variance underflowed is lifted by a power of two —
-    # the other leg as it is — so each pair reads the unscaled windows' correlation, every bit.
+    # and the window read NaN. Each leg's moments are exact in its window's own frame, so each
+    # pair reads the unscaled windows' correlation, every bit.
     a = np.array([1.0, -1.0, 2.0, 0.5, -0.5, 1.5])
     b = np.array([1.1, -0.9, 2.0, 0.4, -0.6, 1.2])
     exact = rolling_corr_1d(a, b, 3)
@@ -585,12 +623,13 @@ def test_rolling_corr_with_an_underflowed_variance_reads_the_unscaled_correlatio
 
 
 def test_ordinary_windows_are_bit_identical_to_the_shifted_direct_forms():
-    # The out-of-range rules bind only where a variance left the normal range (or the
-    # correlation's variance product did): on ordinary windows — scales from 1e-60 to 1e60 — the
-    # correlation, the SMA z-score and both stds keep the direct forms' exact bits, every moment
-    # taken about the window's own first value (a cross-section's about its range's midpoint, its
-    # centre the exactly rounded sum of the differences from it over their count) and the
-    # z-score's numerator the exact deviation, rounded once.
+    # The out-of-range rules bind only where a variance left the normal range: on ordinary
+    # windows — scales from 1e-60 to 1e60 — the SMA z-score and both stds keep the direct forms'
+    # exact bits, every variance taken about the window's own first value (a cross-section's about
+    # its range's midpoint, its centre the exactly rounded sum of the differences from it over
+    # their count) and the z-score's numerator the exact deviation, rounded once. The correlation
+    # is exact arithmetic's moments, each rounded once (its own tests): within rounding of the
+    # direct form here.
     # About the rounded raw mean instead they agree to rounding here; the offset matters where a
     # spread sits near its level's ulp (the 2**52 tests below).
     rng = np.random.RandomState(15)
@@ -614,7 +653,9 @@ def test_ordinary_windows_are_bit_identical_to_the_shifted_direct_forms():
             "std": np.sqrt(va),
         }
         assert np.isfinite(direct["corr"]).all() and (va > 0.0).all()
-        np.testing.assert_array_equal(nb.rolling_corr_apply_nb(a, b, w)[w - 1 :], direct["corr"])
+        np.testing.assert_allclose(
+            nb.rolling_corr_apply_nb(a, b, w)[w - 1 :], direct["corr"], rtol=0.0, atol=1e-13
+        )
         np.testing.assert_array_equal(nb.zscore_sma_apply_nb(a, w)[w - 1 :], direct["z"])
         np.testing.assert_array_equal(nb.rolling_agg_apply_nb(a, w, "std")[w - 1 :], direct["std"])
         raw_var = ((wa - wa.mean(axis=-1)[..., None]) ** 2).mean(axis=-1)
