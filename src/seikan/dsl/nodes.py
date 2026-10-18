@@ -309,7 +309,10 @@ class RollingAgg(_Strict):
     # robust pair: robust z = ``(x − rolling_agg(x, N, median)) / (1.4826 · rolling_agg(x, N,
     # mad))``. Note a rolling median of ``|x − rolling_median(x)|`` is NOT the MAD (each bar's
     # deviation would be taken about a different window's median); ``mad`` centres every
-    # deviation on the one window it is computed over. Trailing-window only (no expanding form).
+    # deviation on the one window it is computed over, in that window's frame about its lower
+    # middle value (exact wherever the window lies within a factor of two of it — about the
+    # rounded median, an even window at 2**52 read twice its MAD). Trailing-window only (no
+    # expanding form).
     type: Literal["rolling_agg"] = "rolling_agg"
     input: Series
     window: Ge2IntParam | None = None

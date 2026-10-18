@@ -405,10 +405,20 @@ def rolling_agg_apply_nb(
                 # The sorted window's middle, an even window's pair met at its overflow-safe
                 # midpoint (bit for bit ``np.median`` wherever that is finite): a constant window
                 # reads its value and a MAD of exactly 0.0, at any level.
-                v = _sorted_median(np.sort(w, axis=-1), window)
+                s = np.sort(w, axis=-1)
+                v = _sorted_median(s, window)
                 if agg == "mad":
-                    # Median absolute deviation about the SAME window's median, unscaled.
-                    v = _sorted_median(np.sort(np.abs(w - v[..., None]), axis=-1), window)
+                    # Median absolute deviation about the SAME window's median, unscaled — taken
+                    # in the window's frame about its lower middle value (the median itself on an
+                    # odd window), where the deviations are exact wherever the window lies within
+                    # a factor of two of it. About the ROUNDED median, 2**52 + [0, 1, 1, 2, 2, 3]
+                    # read 1.0 for 0.5 (its median B + 1.5 rounds to B + 2) and 0.5 once
+                    # translated by −B exactly, so `rolling_mad(X, 6) > rolling_mad(X − B, 6)`
+                    # fired. Members farther apart than the double range overflow the frame:
+                    # NaN, the variance's rule.
+                    y = s - s[..., (window - 1) // 2][..., None]
+                    dev = np.sort(np.abs(y - _sorted_median(y, window)[..., None]), axis=-1)
+                    v = _sorted_median(dev, window)
             else:
                 raise ValueError(f"unknown rolling_agg agg: {agg!r}")
         # `isfinite(v)`: a finite window can still overflow its sum/squared deviations to ±inf.

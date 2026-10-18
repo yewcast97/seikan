@@ -896,15 +896,18 @@ def rolling_median(arr: np.ndarray, window: int) -> np.ndarray:
 
 
 def rolling_mad(arr: np.ndarray, window: int) -> np.ndarray:
-    """Median absolute deviation about the SAME window's median, unscaled."""
+    """Median absolute deviation about the SAME window's median, unscaled — in the window's
+    frame about its lower middle value (the median itself on an odd window)."""
     n = arr.shape[0]
     out = np.full(n, np.nan, dtype=np.float64)
     for i in range(window - 1, n):
         vals = [float(v) for v in arr[i - window + 1 : i + 1]]
         if any(math.isnan(v) for v in vals):
             continue
-        med = _sorted_median(vals)
-        out[i] = _sorted_median([abs(v - med) for v in vals])
+        lower_middle = sorted(vals)[(window - 1) // 2]
+        y = [v - lower_middle for v in vals]
+        med = _sorted_median(y)
+        out[i] = _sorted_median([abs(v - med) for v in y])
     return out
 
 

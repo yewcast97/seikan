@@ -2386,6 +2386,50 @@ def test_rolling_mad_centres_on_the_same_windows_median():
     )
 
 
+def _rational_mad(vals: list[float]) -> float:
+    xs = sorted(Fraction(v) for v in vals)
+    m = len(xs) // 2
+    med = xs[m] if len(xs) % 2 else (xs[m - 1] + xs[m]) / 2
+    d = sorted(abs(v - med) for v in xs)
+    return float(d[m] if len(d) % 2 else (d[m - 1] + d[m]) / 2)
+
+
+def test_rolling_mad_is_taken_about_the_windows_lower_middle_value():
+    # The review's window: 2**52 + [0, 1, 1, 2, 2, 3] has the median B + 1.5, which rounds to
+    # B + 2, and the deviations about that rounded centre read a MAD of 1.0 — translated by −B
+    # exactly, the same window read 0.5, and `rolling_mad(X, 6) > rolling_mad(X − B, 6)` fired on
+    # 595 of 606 bars. The deviations are taken in the window's frame about its lower middle
+    # value, exact wherever the window lies within a factor of two of it: 0.5, the translate's.
+    big = 2.0**52
+    x = big + np.array([0.0, 1.0, 1.0, 2.0, 2.0, 3.0])
+    assert rolling_agg_1d(x, 6, "mad")[-1] == 0.5 == rolling_agg_1d(x - big, 6, "mad")[-1]
+    assert rolling_agg_1d(x, 6, "median")[-1] == big + 2.0  # the median itself rounds correctly
+    # every level-dominated window reads the exact rational MAD, and an exact translation never
+    # moves it
+    rng = np.random.default_rng(23)
+    for level, spread, shift in ((big, 4.0, 2.0**40), (100.0, 5.0, 2.0**30), (1e6, 0.01, 1024.0)):
+        for w in (2, 3, 6, 9):
+            for _ in range(20):
+                if level == big:
+                    vals = level + rng.integers(0, 9, w)
+                elif level == 1e6:
+                    vals = np.round(level + rng.integers(-300, 300, w) * spread, 2)
+                else:
+                    vals = level + rng.normal(0.0, spread, w)
+                got = rolling_agg_1d(vals, w, "mad")[-1]
+                assert got == _rational_mad(vals.tolist()), (level, vals)
+                moved = vals + shift
+                if np.all(moved - shift == vals):
+                    assert rolling_agg_1d(moved, w, "mad")[-1] == got
+    # an odd window's lower middle value is its median: the direct form, bit for bit, at any
+    # magnitude or sign
+    for w in (3, 5, 9):
+        a = rng.normal(0.0, 1.0, (200, 2)) * 10.0 ** rng.integers(-5, 5, (200, 2))
+        win = sliding_window_view(a, w, axis=0)
+        direct = np.median(np.abs(win - np.median(win, axis=-1)[..., None]), axis=-1)
+        np.testing.assert_array_equal(nb.rolling_agg_apply_nb(a, w, "mad")[w - 1 :], direct)
+
+
 def test_rolling_median_mad_apply_nb_are_columnwise():
     a = np.column_stack([_rand(50, seed=1), _rand(50, seed=2)])
     for agg, fn in (("median", ref.rolling_median), ("mad", ref.rolling_mad)):
@@ -2428,13 +2472,23 @@ def test_an_even_median_and_its_mad_never_overflow_at_the_ceiling():
 
 @pytest.mark.parametrize("window", [2, 3, 8, 9, 20])
 def test_rolling_median_and_mad_are_numpy_bit_for_bit(window):
+    # The median is numpy's bit for bit, and so is an odd window's MAD (its centre is a member,
+    # every deviation one rounding). An even window's MAD is the exact rational MAD: numpy's
+    # centre and deviations round at the level's grid, and read another double on about a tenth
+    # of these windows at 8 and 20.
     rng = np.random.default_rng(window)
     a = rng.normal(100.0, 5.0, (300, 3))
     win = sliding_window_view(a, window, axis=0)
     med = np.median(win, axis=-1)
     mad = np.median(np.abs(win - med[..., None]), axis=-1)
     np.testing.assert_array_equal(nb.rolling_agg_apply_nb(a, window, "median")[window - 1 :], med)
-    np.testing.assert_array_equal(nb.rolling_agg_apply_nb(a, window, "mad")[window - 1 :], mad)
+    got = nb.rolling_agg_apply_nb(a, window, "mad")[window - 1 :]
+    want = np.array([[_rational_mad(w.tolist()) for w in col] for col in win.transpose(1, 0, 2)])
+    np.testing.assert_array_equal(got, want.T)
+    if window % 2:
+        np.testing.assert_array_equal(got, mad)
+    elif window >= 8:
+        assert 0 < (got != mad).sum() < got.size // 4
 
 
 def test_cross_median_is_nanmedian_bit_for_bit():

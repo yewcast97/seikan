@@ -463,7 +463,12 @@ range reads that recurrence's value to its rounding.
   different window's median. An even window's median is the midpoint of its middle pair, taken
   so it never overflows (numpy's `(lo + hi) / 2` wherever finite, else the halves' sum, exact):
   levels past half the double range read their median, and a constant window its value with a
-  `mad` of exactly 0.0 — the same rule as `cross_agg`'s `median`.
+  `mad` of exactly 0.0 — the same rule as `cross_agg`'s `median`. The `mad`'s deviations are
+  taken in the window's frame about its lower middle value (the median itself on an odd
+  window), exact wherever the window lies within a factor of two of it: about the ROUNDED
+  median, `2**52 + [0, 1, 1, 2, 2, 3]` read 1.0 for 0.5 (its median `B + 1.5` rounds to `B + 2`)
+  and 0.5 once translated by `−2**52` exactly, so `rolling_agg(X, 6, "mad") > rolling_agg(X − B,
+  6, "mad")` fired.
 - `drawdown` (optional `input` defaulting to close, optional `window`) — fractional depth below a
   peak: `input / peak − 1` (≤ 0). POSITIVE-scale domain: a non-positive peak → NaN (the ratio
   inverts on a negative scale; signed series compose level reads with `change(kind:"diff")`
