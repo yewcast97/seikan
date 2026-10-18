@@ -919,8 +919,10 @@ def test_cell_buckets_read_every_bar_held_whole_at_its_exact_sum():
     ]
     ordinal = valid["feat"].to_numpy()
     assert [b["mean_ret"] for b in block] == [
-        float(sum(n for n, o in zip(numerators, ordinal, strict=True) if o == i))
-        / (3 * int((ordinal == i).sum()))
+        float(
+            sum(n for n, o in zip(numerators, ordinal, strict=True) if o == i)
+            / (3 * int((ordinal == i).sum()))
+        )
         for i in range(4)
     ]
     assert [(b["n"], b["hit_rate"]) for b in block] == [
@@ -954,7 +956,7 @@ def test_cell_buckets_of_one_participating_member_read_its_one_row_bars_exactly(
     block = out["conditional_buckets"]["feat"]["buckets"]
     codes = pd.qcut(alone["feat"], 4, labels=False, duplicates="drop").to_numpy()
     want = [
-        float(sum(map(Fraction, pool[codes == i].ravel().tolist()))) / (3 * int((codes == i).sum()))
+        float(sum(map(Fraction, pool[codes == i].ravel().tolist())) / (3 * int((codes == i).sum())))
         for i in range(4)
     ]
     assert [b["mean_ret"] for b in block] == want
@@ -979,8 +981,10 @@ def test_cell_buckets_of_one_participating_member_read_its_one_row_bars_exactly(
     ]
     codes2 = pd.qcut(both["feat"][a_rows], 4, labels=False, duplicates="drop").to_numpy()
     assert [b["mean_ret"] for b in out2["conditional_buckets"]["feat"]["buckets"]] == [
-        float(sum(n for n, c in zip(numerators, codes2, strict=True) if c == i))
-        / (3 * int((codes2 == i).sum()))
+        float(
+            sum(n for n, c in zip(numerators, codes2, strict=True) if c == i)
+            / (3 * int((codes2 == i).sum()))
+        )
         for i in range(4)
     ]
 
@@ -1323,9 +1327,17 @@ def test_exact_mean_keeps_the_exact_sum_sign_and_zero():
     assert math.isnan(exact_mean(np.empty(0)))
     assert math.isnan(exact_mean(np.array([1.0, np.inf])))
     assert math.isnan(exact_mean(np.array([1.7e308, 1.7e308, 1.0])))
-    # an ordinary pool reads the correctly rounded sum over n
+    # an ordinary pool reads the exact rational mean, rounded once
     v = np.random.RandomState(2).normal(0.0, 0.01, 1000)
-    assert exact_mean(v) == math.fsum(v.tolist()) / 1000
+    assert exact_mean(v) == float(sum(map(Fraction, v.tolist())) / 1000)
+    # rounded ONCE: the exactly rounded sum over the count rounds twice, and the review's pool
+    # [x − ulp, x, x, x, x] read an ulp ABOVE its own maximum off it, where the mean rounds to x
+    # itself — as a plain pool and as parts rows over a scale
+    x = 0.9757632206350922
+    pool = np.array([np.nextafter(x, -np.inf), x, x, x, x])
+    assert math.fsum(pool.tolist()) / 5 > x  # the defect
+    assert exact_mean(pool) == x == pool_moments(pool)["mean_ret"]
+    assert exact_mean(np.column_stack([2.0 * pool, np.zeros(5)]), scale=2) == x
 
 
 def test_exact_sums_are_the_same_double_in_any_order_at_the_range():
@@ -3565,7 +3577,7 @@ def test_pool_moments_shape_is_taken_about_the_pools_own_offset():
     assert s["kurtosis"] == translate["kurtosis"] == pytest.approx(1.7950310559, rel=1e-10)
     # pools within 17 ulps of 1 tripped scipy's "Precision loss" warning (an exception under
     # -W error, which this suite runs): about the offset they read their exact-rational moments
-    for ulps in ([0, 17, 14], [0, 0, 3, 15]):
+    for ulps in ([0, 17, 16], [0, 0, 3, 15]):
         rets = 1.0 + np.array(ulps) * eps
         assert not _near_constant(rets, exact_mean(rets))  # the premise
         f = [Fraction(x) for x in rets]

@@ -4379,11 +4379,11 @@ def test_cross_mean_cancelling_partial_pool_reads_its_exact_zero_in_every_bar_cl
     tmp_path,
 ):
     # The review's basket: six members (p, q, r, p, q, r) of log outcomes, only the first three
-    # firing, three bars apart; on every other firing bar they move (0.95, 0.96, 1.02) and the
+    # firing, three bars apart; on every other firing bar they move (0.95, 0.97, 1.02) and the
     # last three mirror them, so each firing bar's three excesses cancel exactly — the pooled
     # mean_ret is exactly 0 — while their three rounded rows sum to residue (a mirrored PAIR's
-    # two rows cancel exactly; three rows need not, though (0.95, 0.96, 1.03) happen to). Read
-    # off those rows, the HAC
+    # two rows cancel exactly; three rows need not, though the review's (0.95, 0.96, 1.02) and
+    # (0.95, 0.96, 1.03) happen to once each excess is rounded once). Read off those rows, the HAC
     # divided the residue (t_hac 5.43, hac_se 1.6e-19 beside mean_ret 0.0), and every other
     # bar-closed sum minted evidence: a positive bootstrap interval, an episode hit rate of 1.0.
     # Every bar's exact excess sum is 0, so every one of them reads 0: no long-run variance, a
@@ -4396,7 +4396,7 @@ def test_cross_mean_cancelling_partial_pool_reads_its_exact_zero_in_every_bar_cl
     for k in range(30):
         fire[3 * k] = 1.0 if k % 2 == 0 else 0.6
         if k % 2 == 0:
-            for m, move in zip("ABC", (0.95, 0.96, 1.02), strict=True):
+            for m, move in zip("ABC", (0.95, 0.97, 1.02), strict=True):
                 levels[m][3 * k + 2] = move
     targets = ["A", "B", "C", "D", "E", "F"]
     files = {}
@@ -4701,9 +4701,18 @@ def test_cross_mean_buckets_keep_every_row_a_bar_does_not_hold_whole(tmp_path):
             assert bucket["n"] == row_read["n"] and bucket["hit_rate"] == row_read["hit_rate"]
             assert bucket["mean_ret"] == pytest.approx(row_read["mean_ret"], rel=1e-12)
         moved.append(got["conditional_buckets"]["dow"] != plain["conditional_buckets"]["dow"])
-    # the calendar buckets hold whole bars at their exact sums; the lvl-45 cell holds W alone —
-    # the single-target arm, the frozen kernel's plain read
-    assert moved == [True, True, False]
+        dow = zip(
+            got["conditional_buckets"]["dow"]["buckets"],
+            plain["conditional_buckets"]["dow"]["buckets"],
+            strict=True,
+        )
+        for bucket, row_read in dow:
+            assert bucket["mean_ret"] == pytest.approx(row_read["mean_ret"], rel=1e-12)
+    # the calendar buckets hold whole bars at their exact sums: the all-full lvl-0 cell reads its
+    # identity where the rows' plain read is residue (the lvl-35 cell's partial bars, their rows
+    # each the exact excess rounded once, happen to sum to their bars' exact sums here); the
+    # lvl-45 cell holds W alone — the single-target arm, the frozen kernel's plain read
+    assert moved[0] and not moved[2]
 
 
 def test_cross_mean_grid_pbo_reads_every_candidate_s_bar_numerators(tmp_path, monkeypatch):

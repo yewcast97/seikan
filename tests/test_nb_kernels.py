@@ -662,7 +662,7 @@ def test_decision_side_means_are_exactly_rounded_sums():
     # arrived: [1, −2**-54, −1, 2**-54, 0] sums to exactly 0, and every mean a decision reads off
     # it read 1.1e-17 — `cross_agg(x, mean) > 0` fired — and 0 after a permutation of the
     # members, the decision hanging on the order the targets were declared in. Each mean is the
-    # exactly rounded sum over the count: 0.0 in every order (the offset is 0 here, so each
+    # exact sum over the count, rounded once: 0.0 in every order (the offset is 0 here, so each
     # member's deviation is its value).
     e = 2.0**-54
     row = np.array([[1.0, -e, -1.0, e, 0.0]])
@@ -674,7 +674,7 @@ def test_decision_side_means_are_exactly_rounded_sums():
         assert rolling_agg_1d(r.ravel(), 5, "mean")[-1] == 0.0
     # the event_agg example: [2**54, 1, −2**54] sums to 1 exactly — the pairwise sum read 0
     assert rolling_agg_1d(np.array([2.0**54, 1.0, -(2.0**54)]), 3, "mean")[-1] == 1.0 / 3.0
-    # against a per-window `math.fsum` over magnitudes forty decades apart, cancelling giants
+    # against the exact rational mean over magnitudes forty decades apart, cancelling giants
     # beside sub-ulp terms and holed windows (NaN), and the same rows across a cross-section
     rng = np.random.RandomState(16)
     for kind in range(4):
@@ -694,7 +694,7 @@ def test_decision_side_means_are_exactly_rounded_sums():
             for i in range(w - 1, n):
                 win = x[i - w + 1 : i + 1]
                 if np.isfinite(win).all():
-                    want[i] = win[0] if (win == win[0]).all() else math.fsum(win.tolist()) / w
+                    want[i] = win[0] if (win == win[0]).all() else _rational_mean(win.tolist())
             np.testing.assert_array_equal(rolling_agg_1d(x, w, "mean"), want)
             np.testing.assert_array_equal(ref.rolling_agg(x, w, "mean"), want)
             rows = x[: n - n % 5].reshape(-1, 5)
@@ -708,6 +708,79 @@ def test_decision_side_means_are_exactly_rounded_sums():
     np.testing.assert_array_equal(
         rolling_agg_1d(x, 3, "mean"),
         [np.nan, np.nan, 1e308, 1e308, np.nan, third, -1e308, -1e308, np.nan, third, 1.0, 1.0],
+    )
+
+
+def _rational_mean(vals: list[float]) -> float:
+    return float(sum(map(Fraction, vals)) / len(vals))
+
+
+def test_a_decision_mean_is_rounded_once_and_never_leaves_its_window():
+    # The review's window: the exactly rounded sum over the count rounds TWICE, and
+    # [x − ulp, x, x, x, x] read 0.9757632206350924 — an ulp above its own maximum — on every
+    # decision mean, where the mean rounds to x itself; `rolling_mean(X, 5) > rolling_max(X, 5)`
+    # fired on 59 of 602 bars. Rounded once, a mean is the exact rational mean's double, so it
+    # never leaves [min, max].
+    x = 0.9757632206350922
+    vals = [math.nextafter(x, -math.inf), x, x, x, x]
+    col = np.array(vals)[:, None]
+    row = np.array(vals)[None, :]
+    assert rolling_agg_1d(np.array(vals), 5, "mean")[-1] == x
+    assert nb.cross_agg_apply_nb(row, "mean", 2)[0, 0] == x
+    assert nb.cross_means(row, np.isfinite(row))[0] == x
+    fire = np.zeros((5, 1), dtype=bool)
+    fire[0, 0] = True
+    on = np.ones((5, 1), dtype=bool)
+    assert nb.event_agg_apply_nb(fire, on, on, col, "mean")[-1, 0] == x
+    # every path, against exact rationals: two-value ties round to even, subnormal means, the
+    # review's shape across binades, counts of 2**j + 1 (the sum's rounding at its worst),
+    # cancelling giants, and sums past 2**996 where the quotient's split needs its frame
+    rng = np.random.default_rng(15)
+    windows: list[list[float]] = []
+    for _ in range(300):
+        y = float(rng.uniform(0.5, 2.0))
+        windows.append([y, math.nextafter(y, 3.0)])
+        k = int(rng.integers(2, 9))
+        y = float(10.0 ** rng.uniform(-10, 10))
+        windows.append([math.nextafter(y, -math.inf)] + [y] * (k - 1))
+        windows.append(list(rng.choice([5e-324, 1e-323, 1.5e-323, 0.0, -5e-324], size=5)))
+        k = int(rng.choice([3, 5, 9, 17, 33]))
+        windows.append([float(v) for v in rng.uniform(0.5, 1.0, k)])
+        windows.append(list(rng.normal(0, 1, 7) * 10.0 ** rng.integers(-20, 20, 7)))
+        windows.append(
+            [float(v) for v in rng.uniform(0.3, 1.0, 4) * 2.0 ** rng.integers(995, 1023, 4)]
+        )
+    windows.append([2.0**54, 1.0, -(2.0**54), 2.0**-54, -(2.0**-54)] * 2)
+    for vals in windows:
+        k = len(vals)
+        exact = sum(map(Fraction, vals))
+        if abs(exact) > Fraction(np.finfo(float).max):
+            continue  # the sum has no double: NaN by the sliding sum's rule
+        want = float(exact / k)
+        assert min(vals) <= want <= max(vals)
+        col = np.array(vals)[:, None]
+        row = np.array(vals)[None, :]
+        assert rolling_agg_1d(np.array(vals), k, "mean")[-1] == want, vals
+        assert nb.cross_agg_apply_nb(row, "mean", 2)[0, 0] == want, vals
+        fire = np.zeros((k, 1), dtype=bool)
+        fire[0, 0] = True
+        on = np.ones((k, 1), dtype=bool)
+        assert nb.event_agg_apply_nb(fire, on, on, col, "mean")[-1, 0] == want, vals
+        # a deviation is the exact deviation rounded once too (±inf past the range)
+        dev = nb.cross_demean_apply_nb(row, 2)[0]
+        for v, d in zip(vals, dev, strict=True):
+            exact_dev = Fraction(v) - exact / k
+            try:
+                assert d == float(exact_dev), vals
+            except OverflowError:
+                assert np.isnan(d)  # the kernel nulls an overflowed deviation
+    # a frame-scaled row (a member at 2**996 and above) reads its exact mean and deviations in
+    # the input frame — a sub-ulp partner included
+    row = np.array([[1e308, 1e308, -1e308, -1e308, 2.0**-1040]])
+    exact = sum(map(Fraction, row[0].tolist()))
+    assert nb.cross_means(row, np.isfinite(row))[0] == float(exact / 5)
+    np.testing.assert_array_equal(
+        nb.cross_demean_apply_nb(row, 2)[0], [float(Fraction(v) - exact / 5) for v in row[0]]
     )
 
 
@@ -728,7 +801,7 @@ def test_cross_means_are_exactly_rounded_sums_over_the_count():
     rng = np.random.RandomState(17)
     rows = rng.randn(200, 6) * 10.0 ** rng.randint(-20, 20, (200, 6))
     rows[:, 1:][rng.rand(200, 5) < 0.2] = np.nan
-    want = [math.fsum(r[np.isfinite(r)].tolist()) / np.isfinite(r).sum() for r in rows]
+    want = [_rational_mean(r[np.isfinite(r)].tolist()) for r in rows]
     np.testing.assert_array_equal(nb.cross_means(rows, np.isfinite(rows)), want)
     # a member the mask leaves out is ignored, an empty row has no mean
     a = np.array([[1.0, 100.0, 2.0], [np.nan, np.nan, np.nan]])
@@ -737,15 +810,12 @@ def test_cross_means_are_exactly_rounded_sums_over_the_count():
     )
 
     # legs whose plain sum leaves the double range are summed in a scaled frame: each row reads
-    # its exact sum, rounded, over its count, as in an unbounded exponent range
-    def unbounded(row):
-        return float(sum(map(Fraction, row)) / 2**28) / len(row) * 2.0**28
-
+    # its exact mean rounded once, as in an unbounded exponent range
     wide = np.array(
         [[1e308, 1.5e308, 1e308, 1e308, 1.5e308], [1.7e308, 0.0, 1.7e308, 1.7e308, 0.0]]
     )
     np.testing.assert_array_equal(
-        nb.cross_means(wide, np.isfinite(wide)), list(map(unbounded, wide))
+        nb.cross_means(wide, np.isfinite(wide)), list(map(_rational_mean, wide.tolist()))
     )
     huge = np.full((1, 5), 1.7e308)
     assert nb.cross_means(huge, np.isfinite(huge))[0] == 1.7e308
@@ -1692,9 +1762,10 @@ def test_zscore_ema_of_an_ulp_alternation_is_variation(c):
     )
 
 
-def test_event_agg_mean_of_a_run_one_ulp_off_constant_is_sum_over_count():
-    # Only a bit-identical run takes its value as the mean; one ulp off is variation, read as
-    # sum / count like any other run — the exactly rounded sum.
+def test_event_agg_mean_of_a_run_one_ulp_off_constant_is_the_exact_mean_rounded_once():
+    # Only a bit-identical run takes its value as the mean; one ulp off is variation, read as the
+    # exact sum over the count like any other run — rounded once, so it stays inside the run's
+    # range (the exactly rounded sum over the count rounded twice and could land an ulp outside).
     n = 40
     x = np.full(n, 0.1)
     x[10] = np.nextafter(0.1, 1.0)
@@ -1702,8 +1773,9 @@ def test_event_agg_mean_of_a_run_one_ulp_off_constant_is_sum_over_count():
     sig[0] = True
     ones = np.ones(n, dtype=bool)
     got = nb.event_agg_apply_nb(sig[:, None], ones[:, None], ones[:, None], x[:, None], "mean")
-    want = [math.fsum(x[: t + 1].tolist()) / (t + 1) for t in range(n)]
+    want = [_rational_mean(x[: t + 1].tolist()) for t in range(n)]
     np.testing.assert_array_equal(got.ravel()[10:], want[10:])
+    assert all(0.1 <= g <= x[10] for g in got.ravel()[10:])
 
 
 def test_event_agg_running_sum_is_exact():

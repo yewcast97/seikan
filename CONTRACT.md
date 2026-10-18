@@ -916,11 +916,13 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   fitted however small its spread — its deviations about its offset are exact), and a CSCV
   split scores NaN when its pool is exactly constant (the per-block extrema) or within the HAC's
   ~10 ulps. The pool MEANS the checklist grades, and their direct twins — the legs,
-  the eras, the baseline, the HAC's `t` numerator — are the exactly rounded sum over `n` (`math.fsum`,
-  retaken as exact rationals where a running partial leaves the range while the exact sum has a
-  double — `[1e308, 1e308, −1e308, −1e308]` read NaN and its alternating order 0.0 — so one double
-  in any order, at the range too): the exact sum's sign, exactly 0.0 where it is 0 (a pairwise float sum lost a term a larger one
-  swallowed before its cancelling partner arrived — an exact zero read as a positive mean), and a
+  the eras, the baseline, the HAC's `t` numerator — are the exact sum over `n`, rounded ONCE
+  (the sum's exact parts as rationals, so one double in any order, at the range too —
+  `[1e308, 1e308, −1e308, −1e308]` read NaN off `math.fsum` and its alternating order 0.0): the
+  exact sum's sign, exactly 0.0 where it is 0 (a pairwise float sum lost a term a larger one
+  swallowed before its cancelling partner arrived — an exact zero read as a positive mean), never
+  outside the pool's range (the exactly rounded sum over `n` rounds twice, and read
+  `[x − ulp, x, x, x, x]` an ulp above its maximum), and a
   constant pool's own value; a `cross_mean` basket's pooled `mean_ret` is its exact excess sum
   from the raw legs, and the bar-closed sums beside it — the CSCV split means and the bucket
   means over whole bars among them — read each bar at its exact excess sum (see the pooled

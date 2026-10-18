@@ -15,8 +15,9 @@ Two implementation styles, **no vectorbt**:
   the event-anchor family (``event_anchor`` — the latest-event index ``s(t)`` a Condition's
   tradable signal defines — and ``event_agg``, the resettable running aggregate since it; the
   ``bars_since_event`` / ``event_value`` / ``mask`` reads off those are plain numpy), and the
-  exact sums the decision-side means and deviations read (``_rolling_exact_sums``,
-  ``_row_exact_sums``, ``cross_means``, ``cross_deviations``).
+  exact sums the decision-side means and deviations read (``_rolling_exact_means``,
+  ``_row_exact_sums``, ``cross_means``, ``cross_deviations``), each quotient over a count rounded
+  once (``_expansion_quotient``).
   These are scalar recurrences that don't vectorize; numba compiles the loop to machine code.
 
 The production surface is the 2D ``*_apply_nb`` form (rows × columns → rows × columns), applied per
@@ -82,26 +83,30 @@ from seikan.numeric import MIN_NORMAL, log_ratio_array
 # mean of the raw values: that mean's rounding is the size of the level's ulp, and a spread at that
 # scale (``[2**52, 2**52 + 1]``) read a std of 0.707 for 0.5 and a z-score past its bound.
 #
-# EXACT means: every mean a decision reads — ``rolling_agg``'s and ``cross_agg``'s ``mean`` — and
-# the runner's ``cross_mean`` bench leg (``cross_means``) is its window's or row's EXACTLY ROUNDED
-# sum over its count, the read ``analysis._pools.exact_mean`` gives the graded pools (the centre
-# ``cross_agg``'s std reduces about is the row's offset plus its differences' exactly rounded mean,
-# ``cross_centre``, whose subtractions round); a deviation from a cross-section's mean
+# EXACT means: every mean a decision reads — ``rolling_agg``'s, ``cross_agg``'s and ``event_agg``'s
+# ``mean`` — and the runner's ``cross_mean`` bench leg (``cross_means``) is its window's or row's
+# EXACT sum over its count, rounded ONCE (``_expansion_quotient``; the read
+# ``analysis._pools.exact_mean`` gives the graded pools). The exactly rounded sum over the count
+# rounds twice, and that is no rounding of the mean: ``[x − ulp, x, x, x, x]`` at
+# ``x = 0.9757632206350922`` read an ulp ABOVE its maximum, and ``rolling_agg(x, 5, mean) >
+# rolling_agg(x, 5, max)`` fired on 59 of 602 bars; rounded once, a mean never leaves its window's
+# range. (The centre ``cross_agg``'s std reduces about is the row's offset plus its differences'
+# rounded mean, ``cross_centre``, whose subtractions round.) A deviation from a cross-section's mean
 # that is read (``cross_demean``, the ``cross_mean`` excess) has its numerator ``k·x − S`` summed
-# exactly (``cross_deviations``), so a member AT the mean reads exactly 0.0 — about the rounded
-# centre ``[0, 1, 1, −1 − 2**-52, −1 + 2**-52]``'s first member read 2.2e-17, and ``x == 0 AND
-# cross_demean(x) > 0`` fired. The sums are Shewchuk expansions (``_expansion_add``, the
-# ``math.fsum`` algorithm ``event_agg``'s running sum keeps): sliding along a column
-# (``_rolling_exact_sums``, O(rows) whatever the window) or one per row (``_row_exact_sums``).
-# numpy sums pairwise, and a large term swallowed a small one before its cancelling partner
-# arrived: ``[1, −2**-54, −1, 2**-54, 0]`` sums to exactly 0 and its mean read 1.1e-17, so
-# ``cross_agg(x, mean) > 0`` fired on it — and read 0 after a permutation of the members, the
-# decision hanging on the order the targets were declared in. The mean has the exact sum's sign and
-# is 0.0 exactly where the sum is, in any member order. A cross-section whose largest member reaches
-# ``2**996`` is summed in a frame scaled by ``2**-28`` (``_row_expansion``, chosen off the members'
-# magnitudes — the same in any order), and is NaN where that frame cannot hold a member exactly; a
-# window's running sum is NaN where it leaves the double range on the way (members near it), as the
-# direct form's overflow was.
+# exactly (``cross_deviations``) and rounded once over ``k``, so a member AT the mean reads exactly
+# 0.0 — about the rounded centre ``[0, 1, 1, −1 − 2**-52, −1 + 2**-52]``'s first member read
+# 2.2e-17, and ``x == 0 AND cross_demean(x) > 0`` fired. The sums are Shewchuk expansions
+# (``_expansion_add``, the ``math.fsum`` algorithm ``event_agg``'s running sum keeps): sliding
+# along a column (``_rolling_exact_means``, O(rows) whatever the window) or one per row
+# (``_row_exact_sums``). numpy sums pairwise, and a large term swallowed a small one before its
+# cancelling partner arrived: ``[1, −2**-54, −1, 2**-54, 0]`` sums to exactly 0 and its mean read
+# 1.1e-17, so ``cross_agg(x, mean) > 0`` fired on it — and read 0 after a permutation of the
+# members, the decision hanging on the order the targets were declared in. The mean has the exact
+# sum's sign and is 0.0 exactly where the sum is, in any member order. A cross-section whose
+# largest member reaches ``2**996`` is summed in a frame scaled by ``2**-28`` (``_row_expansion``,
+# chosen off the members' magnitudes — the same in any order), and is NaN where that frame cannot
+# hold a member exactly; a window's running sum is NaN where it leaves the double range on the way
+# (members near it), as the direct form's overflow was.
 # The centre a window's variance is reduced about (``_window_moments``, ``_pair_moments``) stays the
 # direct two-pass form about the window's offset: no threshold compares against it, and the
 # moments, the correlation and the z-score read off it are known to the rounding of the window's
@@ -361,12 +366,12 @@ def rolling_agg_apply_nb(
         return out
     win = sliding_window_view(a, window, axis=0)
     # What `mean` and `std` read off the whole input, once per call: the windows of one value,
-    # and `mean`'s exact sums — the window's exactly rounded sum over its length (the
+    # and `mean`'s exact means — the window's exact sum over its length, rounded once (the
     # exact-means note above).
     if agg in ("mean", "std"):
         constant = _constant_windows(a, window)
     if agg == "mean":
-        sums = _rolling_exact_sums(np.ascontiguousarray(a), window)[window - 1 :]
+        means = _rolling_exact_means(np.ascontiguousarray(a), window)[window - 1 :]
     lifted: npt.NDArray[np.float64] | None = None  # built on the first batch that needs it
     for rows in _window_batches(win.shape):
         w = win[rows]
@@ -377,8 +382,9 @@ def rolling_agg_apply_nb(
             elif agg == "min":
                 v = w.min(axis=-1)
             elif agg == "mean":
-                # a constant window's mean IS its value (the zero-dispersion note)
-                v = np.where(constant[rows], w[..., -1], sums[rows] / window)
+                # a constant window's mean IS its value (the zero-dispersion note) — a window of
+                # 1e308 whose sum left the range included
+                v = np.where(constant[rows], w[..., -1], means[rows])
             elif agg == "std":
                 var, _ = _window_moments(w)
                 v = np.sqrt(var)
@@ -827,9 +833,10 @@ def cross_agg_apply_nb(
     cross-section itself, so every column carries it wherever at least ``max(min_valid, 2)`` targets
     are finite —
     a column whose own value is NaN still sees the group's aggregate. ``mean`` is the finite
-    members' exactly rounded sum over their count, the ``cross_mean`` bench leg's
+    members' exact sum over their count, rounded once — the ``cross_mean`` bench leg's
     (:func:`cross_means`; the exact-means note above: 0.0 exactly where they cancel, whatever
-    order the targets were declared in); ``std`` is the population std
+    order the targets were declared in, never outside the members' range); ``std`` is the
+    population std
     (ddof=0, matching ``rolling_agg``); ``frac_positive`` counts finite values > 0. Inherently 2-D —
     a single column has no cross-section and returns all NaN."""
     a = np.asarray(arr, dtype=float)
@@ -1420,9 +1427,71 @@ def _expansion_value(p: npt.NDArray[np.float64], m: int) -> float:
 
 
 @njit(cache=True)
-def _rolling_exact_sum_1d(a: npt.NDArray[np.float64], window: int) -> npt.NDArray[np.float64]:
-    """The correctly rounded sum of each trailing ``window`` of ``a``, at the window's last bar;
-    NaN unless the window holds ``window`` finite values.
+def _even(q: float) -> bool:
+    """Whether the double ``q`` has an even significand — the neighbour a tie rounds to."""
+    fr, e = math.frexp(q)
+    return int(math.ldexp(abs(fr), min(53, e + 1074))) % 2 == 0
+
+
+@njit(cache=True)
+def _expansion_quotient(p: npt.NDArray[np.float64], m: int, k: int) -> float:
+    """``Σp[:m] / k`` correctly rounded — the partials' exact sum over a count ``k`` (an integer
+    in ``1 .. 2**53``), rounded ONCE. The rounded sum over the count rounds twice, and
+    ``fl(fl(S) / k)`` is within 1.5 ulp of the mean yet not always one of its two neighbours:
+    ``[x − ulp, x, x, x, x]`` at ``x = 0.9757632206350922`` read an ulp ABOVE its maximum, where
+    the mean rounds to ``x`` itself. Rounded once, a mean never leaves ``[min, max]``.
+
+    ``q = fl(fl(S) / k)`` is corrected off the EXACT residual ``R = S − k·q`` (``k·q`` split into
+    two doubles by Dekker's product; the rest an expansion like ``p``): the mean is ``q + R/k``,
+    so it rounds to the neighbour of ``q`` toward ``R`` wherever ``|R|`` passes ``k`` times half
+    the gap to it, to the even one of the two exactly there, and to ``q`` otherwise — stepped
+    until that holds (one step in every case tried; a binade boundary could take two). The
+    residual is carried doubled, against ``k`` times the gap, wherever twice the sum cannot
+    overflow, and plain against ``k`` times the exact half-gap past that (``q`` is normal
+    there); ``q``'s Veltkamp halves are taken in a frame scaled by :data:`_SPLIT_DOWN` from
+    :data:`_SPLIT_MAX` on, where the splitter's product would overflow. Non-finite where
+    ``fl(S)`` is. ``p`` is left as it was."""
+    hi = _expansion_value(p, m)
+    q = hi / k
+    if k == 1 or not np.isfinite(q):
+        return q
+    s = 1.0 if abs(q) < _SPLIT_MAX else _SPLIT_DOWN
+    t = (q * s) * _SPLITTER
+    qh = (t - (t - q * s)) / s
+    ql = q - qh
+    t = k * _SPLITTER
+    kh = t - (t - k)
+    kl = k - kh
+    kq = q * k
+    err = ((qh * kh - kq) + qh * kl + ql * kh) + ql * kl  # k·q = kq + err exactly
+    c = 2.0 if abs(hi) < 2.0**1022 else 1.0
+    r = np.empty(m + 3)
+    for i in range(m):
+        r[i] = c * p[i]
+    r, n, _ = _expansion_add(r, m, -c * kq)
+    r, n, _ = _expansion_add(r, n, -c * err)
+    rv = _expansion_value(r, n)  # the residual's sign, exact
+    if rv == 0.0:
+        return q
+    toward = np.inf if rv > 0.0 else -np.inf
+    while True:
+        nb = np.nextafter(q, toward)
+        half_gap = k * ((nb - q) * (c / 2.0))  # a power of two times k: exact
+        r, n, _ = _expansion_add(r, n, -half_gap)
+        d = _expansion_value(r, n)
+        if d == 0.0:
+            return q if _even(q) else nb
+        if (d > 0.0) != (rv > 0.0):
+            return q
+        q = nb
+        r, n, _ = _expansion_add(r, n, -half_gap)
+
+
+@njit(cache=True)
+def _rolling_exact_mean_1d(a: npt.NDArray[np.float64], window: int) -> npt.NDArray[np.float64]:
+    """The correctly rounded mean of each trailing ``window`` of ``a``, at the window's last bar
+    — its exact sum over ``window``, rounded once (:func:`_expansion_quotient`); NaN unless the
+    window holds ``window`` finite values.
 
     One SLIDING expansion (:func:`_expansion_add`): each bar takes back the value leaving the
     window and adds its own, so the partials hold the window's exact sum — O(rows) whatever the
@@ -1458,16 +1527,16 @@ def _rolling_exact_sum_1d(a: npt.NDArray[np.float64], window: int) -> npt.NDArra
                 if stale:
                     break
         if not stale:
-            out[i] = _expansion_value(p, m)
+            out[i] = _expansion_quotient(p, m, window)
     return out
 
 
 @njit(cache=True)
-def _rolling_exact_sums(a: npt.NDArray[np.float64], window: int) -> npt.NDArray[np.float64]:
-    """2-D :func:`_rolling_exact_sum_1d` per column."""
+def _rolling_exact_means(a: npt.NDArray[np.float64], window: int) -> npt.NDArray[np.float64]:
+    """2-D :func:`_rolling_exact_mean_1d` per column."""
     out = np.empty_like(a)
     for j in range(a.shape[1]):
-        out[:, j] = _rolling_exact_sum_1d(a[:, j], window)
+        out[:, j] = _rolling_exact_mean_1d(a[:, j], window)
     return out
 
 
@@ -1510,16 +1579,20 @@ def _row_expansion(
 
 
 @njit(cache=True)
-def _frame_quotient(value: float, k: int, scale: float) -> float:
-    """``value`` — correctly rounded in the frame ``scale`` — over ``k``, in the input frame:
-    scaled back (exactly) and divided once wherever it is representable there, the direct
-    frame's one rounding; divided inside the frame and scaled back where it is not (a mean, or a
-    deviation, whose numerator is past the range). Divided inside the frame, a quotient below
-    ``2**-994`` rounded at the frame's subnormal grid: a deviation of −2**-1046 / 5 read −0.0."""
-    v = value / scale
-    if np.isfinite(v):
-        return v / k
-    return value / k / scale
+def _frame_quotient(p: npt.NDArray[np.float64], m: int, k: int, scale: float) -> float:
+    """``Σp[:m] / k`` correctly rounded in the INPUT frame (:func:`_expansion_quotient`), the
+    partials holding the sum in the frame ``scale`` (:func:`_row_expansion`): scaled back
+    (exactly, in place) wherever the rounded sum is representable there, so the quotient rounds
+    once at the input frame's grid — divided inside the frame, a quotient below ``2**-994``
+    rounded at the frame's subnormal grid, and a deviation of −2**-1046 / 5 read −0.0; divided
+    inside the frame and scaled back where it is not (a mean, or a deviation, whose numerator is
+    past the range: the quotient there is far above the subnormal range, so scaling commutes with
+    its rounding)."""
+    if np.isfinite(_expansion_value(p, m) / scale):
+        for i in range(m):
+            p[i] /= scale
+        return _expansion_quotient(p, m, k)
+    return _expansion_quotient(p, m, k) / scale
 
 
 @njit(cache=True)
@@ -1549,8 +1622,9 @@ def cross_deviations(
     """``(rows × members)``: each ``finite`` member's deviation from its row's mean, ``x − S/k``
     for the exact sum ``S`` of the row's ``k`` finite members — the numerator ``k·x − S`` summed
     EXACTLY (:func:`_expansion_add`, with ``k·x`` the products of ``x``'s two Veltkamp halves,
-    each an exact double), rounded once and divided by ``k`` once: ``cross_demean``'s values and
-    the runner's ``cross_mean`` excesses. A member AT the mean deviates by exactly 0.0, and every
+    each an exact double) and rounded once over ``k`` (:func:`_frame_quotient`):
+    ``cross_demean``'s values and the runner's ``cross_mean`` excesses. A member AT the mean
+    deviates by exactly 0.0, and every
     deviation is the exact one correctly rounded, whatever the members' order or magnitudes. A
     row whose largest member reaches ``2**996`` (where the split or ``k·x`` can overflow) is
     computed in :func:`_row_expansion`'s frame scaled by ``2**-28`` and divided back in the input
@@ -1585,7 +1659,7 @@ def cross_deviations(
             if not over:
                 q, n, over = _expansion_add(q, n, k * (x - hi))
             if not over:
-                out[r, c] = _frame_quotient(_expansion_value(q, n), k, scale)
+                out[r, c] = _frame_quotient(q, n, k, scale)
     return out
 
 
@@ -1594,9 +1668,10 @@ def cross_means(
     a: npt.NDArray[np.float64], finite: npt.NDArray[np.bool_]
 ) -> npt.NDArray[np.float64]:
     """``(rows,)``: each row's mean over its ``finite`` members — ``cross_agg``'s ``mean`` and the
-    runner's ``cross_mean`` bench leg: the exactly rounded sum over the count (0.0 exactly where
-    the members cancel, the exact sum's sign otherwise, in any member order), and a row whose
-    members all share one value reads that value. A row whose largest member reaches ``2**996``
+    runner's ``cross_mean`` bench leg: the exact sum over the count, rounded once (0.0 exactly
+    where the members cancel, the exact sum's sign otherwise, in any member order, never outside
+    the members' range), and a row whose members all share one value reads that value. A row
+    whose largest member reaches ``2**996``
     is summed in :func:`_row_expansion`'s frame scaled by ``2**-28`` and divided back in the
     input frame (:func:`_frame_quotient`), so a row of finite members never loses its mean to a
     sum past the double range. NaN on an empty row and on one whose frame cannot hold a member
@@ -1620,7 +1695,7 @@ def cross_means(
             continue
         p, m, scale, over = _row_expansion(a[r], finite[r], p)
         if not over:
-            out[r] = _frame_quotient(_expansion_value(p, m), k, scale)
+            out[r] = _frame_quotient(p, m, k, scale)
     return out
 
 
@@ -1636,7 +1711,8 @@ def event_agg_1d(
     (the event bar included). ``mode`` 0 = sum, 1 = max, 2 = min, 3 = mean (sum / (t − s + 1)).
 
     The running sum is EXACT: it is kept as non-overlapping partials (:func:`_expansion_add`)
-    and read correctly rounded on every bar — ``math.fsum`` of ``x[s .. t]``. A plain ``acc +=
+    and read correctly rounded on every bar — ``math.fsum`` of ``x[s .. t]`` — as is the mean,
+    that exact sum over the count rounded once (:func:`_expansion_quotient`). A plain ``acc +=
     v`` lost a term a larger one swallowed and never got it back when that term cancelled: after
     ``[2**54, 1, −2**54]`` the exact sum is 1 and it read 0 from then on, so
     ``event_agg(E, X, sum) == 0`` fired where it was false.
@@ -1694,7 +1770,7 @@ def event_agg_1d(
             # an all-equal stretch's mean IS its value (the zero-dispersion note above)
             r = mx
         else:
-            r = np.nan if overflowed else _expansion_value(acc, n_acc) / cnt
+            r = np.nan if overflowed else _expansion_quotient(acc, n_acc, cnt)
         if np.isfinite(r):
             out[t] = r
     return out

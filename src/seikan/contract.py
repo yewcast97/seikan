@@ -654,7 +654,7 @@ METRIC_ROLES_DOC: dict[str, JsonValue] = {
         "per-cell episode_profile (the episode-deduplicated TWIN of the row-level pool "
         "statistics: the same frozen cross-target overlap merge as episode_stats — one crisis seen "
         "through three targets is ONE episode — then one aggregate per episode (the MEAN of its "
-        "rows' ret, their exactly rounded sum over the row count, a cross_mean bar's rows at their "
+        "rows' ret, exact and rounded once, a cross_mean bar's rows at their "
         "exact excess sum — 0 on a full bar — matching the ledger's per-episode read; the extreme "
         "mae/mfe within it) and the same statistic family over the episodes: n_episodes, hit_rate, "
         "mean_ret, profit_factor, ret_quantiles, worst/best, the excursion blocks over per-episode "

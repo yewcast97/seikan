@@ -261,6 +261,27 @@ def test_a_negated_warming_branch_mints_no_observations(tmp_path):
     assert cell["signal_coverage"]["target"]["n_undefined"] == 0
 
 
+def test_an_impossible_mean_predicate_mints_no_observations(tmp_path):
+    # The review's run: the five-bar window [x − ulp, x, x, x, x] at x = 0.9757632206350922 read
+    # its mean an ulp ABOVE its maximum (the exactly rounded sum over the count rounds twice), so
+    # `rolling_mean(close, 5) > rolling_max(close, 5)` — false of every window there is — fired on
+    # 59 of 602 bars and closed 59 observations. Rounded once, a mean never leaves its window.
+    x = 0.9757632206350922
+    pattern = [1.0] * 5 + [float(np.nextafter(x, -np.inf)), x, x, x, x]
+    path = tmp_path / "px.csv"
+    _write_px(path, np.array((pattern * 61)[:602]))
+    close = {"type": "field", "column": "close"}
+    entry = {
+        "type": "threshold",
+        "left": {"type": "rolling_agg", "input": close, "window": 5, "agg": "mean"},
+        "op": ">",
+        "right": {"type": "rolling_agg", "input": close, "window": 5, "agg": "max"},
+    }
+    cell = _run_entry(path, entry, horizon=5)["cells"][0]
+    assert cell["outcome_coverage"]["target"]["n_attempted"] == 0
+    assert cell["by_target"]["target"]["n"] == 0
+
+
 def test_an_unmet_run_level_check_leaves_every_cell_unmet(tmp_path):
     # Run-level evidence is the ground every per-cell read stands on, so one unmet run-level
     # check leaves EVERY cell unmet — a caller reading cells[i].met gets the complete answer

@@ -14,9 +14,9 @@ recurrence, on a mean compensated by TwoSum, runs in a frame lifted by a power o
 variance nears that range. Every
 window moment is taken about the window's own offset (its first value; a cross-section's is the
 midpoint of its range), never about the rounded mean of the raw values, and every MEAN a decision
-reads (``rolling_agg`` / ``cross_agg`` ``mean``, a cross-section's centre) is the exactly rounded
-``math.fsum`` over the count — NaN where that sum overflows; a cross-section's demeaned member is
-its exact deviation's numerator ``k·x − S`` (exact rationals), rounded once, over ``k``.
+reads (``rolling_agg`` / ``cross_agg`` / ``event_agg`` ``mean``) is the exact rational sum over the
+count, rounded once — NaN where that sum overflows; a cross-section's demeaned member is its exact
+deviation ``x − S/k`` (exact rationals) rounded once.
 """
 
 from __future__ import annotations
@@ -107,6 +107,14 @@ def _exact_sum(vals: list[float]) -> float:
         return math.fsum(vals)
     except OverflowError:
         return math.nan
+
+
+def _exact_mean(vals: list[float]) -> float:
+    """The exact rational mean of finite ``vals``, rounded once — NaN where their sum overflows
+    (the kernels' running sum has no value there)."""
+    if math.isnan(_exact_sum(vals)):
+        return math.nan
+    return float(sum(map(Fraction, vals)) / len(vals))
 
 
 def _shifted_moments(vals: list[float]) -> tuple[float, float]:
@@ -253,7 +261,7 @@ def rolling_agg(arr: np.ndarray, window: int, agg: str) -> np.ndarray:
         elif agg == "min":
             out[i] = vals.min()
         elif agg == "mean":
-            out[i] = vals[0] if constant else _exact_sum(vals.tolist()) / window
+            out[i] = vals[0] if constant else _exact_mean(vals.tolist())
         else:  # std, population, about the window's first value
             var, _ = _shifted_moments(vals.tolist())
             if constant:
@@ -488,12 +496,14 @@ def _framed(vals: list[float]) -> tuple[list[Fraction], float] | None:
 
 
 def _frame_quotient(num: Fraction, framed: tuple[list[Fraction], float]) -> float:
-    """An exact numerator in the frame, rounded once there, over the member count — divided in
-    the input frame wherever the rounded numerator is representable there, else inside the frame
-    and scaled back."""
+    """An exact numerator in the frame over the member count, rounded once in the input frame —
+    ``±inf`` where the quotient leaves the double range."""
     xs, s = framed
-    v = float(num)
-    return v / s / len(xs) if math.isfinite(v / s) else v / len(xs) / s
+    q = num / (len(xs) * Fraction(s))
+    try:
+        return float(q)
+    except OverflowError:
+        return math.copysign(math.inf, q)
 
 
 def _row_exact_deviations(vals: list[float]) -> list[float]:
@@ -664,7 +674,7 @@ def event_agg(
         elif agg == "min":
             v = float(np.min(win))
         elif agg == "mean":
-            v = float(win[0]) if len(set(win.tolist())) == 1 else total / len(win)
+            v = float(win[0]) if len(set(win.tolist())) == 1 else _exact_mean(win.tolist())
         else:
             raise ValueError(agg)
         if math.isfinite(v):

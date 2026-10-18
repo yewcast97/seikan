@@ -132,26 +132,39 @@ def exact_sum(v: np.ndarray) -> float:
     return _fsum(v.ravel().tolist())
 
 
+def _exact_quotient(terms: list[float], count: int) -> float:
+    """``Σterms / count`` correctly rounded — the EXACT sum (its exact parts,
+    :func:`_exact_parts`, as rationals) over the integer ``count``, rounded ONCE. The exactly
+    rounded sum over the count rounds twice, which is no rounding of the mean: ``[x − ulp, x, x,
+    x, x]`` at ``x = 0.9757632206350922`` read an ulp above its maximum, where the mean rounds
+    to ``x`` itself. Rounded once, a mean never leaves its pool's range. NaN where the sum has no
+    double (:func:`_fsum`'s rule)."""
+    parts = _exact_parts(terms)
+    if parts is None:
+        return _NAN
+    return float(sum(map(Fraction, parts)) / count)
+
+
 def exact_mean(v: np.ndarray, scale: int = 1) -> float:
-    """The mean of a pool of finite values as its EXACTLY ROUNDED sum over ``n`` — the read
-    every mean the checklist grades, and its direct twins, share: ``pool_moments``' ``mean_ret``,
-    the baseline's and the eras' means, the attribution legs and the HAC's centre (so ``t_hac``
-    is that ``mean_ret`` over its SE).
+    """The mean of a pool of finite values — its EXACT sum over ``n``, rounded once
+    (:func:`_exact_quotient`) — the read every mean the checklist grades, and its direct twins,
+    share: ``pool_moments``' ``mean_ret``, the baseline's and the eras' means, the attribution
+    legs and the HAC's centre (so ``t_hac`` is that ``mean_ret`` over its SE).
 
     ``np.mean`` sums pairwise in floating point, and a large term swallows a small one before
     its cancelling partner arrives: the 49 diff returns of ``[0, 2**54, 0, −1, 0] × 10`` sum to
     exactly 0 and read a mean of 1/49 — a positive edge minted by rounding, which the support
-    floor's ``mean_ret > 0`` graded. ``math.fsum`` is the correctly rounded sum, so the mean has
-    the exact sum's sign and is ``0.0`` exactly where it is 0; an all-equal pool's mean is its
-    value. NaN on an empty pool, on a non-finite value, and where the exact sum leaves the
-    double range (:func:`_fsum`) — an overflowed mean is no evidence, as everywhere in this
-    module.
+    floor's ``mean_ret > 0`` graded. The exact sum rounded once over ``n`` has the exact sum's
+    sign, is ``0.0`` exactly where it is 0 and never leaves the pool's range; an all-equal pool's
+    mean is its value. NaN on an empty pool, on a non-finite value, and where the exact sum
+    leaves the double range (:func:`_fsum`) — an overflowed mean is no evidence, as everywhere
+    in this module.
 
     ``v`` may instead be ``n`` ROWS of exact parts (n × J), each row's value its parts' exact
     sum over the integer ``scale`` — a ``cross_mean`` bar's numerator over the member count
-    (:class:`BarNumerators`), which no double holds: the mean is then the parts' exactly rounded
-    sum over ``scale·n``, one division, so it is 0.0 exactly where the rows' values cancel. Its
-    entries are all equal only where each row is one part (or none): that part over ``scale``."""
+    (:class:`BarNumerators`), which no double holds: the mean is then the parts' exact sum over
+    ``scale·n``, rounded once, so it is 0.0 exactly where the rows' values cancel. Its entries
+    are all equal only where each row is one part (or none): that part over ``scale``."""
     n = int(v.shape[0])
     if n == 0:
         return _NAN
@@ -160,7 +173,7 @@ def exact_mean(v: np.ndarray, scale: int = 1) -> float:
         return _NAN
     if lo == hi:
         return lo / scale
-    return exact_sum(v) / (scale * n)
+    return _exact_quotient(v.ravel().tolist(), scale * n)
 
 
 #: The least mass no double holds — the largest double plus half its ulp, where an exact sum rounds
@@ -444,9 +457,9 @@ def cross_mean_pooled_mean(raw: np.ndarray, closed: np.ndarray) -> float:
     are ``raw[t, g] − mean(raw[t, :])``, so over the pool the excess sum is
     ``Σ_t (Σ_{closed} raw − (k_t/N)·Σ_all raw) = Σ_{t,g} (N·[closed_tg] − k_t)·raw_tg / N`` —
     an INTEGER-weighted sum of the legs, which is computed exactly: each leg is split into two
-    halves whose products with its weight are exact doubles, every product is summed by
-    ``math.fsum`` (the exact numerator, correctly rounded) and the total is divided by ``N·n``
-    once. A bar on which every member closed weighs every leg 0 (``S − 1.0·S``); a bar whose legs
+    halves whose products with its weight are exact doubles, and the products' exact sum over
+    ``N·n`` is rounded once (:func:`_exact_quotient`). A bar on which every member closed weighs
+    every leg 0 (``S − 1.0·S``); a bar whose legs
     are all the SAME value (a shared outcome feed broadcast to the basket) has weights that sum to
     0 against it, whatever closed — each excess there is exactly zero. Rounding ``k_t/N`` first
     did not cancel: a 22-member bar of 7 zeros, 7 twos and 8 ones whose 15 firing members (the
@@ -476,7 +489,7 @@ def cross_mean_pooled_mean(raw: np.ndarray, closed: np.ndarray) -> float:
     if not (np.isfinite(wh).all() and np.isfinite(wl).all()):
         return _NAN
     # NaN where the exact total leaves the double range
-    return float(_fsum([*wh.ravel().tolist(), *wl.ravel().tolist()]) / (wh.shape[1] * n))
+    return _exact_quotient([*wh.ravel().tolist(), *wl.ravel().tolist()], wh.shape[1] * n)
 
 
 def _cross_mean_weighted_parts(
@@ -553,8 +566,8 @@ def cross_mean_bar_numerators(raw: np.ndarray, closed: np.ndarray) -> BarNumerat
     :func:`_exact_parts` peels off that sum, on its first closed member
     (:meth:`BarNumerators.at`), and a read that sums whole bars — the bootstrap's episode sums,
     the eras, the episode means, the CSCV split means, a bucket's mean over a bar it holds whole
-    (the runner's ``rets_pool``, over ``pool_scale`` ``N``) — sums their parts in ONE
-    ``math.fsum`` and divides by ``N`` times its row count once (:func:`exact_mean`): 0.0
+    (the runner's ``rets_pool``, over ``pool_scale`` ``N``) — takes their parts' exact sum over
+    ``N`` times its row count, rounded once (:func:`exact_mean`): 0.0
     exactly where the excesses it holds cancel, across bars too, and otherwise their exact sum's
     sign. Each bar divided by ``N`` first rounded every bar apart: eight episodes of three bars
     whose excesses −1/3, −2/3 and 1 cancel read 1.85e-17 each — a positive interval and an

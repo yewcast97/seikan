@@ -354,10 +354,12 @@ exactly rounded sums. `ema` differs from its plain recurrence only on the steps 
 update left its exact interval; the EW z-score reads the plain West recurrence's value to its
 rounding (the compensated mean), lifted where that recurrence leaves the normal range (below).
 
-Every MEAN a decision reads is exactly rounded too: `rolling_agg`'s and `cross_agg`'s `mean`, and
-the `cross_mean` bench leg, are the window's or the bar's exactly rounded sum over its count — the
-exact sum's sign, and exactly 0.0 where that sum is 0, whatever order the bars or the targets come
-in. Summed pairwise in floating point, the cross-section `[1, −2**-54, −1, 2**-54, 0]` read a mean
+Every MEAN a decision reads is exactly rounded too: `rolling_agg`'s, `cross_agg`'s and
+`event_agg`'s `mean`, and the `cross_mean` bench leg, are the window's or the bar's exact sum over
+its count, rounded ONCE — the exact sum's sign, exactly 0.0 where that sum is 0, whatever order the
+bars or the targets come in, and never outside the window's range (the exactly rounded sum divided
+by the count rounds twice, and read `[x − ulp, x, x, x, x]` an ulp above its own maximum, so
+`rolling_agg(x, 5, "mean") > rolling_agg(x, 5, "max")` fired). Summed pairwise in floating point, the cross-section `[1, −2**-54, −1, 2**-54, 0]` read a mean
 of 1.1e-17 that `cross_agg(x, mean) > 0` fired on in one declaration order of the targets and not
 in another.
 `cross_demean` (and the `cross_mean` excess) is each member's EXACT deviation from that mean —
@@ -450,8 +452,8 @@ range reads that recurrence's value to its rounding.
   finite). **Omit `window`** for an EXPANDING (all-time) `max`/`min` only — expanding
   `mean`/`std`/`median`/`mad` are rejected. Prefer the dedicated `drawdown` node for
   depth-below-peak; the composed form `binary_op(close ÷ rolling_agg(close, N, "max"))` remains
-  valid. A **simple moving average** is `agg:"mean"` (the window's exactly rounded sum over
-  `N`); **realized vol** is
+  valid. A **simple moving average** is `agg:"mean"` (the window's exact sum over `N`, rounded
+  once); **realized vol** is
   `rolling_agg(change(close, kind="log"), N, "std")`. `median` and `mad` are the robust pair:
   `mad` is the median absolute deviation about the SAME window's median, UNSCALED (multiply by
   1.4826 for the normal-consistent sigma), so the **robust z-score** is
@@ -523,7 +525,7 @@ floor sweeps the SAMPLE, not the hypothesis. Each node counts as one operator le
   produced a finite value since its init (its warmup gates on its own input as well — a value the
   input carried before its init, a broadcast snapshotted in warmup, counts for nothing), so a
   staggered-start basket measures each member only over the history it actually has. `mean` is the finite members'
-  exactly rounded sum over their count; `std` is the population std (ddof=0, matching
+  exact sum over their count, rounded once; `std` is the population std (ddof=0, matching
   `rolling_agg`); `frac_positive` is the fraction of finite values > 0, in `[0, 1]`.
 
 **The population model** — two optional selectors on every cross node say WHO is in the
@@ -1192,8 +1194,9 @@ and int64 nanosecond counts silently round in IEEE-754 consumers.)
   - `params` — the parameter assignment, with `horizon` **always present** even when you did not
     sweep it.
   - `by_target` — per target: `n`, `n_nonoverlap` (non-overlapping episodes — non-overlap is not independence; compare to `n`
-    to see the overlap inflation), `mean_ret` (the closed returns' exactly rounded sum over `n`,
-    so its sign and its zero are the exact sum's — the read the support floor grades),
+    to see the overlap inflation), `mean_ret` (the closed returns' exact sum over `n`, rounded
+    once, so its sign and its zero are the exact sum's and it never leaves the pool's range — the
+    read the support floor grades),
     `mean_ret_raw` / `mean_ret_bench` (the excess
     mean's own direction-signed legs over the same closed pool — `mean_ret ≈ mean_ret_raw −
     mean_ret_bench`, so "+3.2% against a +2.4% market" and "lost less than a falling market" are
@@ -1285,7 +1288,7 @@ and int64 nanosecond counts silently round in IEEE-754 consumers.)
     each `{start, end, n, mean_ret, share_abs}`, capped at 32 with mass-conserving truncation
     (`n_omitted` + `omitted_share_abs`; listed + omitted shares ≈ 1), and `n_total ==
     episode_stats.n_clusters` by construction. A count read off a truncated ledger is a floor.
-    An entry's `mean_ret` is its rows' exactly rounded sum over their count — exactly 0 where
+    An entry's `mean_ret` is its rows' exact sum over their count, rounded once — exactly 0 where
     they cancel, so a zero-mean episode is no win in `episode_profile`'s hit rate and streaks —
     and null where that sum left the double range.
   - `conditional_buckets` / `bucket_monotonicity` — per-feature qcut buckets (q=4) over the
@@ -1297,8 +1300,8 @@ and int64 nanosecond counts silently round in IEEE-754 consumers.)
     never across cells (see "Not in the report"). Refusals are
     explicit, never absent:
     `no_closed_observations` / `insufficient_observations` (below 20 valid rows) /
-    `insufficient_distinct_values`. Each `mean_ret` is the bucket's exactly rounded sum over its
-    `n`, so buckets holding the same returns read the same mean in any row order.
+    `insufficient_distinct_values`. Each `mean_ret` is the bucket's exact sum over its `n`,
+    rounded once, so buckets holding the same returns read the same mean in any row order.
     `bucket_monotonicity` carries a Spearman `rho` + `sign` per
     feature that bucketed with ≥ 3 populated buckets — none where a bucket's `mean_ret` is null,
     its returns' sum having left the double range, or where every mean is equal. Under a
@@ -1656,7 +1659,7 @@ open to quote a statistic honestly.
   the first-declared candidate wins each split, and a sparse such grid can score fewer splits
   or decline `insufficient_data`. Every block moment is an exactly rounded sum, the same in any
   row order, so two candidates holding the same returns in every block tie on every split, and
-  every split's mean is its rows' exactly rounded sum over their count — the exact sum's sign,
+  every split's mean is its rows' exact sum over their count, rounded once — the exact sum's sign,
   0.0 where the rows cancel, however they fall across blocks.
 - A sweep-axis read — is an effect a plateau across a swept axis or a lone spike, the honest
   analogue of family-wise machinery this engine does not carry — is yours to form from
