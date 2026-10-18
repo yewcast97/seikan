@@ -235,8 +235,11 @@ def _transform_series(node: Series, resolve: _ParamResolver) -> Series:
                 return CrossAgg(
                     input=inp_t, agg=node.agg, min_valid=node.min_valid, where=wh_t, group=gr_t
                 )
-            cls = CrossRank if isinstance(node, CrossRank) else CrossDemean
-            return cls(input=inp_t, min_valid=node.min_valid, where=wh_t, group=gr_t)
+            if isinstance(node, CrossDemean):
+                return CrossDemean(
+                    input=inp_t, min_valid=node.min_valid, scale=node.scale, where=wh_t, group=gr_t
+                )
+            return CrossRank(input=inp_t, min_valid=node.min_valid, where=wh_t, group=gr_t)
         case BinaryOp(left=lhs, right=rhs, op=op):
             return BinaryOp(
                 left=_transform_series(lhs, resolve), right=_transform_series(rhs, resolve), op=op

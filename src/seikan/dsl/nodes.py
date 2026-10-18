@@ -448,15 +448,19 @@ class CrossRank(_Strict):
 
 
 class CrossDemean(_Strict):
-    # The target's value minus the cross-target mean of the finite values at bar t (self included).
-    # NaN where the target's own value is NaN or fewer than min_valid targets are finite. The
-    # zscore recipe: ``binary_op(cross_demean(x), "/", cross_agg(x, "std"))`` — the same 1 + d(x)
-    # nesting cost as either node alone, and a zero-dispersion bar divides by 0 → NaN via the
-    # ``BinaryOp`` ``/`` contract (never fires) — exactly: a constant cross-section demeans to 0.0
-    # and has a std of 0.0, whatever its computed mean rounds to.
+    # The target's value minus the cross-target mean of the finite values at bar t (self
+    # included) — its exact deviation, rounded once. NaN where the target's own value is NaN or
+    # fewer than min_valid targets are finite. ``scale="std"`` makes it the cross-sectional
+    # Z-SCORE: that deviation over the cross-section's population std (``cross_agg``'s), clipped
+    # to the population bound ±√(k−1) of the k members it reduced over (per group under
+    # ``group``), and NaN on a zero-dispersion bar (undefined, as the SMA ``zscore`` is: never
+    # fires). The quotient ``binary_op(cross_demean(x), "/", cross_agg(x, "std"))`` stays legal
+    # arithmetic but is no bounded z: its roundings read 2.0000000000000004 for the exact 2 of
+    # ``[100, 100, 100, 100, 109.3]``, and ``> 2`` fired there in every member order.
     type: Literal["cross_demean"] = "cross_demean"
     input: Series
     min_valid: Ge2Int = 2
+    scale: Literal["std"] | None = None
     where: Condition | None = None  # see ``CrossRank`` for the population model
     group: Series | None = None
 

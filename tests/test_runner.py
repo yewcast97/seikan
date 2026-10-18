@@ -719,6 +719,53 @@ def test_a_bar_at_its_window_mean_has_a_z_score_of_exactly_zero(tmp_path):
         assert run_backtest(thesis, load(thesis, {"target": px})).trades.empty
 
 
+def test_a_cross_sectional_z_score_never_passes_its_population_bound(tmp_path):
+    # The review's basket: five members on rising prices, one of them 9.3% above the other four
+    # on each bar and the outlier rotating, so its exact z is the population bound 2 on every bar
+    # and `> 2` holds nowhere. Spelled as the quotient cross_demean(close) / cross_agg(close,
+    # "std"), the roundings read 2.0000000000000004 on some bars, and how many moved with the
+    # declaration order — 16 closed observations forward, 18 reversed: the quotient's stated
+    # boundary. cross_demean(close, scale="std") is clipped to the bound and fires in neither.
+    names = ["T1", "T2", "T3", "T4", "T5"]
+    paths = {
+        name: str(
+            _bars(
+                tmp_path / f"{name}.csv",
+                [(109.3 if t % 5 == j else 100.0) * (1.0 + 0.001 * t) for t in range(102)],
+            )
+        )
+        for j, name in enumerate(names)
+    }
+    close = {"type": "field", "column": "close"}
+    quotient = {
+        "type": "binary_op",
+        "op": "/",
+        "left": {"type": "cross_demean", "input": close},
+        "right": {"type": "cross_agg", "agg": "std", "input": close},
+    }
+    z = {"type": "cross_demean", "input": close, "scale": "std"}
+    for left, want in ((z, [0, 0]), (quotient, [16, 18])):
+        closed = []
+        for targets in (names, names[::-1]):
+            thesis = Thesis.model_validate(
+                {
+                    "name": "cross_z",
+                    "target_mode": "basket",
+                    "data": {"targets": targets},
+                    "entry": {
+                        "type": "threshold",
+                        "left": left,
+                        "op": ">",
+                        "right": {"type": "constant", "value": 2.0},
+                    },
+                    "params": {"horizon": 1},
+                }
+            )
+            res = run_backtest(thesis, load(thesis, paths))
+            closed.append(res.summary["cells"][0]["pooled"]["n"])
+        assert closed == want
+
+
 def test_cell_count_equals_the_declared_grid_across_shapes(tmp_path):
     # len(cells) == n_hypotheses_attempted by construction, whatever the grid's shape — including
     # the degenerate one-cell run whose horizon was never swept.

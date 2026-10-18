@@ -131,11 +131,12 @@ def transform_values(
                     return nb.cross_agg_apply_nb(a, cross_agg, mv)
 
             else:
-                fn = (
-                    nb.cross_rank_apply_nb
-                    if isinstance(node, CrossRank)
-                    else nb.cross_demean_apply_nb
-                )
+                if isinstance(node, CrossRank):
+                    fn = nb.cross_rank_apply_nb
+                elif node.scale == "std":  # the cross-sectional z-score
+                    fn = nb.cross_zscore_apply_nb
+                else:
+                    fn = nb.cross_demean_apply_nb
 
                 def kernel(a: np.ndarray) -> np.ndarray:
                     return fn(a, mv)

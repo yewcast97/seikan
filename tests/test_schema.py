@@ -1310,6 +1310,28 @@ def test_cross_sectional_parses_and_roundtrips():
         assert Thesis.model_validate(json.loads(t.model_dump_json())) == t
 
 
+def test_cross_demean_scale_is_a_hash_safe_option():
+    # `scale="std"` makes cross_demean the bounded cross-sectional z-score. The field is optional
+    # and None by default, so a document omitting it, one spelling it null and every document
+    # written before it existed are ONE identity, while setting it is another hypothesis; any
+    # other scale refuses.
+    from seikan.gate import canonical_dsl_hash
+
+    def doc(**scale: str | None) -> dict:
+        left = {"type": "cross_demean", "input": _FIELD_CLOSE, **scale}
+        right = {"type": "constant", "value": 2.0}
+        return _multi_target_thesis({"type": "threshold", "left": left, "op": ">", "right": right})
+
+    t = Thesis.model_validate(doc(scale="std"))
+    assert t.entry.left.scale == "std"
+    assert Thesis.model_validate(json.loads(t.model_dump_json())) == t
+    assert Thesis.model_validate(doc()).entry.left.scale is None
+    assert canonical_dsl_hash(doc()) == canonical_dsl_hash(doc(scale=None))
+    assert canonical_dsl_hash(doc(scale="std")) != canonical_dsl_hash(doc())
+    with pytest.raises(ValidationError, match="scale"):
+        Thesis.model_validate(doc(scale="mad"))
+
+
 def test_cross_nodes_require_basket_mode():
     # The gate is the MODE, not the target count: even a multi-target conjunction refuses a
     # cross node — conjunction declares the targets independent, and a node coupling them
@@ -1433,10 +1455,11 @@ def test_cross_sectional_counts_toward_depth_cap():
         )
 
 
-def test_zscore_recipe_depth():
-    # The documented zscore recipe — binary_op(cross_demean(x), "/", cross_agg(x, "std")) — costs
-    # the same 1 + d(x) levels as either node alone (binary_op is transparent), so over a depth-4
-    # x it sits exactly at the cap; one more real level inside x tips both arms to 6 and refuses.
+def test_cross_zscore_depth():
+    # The cross-sectional z-score costs 1 + d(x) levels however it is spelled: the node
+    # cross_demean(x, scale="std"), and the quotient binary_op(cross_demean(x), "/", cross_agg(x,
+    # "std")), whose binary_op is transparent — so over a depth-4 x each sits exactly at the cap;
+    # one more real level inside x tips both to 6 and refuses.
     x4 = {
         "type": "change",
         "periods": 5,
@@ -1454,22 +1477,23 @@ def test_zscore_recipe_depth():
             },
         },
     }
-    recipe = {
+    quotient = {
         "type": "binary_op",
         "op": "/",
         "left": {"type": "cross_demean", "input": x4},
         "right": {"type": "cross_agg", "agg": "std", "input": x4},
     }
-    Thesis.model_validate(
-        _multi_target_thesis(
-            {
-                "type": "threshold",
-                "left": recipe,
-                "op": ">",
-                "right": {"type": "constant", "value": 1.0},
-            }
+    for left in (quotient, {"type": "cross_demean", "input": x4, "scale": "std"}):
+        Thesis.model_validate(
+            _multi_target_thesis(
+                {
+                    "type": "threshold",
+                    "left": left,
+                    "op": ">",
+                    "right": {"type": "constant", "value": 1.0},
+                }
+            )
         )
-    )
     x5 = {
         "type": "change",
         "periods": 5,
@@ -1497,17 +1521,18 @@ def test_zscore_recipe_depth():
         "left": {"type": "cross_demean", "input": x5},
         "right": {"type": "cross_agg", "agg": "std", "input": x5},
     }
-    with pytest.raises(ValidationError, match="nests 6 operator levels"):
-        Thesis.model_validate(
-            _multi_target_thesis(
-                {
-                    "type": "threshold",
-                    "left": deep,
-                    "op": ">",
-                    "right": {"type": "constant", "value": 1.0},
-                }
+    for left in (deep, {"type": "cross_demean", "input": x5, "scale": "std"}):
+        with pytest.raises(ValidationError, match="nests 6 operator levels"):
+            Thesis.model_validate(
+                _multi_target_thesis(
+                    {
+                        "type": "threshold",
+                        "left": left,
+                        "op": ">",
+                        "right": {"type": "constant", "value": 1.0},
+                    }
+                )
             )
-        )
 
 
 def test_cross_sectional_external_discovery_walks_input():

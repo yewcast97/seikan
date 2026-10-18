@@ -319,7 +319,7 @@ value included. A leading NaN, the input still warming, is warmup as everywhere.
 Zero dispersion is EXACT in every windowed, cross-sectional and since-event transform: a window
 (a bar's cross-section, an `event_agg` run) whose values are all equal has its mean equal to that
 value, a `std` / `mad` / `cross_demean` of exactly `0.0`, and an undefined (NaN) `zscore` /
-`rolling_corr` — whatever the floating-point mean of a constant DECIMAL window rounds to
+`cross_demean` z-score (`scale: "std"`) / `rolling_corr` — whatever the floating-point mean of a constant DECIMAL window rounds to
 (`(0.1 + 0.1 + 0.1) / 3 != 0.1`). The EW pair holds the same line: `ema` of a constant is exactly
 the constant and approaches a held value strictly from its own side (one ulp short at the
 closest, never on it, so `x > ema(x)` reads "above its EW mean" through the whole hold), and
@@ -403,7 +403,8 @@ through it over a held stretch — whose squares lose their bits (a z-score past
 or vanish into the `0.0` an all-equal window owns. Such a VARYING window is recomputed on its values
 lifted by `2**600` (exact) in the same summation order, so it reads the value the direct form has in
 an unbounded exponent range: a `std` under the smallest subnormal floors there — `std > 0` holds on
-every varying window, exactly where its SMA z-score is defined. A `rolling_corr` needs no lift: its
+every varying window, exactly where its SMA z-score is defined — and a cross-section's z-score
+(`cross_demean` with `scale: "std"`) takes its deviation lifted too. A `rolling_corr` needs no lift: its
 exact moments are framed (above) and the root of their variance product is taken with the
 exponents moved out, so `rolling_corr(x, x)` is exactly 1 at any scale, 1e300 and subnormal values
 included. The EW `zscore` keeps its variance in a recurrence, which
@@ -528,12 +529,18 @@ floor sweeps the SAMPLE, not the hypothesis. Each node counts as one operator le
   NaN where the target's own value is NaN or fewer than `min_valid` targets are finite.
   `cross_rank(x) >= 0.8` IS top-quintile membership — the quantile primitive; there is no
   separate quantile node.
-- `cross_demean` (input, min_valid=2) — the target's value minus the cross-target mean of the
-  finite values at the bar (self included), its exact deviation rounded once — a member at the
-  mean reads exactly 0.0; same NaN gating. The cross-sectional ZSCORE recipe:
-  `binary_op(cross_demean(x), "/", cross_agg(x, "std"))` — the same nesting cost as either node
-  alone, and a zero-dispersion bar divides by zero → NaN via the `binary_op` `/` contract (never
-  fires).
+- `cross_demean` (input, min_valid=2, scale) — the target's value minus the cross-target mean of
+  the finite values at the bar (self included), its exact deviation rounded once — a member at the
+  mean reads exactly 0.0; same NaN gating. `"scale": "std"` makes it the cross-sectional ZSCORE:
+  that deviation over the cross-section's population std (`cross_agg`'s), clipped to the
+  population bound `±√(k − 1)` of the `k` members it reduced over (per group under `group`) —
+  `k − 1` equal values beside one other sit exactly on it — computed lifted like the SMA
+  `zscore` where the cross-section's variance falls below the normal range, and NaN on a
+  zero-dispersion bar (never fires). Rendered `cross_demean(x,scale=std)`; the same nesting cost
+  as plain `cross_demean`. The quotient `binary_op(cross_demean(x), "/", cross_agg(x, "std"))`
+  is legal arithmetic but no bounded z: its roundings read 2.0000000000000004 for the exact 2 of
+  `[100, 100, 100, 100, 109.3]`, so `> 2` fired there, in more or fewer bars by the targets'
+  declaration order.
 - `cross_agg` (input, `agg`: `"mean"|"median"|"std"|"frac_positive"`, min_valid=2) — a
   cross-target AGGREGATE at each bar, broadcast back to every target column — the breadth /
   dispersion primitive ("70% of the group above its 200d SMA" via `frac_positive` of

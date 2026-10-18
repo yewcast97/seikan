@@ -17,7 +17,7 @@ from numpy.lib.stride_tricks import sliding_window_view
 
 from seikan.compiler import nb
 from seikan.constants import MAX_BAR_COUNT_PARAM, MIN_EW_ALPHA
-from seikan.numeric import log_ratio, log_ratio_array
+from seikan.numeric import MIN_NORMAL, log_ratio, log_ratio_array
 
 from . import _reference_nb as ref
 
@@ -998,6 +998,123 @@ def test_cross_demean_is_each_members_exact_deviation():
         )
 
 
+def _exact_cross_z(row: list[float]) -> list[float]:
+    """Each finite member's exact population z-score, through one correctly rounded root of its
+    exact square (a rational of at most k − 1): its sign exactly, its magnitude to about an ulp."""
+    vals = [Fraction(x) for x in row if math.isfinite(x)]
+    mean = sum(vals) / len(vals)
+    var = sum((v - mean) ** 2 for v in vals) / len(vals)
+    out = []
+    for x in row:
+        if not math.isfinite(x):
+            out.append(math.nan)
+            continue
+        d = Fraction(x) - mean
+        out.append(math.copysign(math.sqrt(d * d / var), d) if d else 0.0)
+    return out
+
+
+def _cross_quotient(a: np.ndarray) -> np.ndarray:
+    """The quotient spelling of the cross-sectional z: ``cross_demean(x) / cross_agg(x, "std")``."""
+    dev, std = nb.cross_demean_apply_nb(a, 2), nb.cross_agg_apply_nb(a, "std", 2)
+    with np.errstate(invalid="ignore"):  # a constant row's 0/0 is the premise's own
+        return dev / std
+
+
+def test_cross_zscore_reads_its_population_bound_in_every_member_order():
+    # No member of k deviates from their mean by more than √(k − 1) population stds, and k − 1
+    # equal values beside one other sit ON that bound — where the quotient's roundings read
+    # 2.0000000000000004 for the exact 2 of [100, 100, 100, 100, 109.3] in every member order
+    # (3.0000000000000004 for [1.1] + [0.7] * 9), so `cross_demean(x) / cross_agg(x, "std") > 2`
+    # fired where exact arithmetic never does. `cross_demean(x, scale="std")` is clipped to it.
+    # (the last stays an ulp short of √2 in every order: the clip is the bound, not a landing)
+    for row, n_past in (
+        ([100.0, 100.0, 100.0, 100.0, 109.3], 5),
+        ([1.1] + [0.7] * 9, 10),
+        ([1e-200, 1e-200, 2e-200, 1e-200], 4),
+        ([100.0, 100.0, 100.0, 100.0, 100.3], 1),
+        ([2.0**52, 2.0**52 + 1, 2.0**52 + 1], 0),
+    ):
+        bound = math.sqrt(len(row) - 1)
+        past = 0
+        for perm in sorted(set(itertools.permutations(row))):
+            a = np.array([perm])
+            z = nb.cross_zscore_apply_nb(a, 2)[0]
+            assert np.abs(z).max() <= bound, perm
+            assert np.sign(z).tolist() == np.sign(_exact_cross_z(list(perm))).tolist(), perm
+            if np.abs(_cross_quotient(a)).max() > bound:
+                past += 1
+                assert np.abs(z).max() == bound, perm
+        assert past == n_past, row
+
+
+def test_cross_zscore_is_the_exact_deviation_over_the_std():
+    # Rows across every binade — exact ties on power-of-two grids down to the subnormals, decimals,
+    # members a few ulps apart at every scale, holes, rows of one shared value: the z never passes
+    # √(k − 1), is NaN exactly on rows whose members share one value (zero dispersion), has the
+    # exact deviation's sign (0.0 exactly at the mean) and sits within a few ulps of the exact z.
+    # Wherever the quotient's deviation and std are normal doubles and it stays within the bound,
+    # the z IS that quotient, bit for bit — the node changes nothing else.
+    rng = np.random.default_rng(18)
+    rows = np.full((3000, 9), np.nan)
+    for r in range(rows.shape[0]):
+        k = int(rng.integers(2, 10))
+        kind = r % 3
+        if kind == 0:
+            row = rng.integers(-6, 7, k) * 2.0 ** int(rng.integers(-1074, 990))
+        elif kind == 1:
+            row = np.round(rng.standard_normal(k), int(rng.integers(0, 4)))
+            row *= 10.0 ** int(rng.integers(-300, 300))
+        else:
+            row = 1.0 + rng.standard_normal(k) * 10.0 ** int(rng.integers(-16, 0))
+            row *= 10.0 ** int(rng.integers(-300, 300))
+        if rng.random() < 0.1:
+            row[:] = row[0]
+        rows[r, :k] = row
+    z = nb.cross_zscore_apply_nb(rows, 2)
+    quotient = _cross_quotient(rows)
+    dev, std = nb.cross_demean_apply_nb(rows, 2), nb.cross_agg_apply_nb(rows, "std", 2)[:, 0]
+    finite = np.isfinite(rows)
+    n_compared = 0
+    for r in range(rows.shape[0]):
+        k = int(finite[r].sum())
+        members = rows[r, finite[r]]
+        if (members == members[0]).all():
+            assert np.isnan(z[r]).all()
+            continue
+        got = z[r, finite[r]]
+        if np.isnan(got).all():  # an overflowed variance: deviations past ~1.3e154
+            assert np.ptp(members) > 1e154
+            continue
+        assert np.abs(got).max() <= math.sqrt(k - 1)
+        want = _exact_cross_z(members.tolist())
+        np.testing.assert_array_equal(np.sign(got), np.sign(want))
+        np.testing.assert_allclose(got, want, rtol=4 * 2.0**-52, atol=0.0)
+        normal = std[r] >= MIN_NORMAL and all(
+            d == 0 or abs(d) >= MIN_NORMAL for d in dev[r, finite[r]]
+        )
+        if normal and np.abs(quotient[r, finite[r]]).max() <= math.sqrt(k - 1):
+            np.testing.assert_array_equal(got, quotient[r, finite[r]])
+            n_compared += 1
+    assert n_compared > 1000
+
+
+def test_cross_zscore_of_a_subnormal_cross_section_is_read_lifted():
+    # Divided in the input frame, [0, 5e-324]'s deviations ∓2**-1075 round (ties to even) to ∓0.0
+    # and the quotient read a z of 0 for ∓1 — `> 0` false for the member above the mean. A row
+    # whose variance fell below the normal range is computed on its values lifted by 2**600,
+    # deviation and std alike (the SMA z-score's rule), so it reads the z it has in an unbounded
+    # exponent range.
+    for row in ([0.0, 5e-324], [0.0, 0.0, 5e-324], [0.0, 1e-322, 2e-322, 3e-322, 4e-322]):
+        a = np.array([row])
+        got = nb.cross_zscore_apply_nb(a, 2)[0]
+        want = _exact_cross_z(row)
+        np.testing.assert_array_equal(np.sign(got), np.sign(want))
+        np.testing.assert_allclose(got, want, rtol=4 * 2.0**-52, atol=0.0)
+        assert not np.array_equal(np.sign(_cross_quotient(a)[0]), np.sign(want))
+    np.testing.assert_array_equal(nb.cross_zscore_apply_nb(np.array([[0.0, 5e-324]]), 2), [[-1, 1]])
+
+
 # ---- Phase-1 kernels: shift / unary_op --------------------------------------
 
 
@@ -1107,6 +1224,7 @@ def test_cross_kernels_single_column_is_all_nan():
     a = np.random.RandomState(0).randn(30, 1)
     assert np.isnan(nb.cross_rank_apply_nb(a, 2)).all()
     assert np.isnan(nb.cross_demean_apply_nb(a, 2)).all()
+    assert np.isnan(nb.cross_zscore_apply_nb(a, 2)).all()
 
 
 @pytest.mark.parametrize("agg", ["mean", "median", "std", "frac_positive"])
@@ -2368,6 +2486,10 @@ def _agg_kernel(agg, mv=2):
     return lambda a: nb.cross_agg_apply_nb(a, agg, mv)
 
 
+def _zscore_kernel(mv=2):
+    return lambda a: nb.cross_zscore_apply_nb(a, mv)
+
+
 def test_cross_grouped_matches_reference():
     a = _nan_riddled()
     lab = _labels()
@@ -2385,8 +2507,23 @@ def test_cross_grouped_matches_reference():
 def test_cross_grouped_single_label_is_bit_exact_with_ungrouped():
     a = _nan_riddled()
     one = np.ones_like(a)
-    for kernel in (_rank_kernel(3), _demean_kernel(), _agg_kernel("std"), _agg_kernel("mean")):
+    kernels = (_rank_kernel(3), _demean_kernel(), _agg_kernel("std"), _agg_kernel("mean"))
+    for kernel in (*kernels, _zscore_kernel(3)):
         assert np.array_equal(nb.cross_grouped_apply_nb(kernel, a, one), kernel(a), equal_nan=True)
+
+
+def test_cross_grouped_zscore_bound_is_its_groups_own():
+    # Under `group` the kernel reduces within each label, so a member's bound is its GROUP's
+    # √(k − 1): two equal values beside one other sit on √2 inside a six-member row (bound √5),
+    # where the quotient's roundings read −1.4142135623730954.
+    a = np.array([[1.1, 50.0, 50.0, 1.0, 2.0, 4.0]])
+    lab = np.array([[1.0, 1.0, 1.0, 2.0, 2.0, 2.0]])
+    dev = nb.cross_grouped_apply_nb(_demean_kernel(), a, lab)
+    std = nb.cross_grouped_apply_nb(_agg_kernel("std"), a, lab)
+    assert (dev / std)[0, 0] < -math.sqrt(2)
+    got = nb.cross_grouped_apply_nb(_zscore_kernel(), a, lab)[0]
+    assert got[0] == -math.sqrt(2) and np.abs(got).max() == math.sqrt(2)
+    np.testing.assert_array_equal(np.sign(got), [-1, 1, 1, -1, -1, 1])
 
 
 def test_cross_grouped_nan_label_and_singleton_group_are_nan():

@@ -860,6 +860,10 @@ def test_render_series_cross_population_selectors():
     assert (
         render_series(CrossDemean(input=close, where=elig)) == "cross_demean(close,where=(elig>=1))"
     )
+    assert render_series(CrossDemean(input=close, scale="std")) == "cross_demean(close,scale=std)"
+    assert render_series(CrossDemean(input=close, min_valid=3, scale="std", group=sector)) == (
+        "cross_demean(close,3,scale=std,group=sector)"
+    )
     assert render_series(CrossAgg(input=close, agg="mean", group=sector)) == (
         "cross_agg(close,mean,group=sector)"
     )

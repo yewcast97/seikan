@@ -4,8 +4,8 @@ Two implementation styles, **no vectorbt**:
 
 * **Vectorized numpy** for the windowed/elementwise kernels — z-score (SMA), percentile,
   rolling/expanding agg, drawdown/runup, change (pct/log/diff), shift, unary op, and the
-  cross-sectional rank/demean/aggregate (axis=1, across the target columns at each bar — the
-  only kernels with no 1-D form). Windowed kernels
+  cross-sectional rank/demean/aggregate/z-score (axis=1, across the target columns at each bar —
+  the only kernels with no 1-D form). Windowed kernels
   use ``numpy.lib.stride_tricks.sliding_window_view`` (a window requires every bar finite, else
   NaN), reduced in bounded row batches (``_window_batches``); elementwise ones use plain lag
   slicing. No Python time-loop.
@@ -143,11 +143,12 @@ from seikan.numeric import MIN_NORMAL, log_ratio_array
 # — the same summation order — so every moment is the direct one times its power of two (the
 # z-score's numerator the lifted values' exact deviation), and the z-score and std are the values
 # they have in an unbounded exponent range (a std under the smallest subnormal floors there: a
-# varying window is never zero dispersion). Every window whose variance is a normal double keeps
-# every bit. A correlation needs no lift — its exact moments are taken in a frame where nothing
-# leaves the range (the exact-means note above), and the root of their variance product with the
-# exponents moved out (``_sqrt_product``) — so ``corr(x, x)`` is exactly 1 at any scale. The
-# EW z-score (``zscore_ema_1d``) carries its variance in a recurrence,
+# varying window is never zero dispersion). A cross-section is lifted the same way, its z-score's
+# deviation with it (``cross_agg_apply_nb``, ``cross_zscore_apply_nb``). Every window whose
+# variance is a normal double keeps every bit. A correlation needs no lift — its exact moments are
+# taken in a frame where nothing leaves the range (the exact-means note above), and the root of
+# their variance product with the exponents moved out (``_sqrt_product``) — so ``corr(x, x)`` is
+# exactly 1 at any scale. The EW z-score (``zscore_ema_1d``) carries its variance in a recurrence,
 # which the same rule reaches by moving the whole recurrence into a frame lifted by ``2**_LIFT``
 # once its variance nears the range (``_EW_LIFT_VAR``): its z is the recurrence's value in an
 # unbounded exponent range too — not NaN, nor collapsed toward 0 off a floored variance, nor past
@@ -163,15 +164,15 @@ from seikan.numeric import MIN_NORMAL, log_ratio_array
 # residual minted a z-score of exactly ±1 and a correlation of 1 out of a constant series. The
 # recurrences hold the same line (``ema_1d``, ``zscore_ema_1d``, ``event_agg_1d``). Every window
 # with any variation whose variance is a normal double is the direct two-pass form about its
-# offset, bit for bit (the SMA z-score over its exact numerator; a correlation is its exact
-# moments', clipped to ``[−1, 1]`` where their roundings carried an exactly linear window past
-# it; ``ema_1d`` differs from its plain
-# update only on the steps whose rounded update left its exact interval, and the EW z-score carries
-# its mean compensated — the plain West recurrence's value to its rounding, not bit for bit; the
-# out-of-range windows and the lifted EW frame are the note above);
-# "constant" means bit-identical
-# values — arithmetic on decimal levels (a spread ``y1 − y2`` moving in lockstep) leaves residue
-# at the operands' scale, which is variation as far as any kernel can tell.
+# offset, bit for bit (the SMA and cross-sectional z-scores over their exact numerators, clipped
+# to their population bounds ``√(k−1)``; a correlation is its exact moments', clipped to
+# ``[−1, 1]`` where their roundings carried an exactly linear window past it; ``ema_1d`` differs
+# from its plain update only on the steps whose rounded update left its exact interval, and the
+# EW z-score carries its mean compensated — the plain West recurrence's value to its rounding, not
+# bit for bit; the out-of-range windows and the lifted EW frame are the note above); "constant"
+# means bit-identical values — arithmetic on decimal levels (a spread ``y1 − y2`` moving in
+# lockstep) leaves residue at the operands' scale, which is variation as far as any kernel can
+# tell.
 # =============================================================================
 
 
@@ -808,7 +809,7 @@ def cross_agg_apply_nb(
             v[rows, 0] = _midpoint(s[rows, (kr - 1) // 2], s[rows, kr // 2])
         elif agg == "std":
             # Two-pass centered variance — the one-pass Σx²/k − mean² form cancels to a silent
-            # 0.0 std at large member levels, which the documented z-score recipe then divides by.
+            # 0.0 std at large member levels, which a cross-sectional z-score then divides by.
             var = _row_var(a, finite, k)
             v = np.sqrt(var)
             # 0.0 only for a CONSTANT row; a VARYING one whose variance fell below the normal
@@ -826,6 +827,46 @@ def cross_agg_apply_nb(
     ok = (k >= float(max(min_valid, 2))) & np.isfinite(v)
     # (n, 1) aggregate → all columns
     return np.broadcast_to(np.where(ok, v, np.nan), a.shape).copy()
+
+
+def cross_zscore_apply_nb(arr: npt.NDArray[np.float64], min_valid: int) -> npt.NDArray[np.float64]:
+    """Cross-sectional z-score ACROSS targets at each bar — ``cross_demean(x, scale="std")``:
+    each member's exact deviation, rounded once (:func:`cross_demean_apply_nb`), over the
+    cross-section's population std (``cross_agg``'s, two-pass about the row's offset,
+    :func:`_row_var`), so the z has the exact deviation's sign and is 0.0 exactly at the mean.
+
+    Clipped to the population bound (Samuelson): no member of ``k`` deviates from their mean by
+    more than ``√(k−1)`` population stds, and a row of ``k−1`` equal values beside one other sits
+    ON it, where the quotient's roundings carried it past — ``[100, 100, 100, 100, 109.3]`` read
+    2.0000000000000004 for an exact 2 in every member order, so ``cross_demean(x) /
+    cross_agg(x, "std") > 2`` fired where exact arithmetic never does (the SMA z-score's clip).
+    ``k`` is the row's finite members — a group's, under ``group``
+    (:func:`cross_grouped_apply_nb`). A VARYING row whose variance fell below the normal range is
+    computed on its values lifted by ``2**_LIFT``, deviation and variance alike (the SMA
+    z-score's rule): divided in the input frame, ``[0, 5e-324]``'s deviations round to −0.0 and
+    0.0 and read a z of 0 for −1 and 1. NaN where the deviation is (the ``min_valid`` floor), on
+    a row whose members all share one value (zero dispersion — undefined, never fired), and where
+    the variance overflowed (deviations past ~1.3e154: ``x / inf`` is a finite 0.0). Inherently
+    2-D."""
+    a = np.asarray(arr, dtype=float)
+    out = np.full(a.shape, np.nan)
+    if a.ndim != 2 or a.shape[1] < 2:
+        return out
+    finite = np.isfinite(a)
+    k = finite.sum(axis=1, keepdims=True).astype(float)
+    constant = _constant_rows(a, finite)
+    dev = cross_demean_apply_nb(a, min_valid)
+    with np.errstate(all="ignore"):
+        var = _row_var(a, finite, k)
+        lost = np.flatnonzero(~constant[:, 0] & (var[:, 0] < MIN_NORMAL))
+        if lost.size:
+            up = np.ldexp(a[lost], _LIFT)
+            dev[lost] = cross_demean_apply_nb(up, min_valid)
+            var[lost] = _row_var(up, finite[lost], k[lost])
+        z = dev / np.sqrt(var)
+        bound = np.sqrt(k - 1.0)
+    ok = ~constant & _normal(var) & np.isfinite(z)
+    return np.where(ok, np.clip(z, -bound, bound), np.nan)
 
 
 def row_group_ranks(labels: npt.NDArray[np.float64]) -> npt.NDArray[np.int64]:

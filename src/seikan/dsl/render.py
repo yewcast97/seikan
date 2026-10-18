@@ -100,8 +100,8 @@ def render_series(node: Series) -> str:
             return f"rolling_corr({render_series(left)},{render_series(right)},{w})"
         case CrossRank(input=inp, min_valid=mv, where=wh, group=gr):
             return f"cross_rank({render_series(inp)}{_cross_suffix(mv, wh, gr)})"
-        case CrossDemean(input=inp, min_valid=mv, where=wh, group=gr):
-            return f"cross_demean({render_series(inp)}{_cross_suffix(mv, wh, gr)})"
+        case CrossDemean(input=inp, min_valid=mv, scale=sc, where=wh, group=gr):
+            return f"cross_demean({render_series(inp)}{_cross_suffix(mv, wh, gr, sc)})"
         case CrossAgg(input=inp, agg=agg, min_valid=mv, where=wh, group=gr):
             return f"cross_agg({render_series(inp)},{agg}{_cross_suffix(mv, wh, gr)})"
         case BinaryOp(left=left, right=right, op=op):
@@ -122,11 +122,16 @@ def render_series(node: Series) -> str:
             raise TypeError(f"unknown series node: {node!r}")
 
 
-def _cross_suffix(min_valid: int, where: Condition | None, group: Series | None) -> str:
-    """The trailing tokens of a cross node: a non-default ``min_valid``, then the population
-    selectors as ``where=<cond>`` / ``group=<series>`` — ``cross_rank(close)``,
+def _cross_suffix(
+    min_valid: int, where: Condition | None, group: Series | None, scale: str | None = None
+) -> str:
+    """The trailing tokens of a cross node: a non-default ``min_valid``, a ``cross_demean``
+    ``scale``, then the population selectors as ``where=<cond>`` / ``group=<series>`` —
+    ``cross_rank(close)``, ``cross_demean(close,scale=std)``,
     ``cross_rank(close,3,where=(elig>=1),group=sector)``."""
     parts = [] if min_valid == 2 else [str(min_valid)]
+    if scale is not None:
+        parts.append(f"scale={scale}")
     if where is not None:
         parts.append(f"where={render_condition(where)}")
     if group is not None:
