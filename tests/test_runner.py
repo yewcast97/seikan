@@ -679,6 +679,46 @@ def test_an_unreachable_z_score_never_fires_on_an_ulp_scale_alternation(tmp_path
     assert res.trades.empty and res.summary["cells"][0]["by_target"]["target"]["n"] == 0
 
 
+def test_a_bar_at_its_window_mean_has_a_z_score_of_exactly_zero(tmp_path):
+    # The SMA z-score's numerator is the bar's EXACT deviation from its window's exact mean,
+    # rounded once. [1.1, 0.7, 1.1, 0.7, 0.9] sums to exactly five times 0.9 — its last bar sits
+    # at the mean — where the direct two-pass deviation read +1.55e-16: on a ten-bar cycle
+    # `close == 0.9 AND zscore(close, 5) > 0` fired 60 times while `close > rolling_mean(close,
+    # 5)`, the same comparison read through the exact mean, fired on none. Neither fires now.
+    px = _bars(tmp_path / "px.csv", [1.1, 0.7, 1.1, 0.7, 0.9, 1.0, 1.2, 0.8, 1.0, 1.3] * 60)
+    close = {"type": "field", "column": "close"}
+    at_mean = {
+        "type": "threshold",
+        "left": close,
+        "op": "==",
+        "right": {"type": "constant", "value": 0.9},
+    }
+    above = (
+        {
+            "type": "threshold",
+            "left": {"type": "zscore", "input": close, "window": 5},
+            "op": ">",
+            "right": {"type": "constant", "value": 0.0},
+        },
+        {
+            "type": "threshold",
+            "left": close,
+            "op": ">",
+            "right": {"type": "rolling_agg", "input": close, "window": 5, "agg": "mean"},
+        },
+    )
+    for condition in above:
+        thesis = Thesis.model_validate(
+            {
+                "name": "at_mean",
+                "data": {"targets": ["target"]},
+                "entry": {"type": "and", "conditions": [at_mean, condition]},
+                "params": {"horizon": 1},
+            }
+        )
+        assert run_backtest(thesis, load(thesis, {"target": px})).trades.empty
+
+
 def test_cell_count_equals_the_declared_grid_across_shapes(tmp_path):
     # len(cells) == n_hypotheses_attempted by construction, whatever the grid's shape — including
     # the degenerate one-cell run whose horizon was never swept.

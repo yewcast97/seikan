@@ -79,7 +79,7 @@ from seikan.numeric import MIN_NORMAL, log_ratio_array
 # Welford/West recurrence), never as E[x²] − E[x]²: the one-pass form cancels catastrophically on
 # large-magnitude series (a price near 5000 with a std near 1 has already lost most of the
 # mantissa). The two-pass windows are centered about the window's OWN offset (its first value; a
-# cross-section's range midpoint — ``_window_moments``, ``cross_centre``), never about the rounded
+# cross-section's range midpoint — ``_window_variance``, ``cross_centre``), never about the rounded
 # mean of the raw values: that mean's rounding is the size of the level's ulp, and a spread at that
 # scale (``[2**52, 2**52 + 1]``) read a std of 0.707 for 0.5 and a z-score past its bound.
 #
@@ -107,10 +107,15 @@ from seikan.numeric import MIN_NORMAL, log_ratio_array
 # chosen off the members' magnitudes — the same in any order), and is NaN where that frame cannot
 # hold a member exactly; a window's running sum is NaN where it leaves the double range on the way
 # (members near it), as the direct form's overflow was.
-# The centre a window's variance is reduced about (``_window_moments``, ``_pair_moments``) stays the
-# direct two-pass form about the window's offset: no threshold compares against it, and the
-# moments, the correlation and the z-score read off it are known to the rounding of the window's
-# own spread (a z-score within that rounding of 0 can read 0 or the other sign).
+# The SMA z-score's numerator is such a read deviation: the bar's exact deviation from its
+# window's exact mean, ``window·x − S`` summed exactly and rounded once over the window
+# (``_rolling_exact_deviations``), so a bar AT its window's mean reads exactly 0.0 — about the
+# direct two-pass centre ``[1.1, 0.7, 1.1, 0.7, 0.9]``'s last bar read +1.55e-16 (−1.55e-16 with
+# a 0.7 first), and ``close == 0.9 AND zscore(close, 5) > 0`` fired where ``close >
+# rolling_agg(close, 5, mean)`` did not. The centre a window's VARIANCE is reduced about
+# (``_window_variance``, ``_pair_moments``) stays the direct two-pass form about the window's
+# offset: no threshold compares against it, and the z-score's magnitude and the correlation read
+# off it are known to the rounding of the window's own spread.
 #
 # OUT-OF-RANGE intermediates: sanitizing the RESULT is not enough where an out-of-range intermediate
 # yields a FINITE one — ``x / inf`` is 0.0, so a correlation whose variance product overflowed read
@@ -126,12 +131,13 @@ from seikan.numeric import MIN_NORMAL, log_ratio_array
 # window's std as the 0.0 an all-equal window owns. Such a VARYING window is recomputed LIFTED by
 # ``2**_LIFT`` (``_lifted_windows``): scaling up by a power of two never rounds, and the lifted
 # windows keep the direct form's layout — the same summation order — so every moment is the direct
-# one times its power of two, and the z-score, correlation and std are the values the direct form
-# has in an unbounded exponent range (a std under the smallest subnormal floors there: a varying
-# window is never zero dispersion). The correlation's variance PRODUCT of two normal variances is
-# taken with the exponents moved out wherever it leaves the normal range (``_sqrt_product``), to the
-# same exactness. Every window whose variances and, for ``rolling_corr``, their product are normal
-# doubles keeps every bit. The EW z-score (``zscore_ema_1d``) carries its variance in a recurrence,
+# one times its power of two (the z-score's numerator the lifted values' exact deviation), and the
+# z-score, correlation and std are the values they have in an unbounded exponent range (a std
+# under the smallest subnormal floors there: a varying window is never zero dispersion). The
+# correlation's variance PRODUCT of two normal variances is taken with the exponents moved out
+# wherever it leaves the normal range (``_sqrt_product``), to the same exactness. Every window
+# whose variances and, for ``rolling_corr``, their product are normal doubles keeps every bit. The
+# EW z-score (``zscore_ema_1d``) carries its variance in a recurrence,
 # which the same rule reaches by moving the whole recurrence into a frame lifted by ``2**_LIFT``
 # once its variance nears the range (``_EW_LIFT_VAR``): its z is the recurrence's value in an
 # unbounded exponent range too — not NaN, nor collapsed toward 0 off a floored variance, nor past
@@ -147,7 +153,8 @@ from seikan.numeric import MIN_NORMAL, log_ratio_array
 # residual minted a z-score of exactly ±1 and a correlation of 1 out of a constant series. The
 # recurrences hold the same line (``ema_1d``, ``zscore_ema_1d``, ``event_agg_1d``). Every window
 # with any variation whose variances and, for ``rolling_corr``, their product are normal doubles
-# is the direct two-pass form about its offset, bit for bit (a correlation clipped to ``[−1, 1]``,
+# is the direct two-pass form about its offset, bit for bit (the SMA z-score over its exact
+# numerator; a correlation clipped to ``[−1, 1]``,
 # where an exactly linear window's rounding carried it past; ``ema_1d`` differs from its plain
 # update only on the steps whose rounded update left its exact interval, and the EW z-score carries
 # its mean compensated — the plain West recurrence's value to its rounding, not bit for bit; the
@@ -203,13 +210,10 @@ def _normal(v: npt.NDArray[np.float64]) -> npt.NDArray[np.bool_]:
 _LIFT = 600
 
 
-def _window_moments(
-    win: npt.NDArray[np.float64],
-) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
-    """The two-pass centered population variance over the LAST axis, and the last bar's
-    deviation from the window mean — computed around the window's OWN offset, its first value:
-    ``y = x − x_first`` (exact wherever the window lies within a factor of two of that value),
-    then ``y``'s mean and the deviations ``y − mean_y``.
+def _window_variance(win: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+    """The two-pass centered population variance over the LAST axis, computed around the
+    window's OWN offset, its first value: ``y = x − x_first`` (exact wherever the window lies
+    within a factor of two of that value), then ``y``'s mean and the deviations ``y − mean_y``.
 
     Centered about the rounded mean of the RAW values instead, a window whose spread sits near
     its level's ulp lost that spread to the mean's rounding: the mean of ``[2**52, 2**52 + 1]``
@@ -222,8 +226,7 @@ def _window_moments(
     y = win - win[..., :1]
     dev = y - y.mean(axis=-1)[..., None]
     var: npt.NDArray[np.float64] = (dev**2).mean(axis=-1)
-    last: npt.NDArray[np.float64] = dev[..., -1]
-    return var, last
+    return var
 
 
 def _lifted_windows(a: npt.NDArray[np.float64], window: int) -> npt.NDArray[np.float64]:
@@ -304,15 +307,20 @@ def zscore_sma_apply_nb(arr: npt.NDArray[np.float64], window: int) -> npt.NDArra
     # for an exact 2, and `zscore(close, 5) > 2` fired on every such window. Clipped, as the EW
     # z-score is to its own bound and a correlation to [−1, 1].
     bound = math.sqrt(window - 1)
-    lifted: npt.NDArray[np.float64] | None = None  # built on the first batch that needs it
+    # The numerator is the current bar's EXACT deviation from its window's exact mean, rounded
+    # once (the exact-means note above): a bar AT the mean reads 0.0, and the z-score has the
+    # exact deviation's sign.
+    devs = _rolling_exact_deviations(np.ascontiguousarray(a), window)[window - 1 :]
+    # the lifted windows and their exact deviations, built on the first batch that needs them
+    lifted: tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]] | None = None
     for rows in _window_batches(win.shape):
         w = win[rows]
         finite_all = ~np.isnan(w).any(axis=-1)
         with np.errstate(all="ignore"):
-            # Two-pass centered population moments about the window's own offset (the
+            # Two-pass centered population variance about the window's own offset (the
             # ``rolling_agg`` std pattern): the current bar's deviation over the window std.
-            var, dev = _window_moments(w)
-            z = dev / np.sqrt(var)
+            var = _window_variance(w)
+            z = devs[rows] / np.sqrt(var)
             # A VARYING window whose variance fell below the normal range (deviations under
             # ~1.5e-154: a subnormal variance read |z| past its bound √(w−1), one of 0.0 read
             # NaN) is recomputed lifted — the same z, every rounding scaled (the out-of-range
@@ -320,9 +328,10 @@ def zscore_sma_apply_nb(arr: npt.NDArray[np.float64], window: int) -> npt.NDArra
             lost = finite_all & varies[rows] & (var < MIN_NORMAL)
             if lost.any():
                 if lifted is None:
-                    lifted = _lifted_windows(a, window)
-                lifted_var, lifted_dev = _window_moments(lifted[rows])
-                z = np.where(lost, lifted_dev / np.sqrt(lifted_var), z)
+                    up = _rolling_exact_deviations(np.ascontiguousarray(np.ldexp(a, _LIFT)), window)
+                    lifted = _lifted_windows(a, window), up[window - 1 :]
+                lifted_var = _window_variance(lifted[0][rows])
+                z = np.where(lost, lifted[1][rows] / np.sqrt(lifted_var), z)
                 var = np.where(lost, lifted_var, var)
         # `_normal(var)`: squared deviations past ~1.3e154 overflow the variance to inf, and the
         # z-score `(x − mean) / inf` is a FINITE 0.0 that `isfinite(z)` cannot catch.
@@ -386,7 +395,7 @@ def rolling_agg_apply_nb(
                 # 1e308 whose sum left the range included
                 v = np.where(constant[rows], w[..., -1], means[rows])
             elif agg == "std":
-                var, _ = _window_moments(w)
+                var = _window_variance(w)
                 v = np.sqrt(var)
                 # 0.0 only for a CONSTANT window. A VARYING one whose variance fell below the
                 # normal range (squared deviations under ~1.5e-154 — to 0.0 itself under
@@ -397,7 +406,7 @@ def rolling_agg_apply_nb(
                 if lost.any():
                     if lifted is None:
                         lifted = _lifted_windows(a, window)
-                    lifted_var, _ = _window_moments(lifted[rows])
+                    lifted_var = _window_variance(lifted[rows])
                     lifted_std = np.ldexp(np.sqrt(lifted_var), -_LIFT)
                     v = np.where(lost, np.maximum(lifted_std, 5e-324), v)
                 v = np.where(constant[rows], 0.0, v)
@@ -573,7 +582,7 @@ def _pair_moments(
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """The two population variances and the covariance of two aligned window stacks, two-pass
     (centered) over the LAST axis, each leg about its own window offset — the correlation's direct
-    form (:func:`_window_moments` says why the offset: three points ``[2**52, 2**52 + 1, 2**52 +
+    form (:func:`_window_variance` says why the offset: three points ``[2**52, 2**52 + 1, 2**52 +
     1]`` against ``[0, 1, 1]`` correlate exactly 1.0, and read 0.577 about the raw mean)."""
     ya = wa - wa[..., :1]
     yb = wb - wb[..., :1]
@@ -744,7 +753,7 @@ def _row_offset(a: npt.NDArray[np.float64], finite: npt.NDArray[np.bool_]) -> np
     difference from it overflows (0.0 on an empty row): members farther apart than the double
     range still have a representable mean and spread, which an offset AT a member would
     overflow. Differences from it are exact wherever the row lies within a factor of two of it
-    (:func:`_window_moments` says why that matters)."""
+    (:func:`_window_variance` says why that matters)."""
     hi = np.where(finite, a, -np.inf).max(axis=1, keepdims=True)
     lo = np.where(finite, a, np.inf).min(axis=1, keepdims=True)
     with np.errstate(invalid="ignore"):
@@ -1444,6 +1453,22 @@ def _even(q: float) -> bool:
 
 
 @njit(cache=True)
+def _two_product(a: float, b: float) -> tuple[float, float]:
+    """``(p, e)``: ``p = fl(a·b)`` and its error ``e``, ``a·b = p + e`` EXACTLY — Dekker's
+    product of the factors' Veltkamp halves (:data:`_SPLITTER`). Exact wherever neither factor
+    reaches :data:`_SPLIT_MAX` (whose split can overflow) and ``p`` is finite, for a count times
+    a double (:func:`_expansion_quotient`, :func:`_rolling_exact_1d`) down to the subnormals."""
+    p = a * b
+    t = a * _SPLITTER
+    ah = t - (t - a)
+    al = a - ah
+    t = b * _SPLITTER
+    bh = t - (t - b)
+    bl = b - bh
+    return p, ((ah * bh - p) + ah * bl + al * bh) + al * bl
+
+
+@njit(cache=True)
 def _expansion_quotient(p: npt.NDArray[np.float64], m: int, k: int) -> float:
     """``Σp[:m] / k`` correctly rounded — the partials' exact sum over a count ``k`` (an integer
     in ``1 .. 2**53``), rounded ONCE. The rounded sum over the count rounds twice, and
@@ -1471,15 +1496,7 @@ def _expansion_quotient(p: npt.NDArray[np.float64], m: int, k: int) -> float:
     if k == 1 or not np.isfinite(q):
         return q
     s = 1.0 if abs(hi) < _SPLIT_MAX else _SPLIT_DOWN
-    qs = q * s
-    t = qs * _SPLITTER
-    qh = t - (t - qs)
-    ql = qs - qh
-    t = k * _SPLITTER
-    kh = t - (t - k)
-    kl = k - kh
-    kq = qs * k
-    err = ((qh * kh - kq) + qh * kl + ql * kh) + ql * kl  # k·qs = kq + err exactly
+    kq, err = _two_product(q * s, float(k))  # k·q·s = kq + err exactly
     d = ((hi * s - kq) - err) / s  # fl(S) − k·q, a double: every step exact
     c = 2.0 if abs(hi) < 2.0**1022 else 1.0
     r = np.empty(m + 3)
@@ -1505,10 +1522,17 @@ def _expansion_quotient(p: npt.NDArray[np.float64], m: int, k: int) -> float:
 
 
 @njit(cache=True)
-def _rolling_exact_mean_1d(a: npt.NDArray[np.float64], window: int) -> npt.NDArray[np.float64]:
-    """The correctly rounded mean of each trailing ``window`` of ``a``, at the window's last bar
-    — its exact sum over ``window``, rounded once (:func:`_expansion_quotient`); NaN unless the
-    window holds ``window`` finite values.
+def _rolling_exact_1d(
+    a: npt.NDArray[np.float64], window: int, deviation: bool
+) -> npt.NDArray[np.float64]:
+    """Per trailing ``window`` of ``a``, at its last bar ``x``: the correctly rounded MEAN — the
+    window's exact sum ``S`` over ``window``, rounded once (:func:`_expansion_quotient`) — or,
+    with ``deviation``, ``x``'s correctly rounded deviation from it, ``x − S/window``: the
+    numerator ``window·x − S`` summed exactly (``window·x`` as :func:`_two_product`'s two
+    doubles) and rounded once over ``window``, so a bar AT its window's exact mean deviates by
+    exactly 0.0. NaN unless the window holds ``window`` finite values, and a deviation where
+    ``|x|`` reaches :data:`_SPLIT_MAX` or ``window·x`` is not finite — a VARYING window there
+    has deviations past the variance's range anyway.
 
     One SLIDING expansion (:func:`_expansion_add`): each bar takes back the value leaving the
     window and adds its own, so the partials hold the window's exact sum — O(rows) whatever the
@@ -1519,6 +1543,7 @@ def _rolling_exact_mean_1d(a: npt.NDArray[np.float64], window: int) -> npt.NDArr
     n = a.shape[0]
     out = np.full(n, np.nan)
     p = np.empty(8)  # the window's partials, exact while not stale
+    q = np.empty(10)  # a deviation's numerator: −p plus window·x's two parts
     m = 0
     n_finite = 0
     stale = False
@@ -1543,17 +1568,41 @@ def _rolling_exact_mean_1d(a: npt.NDArray[np.float64], window: int) -> npt.NDArr
                 p, m, stale = _expansion_add(p, m, a[j])
                 if stale:
                     break
-        if not stale:
+        if stale:
+            continue
+        if not deviation:
             out[i] = _expansion_quotient(p, m, window)
+            continue
+        if abs(x) >= _SPLIT_MAX or not np.isfinite(window * x):
+            continue
+        if q.shape[0] < m + 2:
+            q = np.empty(m + 2)
+        for c in range(m):
+            q[c] = -p[c]
+        hi, lo = _two_product(float(window), x)
+        q, nq, over = _expansion_add(q, m, hi)
+        if not over:
+            q, nq, over = _expansion_add(q, nq, lo)
+        if not over:
+            out[i] = _expansion_quotient(q, nq, window)
     return out
 
 
 @njit(cache=True)
 def _rolling_exact_means(a: npt.NDArray[np.float64], window: int) -> npt.NDArray[np.float64]:
-    """2-D :func:`_rolling_exact_mean_1d` per column."""
+    """2-D :func:`_rolling_exact_1d` means, per column."""
     out = np.empty_like(a)
     for j in range(a.shape[1]):
-        out[:, j] = _rolling_exact_mean_1d(a[:, j], window)
+        out[:, j] = _rolling_exact_1d(a[:, j], window, False)
+    return out
+
+
+@njit(cache=True)
+def _rolling_exact_deviations(a: npt.NDArray[np.float64], window: int) -> npt.NDArray[np.float64]:
+    """2-D :func:`_rolling_exact_1d` deviations, per column."""
+    out = np.empty_like(a)
+    for j in range(a.shape[1]):
+        out[:, j] = _rolling_exact_1d(a[:, j], window, True)
     return out
 
 

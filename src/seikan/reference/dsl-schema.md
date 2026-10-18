@@ -343,7 +343,8 @@ can sit flat (a rate pinned at its floor) with `and(rolling_agg(x, N, "std") > 0
 bit-identical: a spread built from decimal levels that move in lockstep (`y1 − y2`) carries residue
 at the operands' scale, which is variation as far as any kernel can tell. Every window with any
 variation is the direct two-pass form about its OWN offset — its first value; a cross-section's
-range midpoint — bit for bit, while its variances and, for `rolling_corr`, their product are
+range midpoint — bit for bit (the SMA `zscore` over its exact numerator, below), while its
+variances and, for `rolling_corr`, their product are
 normal doubles (below): centered on the rounded mean of the raw values instead, a spread at its
 level's ulp was lost to that mean's rounding (`[2**52, 2**52 + 1]` read a std of 0.707 for 0.5, a
 two-point z-score of 1.414 that `zscore(x, 2) > 1.1` fired on, and three points correlating 0.577
@@ -369,8 +370,12 @@ demeaned to 2.2e-17, and `x == 0 AND cross_demean(x) > 0` fired. A
 window's mean whose running sum leaves the double range on the way is NaN (undecidable, like an
 overflowed variance below); a cross-section with a member past `2**996` is summed in a frame
 scaled by `2**-28`, the same frame in any member order, and its mean and deviations are NaN
-(undecidable) only where that frame cannot hold a member exactly — one below `2**-1046`. The centre a window's VARIANCE is taken about stays the direct two-pass form above, so a
-`zscore` within the rounding of its window's spread of 0 can read 0 or the other sign.
+(undecidable) only where that frame cannot hold a member exactly — one below `2**-1046`. The SMA
+`zscore`'s numerator is that exact deviation too — the bar's from its window's exact mean, rounded
+once — so a bar at its window's mean reads exactly 0.0 (about the direct two-pass centre,
+`[1.1, 0.7, 1.1, 0.7, 0.9]` read +1.55e-16 and `close == 0.9 AND zscore(close, 5) > 0` fired); the
+centre a window's VARIANCE is taken about stays the direct two-pass form above, so a z-score's
+magnitude carries that variance's rounding, never its sign.
 
 A window variance that OVERFLOWS (deviations past ~1.3e154, where `(x − mean) / inf` would read a
 finite 0) reads NaN in a `std`, a `zscore` (`mean_type: "sma"`) and a `rolling_corr`, and that NaN

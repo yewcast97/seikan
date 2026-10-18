@@ -982,9 +982,13 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   `cross_demean` and the `cross_mean` excess — is the member's exact deviation, its numerator
   `k·x − S` summed exactly and rounded once over `k` (`nb.cross_deviations`), so a member AT the
   mean reads exactly 0.0 (about the rounded centre, `[0, 1, 1, −1 − 2**-52, −1 + 2**-52]`'s first
-  member read 2.2e-17 and `x == 0 AND cross_demean(x) > 0` fired); a window's variance is still
-  taken about its direct two-pass centre (below), so a z-score within the rounding of its window's
-  spread of 0 can read 0 or the other sign.
+  member read 2.2e-17 and `x == 0 AND cross_demean(x) > 0` fired); so is the SMA `zscore`'s
+  numerator, the bar's exact deviation from its window's exact mean, rounded once — about the
+  direct two-pass centre `[1.1, 0.7, 1.1, 0.7, 0.9]`, whose sum is exactly five times its last
+  bar, read z = +1.55e-16 (−1.55e-16 with a 0.7 first), and `close == 0.9 AND zscore(close, 5) > 0`
+  fired where `close > rolling_agg(close, 5, mean)` did not. A z-score has its exact deviation's
+  sign and is 0.0 exactly at the mean; its magnitude carries the rounding of the window's
+  variance, still taken about the direct two-pass centre (below).
   A post-warmup zero-dispersion bar
   is UNDECIDABLE like `x / 0`: its NaN lands in `signal_coverage`, never fires — guard a z-score
   of a series that can sit flat with `rolling_agg(x, N, std) > 0`. "Equal" means bit-identical: a
@@ -993,7 +997,7 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   the direct two-pass form about its OWN offset — the window's first value, a cross-section's or a
   pool's range midpoint (`numeric.midrange`: the pools' `std_ret`, `boot_se` and baseline std, the
   benchmark regression's second moments, `describe`'s dispersion stds)
-  — bit for bit, while its
+  — bit for bit (the SMA z-score over its exact numerator, above), while its
   variances and, for `rolling_corr`, their product are normal doubles (the next bullet): centered
   on the rounded mean of the raw values, a spread at its level's ulp was lost to that mean's
   rounding (`[2**52, 2**52 + 1]` read a window std of 0.707 for 0.5, a two-point z-score of
@@ -1025,9 +1029,10 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   z-score past its bound `√(w−1)`, a correlation off in its third digit) or vanished into the `0.0`
   an all-equal window owns (the guard `std > 0` False on moving data). Such a VARYING window is
   recomputed on its values lifted by `2**600` — exact, scaling up by a power of two never rounds —
-  in the direct form's own summation order, so its `zscore` (`mean_type: "sma"`), `rolling_corr`
-  and `std` (`rolling_agg`, `cross_agg`) are the values the direct form has in an unbounded
-  exponent range; a `std` under the smallest subnormal floors there, so `std > 0` holds on every
+  in the direct form's own summation order, so its `zscore` (`mean_type: "sma"`, the lifted
+  values' exact deviation over their std), `rolling_corr` and `std` (`rolling_agg`, `cross_agg`)
+  are the values they have in an unbounded exponent range; a `std` under the smallest subnormal
+  floors there, so `std > 0` holds on every
   varying window, exactly where the SMA z-score it guards is defined. The correlation's variance
   PRODUCT of two normal variances is taken in an unbounded exponent range too, so
   `rolling_corr(x, x)` is exactly 1 at 1e80, at 1e-85 and on subnormal values as at 1; and a
@@ -1080,7 +1085,8 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   `x / inf`, and finite levels never a null std while their 1-bar changes and the std itself are
   representable doubles). Every window and pool whose variances and, for `rolling_corr`, their
   product are normal doubles, and whose sums and means stay finite, keeps its direct form's bits
-  (a window's or a pool's: the two-pass form about its offset), and every EW z-score whose
+  (a window's or a pool's: the two-pass form about its offset; the SMA z-score over its exact
+  numerator), and every EW z-score whose
   recurrence stays in the normal range reads that recurrence's value to its rounding.
 - **Strict, frozen DSL.** Types are strict (no str/bool/float coerces to an int, no str to a
   bool; int stays legal for a float field — JSON has one number type), instances are frozen

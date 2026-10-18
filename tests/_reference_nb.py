@@ -88,10 +88,14 @@ def zscore_sma(arr: np.ndarray, window: int) -> np.ndarray:
             continue  # a constant window has no dispersion to standardize by
         # Two-pass centered variance (population) about the window's first value, matching the
         # production kernel: the one-pass E[x²] − E[x]² form loses the mantissa to cancellation
-        # at large input levels, and the raw mean's rounding loses an ulp-scale spread.
-        var, dev = _shifted_moments([float(v) for v in arr[i - window + 1 : i + 1]])
+        # at large input levels, and the raw mean's rounding loses an ulp-scale spread. The
+        # numerator is the last value's exact deviation from the exact mean, rounded once.
+        vals = [float(v) for v in arr[i - window + 1 : i + 1]]
+        var, _ = _shifted_moments(vals)
+        dev = float(exact_deviation(vals))
         if var < _MIN_NORMAL:  # a VARYING window whose squared deviations underflowed: lift it
-            var, dev = _shifted_moments([math.ldexp(v, _LIFT) for v in arr[i - window + 1 : i + 1]])
+            var, _ = _shifted_moments([math.ldexp(v, _LIFT) for v in vals])
+            dev = float(exact_deviation(vals) * 2**_LIFT)
         if not (_MIN_NORMAL <= var < math.inf):
             continue  # an overflowed variance
         z = dev / math.sqrt(var)
@@ -115,6 +119,11 @@ def _exact_mean(vals: list[float]) -> float:
     if math.isnan(_exact_sum(vals)):
         return math.nan
     return float(sum(map(Fraction, vals)) / len(vals))
+
+
+def exact_deviation(vals: list[float]) -> Fraction:
+    """The last of the finite ``vals``' exact deviation from their exact mean."""
+    return Fraction(vals[-1]) - sum(map(Fraction, vals)) / len(vals)
 
 
 def _shifted_moments(vals: list[float]) -> tuple[float, float]:

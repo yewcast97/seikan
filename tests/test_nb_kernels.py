@@ -589,7 +589,8 @@ def test_ordinary_windows_are_bit_identical_to_the_shifted_direct_forms():
     # correlation's variance product did): on ordinary windows — scales from 1e-60 to 1e60 — the
     # correlation, the SMA z-score and both stds keep the direct forms' exact bits, every moment
     # taken about the window's own first value (a cross-section's about its range's midpoint, its
-    # centre the exactly rounded sum of the differences from it over their count).
+    # centre the exactly rounded sum of the differences from it over their count) and the
+    # z-score's numerator the exact deviation, rounded once.
     # About the rounded raw mean instead they agree to rounding here; the offset matters where a
     # spread sits near its level's ulp (the 2**52 tests below).
     rng = np.random.RandomState(15)
@@ -608,7 +609,8 @@ def test_ordinary_windows_are_bit_identical_to_the_shifted_direct_forms():
         cov = (da * db).mean(axis=-1)
         direct = {
             "corr": np.clip(cov / np.sqrt(va * vb), -1.0, 1.0),
-            "z": da[..., -1] / np.sqrt(va),
+            "z": np.array([[float(ref.exact_deviation(v))] for v in wa[:, 0].tolist()])
+            / np.sqrt(va),
             "std": np.sqrt(va),
         }
         assert np.isfinite(direct["corr"]).all() and (va > 0.0).all()
@@ -1472,7 +1474,7 @@ def test_zscore_sma_never_exceeds_its_population_bound():
     # `zscore(close, 5) > 2` fired on every such window of a ten-bar cycle — 60 closed
     # observations of an impossible predicate. The z is clipped to the bound, as the EW z-score
     # and a correlation are to theirs; a window within it keeps every bit, and one whose rounding
-    # fell an ulp SHORT of the bound keeps that too ([100, 100, 93] at w = 3) — the clip is the
+    # fell an ulp SHORT of the bound keeps that too ([100, 100, 100.3] at w = 3) — the clip is the
     # exact bound, not a landing.
     review = np.array([100.0, 100.0, 100.0, 100.0, 100.3])
     assert zscore_sma_1d(review, 5)[-1] == 2.0
@@ -1492,6 +1494,26 @@ def test_zscore_sma_never_exceeds_its_population_bound():
         inside = zscore_sma_1d(walk, w)[w - 1 :]
         assert (np.abs(inside) <= bound).all()
         np.testing.assert_array_equal(zscore_sma_1d(walk, w), ref.zscore_sma(walk, w))
+
+
+def test_zscore_sma_numerator_is_the_exact_deviation_rounded_once():
+    # [1.1, 0.7, 1.1, 0.7, 0.9] sums to exactly five times 0.9: its last bar sits AT the exact
+    # mean, where the direct two-pass deviation read +1.55e-16 — and −1.55e-16 with a 0.7 first,
+    # the sign hanging on the window's order. The exact deviation is 0.0 in every order, and in
+    # general the numerator is the exact rational deviation rounded once, across every binade
+    # (subnormal members included), a lifted window's read off its lifted values.
+    for head in set(itertools.permutations([1.1, 0.7, 1.1, 0.7])):
+        assert zscore_sma_1d([*head, 0.9], 5)[-1] == 0.0
+    rng = np.random.default_rng(31)
+    for _ in range(200):
+        w = int(rng.integers(2, 12))
+        x = rng.normal(size=w + 8) * 2.0 ** int(rng.integers(-1074, 1000))
+        x[rng.random(w + 8) < 0.2] = x[0]
+        z = zscore_sma_1d(x, w)
+        np.testing.assert_array_equal(z, ref.zscore_sma(x, w))
+        for i in np.flatnonzero(np.isfinite(z)):
+            dev = ref.exact_deviation(x[i - w + 1 : i + 1].tolist())
+            assert np.sign(z[i]) == (dev > 0) - (dev < 0)
 
 
 def _geometric_ew_z(alpha: float, r: float) -> float:
