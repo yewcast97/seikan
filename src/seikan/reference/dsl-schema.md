@@ -1423,6 +1423,9 @@ complete statistics are still in `summary.cells[i]` — a checklist result never
   member panels: `pooled.n ==` the sum of `by_target.n` (one pool, fully attributed),
   `pooled.n_nonoverlap <= pooled.n`, `pooled.n_nonoverlap <= max(0, (n_bars − 2) // horizon)` (the
   greedy count collapses same-bar cross-member firings, so the bar clock's windows bound it),
+  `max(by_target.n_nonoverlap) <= pooled.n_nonoverlap <= sum(by_target.n_nonoverlap)` (a member's
+  disjoint windows are a disjoint selection of the pool's, and a disjoint pooled selection splits
+  into disjoint selections within its members — the greedy count on equal windows is the largest),
   `pooled.n <= len(targets) × max(0, n_bars − 1 − horizon)` (each member fires at most once per bar
   and closes at most that many), `pooled.concentration.top_share_abs >= k / pooled.n` (the same
   floor over the pool the basket rubric grades), and a

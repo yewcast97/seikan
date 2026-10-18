@@ -148,20 +148,26 @@ def _grade_by_target(
     windows: int | None,
     by_target_n: dict[str, int | None],
     unmet: list[str],
-) -> tuple[int, bool]:
+) -> tuple[int, bool, list[int] | None]:
     """Per-target support-panel counts + their reconciliation against the coverage ledger, the
     index geometry — the most observations of the cell's horizon that close inside the index
     (``closable``) and the most non-overlapping windows among them (``windows``) — and the
     panel's own top-share floor (:func:`_grade_top_share`). Returns ``(per-target n total,
-    readable)``."""
+    readable, the members' n_nonoverlap counts)``, the counts ``None`` where any member's is
+    unreadable."""
     total = 0
     readable = True
+    member_windows: list[int] | None = []
     for tgt in sorted(by_tgt):
         st = by_tgt.get(tgt)
         st = _as_dict(st)
         n = _int(st.get("n"))
         n_nonoverlap = _int(st.get("n_nonoverlap"))
         by_target_n[tgt] = n
+        if n_nonoverlap is None or n_nonoverlap < 0:
+            member_windows = None
+        elif member_windows is not None:
+            member_windows.append(n_nonoverlap)
         if n is None or n < 0:
             unmet.append(f"by_target[{tgt}]: n is not a count — drifted input")
             readable = False
@@ -196,7 +202,7 @@ def _grade_by_target(
                 f"{tgt}: by_target n={n} but its coverage ledger closed {n_closed} firing(s) — "
                 "the panels describe different pools; drifted input"
             )
-    return total, readable
+    return total, readable, member_windows
 
 
 def _grade_signal_geometry(sig: dict[str, object], run_bars: int | None, unmet: list[str]) -> None:
@@ -295,14 +301,16 @@ def _grade_pooled(
     windows: int | None,
     by_target_n_total: int,
     n_total_readable: bool,
+    member_windows: list[int] | None,
     observed: dict[str, object],
     unmet: list[str],
 ) -> None:
     """The mode-dispatched pooled-panel contract: a basket cell must carry one that reconciles
-    with the member panels and the bar clock (``closable``, the most observations of the cell's
-    horizon that close inside the index per member; ``windows``, the most non-overlapping windows
-    among them); a conjunction cell carrying one is the signature of a restamped basket and
-    refuses."""
+    with the member panels — their total ``n``, and their ``n_nonoverlap`` counts
+    (``member_windows``), between whose largest and whose total the pooled count lies — and the
+    bar clock (``closable``, the most observations of the cell's horizon that close inside the
+    index per member; ``windows``, the most non-overlapping windows among them); a conjunction
+    cell carrying one is the signature of a restamped basket and refuses."""
     if mode == "conjunction" and "pooled" in cell:
         # The runner writes `pooled` ONLY in basket mode — absent, not null, on
         # conjunction cells — so a conjunction-stamped cell carrying one is not stray noise but
@@ -362,6 +370,24 @@ def _grade_pooled(
                         "windows of the cell's horizon that close inside the index — the greedy "
                         "count collapses same-bar cross-member firings, so the bar clock bounds "
                         "it; drifted input"
+                    )
+                # Greedy earliest-start on equal windows is the largest disjoint set, so the
+                # pooled count lies between the members': a member's disjoint windows are a
+                # disjoint selection of the pool's, and a disjoint pooled selection splits into
+                # disjoint selections within its members. The review's 8 beside members at 1 and
+                # 1 — two pooled — met the support floor.
+                if member_windows and p_eff < max(member_windows):
+                    unmet.append(
+                        f"pooled.n_nonoverlap={p_eff} is below {max(member_windows)}, the largest "
+                        "member's own count — a member's disjoint windows are a disjoint "
+                        "selection of the pool's; drifted input"
+                    )
+                if member_windows and p_eff > sum(member_windows):
+                    unmet.append(
+                        f"pooled.n_nonoverlap={p_eff} exceeds {sum(member_windows)}, the members' "
+                        "total — a disjoint pooled selection splits into disjoint selections "
+                        "within its members, and the greedy count on equal windows is the "
+                        "largest; drifted input"
                     )
             member_share = pooled.get("member_share")
             if isinstance(member_share, dict):
@@ -461,7 +487,12 @@ def _check_cell_evidence(cell: object, s: Mapping[str, object], t: GateThreshold
     member panels: ``pooled.n == sum of by_target.n`` (one pool, fully attributed),
     ``pooled.n_nonoverlap <= pooled.n``, ``pooled.n_nonoverlap <= max(0, (n_bars − 2) //
     horizon)`` (the greedy non-overlapping count collapses same-bar cross-member firings, so the
-    bar clock's windows bound it as they bound each target's), ``pooled.n <= len(targets) ×
+    bar clock's windows bound it as they bound each target's), ``pooled.n_nonoverlap`` between
+    the largest member's ``n_nonoverlap`` and the members' total (greedy earliest-start on equal
+    windows is the largest disjoint set: a member's disjoint windows are a disjoint selection of
+    the pool's, and a disjoint pooled selection splits into disjoint selections within its
+    members — the review's 8 beside members at 1 and 1, two pooled, met the support floor),
+    ``pooled.n <= len(targets) ×
     max(0, n_bars − 1 − horizon)`` (each member fires at most once per bar and closes at most
     that many), ``pooled.concentration.top_share_abs`` at least ``k / pooled.n`` (the same
     floor, over the pool the basket rubric grades), and a ``member_share`` panel's
@@ -496,6 +527,7 @@ def _check_cell_evidence(cell: object, s: Mapping[str, object], t: GateThreshold
         "contract); basket cells additionally carry a pooled dict that reconciles "
         "(pooled.n==sum of by_target.n, pooled.n_nonoverlap<=pooled.n, "
         "pooled.n_nonoverlap<=max(0,(n_bars-2)//horizon), "
+        "max(by_target.n_nonoverlap)<=pooled.n_nonoverlap<=sum(by_target.n_nonoverlap), "
         "pooled.n<=len(targets)×max(0,n_bars-1-horizon), "
         "pooled.concentration.top_share_abs>=k/pooled.n, member_share.by_target string-keyed "
         "over the targets "
@@ -589,14 +621,23 @@ def _check_cell_evidence(cell: object, s: Mapping[str, object], t: GateThreshold
     # The five graded sections below share the unmet list, in this order — append order is
     # emitted text.
     readable_cov = _grade_outcome_ledger(cov, run_bars, closable, openable, unmet)
-    by_target_n_total, readable_bt = _grade_by_target(
+    by_target_n_total, readable_bt, member_windows = _grade_by_target(
         by_tgt, cov, closable, windows, by_target_n, unmet
     )
     n_total_readable = bool(cov) and bool(by_tgt) and readable_cov and readable_bt
     _grade_signal_geometry(sig, run_bars, unmet)
     _grade_episode_stats(cell, by_target_n_total, n_total_readable, observed, unmet)
     _grade_pooled(
-        cell, mode, targets, closable, windows, by_target_n_total, n_total_readable, observed, unmet
+        cell,
+        mode,
+        targets,
+        closable,
+        windows,
+        by_target_n_total,
+        n_total_readable,
+        member_windows if n_total_readable else None,
+        observed,
+        unmet,
     )
     return GateCheck(
         name="cell_evidence",

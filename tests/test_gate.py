@@ -1942,7 +1942,38 @@ def test_pooled_n_nonoverlap_is_bounded_by_the_horizons_windows():
     cell = _basket_cell(n=350, pooled=_pooled(n=700, n_nonoverlap=29))
     check = _cell_checks(evaluate_gate(_basket(cells=[cell])))["cell_evidence"]
     assert not check.met
-    assert "pooled.n_nonoverlap=29 exceeds 28" in check.detail
+    assert "pooled.n_nonoverlap=29 exceeds 28, the most non-overlapping windows" in check.detail
+    # the members' own counts (14 + 14) bound it the same way, reported beside the clock's
+    assert "pooled.n_nonoverlap=29 exceeds 28, the members' total" in check.detail
+
+
+def test_pooled_n_nonoverlap_lies_between_the_members_largest_and_their_total():
+    # The review's tamper: two members of 20 overlapping observations each, one disjoint window
+    # apiece and two pooled, with pooled.n_nonoverlap rewritten from 2 to 8 — the support floor —
+    # met every check. Greedy earliest-start on equal windows is the largest disjoint set, so a
+    # member's windows are a disjoint selection of the pool's (pooled >= the largest member) and
+    # a disjoint pooled selection splits into disjoint selections within its members (pooled <=
+    # their total).
+    def basket(pooled_windows, members=(1, 1)):
+        cell = _basket_cell(n=20, pooled=_pooled(n=40, n_nonoverlap=pooled_windows))
+        for tgt, k in zip(("AAA", "BBB"), members, strict=True):
+            cell["by_target"][tgt]["n_nonoverlap"] = k
+        return _cell_checks(evaluate_gate(_basket(cells=[cell])))["cell_evidence"]
+
+    check = basket(8)
+    assert not check.met
+    assert "pooled.n_nonoverlap=8 exceeds 2, the members' total" in check.detail
+    assert basket(2).met and basket(1).met
+    check = basket(0)
+    assert not check.met
+    assert "pooled.n_nonoverlap=0 is below 1, the largest member's own count" in check.detail
+    # both boundaries are inclusive, and an unreadable member count disables the bounds (that
+    # member is refused on its own)
+    assert basket(14, members=(14, 5)).met and basket(19, members=(14, 5)).met
+    assert not basket(13, members=(14, 5)).met and not basket(20, members=(14, 5)).met
+    check = basket(30, members=(14, "junk"))
+    assert not check.met
+    assert "is not a count" in check.detail and "members' total" not in check.detail
 
 
 def test_pooled_n_cannot_exceed_bars_times_members():

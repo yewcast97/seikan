@@ -552,7 +552,11 @@ something to grade. Basket cells must ADDITIONALLY carry the `pooled` dict their
 grades, reconciling with the member panels: `pooled.n ==` the per-target total (one pool, fully
 attributed), `pooled.n_nonoverlap ≤ pooled.n`, `pooled.n_nonoverlap ≤ max(0, ⌊(n_bars − 2) /
 horizon⌋)` (same-bar cross-member firings collapse in the greedy count, so the bar clock's windows
-bound it), `pooled.n ≤ len(targets) × max(0, n_bars − 1 − horizon)` (each member fires at most once
+bound it), `max(by_target.n_nonoverlap) ≤ pooled.n_nonoverlap ≤ Σ by_target.n_nonoverlap` (greedy
+earliest-start on equal windows is the largest disjoint set, so a member's disjoint windows are a
+disjoint selection of the pool's and a disjoint pooled selection splits into disjoint selections
+within its members; the review's 8 beside members at 1 and 1, two pooled, met the support floor),
+`pooled.n ≤ len(targets) × max(0, n_bars − 1 − horizon)` (each member fires at most once
 per bar and closes at most that many), `pooled.concentration.top_share_abs ≥ k / pooled.n` (the
 same floor, over the pool the basket rubric grades), and a `member_share.max_member_share_abs`
 that is a share is the largest of its `by_target` shares, string-keyed over the targets exactly
