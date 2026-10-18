@@ -1451,35 +1451,42 @@ def _expansion_quotient(p: npt.NDArray[np.float64], m: int, k: int) -> float:
     ``[x − ulp, x, x, x, x]`` at ``x = 0.9757632206350922`` read an ulp ABOVE its maximum, where
     the mean rounds to ``x`` itself. Rounded once, a mean never leaves ``[min, max]``.
 
-    ``q = fl(fl(S) / k)`` is corrected off the EXACT residual ``R = S − k·q`` (``k·q`` split into
-    two doubles by Dekker's product; the rest an expansion like ``p``): the mean is ``q + R/k``,
-    so it rounds to the neighbour of ``q`` toward ``R`` wherever ``|R|`` passes ``k`` times half
-    the gap to it, to the even one of the two exactly there, and to ``q`` otherwise — stepped
-    until that holds (one step in every case tried; a binade boundary could take two). The
-    residual is carried doubled, against ``k`` times the gap, wherever twice the sum cannot
-    overflow, and plain against ``k`` times the exact half-gap past that (``q`` is normal
-    there); ``q``'s Veltkamp halves are taken in a frame scaled by :data:`_SPLIT_DOWN` from
-    :data:`_SPLIT_MAX` on, where the splitter's product would overflow. Non-finite where
+    ``q = fl(fl(S) / k)`` is corrected off the EXACT residual ``R = S − k·q``: the mean is
+    ``q + R/k``, so it rounds to the neighbour of ``q`` toward ``R`` wherever ``|R|`` passes ``k``
+    times half the gap to it, to the even one of the two exactly there, and to ``q`` otherwise —
+    stepped until that holds (one step in every case tried; a binade boundary could take two).
+    ``R`` is ``(S − fl(S)) + d``: the sum's own residue, an expansion like ``p``, plus
+    ``d = fl(S) − k·q``, ONE double (a multiple of ``ulp(q)`` under ``k·ulp(q)/2``) read off
+    Dekker's product of ``q``'s Veltkamp halves and ``k``'s in a frame scaled by
+    :data:`_SPLIT_DOWN` from ``|fl(S)| ≥`` :data:`_SPLIT_MAX`, where the splitter's product — and
+    ``k·q`` itself — can leave the double range while the mean has one: ``[max, 0, 0]`` at the
+    largest finite double has ``3·q`` infinite, and a residual formed in the input frame read
+    the sum itself and stepped toward it for good. The residual is carried doubled, against ``k``
+    times the gap, wherever twice the sum cannot overflow, and plain against ``k`` times the
+    exact half-gap past that (``q`` is normal there); nothing added to it leaves the range —
+    ``fl(S)`` against partials below its half-ulp, then ``d`` and the half-gaps. Non-finite where
     ``fl(S)`` is. ``p`` is left as it was."""
     hi = _expansion_value(p, m)
     q = hi / k
     if k == 1 or not np.isfinite(q):
         return q
-    s = 1.0 if abs(q) < _SPLIT_MAX else _SPLIT_DOWN
-    t = (q * s) * _SPLITTER
-    qh = (t - (t - q * s)) / s
-    ql = q - qh
+    s = 1.0 if abs(hi) < _SPLIT_MAX else _SPLIT_DOWN
+    qs = q * s
+    t = qs * _SPLITTER
+    qh = t - (t - qs)
+    ql = qs - qh
     t = k * _SPLITTER
     kh = t - (t - k)
     kl = k - kh
-    kq = q * k
-    err = ((qh * kh - kq) + qh * kl + ql * kh) + ql * kl  # k·q = kq + err exactly
+    kq = qs * k
+    err = ((qh * kh - kq) + qh * kl + ql * kh) + ql * kl  # k·qs = kq + err exactly
+    d = ((hi * s - kq) - err) / s  # fl(S) − k·q, a double: every step exact
     c = 2.0 if abs(hi) < 2.0**1022 else 1.0
     r = np.empty(m + 3)
     for i in range(m):
         r[i] = c * p[i]
-    r, n, _ = _expansion_add(r, m, -c * kq)
-    r, n, _ = _expansion_add(r, n, -c * err)
+    r, n, _ = _expansion_add(r, m, -c * hi)
+    r, n, _ = _expansion_add(r, n, c * d)
     rv = _expansion_value(r, n)  # the residual's sign, exact
     if rv == 0.0:
         return q
@@ -1553,9 +1560,10 @@ def _rolling_exact_means(a: npt.NDArray[np.float64], window: int) -> npt.NDArray
 #: Veltkamp's splitter for a double's 53 bits, ``2**27 + 1``: ``x = hi + lo`` with each half at
 #: most 26 significant bits, so its product with a member count below ``2**26`` is exact.
 _SPLITTER = 134217729.0
-#: From this magnitude a row's sum can leave the double range on the way, and a member's split or
-#: its product with the count can overflow — such a row is summed in a frame scaled by
-#: :data:`_SPLIT_DOWN` (:func:`_row_expansion`).
+#: From this magnitude a row's sum can leave the double range on the way, and a member's — or a
+#: rounded sum's quotient's — split or product with the count can overflow: such a row is summed,
+#: and such a quotient's residual read, in a frame scaled by :data:`_SPLIT_DOWN`
+#: (:func:`_row_expansion`, :func:`_expansion_quotient`).
 _SPLIT_MAX = 2.0**996
 _SPLIT_DOWN = 2.0**-28
 

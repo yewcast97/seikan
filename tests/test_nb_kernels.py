@@ -784,6 +784,68 @@ def test_a_decision_mean_is_rounded_once_and_never_leaves_its_window():
     )
 
 
+def test_a_mean_whose_count_times_quotient_overflows_still_rounds_once():
+    # The review's window: [max, 0, 0] at the largest finite double has the mean max / 3, a
+    # double, and `q = fl(fl(S) / 3)` is its rounding — but 3·q is past the range, so a residual
+    # formed in the input frame read the sum itself and the correction stepped toward it for
+    # good: every mean path hung. The quotient's product is read in the split's frame, and the
+    # residual is the sum's own residue plus one exact double.
+    big = np.finfo(float).max
+    vals = [big, 0.0, 0.0]
+    want = float(Fraction(big) / 3)
+    col = np.array(vals)[:, None]
+    row = np.array(vals)[None, :]
+    fire = np.zeros((3, 1), dtype=bool)
+    fire[0, 0] = True
+    on = np.ones((3, 1), dtype=bool)
+    assert rolling_agg_1d(np.array(vals), 3, "mean")[-1] == want
+    assert nb.cross_agg_apply_nb(row, "mean", 2)[0, 0] == want
+    assert nb.cross_means(row, np.isfinite(row))[0] == want
+    assert nb.event_agg_apply_nb(fire, on, on, col, "mean")[-1, 0] == want
+    np.testing.assert_array_equal(
+        nb.cross_demean_apply_nb(row, 2)[0], [float(Fraction(v) - Fraction(big) / 3) for v in vals]
+    )
+    # sums within an ulp of ±max, with a sub-ulp tail, over every small count: the exact
+    # rational mean and deviations on every path
+    for lead, tail, k in itertools.product(
+        (big, math.nextafter(big, 0.0), -big, 2.0**1023),
+        (0.0, 2.0**969, -(2.0**969), 2.0**970, -(2.0**970), 2.0**971 - 2.0**900, 2.0**-1046),
+        (2, 3, 5, 7),
+    ):
+        vals = [lead, tail] + [0.0] * (k - 2)
+        exact = sum(map(Fraction, vals))
+        if abs(exact) > Fraction(big):
+            continue  # the sum has no double: NaN by the sliding sum's rule
+        want = float(exact / k)
+        col = np.array(vals)[:, None]
+        row = np.array(vals)[None, :]
+        fire = np.zeros((k, 1), dtype=bool)
+        fire[0, 0] = True
+        on = np.ones((k, 1), dtype=bool)
+        assert rolling_agg_1d(np.array(vals), k, "mean")[-1] == want, vals
+        assert nb.cross_means(row, np.isfinite(row))[0] == want, vals
+        assert nb.event_agg_apply_nb(fire, on, on, col, "mean")[-1, 0] == want, vals
+        np.testing.assert_array_equal(
+            nb.cross_demean_apply_nb(row, 2)[0], [float(Fraction(v) - exact / k) for v in vals]
+        )
+    # the exact tie at the range's edge — [max, −2**969, 0] is 3·q − 3·ulp(q)/2 — rounds to the
+    # even neighbour, and a 5e-324 tail, below any frame's reach, decides it either way: the
+    # residual never scales the partials (the cross paths null such a row by their frame's rule)
+    means = {
+        tail: float(sum(map(Fraction, [big, -(2.0**969), tail])) / 3)
+        for tail in (0.0, 5e-324, -5e-324)
+    }
+    assert means[5e-324] != means[-5e-324]
+    fire = np.zeros((3, 1), dtype=bool)
+    fire[0, 0] = True
+    on = np.ones((3, 1), dtype=bool)
+    for tail, want in means.items():
+        vals = [big, -(2.0**969), tail]
+        assert rolling_agg_1d(np.array(vals), 3, "mean")[-1] == want, vals
+        col = np.array(vals)[:, None]
+        assert nb.event_agg_apply_nb(fire, on, on, col, "mean")[-1, 0] == want, vals
+
+
 def test_cross_means_are_exactly_rounded_sums_over_the_count():
     # The cross_mean bench leg. The review's row cancels exactly, but about its offset
     # (`cross_centre`: offset + mean of the differences) three of the five subtractions rounded

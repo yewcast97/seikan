@@ -282,6 +282,33 @@ def test_an_impossible_mean_predicate_mints_no_observations(tmp_path):
     assert cell["by_target"]["target"]["n"] == 0
 
 
+def test_a_window_at_the_largest_double_runs_to_completion(tmp_path):
+    # The review's run: a three-bar rolling mean over a series opening at the largest finite
+    # double. The window's mean max / 3 is a double, but three times its rounding is past the
+    # range, and the quotient's correction — its residual formed in the input frame — ran for
+    # good: `seikan run` never returned. The product is read in a frame; the window fires like
+    # any other, and the run completes with its ledgers. A series-shaped target: its zeros are
+    # no prices.
+    path = tmp_path / "series.csv"
+    idx = pd.date_range("2015-01-02", periods=6, freq="1D").rename("datetime")
+    values = [np.finfo(float).max, 0.0, 0.0, 1.0, 2.0, 3.0]
+    pd.DataFrame({"value": values}, index=idx).to_csv(path)
+    entry = {
+        "type": "threshold",
+        "left": {
+            "type": "rolling_agg",
+            "input": {"type": "field", "column": "close"},
+            "window": 3,
+            "agg": "mean",
+        },
+        "op": ">",
+        "right": {"type": "constant", "value": 0.0},
+    }
+    cell = _run_entry(path, entry, horizon=1, outcome={"kind": "diff"})["cells"][0]
+    assert cell["outcome_coverage"]["target"]["n_attempted"] == 3
+    assert cell["by_target"]["target"]["n"] == 2
+
+
 def test_an_unmet_run_level_check_leaves_every_cell_unmet(tmp_path):
     # Run-level evidence is the ground every per-cell read stands on, so one unmet run-level
     # check leaves EVERY cell unmet — a caller reading cells[i].met gets the complete answer
