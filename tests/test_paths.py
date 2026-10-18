@@ -7,7 +7,7 @@ import tracemalloc
 import numpy as np
 from numpy.lib.stride_tricks import sliding_window_view
 
-from seikan.compiler.paths import bars_to_trough_full
+from seikan.compiler.paths import bars_to_trough_full, excursion_extremum
 
 
 def _trough_off_the_stack(adverse: np.ndarray, base: np.ndarray, h: int, sign: float) -> np.ndarray:
@@ -51,6 +51,49 @@ def test_bars_to_trough_is_the_first_attainment_of_the_window_extremum():
             )
     # a horizon past the data censors every anchor
     assert np.isnan(bars_to_trough_full(np.ones((3, 2)), np.ones((3, 2)), 3, 1.0)).all()
+
+
+def _excursion_by_definition(frame: np.ndarray, base: np.ndarray, h: int, which: str) -> np.ndarray:
+    """The excursion extremum by its definition: the min or max over the window's H/L path
+    ``frame[t .. t+h-1]`` and its exit print ``base[t+h]``, NaN unless every member is finite."""
+    n, g = frame.shape
+    out = np.full(frame.shape, np.nan)
+    pick = np.min if which == "min" else np.max
+    for t in range(n - h):
+        for c in range(g):
+            members = np.append(frame[t : t + h, c], base[t + h, c])
+            if np.isfinite(members).all():
+                out[t, c] = pick(members)
+    return out
+
+
+def test_excursion_extremum_is_its_window_extremum_beside_any_hole():
+    # Holes and ±inf anywhere in the H/L path and the exit print, in both directions: NaN wherever
+    # a window member is not finite, and every window a hole is NOT in reads its own extremum.
+    # scipy's comparison-based filters carried a NaN's state past its window, so a fully observed
+    # window behind a hole read the wrong extremum (the reviewer's fixture is
+    # `test_mae_and_mfe_behind_a_hole_read_their_own_window`). The extremum and the trough index
+    # come off one scan: the bar the trough indexes (the exit print at j = h) holds the extremum.
+    rng = np.random.default_rng(29)
+    for _ in range(300):
+        n = int(rng.integers(3, 80))
+        h = int(rng.integers(1, min(n, 13)))
+        g = int(rng.integers(1, 4))
+        frame = rng.choice([0.0, 1.0, 2.0, 3.0], (n, g)) + rng.normal(0.0, 0.1, (n, g))
+        base = rng.choice([0.0, 1.0, 2.0, 3.0], (n, g))
+        frame[rng.random((n, g)) < 0.08] = np.nan
+        frame[rng.random((n, g)) < 0.03] = np.inf
+        frame[rng.random((n, g)) < 0.03] = -np.inf
+        base[rng.random((n, g)) < 0.05] = np.nan
+        for which, sign in (("min", 1.0), ("max", -1.0)):
+            ext = excursion_extremum(frame, base, h, which)
+            np.testing.assert_array_equal(ext, _excursion_by_definition(frame, base, h, which))
+            trough = bars_to_trough_full(frame, base, h, sign)
+            np.testing.assert_array_equal(np.isnan(ext), np.isnan(trough))
+            rows, cols = np.nonzero(~np.isnan(trough))
+            j = trough[rows, cols].astype(np.int64)
+            at = np.where(j < h, frame[rows + j, cols], base[rows + h, cols])
+            np.testing.assert_array_equal(ext[rows, cols], at)
 
 
 def test_bars_to_trough_runs_in_memory_linear_in_the_frame():

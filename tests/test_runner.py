@@ -2449,9 +2449,8 @@ def test_mae_censored_open_is_nan(tmp_path):
 
 
 def test_mae_nan_hole_in_window_invalidates(tmp_path):
-    # THE P2 regression: a single NaN low INSIDE the forward window must invalidate the MAE
-    # (any-NaN → maximum filter over the indicator); a minimum filter would catch only all-NaN
-    # windows and certify an incomplete adverse path as finite.
+    # THE P2 regression: a single NaN low INSIDE the forward window must invalidate the MAE —
+    # an incomplete adverse path is never certified finite.
     rows = [
         [110, 111, 109, 110],
         [95, 96, 94, 95],  # fires (close < 100)
@@ -2482,8 +2481,8 @@ def test_mae_nan_hole_short_side(tmp_path):
 
 
 def test_mae_clean_window_stays_finite_next_to_a_hole(tmp_path):
-    # The indicator filter is window-local: a firing whose window ends BEFORE the hole keeps a
-    # finite MAE (the hole must not smear backwards beyond the windows it actually touches).
+    # A hole is window-local: a firing whose window ends BEFORE the hole keeps a finite MAE (the
+    # hole must not smear backwards beyond the windows it actually touches).
     rows = [
         [110, 111, 109, 110],
         [95, 96, 94, 95],  # fires; h=1 window = bars 2..3 (clean)
@@ -2496,6 +2495,26 @@ def test_mae_clean_window_stays_finite_next_to_a_hole(tmp_path):
     closed = tr[~tr["is_open"]]
     assert len(closed) == 1
     assert closed.iloc[0]["mae"] == pytest.approx(99.0 / 100.0 - 1.0)
+
+
+def test_mae_and_mfe_behind_a_hole_read_their_own_window(tmp_path):
+    # …nor forwards: a window that starts AFTER the hole reads its own extremum. The reviewer's
+    # fixture: lows [1, 95, NaN, 10, 90, 99, 95, 100] with highs mirroring them, a firing on
+    # bar 2 filled at open[3] = 100, horizon 4 — the path is bars 3..6 plus the exit print
+    # open[7] = 100, so MAE = 10/100 − 1 and MFE = 190/100 − 1. scipy's filters carried the
+    # NaN's state past its window and read 90 and 110 (−0.10 / +0.10) beside a trough index
+    # pointing at the low of 10.
+    nan = float("nan")
+    lows = [1, 95, nan, 10, 90, 99, 95, 100]
+    highs = [199, 105, nan, 190, 110, 101, 105, 100]
+    rows = [[100, hi, lo, 100] for hi, lo in zip(highs, lows, strict=True)]
+    rows[2][3] = 95  # fires (close < 100)
+    tr = _ohlc_obs(tmp_path / "mae_behind.csv", rows, _lt(100.0), horizon=4)
+    closed = tr[~tr["is_open"]]
+    assert len(closed) == 1
+    assert closed.iloc[0]["mae"] == 10.0 / 100.0 - 1.0
+    assert closed.iloc[0]["mfe"] == 190.0 / 100.0 - 1.0
+    assert closed.iloc[0]["bars_to_trough"] == 0.0
 
 
 # ---- post-entry MFE: the favorable mirror ------------------------------------
