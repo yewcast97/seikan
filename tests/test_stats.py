@@ -55,6 +55,7 @@ from seikan.analysis.stats import (
     subperiod_means,
     timing_summary,
 )
+from seikan.types import top_share_count
 
 
 def _episodes(rets, reasons=None, feature=None) -> pd.DataFrame:
@@ -2415,6 +2416,23 @@ def test_concentration_hand_computed():
     assert out["n_top"] == 1
     assert out["top_share_abs"] == pytest.approx(0.5 / (0.5 + 0.19))
     assert np.isnan(concentration(np.array([]))["top_share_abs"])
+
+
+def test_concentration_never_reads_below_its_counts_share_of_the_pool():
+    # The largest k of n magnitudes carry at least k/n of their mass; the share is the correctly
+    # rounded exact quotient of exact masses and k/n the correctly rounded quotient of its
+    # integers, so the emission clears the floor cell_evidence holds it to on every pool — at the
+    # boundary too: n equal magnitudes read exactly k/n.
+    rng = np.random.RandomState(9)
+    for n in (1, 2, 19, 20, 21, 40, 100, 777):
+        k = top_share_count(n)
+        assert k == max(1, math.ceil(n / 20))
+        pools = (rng.standard_t(2, n) * 0.01, np.full(n, 0.03), np.r_[1e-300, np.zeros(n - 1)])
+        for pool in pools:
+            out = concentration(pool)
+            assert out["n_top"] == k and out["top_frac"] == 0.05
+            assert out["top_share_abs"] >= k / n
+        assert concentration(np.full(n, 0.03))["top_share_abs"] == k / n
 
 
 def test_concentration_of_an_overflowed_mass_is_nan_never_a_passing_zero():

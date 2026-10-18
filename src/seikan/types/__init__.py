@@ -84,6 +84,7 @@ from seikan.types.gate_section import (
     GateSection,
 )
 from seikan.types.pools import (
+    TOP_SHARE_FRAC,
     BenchmarkRegressionBlock,
     BenchmarkRegressionReason,
     BucketMonotonicity,
@@ -105,6 +106,7 @@ from seikan.types.pools import (
     SubperiodCounts,
     SubperiodEntry,
     TimingBlock,
+    top_share_count,
 )
 from seikan.types.reliability import (
     DegradationSlopeReason,
@@ -152,6 +154,7 @@ __all__ = [
     "EXIT_REASONS",
     "OUTCOME_KINDS",
     "TARGET_MODES",
+    "TOP_SHARE_FRAC",
     "BarSpacing",
     "BaselineEntry",
     "BaselinePool",
@@ -244,4 +247,5 @@ __all__ = [
     "ValidationRecord",
     "VolumeBlock",
     "VolumeWindow",
+    "top_share_count",
 ]

@@ -1202,6 +1202,48 @@ def test_the_episode_ceiling_read_is_at_least_the_clusters_mean_share():
         assert _cell_checks(evaluate_gate(_summary(cells=[cell])))["cell_evidence"].met
 
 
+def test_a_top_share_is_at_least_its_counts_share_of_the_pool():
+    # The review's tamper: a 100-observation pool whose top_share_abs was rewritten to 0.0 met
+    # every check (the ceiling reads the share against [0, 1] and 0.6 alone), as did one that
+    # dropped n_top and top_frac. The largest k of n magnitudes carry at least k/n of their mass,
+    # k = max(1, ceil(n/20)) the emission's own count, so a share below k/n is impossible — and
+    # the floor is exact: the share is the correctly rounded exact quotient of exact masses, k/n
+    # the correctly rounded quotient of its integers, and rounding is monotone.
+    cell = _cell(n=100, top_share=0.0)
+    cell["by_target"]["AAA"]["concentration"] = {"top_share_abs": 0.0}
+    check = _cell_checks(evaluate_gate(_summary(cells=[cell])))["cell_evidence"]
+    assert not check.met
+    assert "by_target[AAA]: concentration.top_share_abs=0.0 is below 5/100=0.05" in check.detail
+    # the boundary: exactly k/n meets, an ulp under refuses, for pools below and above 20 rows
+    # (from 4 rows, where the fixture's 0.3 cluster share clears its own 1/n_clusters floor, to
+    # the 578 the bar clock closes)
+    for n in (4, 7, 19, 20, 21, 42, 100, 500):
+        k = max(1, -(-n // 20))
+        floor = k / n
+        cell = _cell(n=n, top_share=floor)
+        assert _cell_checks(evaluate_gate(_summary(cells=[cell])))["cell_evidence"].met, n
+        cell = _cell(n=n, top_share=math.nextafter(floor, 0.0))
+        check = _cell_checks(evaluate_gate(_summary(cells=[cell])))["cell_evidence"]
+        assert not check.met and f"below {k}/{n}=" in check.detail, n
+    # the basket rubric's pooled share, over the pool's own n: 5/84 for the fixture's pool
+    cell = _basket_cell(pooled=_pooled(top_share=0.05))
+    check = _cell_checks(evaluate_gate(_basket(cells=[cell])))["cell_evidence"]
+    assert not check.met
+    assert "pooled: concentration.top_share_abs=0.05 is below 5/84=" in check.detail
+    assert _cell_checks(
+        evaluate_gate(_basket(cells=[_basket_cell(pooled=_pooled(top_share=5 / 84))]))
+    )["cell_evidence"].met
+    # a null share — a massless or overflowed pool — stays concentration's to refuse
+    cell = _cell()
+    cell["by_target"]["AAA"]["concentration"] = {
+        "top_share_abs": None,
+        "n_top": 3,
+        "top_frac": 0.05,
+    }
+    checks = _cell_checks(evaluate_gate(_summary(cells=[cell])))
+    assert checks["cell_evidence"].met and not checks["concentration"].met
+
+
 @pytest.mark.parametrize("bad", [0, -1, 43, "junk", None, 1.5, float("nan")])
 def test_the_episode_cluster_count_is_a_count_the_pool_can_hold(bad):
     # n_clusters of 0, -1, "junk" and null met every check beside 42 rows — and the one-cluster
@@ -1808,7 +1850,13 @@ def test_a_starving_member_with_a_healthy_pool_meets_basket_support():
     # member does not sink a basket cell, because the claim is about the pool, not any name in
     # it. (Under conjunction the same numbers would fail on BBB.)
     cell = _basket_cell()
-    cell["by_target"]["BBB"] = _tgt_cell(n=3, n_nonoverlap=1, mean_ret=-0.02)
+    cell["by_target"]["BBB"] = _tgt_cell(
+        n=3,
+        n_nonoverlap=1,
+        mean_ret=-0.02,
+        # three rows: the largest carries at least a third of the mass
+        concentration={"top_share_abs": 0.4, "n_top": 1, "top_frac": 0.05},
+    )
     cell["outcome_coverage"]["BBB"] = _cov(3)
     cell["episode_stats"]["n"] = 45  # 42 + 3
     cell["pooled"].update(n=45, n_nonoverlap=15)

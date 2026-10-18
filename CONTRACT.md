@@ -535,7 +535,11 @@ check — deleted outcomes relabelled as the calendar); and
 the panels RECONCILE — `by_target[t].n == outcome_coverage[t].n_closed` (held to the same closed
 ceiling), `n_nonoverlap ≤ n`, `n_nonoverlap ≤ max(0, ⌊(n_bars − 2) /
 horizon⌋)` (the greedy count's windows sit `horizon` bars apart among the closed observations: 40
-windows of 21 bars claimed in a 600-bar index, where 28 fit, is no run's output), `episode_stats.n` == the per-target total,
+windows of 21 bars claimed in a 600-bar index, where 28 fit, is no run's output),
+`concentration.top_share_abs ≥ k / n` for `k = max(1, ⌈n / 20⌉)` (the largest `k` of `n`
+observations carry at least `k / n` of the mass — exact, every share being the correctly rounded
+exact quotient of exact masses and `k / n` of its integers; the review's 0.0 beside 100
+observations met the ceiling), `episode_stats.n` == the per-target total,
 `episode_stats.n_clusters` a count in `0..n` (0 iff `n == 0`: every closed row lies in one
 cluster), `episode_stats.max_cluster_share_abs ≥ largest_cluster_share_abs` and `≥ 1/n_clusters`
 — exactly 1 with one cluster (the ceiling read agrees with its own panel; every share is the
@@ -549,7 +553,8 @@ grades, reconciling with the member panels: `pooled.n ==` the per-target total (
 attributed), `pooled.n_nonoverlap ≤ pooled.n`, `pooled.n_nonoverlap ≤ max(0, ⌊(n_bars − 2) /
 horizon⌋)` (same-bar cross-member firings collapse in the greedy count, so the bar clock's windows
 bound it), `pooled.n ≤ len(targets) × max(0, n_bars − 1 − horizon)` (each member fires at most once
-per bar and closes at most that many), and a `member_share.max_member_share_abs`
+per bar and closes at most that many), `pooled.concentration.top_share_abs ≥ k / pooled.n` (the
+same floor, over the pool the basket rubric grades), and a `member_share.max_member_share_abs`
 that is a share is the largest of its `by_target` shares, string-keyed over the targets exactly
 and summing to 1 within rounding — each share the correctly rounded exact quotient of exact masses, so within
 2**-50 (0.5 beside shares `{AAA: 1.0, BBB: 0.0}` met every check, and so did 0.5 beside

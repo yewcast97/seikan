@@ -114,12 +114,25 @@ class TimingBlock(TypedDict):
     median_bars_to_trough: float | None
 
 
+#: The fraction of a pool the top-share read covers: its largest 5 % of observations.
+TOP_SHARE_FRAC = 0.05
+
+
+def top_share_count(n: int) -> int:
+    """``n_top`` for a pool of ``n`` observations: the largest 5 %, at least one —
+    ``max(1, ⌈n / 20⌉)``. The one definition the emission (``analysis.stats.concentration``) and
+    the checklist share: the largest ``k`` of ``n`` magnitudes carry at least ``k / n`` of their
+    total, so ``cell_evidence`` holds ``top_share_abs`` to that floor off the pool's ``n``."""
+    return max(1, -(-n // 20))
+
+
 class ConcentrationBlock(TypedDict):
     """|return|-mass share of a pool's largest observations — ``analysis.stats.concentration``.
 
     Mounted per (cell × target) and, in basket mode, on the pooled panel; ``top_share_abs`` is the
     one number the per-cell ``concentration`` check reads (an empty or zero-mass pool yields
-    NaN → null, which that check refuses rather than waves through).
+    NaN → null, which that check refuses rather than waves through), and ``cell_evidence`` holds
+    it to at least ``n_top / n`` (:func:`top_share_count`).
     """
 
     top_share_abs: float | None

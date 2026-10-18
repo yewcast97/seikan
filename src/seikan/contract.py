@@ -59,7 +59,9 @@ METRIC_ROLES: dict[str, JsonValue] = {
     "cell_checks": {
         "cell_evidence": [
             "cells[*].params (a countable horizon >= 1)",
-            "cells[*].by_target[*].{n,n_nonoverlap}",
+            "cells[*].by_target[*].{n,n_nonoverlap,concentration.top_share_abs} (the share at "
+            "least k/n for k = max(1, ceil(n/20)): the largest k of n observations carry at least "
+            "k/n of the mass)",
             "cells[*].outcome_coverage[*].{n_attempted,n_closed,exit_reasons} (the ledger "
             "arithmetic, and the next-open geometry: n_attempted <= n_bars − 1, n_closed <= "
             "max(0, n_bars − 1 − horizon), exit_reasons.open <= min(horizon, n_bars − 1))",
@@ -68,9 +70,11 @@ METRIC_ROLES: dict[str, JsonValue] = {
             "(n == the per-target total; n_clusters a count in 0..n, 0 iff n == 0; the ceiling "
             "read is at least the largest-by-count cluster's share and at least 1/n_clusters — "
             "exactly 1 with one cluster)",
-            "cells[*].pooled.{n,n_nonoverlap} (basket only — pooled.n == sum of by_target.n, "
+            "cells[*].pooled.{n,n_nonoverlap,concentration.top_share_abs} (basket only — "
+            "pooled.n == sum of by_target.n, "
             "pooled.n_nonoverlap <= pooled.n, pooled.n_nonoverlap <= max(0, (n_bars − 2) // "
-            "horizon), pooled.n <= len(targets) × max(0, n_bars − 1 − horizon); "
+            "horizon), pooled.n <= len(targets) × max(0, n_bars − 1 − horizon), the pooled share "
+            "at least k/pooled.n; "
             "a pooled key on a conjunction cell REFUSES as a restamped basket)",
             "cells[*].pooled.member_share.{by_target,max_member_share_abs} (basket only — "
             "by_target string-keyed over the targets exactly; a max_member_share_abs that is a "
@@ -504,7 +508,10 @@ METRIC_ROLES_DOC: dict[str, JsonValue] = {
         "outcome_coverage.n_closed, "
         "n_nonoverlap <= n (non-overlapping windows cannot outnumber observations), "
         "n_nonoverlap <= max(0, (n_bars − 2) // horizon) (the greedy count's windows sit "
-        "horizon bars apart among the closed observations), episode_stats.n == the "
+        "horizon bars apart among the closed observations), concentration.top_share_abs >= k/n "
+        "for k = max(1, ceil(n/20)) (the largest k of n observations carry at least k/n of the "
+        "mass — exact, every share being the correctly rounded exact quotient of exact masses "
+        "and k/n of its integers), episode_stats.n == the "
         "per-target total (the concentration and support panels must describe one pool), "
         "episode_stats.n_clusters a count in 0..n (0 iff n == 0: every closed row lies in one "
         "cluster), episode_stats.max_cluster_share_abs >= largest_cluster_share_abs and >= "
@@ -517,8 +524,9 @@ METRIC_ROLES_DOC: dict[str, JsonValue] = {
         "pooled.n_nonoverlap <= pooled.n, pooled.n_nonoverlap <= max(0, (n_bars − 2) // "
         "horizon) (same-bar cross-member firings collapse in the greedy count), "
         "pooled.n <= len(targets) × max(0, n_bars − 1 − horizon) (each member fires "
-        "at most once per bar and closes at most that many), and a member_share whose "
-        "max_member_share_abs is a share "
+        "at most once per bar and closes at most that many), pooled.concentration.top_share_abs "
+        ">= k/pooled.n (the same floor over the pool the basket rubric grades), and a "
+        "member_share whose max_member_share_abs is a share "
         "names it as the largest of its by_target shares (string-keyed over the targets "
         "exactly, and summing to 1 within rounding — each the correctly rounded exact quotient "
         "of exact masses); a pooled key on a conjunction cell REFUSES — the runner "
@@ -830,8 +838,9 @@ METRIC_ROLES_DOC: dict[str, JsonValue] = {
         ),
         "concentration": (
             "top_share_abs is the |return|-mass share of the top 5% of observations with "
-            "k = max(1, ceil(0.05·n)) — for n <= 20 that is the single largest observation, so "
-            "thin pools read structurally elevated (n_top says what k was)."
+            "k = max(1, ceil(n/20)) — for n <= 20 that is the single largest observation, so "
+            "thin pools read structurally elevated (n_top says what k was), and no pool reads "
+            "below k/n (cell_evidence holds the share to that floor)."
         ),
         "ret_quantiles": (
             "Order statistics of the cell's own closed returns under numpy's default linear "
@@ -1596,7 +1605,8 @@ GATE_CONTRACT_DOC: dict[str, JsonValue] = {
             "n_closed <= max(0, n_bars − 1 − horizon), exit_reasons.open <= min(horizon, "
             "n_bars − 1)); and the panels RECONCILE — by_target.n "
             "== outcome_coverage.n_closed (held to the same closed ceiling), n_nonoverlap <= n, "
-            "n_nonoverlap <= max(0, (n_bars − 2) // horizon), episode_stats.n == the per-target "
+            "n_nonoverlap <= max(0, (n_bars − 2) // horizon), concentration.top_share_abs >= k/n "
+            "for k = max(1, ceil(n/20)), episode_stats.n == the per-target "
             "total, episode_stats.n_clusters a count in 0..n (0 iff n == 0), "
             "episode_stats.max_cluster_share_abs >= largest_cluster_share_abs and >= "
             "1/n_clusters (== 1 with one cluster), signal_coverage.n_bars == summary.n_bars. "
@@ -1605,7 +1615,8 @@ GATE_CONTRACT_DOC: dict[str, JsonValue] = {
             "the pooled dict their rubric grades, reconciling with the member panels (pooled.n "
             "== the per-target total, pooled.n_nonoverlap <= pooled.n, pooled.n_nonoverlap <= "
             "max(0, (n_bars − 2) // horizon), pooled.n "
-            "<= len(targets) × max(0, n_bars − 1 − horizon), and a max_member_share_abs that "
+            "<= len(targets) × max(0, n_bars − 1 − horizon), pooled.concentration.top_share_abs "
+            ">= k/pooled.n, and a max_member_share_abs that "
             "is a share is the "
             "largest of member_share.by_target's shares, string-keyed over the targets "
             "exactly and summing to 1 within rounding); a pooled key on a conjunction cell "

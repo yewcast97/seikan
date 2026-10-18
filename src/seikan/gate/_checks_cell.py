@@ -20,7 +20,7 @@ from seikan.gate._read import (
     _targets,
 )
 from seikan.settings import GateThresholds
-from seikan.types import EXIT_REASONS
+from seikan.types import EXIT_REASONS, top_share_count
 
 #: How far a basket's member shares may sum from 1. Each share is the correctly rounded exact
 #: quotient of its member's |return| mass over the pool's — quotients that sum to exactly 1 — and
@@ -122,6 +122,25 @@ def _grade_outcome_ledger(
     return readable
 
 
+def _grade_top_share(panel: dict[str, object], n: int | None, label: str, unmet: list[str]) -> None:
+    """A panel's ``concentration.top_share_abs`` must be at least its own count's share of the
+    pool it is read off: the largest ``k`` of ``n`` magnitudes carry at least ``k / n`` of their
+    total mass, ``k`` the emission's own top count (:func:`top_share_count`). Exact: the share is
+    the correctly rounded exact quotient of exact masses, ``k / n`` the correctly rounded
+    quotient of its integers, and rounding is monotone. The review's tamper: 0.0 beside 100
+    observations met the ceiling. A null share (a massless or overflowed pool) is
+    ``concentration``'s to refuse."""
+    share = _prob(_as_dict(panel.get("concentration")).get("top_share_abs"))
+    if share is None or n is None or n < 1:
+        return
+    k = top_share_count(n)
+    if share < k / n:
+        unmet.append(
+            f"{label}: concentration.top_share_abs={share} is below {k}/{n}={k / n}, the least "
+            f"share the largest {k} of {n} observations can carry; drifted input"
+        )
+
+
 def _grade_by_target(
     by_tgt: dict[str, object],
     cov: dict[str, object],
@@ -130,10 +149,11 @@ def _grade_by_target(
     by_target_n: dict[str, int | None],
     unmet: list[str],
 ) -> tuple[int, bool]:
-    """Per-target support-panel counts + their reconciliation against the coverage ledger and the
-    index geometry: the most observations of the cell's horizon that close inside the index
-    (``closable``) and the most non-overlapping windows among them (``windows``). Returns
-    ``(per-target n total, readable)``."""
+    """Per-target support-panel counts + their reconciliation against the coverage ledger, the
+    index geometry — the most observations of the cell's horizon that close inside the index
+    (``closable``) and the most non-overlapping windows among them (``windows``) — and the
+    panel's own top-share floor (:func:`_grade_top_share`). Returns ``(per-target n total,
+    readable)``."""
     total = 0
     readable = True
     for tgt in sorted(by_tgt):
@@ -154,6 +174,7 @@ def _grade_by_target(
                 "cell's horizon that close inside the index; drifted input"
             )
         total += n
+        _grade_top_share(st, n, f"by_target[{tgt}]", unmet)
         if n_nonoverlap is None or n_nonoverlap < 0:
             unmet.append(f"by_target[{tgt}]: n_nonoverlap is not a count — drifted input")
         elif n_nonoverlap > n:
@@ -326,6 +347,7 @@ def _grade_pooled(
                         "that close inside the index across the members — each fires at most "
                         "once per bar; drifted input"
                     )
+                _grade_top_share(pooled, p_n, "pooled", unmet)
             if p_eff is None or p_eff < 0:
                 unmet.append("pooled.n_nonoverlap is not a count — drifted input")
             else:
@@ -420,7 +442,11 @@ def _check_cell_evidence(cell: object, s: Mapping[str, object], t: GateThreshold
     ``n`` is held to the same closed ceiling); ``n_nonoverlap <= n`` (non-overlapping windows
     cannot outnumber observations) and ``n_nonoverlap <= max(0, (n_bars − 2) // horizon)`` — the
     greedy count's windows sit ``horizon`` bars apart among the closed observations: 40 windows
-    of 21 bars in a 600-bar index claimed more than the 28 that fit; the cell's
+    of 21 bars in a 600-bar index claimed more than the 28 that fit; each panel's
+    ``concentration.top_share_abs`` is at least ``k / n`` for its own ``n`` and the emission's
+    top count ``k = max(1, ⌈n / 20⌉)`` (:func:`_grade_top_share` — the largest ``k`` of ``n``
+    observations carry at least ``k / n`` of the mass; 0.0 beside 100 observations met the
+    ceiling); the cell's
     ``episode_stats.n`` is the per-target total (the concentration panel and the support panel
     must describe one pool), its ``n_clusters`` a count the pool can hold, and its
     ``max_cluster_share_abs`` agrees with its own panel — at least ``largest_cluster_share_abs``
@@ -437,7 +463,8 @@ def _check_cell_evidence(cell: object, s: Mapping[str, object], t: GateThreshold
     horizon)`` (the greedy non-overlapping count collapses same-bar cross-member firings, so the
     bar clock's windows bound it as they bound each target's), ``pooled.n <= len(targets) ×
     max(0, n_bars − 1 − horizon)`` (each member fires at most once per bar and closes at most
-    that many), and a ``member_share`` panel's
+    that many), ``pooled.concentration.top_share_abs`` at least ``k / pooled.n`` (the same
+    floor, over the pool the basket rubric grades), and a ``member_share`` panel's
     one-name read is the largest share of its ``by_target`` decomposition, string-keyed over the
     targets exactly and summing to 1 within rounding (:func:`_grade_member_share` —
     ``max_member_share_abs`` 0.5 beside shares ``{AAA: 1.0, BBB: 0.0}`` met every check, the
@@ -460,6 +487,8 @@ def _check_cell_evidence(cell: object, s: Mapping[str, object], t: GateThreshold
         "horizon anchor bars are right-censored); panels reconcile "
         "(by_target.n==outcome_coverage.n_closed, "
         "n<=max(0,n_bars-1-horizon), n_nonoverlap<=n, n_nonoverlap<=max(0,(n_bars-2)//horizon), "
+        "concentration.top_share_abs>=k/n for k=max(1,ceil(n/20)) (the largest k of n "
+        "observations carry at least k/n of the mass), "
         "episode_stats.n==sum of by_target.n, episode_stats.n_clusters a count in 0..n (0 iff "
         "n==0), episode_stats.max_cluster_share_abs>=largest_cluster_share_abs and "
         ">=1/n_clusters (==1 with one cluster), signal_coverage.n_bars==summary.n_bars); "
@@ -467,7 +496,8 @@ def _check_cell_evidence(cell: object, s: Mapping[str, object], t: GateThreshold
         "contract); basket cells additionally carry a pooled dict that reconciles "
         "(pooled.n==sum of by_target.n, pooled.n_nonoverlap<=pooled.n, "
         "pooled.n_nonoverlap<=max(0,(n_bars-2)//horizon), "
-        "pooled.n<=len(targets)×max(0,n_bars-1-horizon), member_share.by_target string-keyed "
+        "pooled.n<=len(targets)×max(0,n_bars-1-horizon), "
+        "pooled.concentration.top_share_abs>=k/pooled.n, member_share.by_target string-keyed "
         "over the targets "
         "exactly and, where max_member_share_abs is a share, every share in [0,1] with "
         "max==max_member_share_abs and sum==1 within 2**-50); a pooled key on a conjunction "

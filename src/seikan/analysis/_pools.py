@@ -25,6 +25,7 @@ from scipy import stats as sps
 
 from seikan.numeric import MIN_NORMAL, midrange
 from seikan.types import (
+    TOP_SHARE_FRAC,
     BenchmarkRegressionBlock,
     BenchmarkRegressionReason,
     ConcentrationBlock,
@@ -33,6 +34,7 @@ from seikan.types import (
     PoolMoments,
     PoolQuantiles,
     TimingBlock,
+    top_share_count,
 )
 
 _NAN = float("nan")
@@ -303,25 +305,27 @@ def pool_moments(rets: np.ndarray) -> PoolMoments:
 
 
 @np.errstate(over="ignore", invalid="ignore")
-def concentration(rets: np.ndarray, top_frac: float = 0.05) -> ConcentrationBlock:
+def concentration(rets: np.ndarray) -> ConcentrationBlock:
     """How much of the pool's return mass sits in its largest few observations — the
-    "one-episode thesis" detector. ``top_share_abs`` is the |return| mass of the top ``top_frac``
-    observations over the total |return| mass; near 1 means the whole edge is a handful of events
-    (``n_nonoverlap`` shows overlap inflation, this shows MASS concentration). The per-cell
-    concentration checklist reads ``top_share_abs`` against a ceiling; an empty pool yields NaN,
-    which that checklist refuses rather than waves through — and so does a pool whose total
-    |return| mass leaves the double range (:func:`mass_share`). The share is the correctly
-    rounded exact quotient of exact masses, so it never exceeds 1: summed in floating point,
-    five masses among 95 zeros read 1.0000000000000002."""
+    "one-episode thesis" detector. ``top_share_abs`` is the |return| mass of the top
+    :data:`TOP_SHARE_FRAC` of observations (``n_top`` of them, :func:`top_share_count`) over the
+    total |return| mass; near 1 means the whole edge is a handful of events (``n_nonoverlap``
+    shows overlap inflation, this shows MASS concentration). The per-cell concentration
+    checklist reads ``top_share_abs`` against a ceiling; an empty pool yields NaN, which that
+    checklist refuses rather than waves through — and so does a pool whose total |return| mass
+    leaves the double range (:func:`mass_share`). The share is the correctly rounded exact
+    quotient of exact masses, so it never exceeds 1 (summed in floating point, five masses among
+    95 zeros read 1.0000000000000002) and never falls below ``n_top / n``, the floor
+    ``cell_evidence`` holds it to."""
     rets = np.asarray(rets, dtype=float)
     rets = rets[~np.isnan(rets)]
     n = rets.shape[0]
     if n == 0:
-        return {"top_share_abs": _NAN, "n_top": 0, "top_frac": float(top_frac)}
-    k = max(1, math.ceil(top_frac * n))
+        return {"top_share_abs": _NAN, "n_top": 0, "top_frac": TOP_SHARE_FRAC}
+    k = top_share_count(n)
     mag = np.sort(np.abs(rets))[::-1]
     share = mass_share(exact_mass(mag[:k]), exact_mass(mag))
-    return {"top_share_abs": share, "n_top": int(k), "top_frac": float(top_frac)}
+    return {"top_share_abs": share, "n_top": k, "top_frac": TOP_SHARE_FRAC}
 
 
 #: The percentiles every per-cell distribution block reports. Seven points, not a histogram:

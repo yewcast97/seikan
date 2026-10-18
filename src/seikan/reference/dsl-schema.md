@@ -1413,7 +1413,9 @@ complete statistics are still in `summary.cells[i]` — a checklist result never
   anchors nothing, only so many observations close inside the index (`by_target.n` held to the
   same ceiling) and only the last `horizon` anchor bars are right-censored; `n_nonoverlap <= n` and
   `n_nonoverlap <= max(0, (n_bars − 2) // horizon)` — the greedy count's windows sit `horizon` bars
-  apart among them; `episode_stats.n` == the per-target total, its `n_clusters` a count in
+  apart among them; `concentration.top_share_abs >= k / n` for `k = max(1, ceil(n / 20))` — the
+  largest `k` of `n` observations carry at least `k / n` of the mass; `episode_stats.n` == the
+  per-target total, its `n_clusters` a count in
   `0..n` (0 iff `n == 0`) and its `max_cluster_share_abs` at least `largest_cluster_share_abs`
   and at least `1/n_clusters` — exactly 1 where `n_clusters == 1`;
   `signal_coverage.n_bars == summary.n_bars`). Basket
@@ -1422,7 +1424,8 @@ complete statistics are still in `summary.cells[i]` — a checklist result never
   `pooled.n_nonoverlap <= pooled.n`, `pooled.n_nonoverlap <= max(0, (n_bars − 2) // horizon)` (the
   greedy count collapses same-bar cross-member firings, so the bar clock's windows bound it),
   `pooled.n <= len(targets) × max(0, n_bars − 1 − horizon)` (each member fires at most once per bar
-  and closes at most that many), and a
+  and closes at most that many), `pooled.concentration.top_share_abs >= k / pooled.n` (the same
+  floor over the pool the basket rubric grades), and a
   `member_share.max_member_share_abs` that is a share is the largest of its `by_target` shares,
   string-keyed over the targets exactly and summing to 1 within rounding (each the correctly
   rounded exact quotient of exact masses). A `pooled` key on a conjunction cell
