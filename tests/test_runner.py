@@ -1896,6 +1896,45 @@ def test_multi_target_bucket_edges_aggregate_by_ordinal(tmp_path):
         ]
 
 
+def test_a_pooled_bucket_record_carries_its_composition(tmp_path):
+    # The review's fixture through the run: two targets bucketed by a per-target feature of TIED
+    # values, A filling its three bins 50/25/25 and B 25/25/50, each member's return rising bin
+    # by bin. The pooled ordinal means fall (rho −1), a trend neither member shows; each record
+    # carries by_target, the members' own rows of it, and the summary validates with it.
+    n = 100  # closed rows per target: bar t measures open[t + 1] → open[t + 2]
+    idx = pd.date_range("2021-01-01", periods=n + 2, freq="1D", name="datetime")
+    rng = np.random.default_rng(4)
+    files: dict[str, str] = {}
+    for name, counts, base in (("A", [50, 25, 25], 0.003), ("B", [25, 25, 50], 0.002)):
+        feat = np.repeat([0.0, 1.0, 2.0], counts)
+        rng.shuffle(feat)
+        px = np.full(n + 2, 100.0)
+        for t in range(n):
+            px[t + 2] = px[t + 1] * (1.0 + base + 1e-5 * feat[t])
+        files[name] = str(_bars(tmp_path / f"{name}.csv", px.tolist()))
+        feed = tmp_path / f"f@{name}.csv"
+        pd.DataFrame({"f": np.append(feat, [feat[-1]] * 2)}, index=idx).to_csv(feed)
+        files[f"f@{name}"] = str(feed)
+    thesis = Thesis.model_validate(
+        {
+            "name": "composition",
+            "data": {"targets": ["A", "B"], "external": {"f": {"per_target": True}}},
+            "entry": _lt(1e9),
+            "params": {"horizon": 1, "features": {"f": {"type": "external", "name": "f"}}},
+        }
+    )
+    res = run_backtest(thesis, load(thesis, files))
+    validate_summary(res.summary)
+    cell = res.summary["cells"][0]
+    records = cell["conditional_buckets"]["f"]["buckets"]
+    pooled = [r["mean_ret"] for r in records]
+    assert pooled == sorted(pooled, reverse=True) and cell["bucket_monotonicity"]["f"]["sign"] == -1
+    assert [[r["by_target"][t]["n"] for r in records] for t in "AB"] == [[50, 25, 25], [25, 25, 50]]
+    for t in "AB":
+        means = [r["by_target"][t]["mean_ret"] for r in records]
+        assert means == sorted(means) and len(set(means)) == 3
+
+
 # ---- cross_breadth: the effective-universe ledger -------------------------------------------
 # The cross kernels reduce over the entering members of every population (the cross-section, or
 # each group) that clears min_valid, and discard that count k; member warmup legally thins the

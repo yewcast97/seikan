@@ -1142,7 +1142,7 @@ correct for them.
 
 The report is a FILE you nominate: `--report-out <path>` (always overwritten). A successful run
 prints **nothing** on stdout — only an error ever emits a JSON envelope there — so read the report
-off disk, not off the pipe. It is `report_schema_version` **5**, in a FIXED layer order (there are
+off disk, not off the pipe. It is `report_schema_version` **6**, in a FIXED layer order (there are
 no layering variants to branch on):
 
 `seikan_version` / `report_schema_version` / `command` (the header every seikan JSON document
@@ -1328,7 +1328,14 @@ and int64 nanosecond counts silently round in IEEE-754 consumers.)
     explicit, never absent:
     `no_closed_observations` / `insufficient_observations` (below 20 valid rows) /
     `insufficient_distinct_values`. Each `mean_ret` is the bucket's exact sum over its `n`,
-    rounded once, so buckets holding the same returns read the same mean in any row order.
+    rounded once, so buckets holding the same returns read the same mean in any row order. A
+    record pooling several targets' rows carries `by_target` — `{target: {n, mean_ret,
+    hit_rate}}`, each participating target's own rows of the ordinal off their own returns, its
+    `mean_ret` standing under a `diff` outcome where the pooled one is null — absent on one
+    target's records. Read it before a pooled trend: the pooled `mean_ret` weights the targets
+    by their rows in the ordinal, which equal per-target bin counts do not equalize — with tied
+    feature values two targets fill their ordinals 50/25/25 and 25/25/50, and the pooled means
+    fall (`rho` −1) while both targets' own rise.
     `bucket_monotonicity` carries a Spearman `rho` + `sign` per
     feature that bucketed with ≥ 3 populated buckets — none where a bucket's `mean_ret` is null,
     its returns' sum having left the double range, or where every mean is equal. Under a
@@ -1708,7 +1715,8 @@ open to quote a statistic honestly.
   feature over the cell's own closed rows, with a Spearman `rho` + `sign` per feature (alphalens
   mean-return-by-quantile in one number): does the edge strengthen monotonically with the
   feature? Pooled across the cell's TARGETS — which in basket mode already IS the pooled
-  conditioning read — but never across cells, and overlap-inflated like every trades-pool
+  conditioning read, each pooled record's `by_target` its composition — but never across cells,
+  and overlap-inflated like every trades-pool
   statistic: "associated in this sample" is the entire claim a bucket pattern supports. Do not
   pool buckets back across cells yourself: a pooled qcut conditions on grid composition.
 - `cells[i].episodes` — the time-ordered episode ledger under the shares the

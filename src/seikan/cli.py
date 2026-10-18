@@ -152,13 +152,17 @@ EXIT_INTERNAL: Final = 4
 #: gate -> metric_roles), the ``outputs`` block naming the files a run wrote, and the error
 #: envelope ``{type, message, errors?}``. It is the one number that tells an agent whether the
 #: binary in front of it is the contract it is holding, so a reader-visible shape change bumps it
-#: rather than arriving silently. v5 (this build) REMOVED the legacy ``stats_table`` /
+#: rather than arriving silently. v6 (this build) ADDED ``by_target`` — each participating
+#: target's own n / mean_ret / hit_rate — to every conditional-bucket record that pools several
+#: targets' rows by ordinal (``cells[].conditional_buckets.<feature>.buckets[]``): the pooled
+#: means weight the targets by their rows per ordinal, and the composition read was missing;
+#: every v5 key and number is unchanged. v5 REMOVED the legacy ``stats_table`` /
 #: ``by_target``/``by_param``/``n_stats_rows`` grid breakdown, the nominal ``t_iid``/``p_iid``
 #: pair and the derivable ``sharpe``/``firing_rate`` from the summary, renamed the trades column
 #: ``bars_held`` → ``horizon`` (always present), and ADDED the integrity reads ``rot_n_null``
 #: (per panel) and ``pbo.n_splits_attempted`` / ``pbo.n_candidates_min``; every surviving number
-#: is byte-identical to v4.
-REPORT_SCHEMA_VERSION = 5
+#: was byte-identical to v4.
+REPORT_SCHEMA_VERSION = 6
 
 
 #: Ceiling on the ``--windows`` list. A cap, not a knob: past it the request is a usage error,

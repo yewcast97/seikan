@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Literal, TypedDict
+from typing import Literal, NotRequired, TypedDict
 
 # ---- pool-level statistical blocks --------------------------------------------------------
 #
@@ -297,6 +297,19 @@ class EpisodeProfileBlock(TypedDict):
     max_loss_streak: int
 
 
+class BucketMemberRecord(TypedDict):
+    """One participating target's own rows within a multi-target bucket record
+    (``BucketRecord.by_target``): ``n`` / ``mean_ret`` / ``hit_rate`` over the rows of THAT
+    target the ordinal pooled, read off each row's own return — ``mean_ret`` their exactly
+    rounded mean (null only where their sum left the double range), each row's own excess under
+    a ``cross_mean`` basket (one target's rows hold no bar whole). A target is its own unit, so
+    these means stand under a ``diff`` outcome, where the pooled one is null."""
+
+    n: int
+    mean_ret: float | None
+    hit_rate: float
+
+
 class BucketRecord(TypedDict):
     """One quantile bucket of a per-cell conditional panel, over the ascending-feature qcut.
 
@@ -313,12 +326,20 @@ class BucketRecord(TypedDict):
     add). Under a
     ``cross_mean`` basket the rows of a FULL bar (every member closed) that land wholly in the
     bucket enter ``mean_ret`` at 0.0, their sum's exact value; ``n`` and ``hit_rate`` are always
-    the rows' own."""
+    the rows' own.
+
+    ``by_target`` is a pooled record's COMPOSITION — each participating target's own record
+    (:class:`BucketMemberRecord`) — present exactly on the records that pooled several targets'
+    rows by ordinal and absent on a single-target record (as ``pooled`` is on a conjunction
+    cell). The pooled ``mean_ret`` weights the targets by the rows each puts in the ordinal,
+    which equal per-target bin counts do not equalize: tied feature values fill two targets'
+    ordinals 50/25/25 and 25/25/50, and the pooled means fall while both targets' own rise."""
 
     bucket: str
     n: int
     mean_ret: float | None
     hit_rate: float
+    by_target: NotRequired[dict[str, BucketMemberRecord]]
 
 
 class FeatureBucketPanel(TypedDict):

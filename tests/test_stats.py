@@ -575,6 +575,52 @@ def test_cell_conditional_buckets_aggregates_ordinals_across_targets():
     assert [b["hit_rate"] for b in block["buckets"]] == pytest.approx([1.0, 1.0, 1.0, 0.5])
 
 
+def _tied_two_member_frame() -> pd.DataFrame:
+    """Two members bucketed by a feature of TIED values 0 / 1 / 2: A's 100 rows fill its three
+    populated bins 50/25/25, B's 25/25/50, and each member's return rises bin by bin — A at
+    0.300/0.301/0.302%, B at 0.200/0.201/0.202% — in shuffled row order."""
+    rng = np.random.default_rng(4)
+    parts = []
+    for name, counts, base in (("A", [50, 25, 25], 0.003), ("B", [25, 25, 50], 0.002)):
+        feat = np.repeat([0.0, 1.0, 2.0], counts)
+        rng.shuffle(feat)
+        parts.append(pd.DataFrame({"target": name, "feat": feat, "ret": base + 1e-5 * feat}))
+    return pd.concat(parts, ignore_index=True)
+
+
+def test_cell_conditional_buckets_carry_each_targets_rows_of_a_pooled_record():
+    # Per-target edges leave the pooled ordinal means weighted by each member's rows there, and
+    # equal populated-bin counts do not equalize those proportions: over the tied two-member
+    # frame the pooled means FALL — 0.2667% / 0.2510% / 0.2353%, rho −1 — a trend neither
+    # member shows. Every multi-target record carries its composition, each member's own n /
+    # mean_ret / hit_rate over its rows of the ordinal.
+    frame = _tied_two_member_frame()
+    out = cell_conditional_buckets(frame, ["feat"])
+    records = out["conditional_buckets"]["feat"]["buckets"]
+    pooled = [r["mean_ret"] for r in records]
+    assert pooled == sorted(pooled, reverse=True) and len(set(pooled)) == 3
+    assert out["bucket_monotonicity"]["feat"] == {"rho": pytest.approx(-1.0), "sign": -1}
+    for name, counts in (("A", [50, 25, 25]), ("B", [25, 25, 50])):
+        mine = [r["by_target"][name] for r in records]
+        assert [m["n"] for m in mine] == counts
+        means = [m["mean_ret"] for m in mine]
+        assert means == sorted(means) and len(set(means)) == 3
+        rows = frame[frame["target"] == name]
+        for value, m in zip((0.0, 1.0, 2.0), mine, strict=True):
+            assert m["mean_ret"] == exact_mean(rows.loc[rows["feat"] == value, "ret"].to_numpy())
+            assert m["hit_rate"] == 1.0
+    for r in records:  # the composition reconciles with the pooled record
+        assert list(r["by_target"]) == ["A", "B"]
+        assert sum(m["n"] for m in r["by_target"].values()) == r["n"]
+    # one participating target's records pool nothing, so they carry no composition
+    alone = cell_conditional_buckets(frame[frame["target"] == "A"], ["feat"])
+    assert all("by_target" not in r for r in alone["conditional_buckets"]["feat"]["buckets"])
+    # a target is its own unit: under a diff outcome the pooled mean is null, the members' stand
+    held = cell_conditional_buckets(frame, ["feat"], commensurable=False)
+    for h, r in zip(held["conditional_buckets"]["feat"]["buckets"], records, strict=True):
+        assert math.isnan(h["mean_ret"]) and h["by_target"] == r["by_target"]
+
+
 def test_cell_conditional_buckets_withhold_means_across_incommensurable_targets():
     # Under a `diff` outcome each target is in its own level units: a record pooling both
     # members' rows by ordinal has no unit for its mean — null, and so no monotonicity ranks the
@@ -854,6 +900,10 @@ def test_cell_buckets_read_a_whole_full_bar_at_its_exact_zero_in_any_declaration
             (b["bucket"], b["n"], b["hit_rate"]) for b in plain_block["buckets"]
         ]
         assert 0.0 < block["buckets"][0]["hit_rate"] < 1.0
+        # a member's own rows hold no bar whole: its composition entry reads its rows' returns
+        assert [b["by_target"] for b in block["buckets"]] == [
+            b["by_target"] for b in plain_block["buckets"]
+        ]
         plain_reads.add(
             (
                 tuple(b["mean_ret"] for b in plain_block["buckets"]),

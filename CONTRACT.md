@@ -206,12 +206,15 @@ Every JSON document — the `run` report, `hash`, `check-data`, `describe`, `sch
 every error
 envelope — opens
 with the same top-level header `{seikan_version, report_schema_version, command}`
-(`report_schema_version` **5** — v5 REMOVED the legacy `stats_table`/`by_target`/`by_param`/
-`n_stats_rows` grid breakdown (a fired-pools-only duplicate of `cells[].by_target` whose rollups
-averaged per-cell means across horizons), the nominal `t_iid`/`p_iid` pair and the derivable
-`sharpe`/`firing_rate`, renamed the trades column `bars_held` → `horizon` (always present), and
-ADDED the integrity reads `rot_n_null` per panel and `pbo.n_splits_attempted`/`n_candidates_min`;
-every surviving number is byte-identical to v4); an error envelope then carries
+(`report_schema_version` **6** — v6 ADDED `by_target`, each participating target's own `n` /
+`mean_ret` / `hit_rate`, to every conditional-bucket record that pools several targets' rows by
+ordinal, every v5 key and number unchanged; v5 REMOVED the legacy `stats_table`/`by_target`/
+`by_param`/`n_stats_rows` grid breakdown (a fired-pools-only duplicate of `cells[].by_target`
+whose rollups averaged per-cell means across horizons), the nominal `t_iid`/`p_iid` pair and the
+derivable `sharpe`/`firing_rate`, renamed the trades column `bars_held` → `horizon` (always
+present), and ADDED the integrity reads `rot_n_null` per panel and
+`pbo.n_splits_attempted`/`n_candidates_min`, every surviving number byte-identical to v4); an
+error envelope then carries
 `error: {type, message, errors?}` with `type` ∈ {usage, data_invalid, dsl_invalid,
 thresholds_invalid, internal}. The `run` report —
 the file `--report-out` nominates, never stdout — has ONE FIXED layer order after the header, no
@@ -388,7 +391,9 @@ home since over overlapping ROWS "consecutive" is a cluster artifact; `n_episode
 episode_stats.n_clusters` by construction, it emits ALWAYS — descriptive statistics do not
 refuse on thinness — and row-vs-episode divergence is the visible cluster diagnostic, reported
 never corrected), `conditional_buckets`/`bucket_monotonicity` (per-cell, pooled across
-the cell's own targets with explicit refusal reasons) and `feature_association` (per-target
+the cell's own targets with explicit refusal reasons, every record that pools several targets'
+rows carrying `by_target` — each target's own `n` / `mean_ret` / `hit_rate` there, the
+composition its pooled mean weights them by) and `feature_association` (per-target
 Spearman, no p-value) — where a `diff` outcome's rows span several targets, each in its own level
 units, every value these blocks pool ACROSS targets is null (the episode means, |return|-mass
 shares and excursion extremes, an ordinal bucket's `mean_ret` and with it the monotonicity read;

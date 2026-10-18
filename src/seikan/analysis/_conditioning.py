@@ -12,6 +12,7 @@ from scipy import stats as sps
 
 from seikan.analysis._pools import exact_mean, scaled_parts
 from seikan.types import (
+    BucketMemberRecord,
     BucketMonotonicity,
     BucketRecord,
     CellBucketPanels,
@@ -22,6 +23,20 @@ from seikan.types import (
 _NAN = float("nan")
 
 
+def _record(
+    rets: np.ndarray, sums: np.ndarray, scale: int, commensurable: bool
+) -> BucketMemberRecord:
+    """The ONE record arithmetic of every bucket panel, over one record's rows: ``n`` and
+    ``hit_rate`` over the rows' own returns, ``mean_ret`` the exactly rounded sum of what the rows
+    add (``sums``, :func:`_bucket_sums`) over ``scale`` times ``n`` — NaN under
+    ``commensurable=False`` (several targets' level units add to nothing)."""
+    return {
+        "n": int(rets.size),
+        "mean_ret": exact_mean(sums, scale) if commensurable else _NAN,
+        "hit_rate": float(np.mean(rets > 0)),
+    }
+
+
 def _records(
     categories: Sequence[object],
     codes: np.ndarray,
@@ -30,25 +45,21 @@ def _records(
     scale: int,
     commensurable: bool,
 ) -> list[BucketRecord]:
-    """One record per populated category, in order — the ONE record arithmetic of every bucket
-    panel: ``n`` and ``hit_rate`` over the rows' own returns, ``mean_ret`` the exactly rounded sum
-    of what the rows add (``sums``, :func:`_bucket_sums`) over ``scale`` times ``n`` — NaN under
-    ``commensurable=False`` (several targets' level units add to nothing). ``codes`` is each
-    row's category index (−1 where no bin holds the row)."""
+    """One labelled :func:`_record` per populated category, in order. ``codes`` is each row's
+    category index (−1 where no bin holds the row)."""
     records: list[BucketRecord] = []
     for i, label in enumerate(categories):
         in_bucket = codes == i
-        if not in_bucket.any():
-            continue
-        pool = rets[in_bucket]
-        records.append(
-            {
-                "bucket": str(label),
-                "n": int(pool.size),
-                "mean_ret": exact_mean(sums[in_bucket], scale) if commensurable else _NAN,
-                "hit_rate": float(np.mean(pool > 0)),
-            }
-        )
+        if in_bucket.any():
+            member = _record(rets[in_bucket], sums[in_bucket], scale, commensurable)
+            records.append(
+                {
+                    "bucket": str(label),
+                    "n": member["n"],
+                    "mean_ret": member["mean_ret"],
+                    "hit_rate": member["hit_rate"],
+                }
+            )
     return records
 
 
@@ -63,7 +74,13 @@ def _bucket_monotonicity(records: list[BucketRecord]) -> BucketMonotonicity | No
     (``inf``, or ``inf − inf``), though the true mean of finite returns is finite: its place in
     the ranking is unknown, so the rank signal is too (``inf`` ranked it above every finite mean;
     dropping it would rank the rest as if it were empty). Evidence-only — like the buckets
-    themselves, no checklist reads it."""
+    themselves, no checklist reads it.
+
+    Over several targets it ranks the POOLED means, which weight the targets by the rows each
+    puts in an ordinal — equal per-target bin counts do not equalize those proportions — so the
+    composition alone can reverse a trend every target shows: tied feature values fill two
+    targets' ordinals 50/25/25 and 25/25/50, and two members rising bucket by bucket read
+    ``rho`` −1. Each multi-target record's ``by_target`` is that composition read."""
     # NaN in memory, null once emitted: an overflowed mean either way
     means = [_NAN if (m := r.get("mean_ret")) is None else m for r in records if r.get("n", 0) > 0]
     # an overflowed mean → no rank signal; constant means → none either (undefined rho)
@@ -256,7 +273,13 @@ def _aggregate_bucket_ordinals(
     the exact excess sum their rounded excesses miss by residue. ``commensurable=False`` (a
     ``diff`` outcome: each target in its own level units) leaves every record's ``mean_ret``
     NaN — a sum across the targets' units has none — while ``n`` and ``hit_rate``, a count and a
-    share of signs, stand."""
+    share of signs, stand.
+
+    Every record carries its COMPOSITION as ``by_target``: each participating target's own
+    :func:`_record` over its rows of the ordinal, off their own returns — one target's rows hold
+    no bar whole, so never the pool values — with its mean standing under
+    ``commensurable=False`` (a target is its own unit). Every (target, ordinal) holds rows: the
+    ordinals are each target's populated bins, the same count for every target."""
     ordinals: list[np.ndarray] = []
     bucket_counts: set[int] = set()
     for group in groups:
@@ -286,7 +309,16 @@ def _aggregate_bucket_ordinals(
     codes = np.concatenate(ordinals)
     rets = np.concatenate([group["ret"].to_numpy(dtype=float) for group in groups])
     sums, scale = _bucket_sums(rets, codes, None if pool is None else pool.rows(order))
-    return _records([f"q{i + 1}" for i in range(k)], codes, rets, sums, scale, commensurable)
+    records = _records([f"q{i + 1}" for i in range(k)], codes, rets, sums, scale, commensurable)
+    members = [
+        (str(group["target"].iloc[0]), group["ret"].to_numpy(dtype=float), ordinal)
+        for group, ordinal in zip(groups, ordinals, strict=True)
+    ]
+    for i, record in enumerate(records):
+        record["by_target"] = {
+            name: _record(r[o == i], r[o == i], 1, True) for name, r, o in members
+        }
+    return records
 
 
 def cell_conditional_buckets(
@@ -351,7 +383,12 @@ def cell_conditional_buckets(
     ``commensurable=False`` (a ``diff`` outcome, each target in its own level units) nulls the
     multi-target arm's ``mean_ret`` (:func:`_aggregate_bucket_ordinals`) — its records pool
     several targets' returns — so no ``bucket_monotonicity`` ranks them; one participating
-    target's records keep theirs.
+    target's records keep theirs, as does every ``by_target`` entry.
+
+    The multi-target arm's records carry their composition, ``by_target`` (each participating
+    target's own n / mean_ret / hit_rate over its rows of the ordinal): the pooled means weight
+    the targets by those rows, so the pooled trend can be the composition's rather than any
+    target's (:func:`_bucket_monotonicity`). One participating target's records carry none.
     """
     buckets_out: dict[str, FeatureBucketPanel] = {}
     mono_out: dict[str, BucketMonotonicity] = {}

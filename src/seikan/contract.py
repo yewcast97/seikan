@@ -169,8 +169,8 @@ METRIC_ROLES: dict[str, JsonValue] = {
         "per-cell episodes (the time-ordered episode ledger under episode_stats — bounded at "
         "its stated cap, with mass-conserving truncation counts)",
         "per-cell conditional_buckets / bucket_monotonicity (descriptive conditioning over "
-        "the cell's own rows — bucket edges per TARGET, records aggregated by ordinal — never "
-        "pooled across cells)",
+        "the cell's own rows — bucket edges per TARGET, records aggregated by ordinal, each "
+        "multi-target record with its by_target composition — never pooled across cells)",
         "per-cell feature_association (Spearman rho per cell × feature × target — per-target "
         "in BOTH modes, deliberately no p-value)",
         "per-cell pooled beyond the fields the checklist reads (mean_ret_raw, mean_ret_bench, "
@@ -357,10 +357,10 @@ METRIC_ROLES: dict[str, JsonValue] = {
             "floor, not a total — reconcile against episode_stats.n_clusters"
         ),
         "conditional_buckets": (
-            "per-cell, bucket edges per TARGET (pooled edges would conflate member levels with "
-            "time variation); qcut over overlap-inflated rows — 'associated in this sample', "
-            "never 'predicts' — and never pool across cells: a cross-cell pool's conditioning "
-            "depends on grid composition"
+            "per-cell, edges per TARGET (pooled edges would conflate member levels with time "
+            "variation); a pooled record weights members by their rows in it, so read by_target "
+            "before a pooled trend; overlap-inflated rows: 'associated in this sample', never "
+            "'predicts'; never pool across cells (grid-dependent)"
         ),
         "feature_association": (
             "Spearman rho over overlapping rows, no p-value on purpose (an overlap-inflated p "
@@ -709,9 +709,9 @@ METRIC_ROLES_DOC: dict[str, JsonValue] = {
         "per-cell conditional_buckets / bucket_monotonicity (per-feature "
         "mean-return-by-quantile over the CELL's own closed rows — bucket EDGES per target, "
         "records aggregated by ordinal, because one qcut over raw levels pooled across members "
-        "would conflate member LEVELS with time variation — with explicit refusal reasons; "
-        "there is no run-level pooled pair, because a pooled qcut's conditioning would depend "
-        "on grid composition)",
+        "would conflate member LEVELS with time variation, each such record carrying its "
+        "by_target composition — with explicit refusal reasons; there is no run-level pooled "
+        "pair, because a pooled qcut's conditioning would depend on grid composition)",
         "per-cell feature_association (Spearman rho between the entry-time "
         "feature snapshot and the realized closed ret, per cell × feature × target — the time "
         "axis within ONE target, in BOTH modes; deliberately no p-value)",
@@ -957,9 +957,16 @@ METRIC_ROLES_DOC: dict[str, JsonValue] = {
             "Per-cell, per-feature qcut buckets over the cell's own closed rows — edges per "
             "TARGET, aggregated by ordinal: one pooled qcut over raw levels would let the top "
             "bucket simply BE the high-level member, a Simpson's inversion wearing a "
-            "conditioning read's clothes. The rows are OVERLAPPING, so bucket means inherit "
-            "the same "
-            "smearing as every pooled read: 'associated in this sample', never 'predicts'. Do "
+            "conditioning read's clothes. Per-target edges do not close it: an ordinal's pooled "
+            "mean weights the targets by the rows each puts there, and equal per-target bin "
+            "counts do not equalize those proportions — with tied feature values two members "
+            "fill their ordinals 50/25/25 and 25/25/50, and the pooled means fall (rho −1) "
+            "while both members' own rise. Every multi-target record therefore carries "
+            "by_target, each participating member's own n / mean_ret / hit_rate over its rows "
+            "of the ordinal (each row's own return; its mean stands under a diff outcome): "
+            "read the composition before the pooled trend. The rows are OVERLAPPING, so bucket "
+            "means inherit the same smearing as every pooled read: 'associated in this sample', "
+            "never 'predicts'. Do "
             "not rebuild a pooled cross-cell version yourself — the same bar enters once per "
             "combo × horizon, which makes every bucket boundary depend on grid composition "
             "(dishonest conditioning, not redundancy). Under a cross_mean basket a bar whose "
@@ -1385,8 +1392,12 @@ REPORT_FIELDS: dict[str, JsonValue] = {
         ),
         "conditional_buckets / bucket_monotonicity": (
             "PER-CELL feature conditioning over the cell's own closed rows, pooled across its "
-            "targets: per feature {buckets: [{bucket, n, mean_ret, hit_rate}], reason} with "
-            "explicit refusal reasons, plus a per-feature Spearman {rho, sign} — there is no "
+            "targets: per feature {buckets: [{bucket, n, mean_ret, hit_rate, by_target?}], "
+            "reason} with explicit refusal reasons, plus a per-feature Spearman {rho, sign} "
+            "over the pooled means; by_target ({target: {n, mean_ret, hit_rate}} — each "
+            "participating member's own rows of the record, off their own returns, its "
+            "mean_ret standing under a diff outcome) is present exactly on a record pooling "
+            "several targets' rows, absent on one target's — there is no "
             "run-level pooled pair; in a cross_mean basket a bucket's mean_ret reads the rows "
             "of a bar that land wholly in it at their EXACT excess sum (0 on a full bar, every "
             "member closed; a one-row bar included, whichever member's rows the feature "
