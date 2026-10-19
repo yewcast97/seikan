@@ -4279,6 +4279,29 @@ def test_cross_mean_member_at_the_basket_mean_reads_exactly_zero(tmp_path):
     assert res.summary["cells"][0]["by_target"]["A"]["hit_rate"] == 0.0
 
 
+def test_cross_mean_constant_pool_past_the_range_nulls_its_bootstrap_with_its_mean(tmp_path):
+    # The review's basket: A alone fires, on bars whose pct legs [1e307, 0, 1] put each bar's
+    # numerator at 2e307 − 1, so twenty of them sum past the double range and the pooled mean_ret
+    # is null. The pool is constant, and the bootstrap's constant shortcut read a null interval
+    # beside boot_se 0.0 with no reason: it nulls whole, and says why.
+    cycles = {"A": [0.5, 1.0, 1e307], "B": [1.0, 1.0, 1.0], "C": [1.0, 1.0, 2.0]}
+    files = {t: _series_bars(tmp_path / f"{t}.csv", c * 20) for t, c in cycles.items()}
+    thesis = Thesis.model_validate(
+        {
+            "name": "cm_constant_overflow",
+            "target_mode": "basket",
+            "data": {"targets": list(cycles)},
+            "entry": _lt(1.0),
+            "params": {"horizon": 1, "benchmark": "cross_mean"},
+        }
+    )
+    pooled = run_backtest(thesis, load(thesis, files)).summary["cells"][0]["pooled"]
+    assert pooled["n"] == 20 and np.isnan(pooled["mean_ret"])
+    boot = pooled["boot"]
+    assert boot["n_episodes"] == 20 and boot["reason"] == "not_representable"
+    assert np.isnan(boot["ci_lo"]) and np.isnan(boot["ci_hi"]) and np.isnan(boot["boot_se"])
+
+
 def _cross_mean_basket(tmp_path, order, entry, *, n=100, horizon=5, seed=21):
     """Three members (fixed price paths per NAME) declared in ``order``, ``cross_mean``."""
     idx = pd.date_range("2021-01-01", periods=n, freq="1D")

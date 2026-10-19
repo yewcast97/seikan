@@ -948,9 +948,11 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   `z > 0` does. Closing that needs the exact mean, a rational that grows with every step.
   In the statistics: a constant pool has `std_ret` 0.0, no bucket-monotonicity rank and a degenerate
   bootstrap (`boot_se` 0.0, `ci_lo == ci_hi` on the pool's own arithmetic mean — the value itself
-  where that mean's sum overflowed — as for any pool whose resampled means are bit-identical on
-  every draw), and the reads that divide by dispersion stand down where the spread is within
-  rounding — the HAC nulls (largest deviation within ~10 ulps of the mean, the skewness/kurtosis
+  where that mean's sum overflowed, null with reason `not_representable` beside a null `mean_ret`
+  where a `cross_mean` pool's equal bar numerators sum past the double range — as for any pool
+  whose resampled means are bit-identical on every draw), and the reads that divide by dispersion
+  stand down where the spread is within rounding — the HAC nulls (largest deviation within ~10
+  ulps of the mean, the skewness/kurtosis
   gate, or every BAR's deviation sum exactly 0 about the exact mean: a pooled pool whose bars all
   sit at its mean, every row on one bar among them; skewness/kurtosis are otherwise taken about
   the pool's offset, translation-invariant — about scipy's own rounded mean the symmetric `1 + k·eps`,
@@ -1118,8 +1120,9 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   `benchmark_regression` declines with reason `not_representable`, an overflowed |return| mass
   fails the concentration check instead of passing it on 0.0 shares, an episode's or a bucket's
   mean whose sum overflowed is null itself (the `episodes` ledger entry, the conditional bucket —
-  which leaves `bucket_monotonicity` null), and an episode sum that overflowed nulls both `boot`
-  bounds with `boot_se`, never one bound, with reason `not_representable` (the reason a
+  which leaves `bucket_monotonicity` null), and an episode sum that overflowed (or a constant
+  `cross_mean` pool's whole sum, its `mean_ret` null) nulls both `boot` bounds with `boot_se`,
+  never one bound, with reason `not_representable` (the reason a
   `boot_se` nulled alone off the draws' variance carries too). A conditional bucket whose
   feature edge is past what an interval label prints (~1.8e305, or under ~1e-306 in magnitude)
   keeps its true bin under its ordinal `q1..qk`, never merged with a colliding label, and a

@@ -83,9 +83,10 @@ def episode_bootstrap_ci(
     pathology): a pool whose summed values are all equal (its interval is that value — their
     exact mean, the pool's ``mean_ret``), and any pool whose resampled means come out
     bit-identical on every draw (every episode's exact mean the same, however its rows vary).
-    Out of range, the block says so: an episode's or a draw's sum past the double range nulls the
-    interval and ``boot_se`` together, and a draws' variance that is not a normal double nulls
-    ``boot_se`` — each with ``reason="not_representable"``.
+    Out of range, the block says so: a sum past the double range — an episode's, a draw's, or an
+    all-equal pool's whose rows are a ``cross_mean`` bar's parts (its ``mean_ret`` null beside
+    it) — nulls the interval and ``boot_se`` together, and a draws' variance that is not a normal
+    double nulls ``boot_se`` — each with ``reason="not_representable"``.
 
     ``rets_pool`` (row-aligned with ``rets``; default ``rets`` itself) is what the episode sums
     ADD, over ``pool_scale`` — a ``cross_mean`` basket's pooled panel hands in its bar
@@ -137,7 +138,12 @@ def episode_bootstrap_ci(
         # Every row adds the same value, so every draw's mean is that value — the exact mean
         # `_pools.exact_mean` reads (`mean_ret`), where a computed mean read an ulp off it (0.3
         # as 0.29999999999999993) and an overflowed sum a null interval beside `boot_se` 0.0.
-        out["ci_lo"] = out["ci_hi"] = exact_mean(pool, pool_scale)
+        # Rows of parts whose exact sum has no double have no mean to read (`mean_ret` is null
+        # beside them): the block says so, as for an overflowed episode sum.
+        mean = exact_mean(pool, pool_scale)
+        if math.isnan(mean):
+            return _not_representable(out)
+        out["ci_lo"] = out["ci_hi"] = mean
         out["boot_se"] = 0.0
         return out
     # A NaN pool value (a `cross_mean` bar whose sum left the double range) has no integer to be;

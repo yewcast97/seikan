@@ -3763,6 +3763,24 @@ def test_constant_pool_bootstrap_past_the_range_is_the_value(c):
     assert ci["ci_lo"] == ci["ci_hi"] == c and ci["boot_se"] == 0.0
 
 
+def test_constant_parts_pool_bootstrap_past_the_range_is_not_representable():
+    # A cross_mean pool's rows are a bar's exact parts over the member count: twenty equal rows
+    # [2e307, −1] over 3 sum past the double range, so their exact mean — the pool's mean_ret — is
+    # null, and the constant-pool shortcut read a null interval beside boot_se 0.0, no reason.
+    # The block nulls whole and says why, as for an overflowed episode sum.
+    rets, bars = np.full(20, 0.5), np.arange(20) * 3
+    pool = np.tile([2e307, -1.0], (20, 1))
+    assert np.isnan(exact_mean(pool, 3))  # the premise
+    ci = episode_bootstrap_ci(rets, bars, 1, rets_pool=pool, pool_scale=3)
+    assert ci["n_episodes"] == 20 and ci["reason"] == "not_representable"
+    assert np.isnan(ci["ci_lo"]) and np.isnan(ci["ci_hi"]) and np.isnan(ci["boot_se"])
+    # equal parts rows whose sum has a double keep the degenerate interval on their exact mean
+    pool = np.tile([0.3, 1e-20], (20, 1))
+    ci = episode_bootstrap_ci(rets, bars, 1, rets_pool=pool, pool_scale=3)
+    assert ci["ci_lo"] == ci["ci_hi"] == exact_mean(pool, 3) and ci["boot_se"] == 0.0
+    assert ci["reason"] is None
+
+
 def test_ddof1_std_of_a_non_finite_pool_is_nan_never_a_degenerate_zero():
     # No caller reaches it today (the moment reads filter, the bootstrap nulls its non-finite
     # draws first), so it is pinned here: `inf == inf` would pass the all-equal test, and an
