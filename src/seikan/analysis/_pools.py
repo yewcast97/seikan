@@ -184,8 +184,8 @@ def integer_terms(values: list[float]) -> tuple[list[int], int]:
     with ``q`` a power of two, and ``den`` is the largest ``q`` (1 on no values). Sums, squares
     and products of the values are then integer arithmetic, exact at any magnitude, and a
     quotient of two such integers is correctly rounded by Python's true division, which raises
-    ``OverflowError`` past the double range — the exact moments the HAC's per-bar deviation sums
-    and CSCV's split variances read."""
+    ``OverflowError`` past the double range — the exact moments the HAC's per-bar deviation sums,
+    CSCV's split variances and the bootstrap's draw means read."""
     ratios = [v.as_integer_ratio() for v in values]
     den = max((q for _, q in ratios), default=1)
     return [p * (den // q) for p, q in ratios], den

@@ -958,10 +958,13 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   `[−0.5, −2**-55, 0.5, 2**-55]` read 6.9e-18 each, a hit rate of 1 and a win streak of 8 beside
   a `mean_ret` of 0 — and the conditional buckets' means, whose order `bucket_monotonicity`
   ranks: summed in floating point, four buckets holding `[−0.3, −0.2, −0.1, 0.1, 0.2, 0.3]` in
-  four row orders read four rising means and a `rho` of 1. The bootstrap's draws stay the
-  arithmetic mean, save that each episode's sum is exactly rounded too — summed in floating
-  point, eight episodes of `[1, −2**54, −1, 2**54]` read a zero-width interval at 0.25 beside a
-  `mean_ret` of 0; a draw's sum over its episodes' sums stays ordinary arithmetic. A CSCV
+  four row orders read four rising means and a `rho` of 1. So are the bootstrap's draws: each
+  draw's mean is its episodes' exact sum over its row count, rounded once (the pool values read
+  as integers over one power-of-two denominator) — summed in floating point, eight episodes of
+  `[1, −2**54, −1, 2**54]` read a zero-width interval at 0.25 beside a `mean_ret` of 0, and with
+  only each episode's sum exactly rounded, seven episodes of the two doubles beside 0.1 (every
+  draw's exact mean 0.1's double) read a zero-width interval at 0.09999999999999999 beside a
+  `mean_ret` of 0.1. A CSCV
   split's mean is its rows' exactly rounded sum over their count, one `math.fsum` over its
   blocks' exact parts — rebuilt from the column's mean, an exact 0 read −2.6e-18 and two
   candidates cycling through ±0.3 read `pbo` 2/70 and `prob_oos_loss` 1/70 for 1/70 and 0 —

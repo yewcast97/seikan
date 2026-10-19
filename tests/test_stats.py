@@ -3847,6 +3847,26 @@ def test_bootstrap_episode_sums_are_exactly_rounded():
     assert ci["boot_se"] == 0.0
 
 
+@pytest.mark.parametrize("mixed", [False, True])
+def test_bootstrap_draws_are_exact_means_rounded_once(mixed):
+    # The review's pool: seven separated episodes of the two doubles beside 0.1, whose exact sum
+    # is twice 0.1's double — every episode's exact mean is 0.1's double, and so is every draw's.
+    # Each episode's sum was exactly rounded but each draw's sum of them and its quotient were
+    # rounded after it: a zero-width interval at 0.09999999999999999 beside a mean_ret of 0.1.
+    # Its mixed twin puts 0.1 itself between every other episode's pair, 2- and 3-row episodes
+    # at that same exact mean.
+    below, above = np.nextafter(0.1, 0.0), np.nextafter(0.1, 1.0)
+    assert Fraction(float(below)) + Fraction(float(above)) == 2 * Fraction(0.1)
+    assert np.full(7, 0.2).sum() / 14 != 0.1  # the premise: the old draw arithmetic
+    eps = [[below, 0.1, above] if mixed and k % 2 else [below, above] for k in range(7)]
+    rets = np.concatenate(eps)
+    bars = np.concatenate([10 * k + np.arange(len(e)) for k, e in enumerate(eps)])
+    ci = episode_bootstrap_ci(rets, bars, 2)
+    assert ci["reason"] is None and ci["n_episodes"] == 7
+    assert ci["ci_lo"] == ci["ci_hi"] == pool_moments(rets)["mean_ret"] == 0.1
+    assert ci["boot_se"] == 0.0
+
+
 def test_degenerate_bootstrap_distribution_has_exactly_zero_se():
     # A pool that varies, but whose episodes all carry the same (sum, count): every draw's mean
     # is the same bits, so the distribution is degenerate — an SE of rounding residue (~3e-17,

@@ -12,7 +12,7 @@ from itertools import pairwise
 import numpy as np
 
 from seikan.analysis._episodes import overlap_clusters
-from seikan.analysis._pools import _ddof1_std, exact_mean, exact_sum
+from seikan.analysis._pools import _PAST_DOUBLE, _ddof1_std, exact_mean, integer_terms
 from seikan.types import (
     EpisodeBootstrapCI,
 )
@@ -40,6 +40,11 @@ BOOT_MIN_EPISODES = 5
 #: hence every drawn value — is deterministic for a given pool.
 _BOOT_CHUNK = 1 << 22
 
+#: The limb width a draw's exact sum is carried in: every episode's integer sum splits into
+#: base-2**31 limbs (the top one signed), so each limb's sum over a draw's episodes is exact int64
+#: arithmetic below 2**32 episodes, and the draw's sum is its limbs' recombination.
+_LIMB_BITS = 31
+
 
 def episode_bootstrap_ci(
     rets: np.ndarray,
@@ -58,12 +63,17 @@ def episode_bootstrap_ci(
     ``[entry_bar, entry_bar + h)`` windows (:func:`overlap_clusters` — the frozen half-open
     greedy merge, applied per target here). Each draw resamples ``n_episodes`` episodes with
     replacement; the draw's statistic is the pooled mean over the resampled observations
-    (Σ episode return-sums / Σ episode counts). Each episode's return-sum is exactly rounded
-    (``math.fsum``): summed in floating point, ``[1, −2**54, −1, 2**54]`` read 1 for its exact 0,
-    and eight such episodes a zero-width interval at 0.25 with ``boot_se`` 0.0 beside a
-    ``mean_ret`` of 0 — an interval excluding the mean it brackets. A draw's sum over its
-    episodes' sums stays ordinary arithmetic. Same keys always: ``{method, ci_level, n_boot,
-    n_episodes, ci_lo, ci_hi, boot_se, reason}`` — an empty pool reports
+    (Σ episode return-sums / Σ episode counts), EXACT and rounded once: the values read as
+    integers over one power-of-two denominator (``_pools.integer_terms``), each episode's sum
+    an integer, each draw's the sum of its episodes' and its mean one quotient of integers,
+    correctly rounded — the rule ``mean_ret`` reads (``_pools.exact_mean``), so a draw whose
+    exact mean is the pool's reads ``mean_ret`` itself. Summed in floating point,
+    ``[1, −2**54, −1, 2**54]`` read 1 for its exact 0 and eight such episodes a zero-width
+    interval at 0.25 beside a ``mean_ret`` of 0; with each episode's sum exactly rounded but the
+    draw's sum and quotient rounded after it, seven episodes of the two doubles beside 0.1 —
+    every episode's exact mean 0.1's double, every draw's too — read a zero-width interval at
+    0.09999999999999999 beside a ``mean_ret`` of 0.1. Same keys always: ``{method, ci_level,
+    n_boot, n_episodes, ci_lo, ci_hi, boot_se, reason}`` — an empty pool reports
     ``reason="no_observations"``, fewer than ``min_episodes`` episodes reports the honest
     ``n_episodes`` with ``reason="insufficient_episodes"`` (a dense every-bar pool transitively
     chains into ONE episode: there is no resampling distribution over one exchangeable unit,
@@ -71,11 +81,11 @@ def episode_bootstrap_ci(
     distribution is reported exactly — ``ci_lo == ci_hi``, ``boot_se`` 0.0 — instead of the
     ulp-scale spread rounding would mint (a ``mean / boot_se`` of ~1e15, the ``t_hac``
     pathology): a pool whose summed values are all equal (its interval is that value — their
-    exact mean, the pool's ``mean_ret``), and any pool whose
-    resampled means come out bit-identical on every draw (every episode carrying the same sum
-    and count). Out of range, the block says so: an episode sum or a draw past the double range
-    nulls the interval and ``boot_se`` together, and a draws' variance that is not a normal
-    double nulls ``boot_se`` — each with ``reason="not_representable"``.
+    exact mean, the pool's ``mean_ret``), and any pool whose resampled means come out
+    bit-identical on every draw (every episode's exact mean the same, however its rows vary).
+    Out of range, the block says so: an episode's or a draw's sum past the double range nulls the
+    interval and ``boot_se`` together, and a draws' variance that is not a normal double nulls
+    ``boot_se`` — each with ``reason="not_representable"``.
 
     ``rets_pool`` (row-aligned with ``rets``; default ``rets`` itself) is what the episode sums
     ADD, over ``pool_scale`` — a ``cross_mean`` basket's pooled panel hands in its bar
@@ -83,9 +93,9 @@ def episode_bootstrap_ci(
     member count (``_pools.cross_mean_bar_numerators``; NaN where a bar's sum left the double
     range, which nulls the interval like an overflowed episode sum). An episode holds each bar's
     rows entirely (one bar, one window), so each episode sum is its bars' exact numerator sum,
-    correctly rounded, and a draw divides the sum of its episodes' sums by ``pool_scale`` times
-    its row count once. Everything else stays on ``rets``: the canonical (bar, ret) order, the
-    seed digest (so the draw stream is the one ``rets`` alone would give) and the episodes.
+    and a draw divides the sum of its episodes' sums by ``pool_scale`` times its row count once.
+    Everything else stays on ``rets``: the canonical (bar, ret) order, the seed digest (so the
+    draw stream is the one ``rets`` alone would give) and the episodes.
     """
     rets = np.asarray(rets, dtype=float)
     bars = np.asarray(entry_bars, dtype=np.int64)
@@ -122,22 +132,40 @@ def episode_bootstrap_ci(
     if n_ep < min_episodes:
         out["reason"] = "insufficient_episodes"
         return out
+    out["n_boot"] = int(n_boot)
     if (pool == pool[0]).all():
-        out["n_boot"] = int(n_boot)
         # Every row adds the same value, so every draw's mean is that value — the exact mean
         # `_pools.exact_mean` reads (`mean_ret`), where a computed mean read an ulp off it (0.3
         # as 0.29999999999999993) and an overflowed sum a null interval beside `boot_se` 0.0.
         out["ci_lo"] = out["ci_hi"] = exact_mean(pool, pool_scale)
         out["boot_se"] = 0.0
         return out
+    # A NaN pool value (a `cross_mean` bar whose sum left the double range) has no integer to be;
+    # it, an episode's sum past the double range and a draw's each null the whole interval and
+    # `boot_se` alike — never half an interval — and say why (`_not_representable`).
+    if not np.isfinite(pool).all():
+        return _not_representable(out)
     # Clusters partition the sorted rows into CONTIGUOUS runs (the greedy merge walks the rows in
-    # order), so each episode is one segment of the sorted pool. Its sum is exactly rounded; a
-    # sum past the double range is NaN, which the finiteness test below decides.
+    # order), so each episode is one segment of the sorted pool — `width` parts per row (one, or
+    # a `cross_mean` pool's bar parts).
+    width = pool.size // rets.size
+    nums, den = integer_terms(pool.ravel().tolist())
     starts = np.fromiter((c[0] for c in clusters), dtype=np.int64, count=n_ep)
     ep_counts = np.diff(np.append(starts, rets.size))
-    ep_sums = np.array(
-        [exact_sum(pool[a:b]) for a, b in pairwise([*starts.tolist(), int(rets.size)])]
-    )
+    bounds = pairwise([*starts.tolist(), rets.size])
+    ep_sums = [sum(nums[a * width : b * width]) for a, b in bounds]
+    past = int(_PAST_DOUBLE) * den  # a sum (over `den`) this large has no double
+    if any(abs(s) >= past for s in ep_sums):
+        return _not_representable(out)
+    # The episode sums as (limbs × episodes) int64 (`_LIMB_BITS`), so a draw's exact sum is its
+    # per-limb int64 sums recombined — numpy-fast where summing the Python ints is not.
+    n_limbs = -(-(max(abs(s) for s in ep_sums).bit_length() + 1) // _LIMB_BITS)
+    shifts = [_LIMB_BITS * k for k in range(n_limbs)]
+    low = (1 << _LIMB_BITS) - 1
+    limbs = np.array(
+        [[(s >> k) & low for k in shifts[:-1]] + [s >> shifts[-1]] for s in ep_sums],
+        dtype=np.int64,
+    ).T
 
     digest = hashlib.sha256(np.int64(h).tobytes() + bars.tobytes() + rets.tobytes()).digest()
     rng = np.random.default_rng([_BOOT_SEED, *np.frombuffer(digest, dtype="<u4").tolist()])
@@ -145,26 +173,19 @@ def episode_bootstrap_ci(
     stats_arr = np.empty(n_boot, dtype=float)
     rows_per_chunk = max(1, _BOOT_CHUNK // n_ep)
     done = 0
-    # A draw's sum of episode sums may leave the double range: the finiteness test below decides
-    # every such read, so the overflow is an expected input, never a warning.
-    with np.errstate(over="ignore", invalid="ignore"):
-        while done < n_boot:
-            rows = min(rows_per_chunk, n_boot - done)
-            idx = rng.integers(0, n_ep, size=(rows, n_ep))
-            stats_arr[done : done + rows] = ep_sums[idx].sum(axis=1) / (
-                pool_scale * ep_counts[idx].sum(axis=1)
-            )
-            done += rows
-
-    out["n_boot"] = int(n_boot)
-    # An episode sum that overflowed makes every draw that resamples it NaN, and a draw's own sum
-    # can leave the double range (±inf, ranked at one end: the percentile read one FINITE bound
-    # over draws that left the range beside a null one). Any such sum or draw nulls the whole
-    # interval and `boot_se` alike, and says why: a null evidence block carries its reason.
-    if not (np.isfinite(ep_sums).all() and np.isfinite(stats_arr).all()):
-        out["ci_lo"] = out["ci_hi"] = out["boot_se"] = _NAN
-        out["reason"] = "not_representable"
-        return out
+    while done < n_boot:
+        rows = min(rows_per_chunk, n_boot - done)
+        idx = rng.integers(0, n_ep, size=(rows, n_ep))
+        sums = sum(
+            limb[idx].sum(axis=1).astype(object) << k for limb, k in zip(limbs, shifts, strict=True)
+        )
+        draws = zip(sums, ep_counts[idx].sum(axis=1).tolist(), strict=True)
+        stats_arr[done : done + rows] = [
+            s / (den * pool_scale * c) if abs(s) < past else _NAN for s, c in draws
+        ]
+        done += rows
+    if not np.isfinite(stats_arr).all():
+        return _not_representable(out)
     alpha = (1.0 - ci) / 2.0
     lo, hi = np.percentile(stats_arr, [100.0 * alpha, 100.0 * (1.0 - alpha)])
     out["ci_lo"] = float(lo)
@@ -176,4 +197,12 @@ def episode_bootstrap_ci(
     out["boot_se"] = boot_se
     if math.isnan(boot_se):
         out["reason"] = "not_representable"
+    return out
+
+
+def _not_representable(out: EpisodeBootstrapCI) -> EpisodeBootstrapCI:
+    """``out`` with the interval and ``boot_se`` null together, and the reason a null evidence
+    block carries — a read past the double range."""
+    out["ci_lo"] = out["ci_hi"] = out["boot_se"] = _NAN
+    out["reason"] = "not_representable"
     return out
