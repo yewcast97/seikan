@@ -4,6 +4,7 @@ reports)."""
 from __future__ import annotations
 
 import hashlib
+from fractions import Fraction
 from pathlib import Path
 
 import numpy as np
@@ -517,10 +518,11 @@ def test_feed_age_is_exact_tick_arithmetic_past_the_int64_nanosecond_span(tmp_pa
 
 
 @pytest.mark.parametrize("units", [("us", "us"), ("us", "ns"), ("ns", "us"), ("s", "ms")])
-def test_feed_age_is_pandas_timedelta_division_bit_for_bit_in_range(units):
-    # Wherever the int64 difference held, the age is the very double pandas' Timedelta division
-    # gave: the tick difference in the finer resolution, cast, over the day's ticks — a bar on a
-    # stamp reads 0.0, a bar before the first stamp NaN.
+def test_feed_age_is_the_exact_tick_quotient_rounded_once(units):
+    # In any mix of clock resolutions the age is the exact difference over a day, rounded once —
+    # a bar on a stamp reads 0.0, a bar before the first stamp NaN. pandas' Timedelta division
+    # (this test's former reference) casts a nanosecond difference past 2**53 (~104 days) to a
+    # double first, and so misses the correctly rounded age by an ulp on a fifth of those spans.
     from seikan.compiler.data import _feed_age_days
 
     rng = np.random.default_rng(len(units[0]) * 7 + len(units[1]))
@@ -533,12 +535,29 @@ def test_feed_age_is_pandas_timedelta_division_bit_for_bit_in_range(units):
         )
         bars = pd.DatetimeIndex(t.astype("datetime64[ns]")).as_unit(units[0])
         stamps = pd.Series(native.index, index=native.index)
-        want = (bars.to_series(index=bars) - stamps.reindex(bars, method="ffill")) / pd.Timedelta(
-            days=1
-        )
+        behind = bars.to_series(index=bars) - stamps.reindex(bars, method="ffill")
+        want = [np.nan if pd.isna(d) else float(Fraction(d.value, 86_400 * 10**9)) for d in behind]
         got = _feed_age_days(native, bars)
-        np.testing.assert_array_equal(got.to_numpy(), want.to_numpy())
+        np.testing.assert_array_equal(got.to_numpy(), want)
         assert np.isnan(got.iloc[0]) and (got.loc[native.index[:10]] == 0.0).all()
+
+
+def test_feed_age_rounds_once_at_a_freshness_boundary(tmp_path):
+    # The review's case: a print 120 days and 1 ns before the first bar. The tick difference was
+    # cast to a double (past 2**53 ns it rounds to even) before the division rounded again, so
+    # the age read 120.0; the exact quotient, rounded once, is the next double above 120.
+    _ohlcv(tmp_path / "target.csv", n=3, start="2024-01-01")
+    stamp = pd.Timestamp("2024-01-01") - pd.Timedelta(days=120, nanoseconds=1)
+    pd.DataFrame({"datetime": [stamp.isoformat()], "f": [1.0]}).to_csv(
+        tmp_path / "f.csv", index=False
+    )
+    md = load(
+        _thesis(external={"f": {}}), {"target": tmp_path / "target.csv", "f": tmp_path / "f.csv"}
+    )
+    day = 86_400 * 10**9
+    want = [float(Fraction((120 + k) * day + 1, day)) for k in range(3)]
+    np.testing.assert_array_equal(md.days_since_values("f")[:, 0], want)
+    assert want[0] == np.nextafter(120.0, np.inf)
 
 
 def test_feed_anchoring_is_exact_tick_arithmetic_past_the_nanosecond_clock(tmp_path):

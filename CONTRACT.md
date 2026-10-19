@@ -305,8 +305,8 @@ alpha on the exact leg means and a fit of every varying raw leg, an EW z-score o
 mean, correlations clipped to their range, warmup that follows the bars a lagged or snapshot
 operand reads, cross-sections that enter only initialized inputs and labels, cross-target value
 reads withheld where a `diff` outcome's level units differ, a rotation transform run in a unit
-frame, an overflow-safe median, and clock arithmetic in exact ticks)
-names the engine's estimator revision the same way.
+frame, an overflow-safe median, and clock arithmetic in exact ticks, a feed age rounded once
+from them) names the engine's estimator revision the same way.
 
 The summary is a GRID, not a headline. Run-level keys are geometry and provenance only —
 `n_bars`, `index_start`/`index_end`, `bar_spacing` ({min,median,max}_seconds between consecutive

@@ -6654,6 +6654,22 @@ def test_native_feed_end_to_end_with_lag_and_freshness_guard(tmp_path):
     )
 
 
+def test_freshness_guard_holds_at_its_boundary(tmp_path):
+    # The review's thesis: one print 120 days and 1 ns before the first bar, gated on
+    # ``days_since(eps) <= 120``. The age double-rounded to 120.0 and the guard fired on bar 0;
+    # rounded once it is the next double above 120, so the stale print never fires.
+    stamp = pd.Timestamp("2024-01-01") - pd.Timedelta(days=120, nanoseconds=1)
+    entry = {
+        "type": "threshold",
+        "left": {"type": "days_since", "name": "eps"},
+        "op": "<=",
+        "right": {"type": "constant", "value": 120.0},
+    }
+    thesis, md = _native_run(tmp_path, [stamp.isoformat()], [1.0], entry)
+    assert md.days_since_values("eps")[0, 0] == np.nextafter(120.0, np.inf)
+    assert run_backtest(thesis, md).trades.empty
+
+
 # The review's native-hole case: daily prints at midnight, plus a NaN print at 06:00 and a
 # finite one at 12:00 on 01-05 — both arrive at the 01-06 bar, whose asof read keeps only the
 # midnight print, so the bar-clock ``external`` leaf never sees the hole the native EMA skipped.

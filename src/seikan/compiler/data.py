@@ -334,30 +334,28 @@ def _prepare_feed(
 class _Asof(NamedTuple):
     """One feed clock read backward-asof on the bar clock (:func:`_asof`): per bar, the POSITION
     of the feed's latest stamp at or before it (−1 before the first) and the ticks the bar sits
-    BEHIND that stamp as a double (NaN before the first), in the finer of the two resolutions —
-    ``per_second`` ticks a second."""
+    BEHIND that stamp as an exact integer (None before the first), in the finer of the two
+    resolutions — ``per_second`` ticks a second."""
 
     position: list[int]
-    behind: list[float]
+    behind: list[int | None]
     per_second: int
 
 
 def _asof(stamps: pd.DatetimeIndex, bars: pd.DatetimeIndex) -> _Asof:
     """The ONE asof read, which :func:`_anchor_feed` and :func:`_feed_age_days` share: both
     clocks as Python integers in the finer of their two resolutions, each bar's latest stamp at or
-    before it found by bisection, and the tick difference cast to a double — bit for bit the
-    comparison and the Timedelta division pandas formed in int64 nanoseconds wherever those held.
-    Past that range they did not: a coarser feed clock promoted to nanoseconds overflowed on a
-    print past 2262 that no bar ever reads (a reindex-ffill of a feed stamped 2500-01-01 beside
-    nanosecond bars refused the load as ``OutOfBoundsDatetime``), and a feed stamped 1700 against
-    2026 bars overflowed the age past ~292 years and crashed it."""
+    before it found by bisection, and the tick difference kept exact. pandas formed both in int64
+    nanoseconds, which do not hold the range: a coarser feed clock promoted to nanoseconds
+    overflowed on a print past 2262 that no bar ever reads (a reindex-ffill of a feed stamped
+    2500-01-01 beside nanosecond bars refused the load as ``OutOfBoundsDatetime``), and a feed
+    stamped 1700 against 2026 bars overflowed the age past ~292 years and crashed it."""
     per_second = max(ticks_per_second(stamps), ticks_per_second(bars))
     stamp_ticks = [t * (per_second // ticks_per_second(stamps)) for t in stamps.asi8.tolist()]
     bar_ticks = [t * (per_second // ticks_per_second(bars)) for t in bars.asi8.tolist()]
     position = [bisect.bisect_right(stamp_ticks, t) - 1 for t in bar_ticks]
     behind = [
-        float(t - stamp_ticks[j]) if j >= 0 else math.nan
-        for t, j in zip(bar_ticks, position, strict=True)
+        t - stamp_ticks[j] if j >= 0 else None for t, j in zip(bar_ticks, position, strict=True)
     ]
     return _Asof(position, behind, per_second)
 
@@ -375,12 +373,15 @@ def _anchor_feed(native: pd.Series, index: pd.DatetimeIndex) -> pd.Series:
 
 def _feed_age_days(native: pd.Series, target_index: pd.DatetimeIndex) -> pd.Series:
     """Calendar days since the feed's most recent native stamp at or before each bar (float; NaN
-    before the first stamp): the asof read's tick difference over the day's ticks
-    (:func:`_asof`). The stamps are availability times (post-lag), so the age is exactly how
-    stale the value a decision at that bar would read is — and 'an event happened within the
-    last N days' is ``days_since <= N``."""
+    before the first stamp): the asof read's exact tick difference over the day's ticks, rounded
+    once (:func:`_asof`; ``int / int`` is correctly rounded). A double of the difference rounded
+    a span past 2**53 ticks before the division rounded again: 120 days and 1 ns read 120.0, so
+    ``days_since <= 120`` fired. The stamps are availability times (post-lag), so the age is
+    exactly how stale the value a decision at that bar would read is — and 'an event happened
+    within the last N days' is ``days_since <= N``."""
     asof = _asof(native.index, target_index)
-    ages = np.array(asof.behind, dtype=float) / float(86_400 * asof.per_second)
+    day = 86_400 * asof.per_second
+    ages = np.array([math.nan if d is None else d / day for d in asof.behind], dtype=float)
     return pd.Series(ages, index=target_index, name=target_index.name)
 
 
