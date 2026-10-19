@@ -185,6 +185,25 @@ def test_error_names_file_column_and_line(tmp_path):
     assert err["examples"][0]["value"] == "oops"
 
 
+def test_a_row_is_named_by_the_physical_line_its_record_starts_on(tmp_path):
+    # The review's file: a skipped blank line puts the bad value on line 4, which the example
+    # named as row index + 2 = 3. A row is named by the line its record starts on — past blank
+    # and whitespace-only lines, and past a quoted line break spanning one record over two.
+    _, rep = _run(tmp_path, "datetime,close\n2021-01-01,100\n\n2021-01-02,oops\n")
+    (err,) = rep.errors
+    assert err["examples"] == [{"csv_line": 4, "value": "oops"}]
+    text = '\ndatetime,close\n2021-01-01,"100\n"\n \t\n2021-01-02,oops\n2021-01-02,7\n'
+    _, rep = _run(tmp_path, text)
+    lines = {e["code"]: [x["csv_line"] for x in e["examples"]] for e in rep.errors}
+    assert lines == {"duplicate_timestamp": [7], "non_numeric_value": [6]}
+    df, rep = _run(
+        tmp_path, _GOOD.replace("\n2021-01-04,101,102,100,101", "\n\n2021-01-04,1,1,1,1")
+    )
+    assert df is not None
+    (warn,) = (w for w in rep.warnings if w["code"] == "large_move")
+    assert warn["examples"] == [{"csv_line": 4, "value": "1.0"}, {"csv_line": 5, "value": "102.0"}]
+
+
 def test_all_violations_accumulate_in_one_report(tmp_path):
     # A duplicate timestamp AND a non-numeric value must BOTH be reported, not just the first.
     _, rep = _run(tmp_path, "datetime,close\n2021-01-01,100\n2021-01-01,xyz\n")

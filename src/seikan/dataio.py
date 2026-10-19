@@ -225,11 +225,14 @@ def check_frame(df: pd.DataFrame, *, shape: str) -> None:
         raise IntegrityError(v)
 
 
-def _examples(mask: pd.Series, raw: pd.Series | None = None) -> list[IssueExample]:
-    """First offending rows as ``{csv_line, value?}`` records (csv line = row index + 2: header)."""
+def _examples(
+    mask: pd.Series, lines: list[int], raw: pd.Series | None = None
+) -> list[IssueExample]:
+    """First offending rows as ``{csv_line, value?}`` records, each row's csv line the physical
+    line its record starts on (``lines``, :func:`_record_shape`)."""
     out: list[IssueExample] = []
     for pos in np.flatnonzero(mask.to_numpy())[:MAX_EXAMPLES]:
-        rec: IssueExample = {"csv_line": int(pos) + 2}
+        rec: IssueExample = {"csv_line": lines[int(pos)]}
         if raw is not None:
             rec["value"] = str(raw.iloc[int(pos)])
         out.append(rec)
@@ -343,7 +346,8 @@ class StrictCsvReader:
         ambient = csv.field_size_limit(_CSV_FIELD_LIMIT)  # set, returning the limit it replaces
         try:
             header = _header_columns(path, blob, rep)
-            if header is None or not _record_shape(path, blob, len(header[1]), rep):
+            lines = None if header is None else _record_shape(path, blob, len(header[1]), rep)
+            if header is None or lines is None:
                 return None, rep
             raw = _parse_frame(path, blob, header, rep)
             if raw is None or not _tokenizer_parity(path, blob, raw, rep):
@@ -351,15 +355,15 @@ class StrictCsvReader:
         finally:  # here, never in the _records generator, whose cleanup waits on garbage collection
             csv.field_size_limit(ambient)
         ts_col = "datetime" if "datetime" in raw.columns else raw.columns[0]
-        ts = _parse_timestamps(path, raw, ts_col, rep)
-        data = _parse_value_columns(path, raw, ts_col, rep)
+        ts = _parse_timestamps(path, raw, ts_col, lines, rep)
+        data = _parse_value_columns(path, raw, ts_col, lines, rep)
         if rep.errors or ts is None:  # rep.errors is the read `rep.ok` derives from
             return None, rep
         df = pd.DataFrame(data, index=pd.DatetimeIndex(ts, name="datetime"))
         detected = _shape_and_integrity(path, df, expected_shape, rep)
         if rep.errors:
             return None, rep
-        _descriptive_warnings(path, df, detected, rep)
+        _descriptive_warnings(path, df, detected, lines, rep)
         return df, rep
 
 
@@ -519,7 +523,7 @@ def _header_columns(path: str, blob: bytes, rep: FileReport) -> tuple[int, list[
     return None if unnamed or dups else (line, cols)
 
 
-def _record_shape(path: str, blob: bytes, n_fields: int, rep: FileReport) -> bool:
+def _record_shape(path: str, blob: bytes, n_fields: int, rep: FileReport) -> list[int] | None:
     """Stage 3: every record carries exactly the header's ``n_fields`` fields — more OR fewer
     refuses, every offender counted, before pandas reads a byte. pandas repairs both in silence:
     a short record pads with empty cells (a legal missing marker — a hole the file never had), and
@@ -530,14 +534,20 @@ def _record_shape(path: str, blob: bytes, n_fields: int, rep: FileReport) -> boo
     :func:`_parse_frame` keeps pandas' defaults. A single ragged record pandas does refuse, but as
     an ``unreadable`` tokenizer error naming one line; here every offender is counted under its
     own code and the first ``MAX_EXAMPLES`` are named by line.
+
+    Returns the csv line each data record starts on — row for row the frame's, which
+    :func:`_tokenizer_parity` holds pandas to — so a later stage names an offending row by the
+    line it sits on, past skipped blank lines and quoted line breaks; None on a refusal.
     """
     n_bad = 0
     counts: set[int] = set()
     examples: list[IssueExample] = []
+    lines: list[int] = []
     try:
         records = _records(blob)
         next(records)  # the header stage 2 read
         for line, fields in records:
+            lines.append(line)
             if len(fields) != n_fields:
                 n_bad += 1
                 counts.add(len(fields))
@@ -545,10 +555,10 @@ def _record_shape(path: str, blob: bytes, n_fields: int, rep: FileReport) -> boo
                     examples.append({"csv_line": line, "value": str(len(fields))})
     except UnicodeDecodeError as exc:  # a byte past the header's chunk first decodes here
         _refuse_undecodable(path, blob, exc, rep)
-        return False
+        return None
     except _RecordError as exc:
         _refuse_unparsable(path, exc, rep)
-        return False
+        return None
     if n_bad:
         found = ", ".join(str(n) for n in sorted(counts)[:MAX_EXAMPLES])
         if len(counts) > MAX_EXAMPLES:
@@ -560,8 +570,8 @@ def _record_shape(path: str, blob: bytes, n_fields: int, rep: FileReport) -> boo
             "delimiter is one more, empty field)",
             examples=examples,
         )
-        return False
-    return True
+        return None
+    return lines
 
 
 def _parse_frame(
@@ -644,7 +654,7 @@ def _tokenizer_parity(path: str, blob: bytes, raw: pd.DataFrame, rep: FileReport
 
 
 def _parse_timestamps(
-    path: str, raw: pd.DataFrame, ts_col: str, rep: FileReport
+    path: str, raw: pd.DataFrame, ts_col: str, lines: list[int], rep: FileReport
 ) -> pd.Series | None:
     """Stage 6: strict ISO-8601, tz-naive, at most nanosecond resolution, unique, ascending —
     violations accumulate as machine-readable errors, and nothing is ever format-guessed."""
@@ -668,7 +678,7 @@ def _parse_timestamps(
                 "bad_timestamp",
                 f"{path}: {int(bad.sum())} timestamp(s) in column {ts_col!r} are not "
                 "ISO-8601 (expected YYYY-MM-DD or an ISO timestamp; no other format is accepted)",
-                examples=_examples(bad, ts_raw),
+                examples=_examples(bad, lines, ts_raw),
             )
             ts = None
         elif getattr(ts.dt, "tz", None) is not None:
@@ -686,7 +696,7 @@ def _parse_timestamps(
                 "and the rest would be truncated, reading another instant "
                 "('…00:00:00.0000000001' as midnight); round them at export (zeros past the "
                 "ninth digit are admitted)",
-                examples=_examples(past_ns, ts_raw),
+                examples=_examples(past_ns, lines, ts_raw),
             )
             ts = None
     if ts is not None:
@@ -695,20 +705,20 @@ def _parse_timestamps(
             rep.error(
                 "duplicate_timestamp",
                 f"{path}: {int(dup.sum())} duplicate timestamp(s)",
-                examples=_examples(dup, ts_raw),
+                examples=_examples(dup, lines, ts_raw),
             )
         unsorted = ts < ts.shift(1)
         if unsorted.any():
             rep.error(
                 "unsorted_timestamp",
                 f"{path}: timestamps are not sorted ascending",
-                examples=_examples(unsorted, ts_raw),
+                examples=_examples(unsorted, lines, ts_raw),
             )
     return ts
 
 
 def _parse_value_columns(
-    path: str, raw: pd.DataFrame, ts_col: str, rep: FileReport
+    path: str, raw: pd.DataFrame, ts_col: str, lines: list[int], rep: FileReport
 ) -> dict[str, np.ndarray]:
     """Stage 7: forced-float value columns; an empty cell and ``nan`` are the ONLY missing
     markers — anything else outside the numeric grammar (:data:`_NUMBER`) refuses, named per
@@ -733,7 +743,7 @@ def _parse_value_columns(
                 "non_numeric_value",
                 f"{path}: column {c!r} has {int(bad.sum())} non-numeric value(s)",
                 column=c,
-                examples=_examples(pd.Series(bad), s),
+                examples=_examples(pd.Series(bad), lines, s),
             )
         vals = np.full(len(s), np.nan)  # positional values; the frame gets the ts index
         cells = s.to_numpy(dtype=object)[is_number]
@@ -766,7 +776,9 @@ def _shape_and_integrity(
     return detected
 
 
-def _descriptive_warnings(path: str, df: pd.DataFrame, detected: str, rep: FileReport) -> None:
+def _descriptive_warnings(
+    path: str, df: pd.DataFrame, detected: str, lines: list[int], rep: FileReport
+) -> None:
     """Stage 9: descriptive facts + admit-with-warning anomalies (NaN fractions, crash-sized
     moves, calendar gaps) — market-shaped, the research subject, never dirt."""
     rep.n_rows = len(df)
@@ -791,7 +803,7 @@ def _descriptive_warnings(path: str, df: pd.DataFrame, detected: str, rep: FileR
                 "large_move",
                 f"{path}: {int(big.sum())} bar(s) move more than {_LARGE_MOVE:.0%} close-to-close "
                 "— verify the series is split/dividend-adjusted",
-                examples=_examples(big, df["close"].astype(str)),
+                examples=_examples(big, lines, df["close"].astype(str)),
             )
     if len(df) > 2:
         # Exact tick arithmetic, as `bar_spacing` reads the clock: a Timedelta median times the
