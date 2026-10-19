@@ -1341,10 +1341,11 @@ def test_summary_verbatim_regardless_of_cell_outcomes(tmp_path):
 
 def test_no_check_reads_the_evidence_riders(tmp_path):
     # "No check reads them", asserted mechanically: DELETE every evidence-only rider — the
-    # attribution legs, profit_factor, best_ret, edge_ratio, the excursion means, and for good
-    # measure the whole quantile/boot/subperiod blocks — from a real emitted summary and the
-    # gate's verdict document is DEEP-EQUAL to the one graded on the full summary. A future
-    # check that quietly starts consuming a rider fails here, by construction.
+    # attribution legs, profit_factor, edge_ratio, the excursion means, and for good measure the
+    # whole quantile/boot/subperiod blocks — from a real emitted summary and the gate's verdict
+    # document is DEEP-EQUAL to the one graded on the full summary. A future check that quietly
+    # starts consuming a rider fails here, by construction. (worst_ret / best_ret are no riders:
+    # cell_evidence reconciles mean_ret against them.)
     path = tmp_path / "px.csv"
     _write_px(path, _dip_then_fade_px(3000))
     summary = _run_entry(path, DIP_ENTRY, horizon=[3, 12])
@@ -1361,9 +1362,7 @@ def test_no_check_reads_the_evidence_riders(tmp_path):
         "kurtosis",
         "tail_ratio",
         "cvar_5",
-        "best_ret",
         "edge_ratio",
-        "worst_ret",
         "ret_quantiles",
         "mae_quantiles",
         "mfe_quantiles",

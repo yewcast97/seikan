@@ -62,6 +62,8 @@ METRIC_ROLES: dict[str, JsonValue] = {
             "cells[*].by_target[*].{n,n_nonoverlap,concentration.top_share_abs} (the share at "
             "least k/n for k = max(1, ceil(n/20)): the largest k of n observations carry at least "
             "k/n of the mass)",
+            "cells[*].by_target[*].{mean_ret,worst_ret,best_ret} (a numeric mean lies within "
+            "[worst_ret, best_ret]: it is the pool's exact sum over its count, rounded once)",
             "cells[*].outcome_coverage[*].{n_attempted,n_closed,exit_reasons} (the ledger "
             "arithmetic, and the next-open geometry: n_attempted <= n_bars − 1, n_closed <= "
             "max(0, n_bars − 1 − horizon), exit_reasons.open <= min(horizon, n_bars − 1))",
@@ -75,7 +77,8 @@ METRIC_ROLES: dict[str, JsonValue] = {
             "pooled.n_nonoverlap <= pooled.n, pooled.n_nonoverlap <= max(0, (n_bars − 2) // "
             "horizon), max(by_target.n_nonoverlap) <= pooled.n_nonoverlap <= "
             "sum(by_target.n_nonoverlap), pooled.n <= len(targets) × max(0, n_bars − 1 − "
-            "horizon), the pooled share at least k/pooled.n; "
+            "horizon), the pooled share at least k/pooled.n, a numeric pooled.mean_ret within "
+            "[pooled.worst_ret, pooled.best_ret]; "
             "a pooled key on a conjunction cell REFUSES as a restamped basket)",
             "cells[*].pooled.member_share.{by_target,max_member_share_abs} (basket only — "
             "by_target string-keyed over the targets exactly; a max_member_share_abs that is a "
@@ -136,7 +139,8 @@ METRIC_ROLES: dict[str, JsonValue] = {
         "per-cell by_target ret_quantiles {p05,p10,p25,p50,p75,p90,p95} + worst_ret / best_ret "
         "(closed-return order statistics — the typical-observation read mean_ret cannot give; "
         "p05 doubles as the historical VaR(5%) beside cvar_5's shortfall; see "
-        "caveats.ret_quantiles)",
+        "caveats.ret_quantiles; cell_evidence reads worst_ret / best_ret only to reconcile "
+        "mean_ret)",
         "per-cell by_target mae_quantiles / mfe_quantiles ({n, mean, p05..p95, worst | best} — "
         "RAW post-entry excursion statistics over the full H/L of [fill, fill+h-1] plus the "
         "exit open, each block over its own finite subset; see caveats)",
@@ -177,7 +181,8 @@ METRIC_ROLES: dict[str, JsonValue] = {
         "benchmark_regression, hit_rate, win_loss_ratio, profit_factor, std_ret, skewness, "
         "kurtosis, tail_ratio, cvar_5, t_hac, hac_se, rot_p, boot, subperiods, ret_quantiles, "
         "worst_ret, best_ret, mae_quantiles, mfe_quantiles, edge_ratio, timing — basket "
-        "evidence riders; none gate. Under cross_mean the pooled mean_ret is the FIRING "
+        "evidence riders; none gate, and cell_evidence reads worst_ret / best_ret only to "
+        "reconcile mean_ret. Under cross_mean the pooled mean_ret is the FIRING "
         "subset's cross-sectional selection tilt — each closed bar's FULL cross-section demeans "
         "to zero, but the pool holds only the members that fired, so its mean is their exact "
         "excess sum over n (summed from the raw legs): 0 exactly where the selected excesses "
@@ -513,7 +518,9 @@ METRIC_ROLES_DOC: dict[str, JsonValue] = {
         "horizon bars apart among the closed observations), concentration.top_share_abs >= k/n "
         "for k = max(1, ceil(n/20)) (the largest k of n observations carry at least k/n of the "
         "mass — exact, every share being the correctly rounded exact quotient of exact masses "
-        "and k/n of its integers), episode_stats.n == the "
+        "and k/n of its integers), a numeric mean_ret within [worst_ret, best_ret] (exact: the "
+        "mean is the pool's exact sum over its count, rounded once, the extrema the same "
+        "pool's rows, and rounding is monotone), episode_stats.n == the "
         "per-target total (the concentration and support panels must describe one pool), "
         "episode_stats.n_clusters a count in 0..n (0 iff n == 0: every closed row lies in one "
         "cluster), episode_stats.max_cluster_share_abs >= largest_cluster_share_abs and >= "
@@ -531,7 +538,8 @@ METRIC_ROLES_DOC: dict[str, JsonValue] = {
         "equal windows is the largest), "
         "pooled.n <= len(targets) × max(0, n_bars − 1 − horizon) (each member fires "
         "at most once per bar and closes at most that many), pooled.concentration.top_share_abs "
-        ">= k/pooled.n (the same floor over the pool the basket rubric grades), and a "
+        ">= k/pooled.n (the same floor over the pool the basket rubric grades), a numeric "
+        "pooled.mean_ret within [pooled.worst_ret, pooled.best_ret], and a "
         "member_share whose max_member_share_abs is a share "
         "names it as the largest of its by_target shares (string-keyed over the targets "
         "exactly, and summing to 1 within rounding — each the correctly rounded exact quotient "
@@ -655,7 +663,8 @@ METRIC_ROLES_DOC: dict[str, JsonValue] = {
         "read a mean cannot give, so a reader can state what a typical observation looked like "
         "instead of describing the pool by its average alone — p05 doubling as the historical "
         "VaR(5%) beside cvar_5's shortfall, p95 its favorable mirror; no count of its "
-        "own, because its pool is the cell's own n)",
+        "own, because its pool is the cell's own n; cell_evidence reads worst_ret / best_ret "
+        "only to reconcile mean_ret, which lies within them)",
         "per-cell by_target mae_quantiles / mfe_quantiles (the same seven points "
         "plus the subset's mean and extreme over the RAW post-entry excursion columns, each "
         "with its own n: the holding-period path evidence, aggregated into the report so it "
@@ -1335,7 +1344,9 @@ REPORT_FIELDS: dict[str, JsonValue] = {
         ),
         "by_target.worst_ret / best_ret": (
             "the single worst and best closed observations of this pool, same units as "
-            "mean_ret (evidence-only); null on an empty pool"
+            "mean_ret (evidence-only; cell_evidence reads them only to reconcile mean_ret, which "
+            "lies within them — the pool's exact sum over its count, rounded once); null on an "
+            "empty pool"
         ),
         "by_target.mae_quantiles / mfe_quantiles": (
             "{n, mean, p05, p10, p25, p50, p75, p90, p95, worst | best} over the per-trade "
@@ -1629,7 +1640,8 @@ GATE_CONTRACT_DOC: dict[str, JsonValue] = {
             "n_bars − 1)); and the panels RECONCILE — by_target.n "
             "== outcome_coverage.n_closed (held to the same closed ceiling), n_nonoverlap <= n, "
             "n_nonoverlap <= max(0, (n_bars − 2) // horizon), concentration.top_share_abs >= k/n "
-            "for k = max(1, ceil(n/20)), episode_stats.n == the per-target "
+            "for k = max(1, ceil(n/20)), worst_ret <= mean_ret <= best_ret for a numeric "
+            "mean_ret, episode_stats.n == the per-target "
             "total, episode_stats.n_clusters a count in 0..n (0 iff n == 0), "
             "episode_stats.max_cluster_share_abs >= largest_cluster_share_abs and >= "
             "1/n_clusters (== 1 with one cluster), signal_coverage.n_bars == summary.n_bars. "
@@ -1640,7 +1652,8 @@ GATE_CONTRACT_DOC: dict[str, JsonValue] = {
             "max(0, (n_bars − 2) // horizon), max(by_target.n_nonoverlap) <= "
             "pooled.n_nonoverlap <= sum(by_target.n_nonoverlap), pooled.n "
             "<= len(targets) × max(0, n_bars − 1 − horizon), pooled.concentration.top_share_abs "
-            ">= k/pooled.n, and a max_member_share_abs that "
+            ">= k/pooled.n, pooled.worst_ret <= pooled.mean_ret <= pooled.best_ret, and a "
+            "max_member_share_abs that "
             "is a share is the "
             "largest of member_share.by_target's shares, string-keyed over the targets "
             "exactly and summing to 1 within rounding); a pooled key on a conjunction cell "
@@ -1705,7 +1718,8 @@ GATE_CONTRACT_DOC: dict[str, JsonValue] = {
         "ledger, conditional_buckets/bucket_monotonicity and feature_association, and — in "
         "basket — every pooled field beyond {n, n_nonoverlap, mean_ret, "
         "concentration.top_share_abs, member_share} (member_share.by_target read only to "
-        "reconcile max_member_share_abs — attribution, never a ranking) all ride in the "
+        "reconcile max_member_share_abs — attribution, never a ranking; worst_ret / best_ret, "
+        "here and per target, only to reconcile mean_ret) all ride in the "
         "summary as EVIDENCE and no check reads them — see metric_roles (and its caveats "
         "map) for why"
     ),

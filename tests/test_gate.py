@@ -58,6 +58,9 @@ def _tgt_cell(**over) -> dict:
         "hac_se": 0.02,
         "rot_p": 0.03,
         "concentration": {"top_share_abs": 0.3, "n_top": 3, "top_frac": 0.05},
+        # The pool's extrema — cell_evidence reads them only to reconcile mean_ret.
+        "worst_ret": -0.18,
+        "best_ret": 0.31,
         # Evidence riders — no check reads either (the regressions below prove it).
         "boot": {
             "method": "episode_percentile",
@@ -235,9 +238,8 @@ def _pooled(
 ) -> dict:
     """One pooled cross-target panel that clears every basket read — the full field
     set (n, n_nonoverlap, mean_ret, hit_rate, t_hac, hac_se, rot_p, concentration, member_share,
-    boot,
-    subperiods, ret_quantiles, worst_ret, mae_quantiles, mfe_quantiles). Equal member shares by
-    default, so ``max_member_share_abs`` sits under the sealed ceiling."""
+    worst_ret, best_ret, boot, subperiods, ret_quantiles, mae_quantiles, mfe_quantiles). Equal
+    member shares by default, so ``max_member_share_abs`` sits under the sealed ceiling."""
     tg = list(targets)
     share = 1.0 / len(tg)
     p = {
@@ -253,6 +255,9 @@ def _pooled(
             "by_target": dict.fromkeys(tg, share),
             "max_member_share_abs": share,
         },
+        # The pool's extrema — cell_evidence reads them only to reconcile mean_ret.
+        "worst_ret": -0.18,
+        "best_ret": 0.31,
         # Pooled evidence riders — no check reads any of them (regressions below prove it).
         "boot": {
             "method": "episode_percentile",
@@ -285,7 +290,6 @@ def _pooled(
             },
         ],
         "ret_quantiles": {"p10": -0.03, "p25": -0.005, "p50": 0.03, "p75": 0.08, "p90": 0.13},
-        "worst_ret": -0.18,
         "mae_quantiles": {
             "n": 84,
             "p10": -0.09,
@@ -1244,6 +1248,42 @@ def test_a_top_share_is_at_least_its_counts_share_of_the_pool():
     assert checks["cell_evidence"].met and not checks["concentration"].met
 
 
+def test_a_mean_lies_within_its_pools_extrema():
+    # The review's tamper: a mean of 0.02 beside a pool whose worst and best observations are
+    # −0.2 and −0.01 met every check, though no mean of negative returns is positive. A mean is
+    # its pool's exact sum over its count, rounded once, and the extrema are the same rows, so
+    # rounding — monotone — keeps it inside them: exactly, a mean on either bound meets.
+    cell = _cell(mean_ret=0.02)
+    cell["by_target"]["AAA"].update({"worst_ret": -0.2, "best_ret": -0.01})
+    check = _cell_checks(evaluate_gate(_summary(cells=[cell])))["cell_evidence"]
+    assert not check.met
+    assert (
+        "by_target[AAA]: mean_ret=0.02 lies outside [worst_ret, best_ret] = [-0.2, -0.01]"
+        in check.detail
+    )
+    cell = _basket_cell(pooled=_pooled(mean_ret=0.02, worst_ret=-0.2, best_ret=-0.01))
+    check = _cell_checks(evaluate_gate(_basket(cells=[cell])))["cell_evidence"]
+    assert not check.met and "pooled: mean_ret=0.02 lies outside" in check.detail
+    for mean in (-0.18, 0.31):  # the fixtures' extrema
+        cell = _cell(mean_ret=mean)
+        assert _cell_checks(evaluate_gate(_summary(cells=[cell])))["cell_evidence"].met
+        cell = _basket_cell(pooled=_pooled(mean_ret=mean))
+        assert _cell_checks(evaluate_gate(_basket(cells=[cell])))["cell_evidence"].met
+    # beside a numeric mean an absent or unreadable extremum refuses; a null mean is support's
+    for key, value in (("worst_ret", None), ("best_ret", "junk"), ("best_ret", float("inf"))):
+        cell = _cell()
+        cell["by_target"]["AAA"][key] = value
+        check = _cell_checks(evaluate_gate(_summary(cells=[cell])))["cell_evidence"]
+        assert not check.met and "lies outside [worst_ret, best_ret]" in check.detail, key
+    cell = _cell()
+    del cell["by_target"]["AAA"]["worst_ret"]
+    assert not _cell_checks(evaluate_gate(_summary(cells=[cell])))["cell_evidence"].met
+    cell = _cell()
+    cell["by_target"]["AAA"]["mean_ret"] = None
+    checks = _cell_checks(evaluate_gate(_summary(cells=[cell])))
+    assert checks["cell_evidence"].met and not checks["support"].met
+
+
 @pytest.mark.parametrize("bad", [0, -1, 43, "junk", None, 1.5, float("nan")])
 def test_the_episode_cluster_count_is_a_count_the_pool_can_hold(bad):
     # n_clusters of 0, -1, "junk" and null met every check beside 42 rows — and the one-cluster
@@ -2144,7 +2184,8 @@ def test_a_pooled_key_on_a_conjunction_cell_refuses_as_a_restamped_basket():
 def test_stripping_pooled_non_gated_fields_changes_no_result():
     # Evidence-only pin, pooled edition: everything beyond {n, n_nonoverlap, mean_ret,
     # concentration.top_share_abs, member_share} is evidence and no check reads it
-    # (member_share.by_target is read only to reconcile the maximum it decomposes).
+    # (member_share.by_target is read only to reconcile the maximum it decomposes, and
+    # worst_ret / best_ret only to reconcile mean_ret).
     cell = _basket_cell()
     for k in (
         "hit_rate",
@@ -2154,7 +2195,6 @@ def test_stripping_pooled_non_gated_fields_changes_no_result():
         "boot",
         "subperiods",
         "ret_quantiles",
-        "worst_ret",
         "mae_quantiles",
         "mfe_quantiles",
     ):

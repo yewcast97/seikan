@@ -141,6 +141,24 @@ def _grade_top_share(panel: dict[str, object], n: int | None, label: str, unmet:
         )
 
 
+def _grade_mean_range(panel: dict[str, object], label: str, unmet: list[str]) -> None:
+    """A panel's ``mean_ret`` must lie within its pool's extrema, ``[worst_ret, best_ret]``. Exact:
+    the mean is the pool's exact sum over its count, rounded once, the extrema are the same
+    pool's rows, and rounding is monotone — on a ``cross_mean`` pool too, whose rows are their
+    exact excesses rounded once. The review's tamper: a mean of 0.02 beside a range of
+    [−0.2, −0.01] met every check. A null mean is ``support``'s to refuse."""
+    mean = _num(panel.get("mean_ret"))
+    if mean is None:
+        return
+    worst, best = _num(panel.get("worst_ret")), _num(panel.get("best_ret"))
+    if worst is None or best is None or not worst <= mean <= best:
+        unmet.append(
+            f"{label}: mean_ret={mean} lies outside [worst_ret, best_ret] = [{worst}, {best}] — "
+            "a mean is its pool's exact sum over its count, rounded once, which never leaves the "
+            "pool's range; drifted input"
+        )
+
+
 def _grade_by_target(
     by_tgt: dict[str, object],
     cov: dict[str, object],
@@ -152,7 +170,8 @@ def _grade_by_target(
     """Per-target support-panel counts + their reconciliation against the coverage ledger, the
     index geometry — the most observations of the cell's horizon that close inside the index
     (``closable``) and the most non-overlapping windows among them (``windows``) — and the
-    panel's own top-share floor (:func:`_grade_top_share`). Returns ``(per-target n total,
+    panel's own top-share floor and mean range (:func:`_grade_top_share`,
+    :func:`_grade_mean_range`). Returns ``(per-target n total,
     readable, the members' n_nonoverlap counts)``, the counts ``None`` where any member's is
     unreadable."""
     total = 0
@@ -181,6 +200,7 @@ def _grade_by_target(
             )
         total += n
         _grade_top_share(st, n, f"by_target[{tgt}]", unmet)
+        _grade_mean_range(st, f"by_target[{tgt}]", unmet)
         if n_nonoverlap is None or n_nonoverlap < 0:
             unmet.append(f"by_target[{tgt}]: n_nonoverlap is not a count — drifted input")
         elif n_nonoverlap > n:
@@ -356,6 +376,7 @@ def _grade_pooled(
                         "once per bar; drifted input"
                     )
                 _grade_top_share(pooled, p_n, "pooled", unmet)
+                _grade_mean_range(pooled, "pooled", unmet)
             if p_eff is None or p_eff < 0:
                 unmet.append("pooled.n_nonoverlap is not a count — drifted input")
             else:
@@ -472,7 +493,9 @@ def _check_cell_evidence(cell: object, s: Mapping[str, object], t: GateThreshold
     ``concentration.top_share_abs`` is at least ``k / n`` for its own ``n`` and the emission's
     top count ``k = max(1, ⌈n / 20⌉)`` (:func:`_grade_top_share` — the largest ``k`` of ``n``
     observations carry at least ``k / n`` of the mass; 0.0 beside 100 observations met the
-    ceiling); the cell's
+    ceiling); each panel's ``mean_ret`` lies within its ``[worst_ret, best_ret]``
+    (:func:`_grade_mean_range` — a mean is its pool's exact sum over its count, rounded once;
+    0.02 beside a range of [−0.2, −0.01] met every check); the cell's
     ``episode_stats.n`` is the per-target total (the concentration panel and the support panel
     must describe one pool), its ``n_clusters`` a count the pool can hold, and its
     ``max_cluster_share_abs`` agrees with its own panel — at least ``largest_cluster_share_abs``
@@ -495,7 +518,8 @@ def _check_cell_evidence(cell: object, s: Mapping[str, object], t: GateThreshold
     ``pooled.n <= len(targets) ×
     max(0, n_bars − 1 − horizon)`` (each member fires at most once per bar and closes at most
     that many), ``pooled.concentration.top_share_abs`` at least ``k / pooled.n`` (the same
-    floor, over the pool the basket rubric grades), and a ``member_share`` panel's
+    floor, over the pool the basket rubric grades), ``pooled.mean_ret`` within its pool's
+    extrema (the same range), and a ``member_share`` panel's
     one-name read is the largest share of its ``by_target`` decomposition, string-keyed over the
     targets exactly and summing to 1 within rounding (:func:`_grade_member_share` —
     ``max_member_share_abs`` 0.5 beside shares ``{AAA: 1.0, BBB: 0.0}`` met every check, the
@@ -519,7 +543,8 @@ def _check_cell_evidence(cell: object, s: Mapping[str, object], t: GateThreshold
         "(by_target.n==outcome_coverage.n_closed, "
         "n<=max(0,n_bars-1-horizon), n_nonoverlap<=n, n_nonoverlap<=max(0,(n_bars-2)//horizon), "
         "concentration.top_share_abs>=k/n for k=max(1,ceil(n/20)) (the largest k of n "
-        "observations carry at least k/n of the mass), "
+        "observations carry at least k/n of the mass), worst_ret<=mean_ret<=best_ret (a mean "
+        "is its pool's exact sum over its count, rounded once), "
         "episode_stats.n==sum of by_target.n, episode_stats.n_clusters a count in 0..n (0 iff "
         "n==0), episode_stats.max_cluster_share_abs>=largest_cluster_share_abs and "
         ">=1/n_clusters (==1 with one cluster), signal_coverage.n_bars==summary.n_bars); "
@@ -529,7 +554,8 @@ def _check_cell_evidence(cell: object, s: Mapping[str, object], t: GateThreshold
         "pooled.n_nonoverlap<=max(0,(n_bars-2)//horizon), "
         "max(by_target.n_nonoverlap)<=pooled.n_nonoverlap<=sum(by_target.n_nonoverlap), "
         "pooled.n<=len(targets)×max(0,n_bars-1-horizon), "
-        "pooled.concentration.top_share_abs>=k/pooled.n, member_share.by_target string-keyed "
+        "pooled.concentration.top_share_abs>=k/pooled.n, "
+        "pooled.worst_ret<=pooled.mean_ret<=pooled.best_ret, member_share.by_target string-keyed "
         "over the targets "
         "exactly and, where max_member_share_abs is a share, every share in [0,1] with "
         "max==max_member_share_abs and sum==1 within 2**-50); a pooled key on a conjunction "

@@ -264,8 +264,8 @@ LAST, after every other nominated output has landed (staged outputs, below), so 
 enumerating files that never appeared is not a state this CLI can reach. There is no top-level `n`: a scalar observation count
 would have to be some cell's, and naming one cell is the selection this engine does not perform.
 `policy_version` (**4** — v4: a cell names its horizon, which bounds its non-overlapping
-counts, no two cells name one assignment, and a basket's one-name read is the largest share of
-its member decomposition; v3: a never-available source refuses, and the support floor reads the renamed
+counts, no two cells name one assignment, a basket's one-name read is the largest share of
+its member decomposition, and a mean lies within its pool's extrema; v3: a never-available source refuses, and the support floor reads the renamed
 `n_nonoverlap`) names the checklist semantics (two cell results compare only
 under the same version); `summary.statistics_version` (**5** — v2 ADDED evidence: the p05/p95
 quantile tails, the promoted per-cell shape reads, `benchmark_regression`, `timing` and the
@@ -545,7 +545,10 @@ windows of 21 bars claimed in a 600-bar index, where 28 fit, is no run's output)
 `concentration.top_share_abs ≥ k / n` for `k = max(1, ⌈n / 20⌉)` (the largest `k` of `n`
 observations carry at least `k / n` of the mass — exact, every share being the correctly rounded
 exact quotient of exact masses and `k / n` of its integers; the review's 0.0 beside 100
-observations met the ceiling), `episode_stats.n` == the per-target total,
+observations met the ceiling), a numeric `mean_ret` within `[worst_ret, best_ret]` (exact: the
+mean is its pool's exact sum over its count, rounded once, the extrema the same pool's rows, and
+rounding is monotone — the review's mean of 0.02 beside a range of `[−0.2, −0.01]` met every
+check), `episode_stats.n` == the per-target total,
 `episode_stats.n_clusters` a count in `0..n` (0 iff `n == 0`: every closed row lies in one
 cluster), `episode_stats.max_cluster_share_abs ≥ largest_cluster_share_abs` and `≥ 1/n_clusters`
 — exactly 1 with one cluster (the ceiling read agrees with its own panel; every share is the
@@ -564,7 +567,8 @@ disjoint selection of the pool's and a disjoint pooled selection splits into dis
 within its members; the review's 8 beside members at 1 and 1, two pooled, met the support floor),
 `pooled.n ≤ len(targets) × max(0, n_bars − 1 − horizon)` (each member fires at most once
 per bar and closes at most that many), `pooled.concentration.top_share_abs ≥ k / pooled.n` (the
-same floor, over the pool the basket rubric grades), and a `member_share.max_member_share_abs`
+same floor, over the pool the basket rubric grades), a numeric `pooled.mean_ret` within
+`[pooled.worst_ret, pooled.best_ret]`, and a `member_share.max_member_share_abs`
 that is a share is the largest of its `by_target` shares, string-keyed over the targets exactly
 and summing to 1 within rounding — each share the correctly rounded exact quotient of exact masses, so within
 2**-50 (0.5 beside shares `{AAA: 1.0, BBB: 0.0}` met every check, and so did 0.5 beside
@@ -638,7 +642,8 @@ episodes — honest about within-episode overlap, but it assumes independence be
 undercovers on few of them and has no ordering against `t_hac` either way), the `subperiods` era
 panel, `bar_spacing`, the order-statistic blocks (`ret_quantiles`/`worst_ret`/`best_ret` — the median-against-mean
 read that exposes a pool a few spikes carried, which `concentration` structurally cannot, since
-mild right skew concentrates no mass in one episode — and `mae_quantiles`/`mfe_quantiles` with
+mild right skew concentrates no mass in one episode; `cell_evidence` reads `worst_ret`/`best_ret`
+only to reconcile `mean_ret`, which lies within them — and `mae_quantiles`/`mfe_quantiles` with
 their subset means, RAW
 path and so NOT commensurable with a benchmarked excess `ret`, tied together by overlapping
 windows sharing one trough and one peak, and in the MFE's case a MARK rather than an attainable
