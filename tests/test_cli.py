@@ -2547,6 +2547,16 @@ def test_threshold_flag_overrides_env(tmp_path, capsys, monkeypatch):
     assert doc["identity"]["thresholds"]["thesis_min_trades"] == 45  # flag wins (stricter)
 
 
+def test_lowercase_threshold_env_var_is_the_knob(tmp_path, capsys, monkeypatch):
+    # The knobs are read in any letter case, which is why the namespace is owned in any.
+    monkeypatch.setenv("seikan_thesis_min_trades", "300")
+    px = _write_ohlcv(tmp_path / "px.csv")
+    thesis = _write_thesis(tmp_path / "t.json")
+    _code, doc = _run_report(capsys, tmp_path, ["run", str(thesis), *_target(px)])
+    assert doc["identity"]["thresholds"]["thesis_min_trades"] == 300
+    assert doc["identity"]["thresholds_provenance"]["thesis_min_trades"] == "env"
+
+
 @pytest.mark.parametrize("flag", ["--min-oos-n-eff", "--oos-alpha", "--gate-profile"])
 def test_unknown_threshold_flags_are_usage_errors(capsys, flag):
     # There is no holdout, no episode sign test and no profile system, so there is no knob for any
@@ -2567,6 +2577,8 @@ def test_unknown_threshold_flags_are_usage_errors(capsys, flag):
         "SEIKAN_THESIS_MIN_PSR",  # PSR rides as evidence; no check reads it
         "SEIKAN_THESIS_MIN_N_EFF",  # the retired v2 knob name — renamed N_NONOVERLAP in v3
         "SEIKAN_MAX_P_VALUE",  # a plain typo (missing THESIS_)
+        "seikan_thesis_min_trade",  # a lowercase typo: the knobs are read in any letter case
+        "Seikan_Thesis_Min_Trade",
     ],
 )
 def test_unknown_seikan_env_vars_exit_3(tmp_path, capsys, monkeypatch, var):

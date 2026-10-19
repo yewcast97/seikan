@@ -18,7 +18,8 @@ Four sealing rules (the policy is stamped AND bounded):
   concentration ceiling above 1) can never construct.
 - **The ``SEIKAN_`` env namespace is owned** (``extra="forbid"``): an unknown ``SEIKAN_*``
   variable — typically a typo'd threshold var the caller believes is active — refuses the run
-  instead of silently falling back to defaults.
+  instead of silently falling back to defaults, in any letter case, since the knobs themselves
+  are read in any (``seikan_thesis_min_trades`` sets ``thesis_min_trades``).
 - **The instance is FROZEN**: the floors above are constructor-time validation, so a mutable
   settings object would let a library caller loosen the exam after it had been checked. Assignment
   raises, and ``gate.evaluate_gate`` additionally reconstructs the object it is handed — the
@@ -82,18 +83,20 @@ class GateThresholds(BaseSettings):
         # SEIKAN_THESIS_MIN_OOS_N_EFF, SEIKAN_THESIS_OOS_ALPHA, SEIKAN_GATE_PROFILE, and, since
         # the schema-v3 rename, the retired SEIKAN_THESIS_MIN_N_EFF — lands here as a hard
         # error: a caller exporting one is asking for an exam this build does not run, which is
-        # exactly what must not pass silently.
+        # exactly what must not pass silently. Names compare lowercased, as pydantic-settings
+        # reads them (``case_sensitive`` is off): ``seikan_thesis_min_trades`` sets the knob, so
+        # ``seikan_thesis_min_trade`` is a typo'd var like its upper-case spelling.
         prefix = self.model_config.get("env_prefix", "")
-        known = {name.lower() for name in type(self).model_fields}
+        known = {(prefix + name).lower() for name in type(self).model_fields}
         unknown = sorted(
-            k for k in os.environ if k.startswith(prefix) and k[len(prefix) :].lower() not in known
+            k for k in os.environ if k.lower().startswith(prefix.lower()) and k.lower() not in known
         )
         if unknown:
             raise ValueError(
                 f"unknown {prefix}* environment variable(s): {', '.join(unknown)} — the "
                 f"{prefix} namespace belongs to the gate thresholds (a typo'd var would "
                 "silently run a different exam than intended); known vars: "
-                + ", ".join(sorted(prefix + n.upper() for n in known))
+                + ", ".join(sorted(n.upper() for n in known))
             )
         return self
 

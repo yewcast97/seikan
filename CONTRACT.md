@@ -708,7 +708,9 @@ The policy is sealed as well as stamped: **the canonical checklist is the floor*
 constructs only at its default or STRICTER, so a loosened exam is exit 3 (`thresholds_invalid`),
 same as a nonsense value — and the `SEIKAN_*` env namespace is owned: an unknown/typo'd `SEIKAN_*`
 var — any name that is not one of the four knobs, `SEIKAN_GATE_PROFILE` and
-`SEIKAN_THESIS_OOS_ALPHA` included — is a hard error, never silently ignored. The knob NAMING is
+`SEIKAN_THESIS_OOS_ALPHA` included — is a hard error, never silently ignored, in any letter case,
+as the knobs themselves are read (`seikan_thesis_min_trades` sets `thesis_min_trades`, so
+`seikan_thesis_min_trade` refuses like its upper-case spelling). The knob NAMING is
 a rule, not a coincidence: a knob's CLI flag is its `GateThresholds` field name minus the
 `thesis_` prefix with snake_case turned into `--kebab-case` (`thesis_min_trades` →
 `--min-trades`), and its env var is the full field name upper-cased under the `SEIKAN_` prefix

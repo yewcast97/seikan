@@ -2344,12 +2344,27 @@ def test_stricter_than_canonical_constructs(field, value):
     assert t.is_canonical() is False  # exact-default stamp: stricter is still non-canonical
 
 
-def test_unknown_seikan_env_var_is_a_hard_error(monkeypatch):
+@pytest.mark.parametrize(
+    "var",
+    [
+        "SEIKAN_MAX_P_VALUE",  # typo: missing THESIS_
+        "seikan_thesis_min_trade",  # typo: the knob's lost S, in a case the knobs are read in
+        "Seikan_Thesis_Min_Trade",
+    ],
+)
+def test_unknown_seikan_env_var_is_a_hard_error(monkeypatch, var):
     # A typo'd threshold var means the caller believes a checklist ran that didn't — refuse loudly
-    # instead of silently falling back to defaults (the SEIKAN_ namespace is owned).
-    monkeypatch.setenv("SEIKAN_MAX_P_VALUE", "0.2")  # typo: missing THESIS_
+    # instead of silently falling back to defaults (the SEIKAN_ namespace is owned, in any letter
+    # case: the lowercase spelling constructed at the default 30).
+    monkeypatch.setenv(var, "300")
     with pytest.raises(ValidationError):
         GateThresholds()
+
+
+def test_seikan_env_knobs_are_read_in_any_letter_case(monkeypatch):
+    # The premise of the any-case namespace: pydantic-settings reads the env case-insensitively.
+    monkeypatch.setenv("seikan_thesis_min_trades", "300")
+    assert GateThresholds().thesis_min_trades == 300
 
 
 @pytest.mark.parametrize(
