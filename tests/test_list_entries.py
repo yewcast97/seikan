@@ -248,6 +248,24 @@ def test_list_entries_runup_and_bars_since_extremum(tmp_path):
     assert stamps == sorted(stamps)
 
 
+def test_list_entries_subnormal_cycle_reads_its_mad_and_never_fires_above_it(tmp_path):
+    # The review's read: closes [u, 3u, 4u, 5u] (u = 5e-324) have the MAD u on every window of 4,
+    # so `rolling_agg(close, 4, mad) > u` holds on none — it fired 81 times, the even window's
+    # median having lost the half of its middle gap.
+    u = 5e-324
+    path = _bars(tmp_path / "sub.csv", [u, 3 * u, 4 * u, 5 * u] * 21)
+    mad = {"type": "rolling_agg", "input": {"type": "field", "column": "close"}, "window": 4}
+    entry = {
+        "type": "threshold",
+        "left": {**mad, "agg": "mad"},
+        "op": ">",
+        "right": {"type": "constant", "value": u},
+    }
+    report = _list(path, entry)
+    assert report.entries[0]["timestamps"] == []
+    assert set(report.root_series["rolling_agg(close,4,mad)"].dropna()) == {u}
+
+
 # ---- render_series (the value-column labels) ------------------------------------------------
 
 

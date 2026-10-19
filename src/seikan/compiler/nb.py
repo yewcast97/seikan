@@ -273,6 +273,13 @@ def _sorted_median(s: npt.NDArray[np.float64], k: int) -> npt.NDArray[np.float64
     return _midpoint(s[..., (k - 1) // 2], s[..., k // 2])
 
 
+def _deviation_median(y: npt.NDArray[np.float64], k: int) -> npt.NDArray[np.float64]:
+    """The median of ``|y − median(y)|`` over the last axis of ``y``, laid out as for
+    :func:`_sorted_median`."""
+    dev = np.sort(np.abs(y - _sorted_median(y, k)[..., None]), axis=-1)
+    return _sorted_median(dev, k)
+
+
 def _sorted_mad(s: npt.NDArray[np.float64], k: int) -> npt.NDArray[np.float64]:
     """The median absolute deviation over the last axis of ``s``, laid out as for
     :func:`_sorted_median`: about the SAME values' median, unscaled, the deviations taken in their
@@ -281,14 +288,28 @@ def _sorted_mad(s: npt.NDArray[np.float64], k: int) -> npt.NDArray[np.float64]:
     read 1.0 for 0.5 (its median B + 1.5 rounds to B + 2) and 0.5 once translated by −B exactly,
     so ``rolling_mad(X, 6) > rolling_mad(X − B, 6)`` fired.
 
+    An even window whose middle pair lies an ODD multiple of 2**-1074 apart has no double for its
+    median in that frame (the gap's half rounds), so it is retaken doubled — where the half is
+    exact and every step the direct form's in an unbounded exponent range — and halved once:
+    ``[u, 3u, 4u, 5u]`` (u = 2**-1074) read 2u for its MAD of u, and ``rolling_mad(x, 4) > u``
+    fired on every window. A member the doubling overflows sorts past the middle deviations
+    wherever the MAD is that small; where they reach it, the MAD is past 2**1022 and the direct
+    read stands.
+
     NaN where a value lies farther than the largest double from the lower middle one: that
     deviation overflows, and an infinite one can displace the median of the rest (``[-2270207,
     -12172030, 16568487, 8508056] * 2**1000`` read 1.108e308 for 1.009e308). Callers silence the
     overflow."""
     y = s - s[..., (k - 1) // 2][..., None]
-    dev = np.sort(np.abs(y - _sorted_median(y, k)[..., None]), axis=-1)
     held = np.isfinite(y[..., 0]) & np.isfinite(y[..., -1])
-    return np.where(held, _sorted_median(dev, k), np.nan)
+    v = np.where(held, _deviation_median(y, k), np.nan)
+    gap = y[..., k // 2]  # 0 when k is odd: the lower middle value is the median
+    half = np.ldexp(gap, -1)
+    lift = held & (half + half != gap)
+    if lift.any():
+        lifted = np.ldexp(_deviation_median(np.ldexp(y[lift], 1), k), -1)
+        v[lift] = np.where(np.isfinite(lifted), lifted, v[lift])
+    return v
 
 
 def zscore_sma_apply_nb(arr: npt.NDArray[np.float64], window: int) -> npt.NDArray[np.float64]:

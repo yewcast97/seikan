@@ -916,20 +916,32 @@ def rolling_median(arr: np.ndarray, window: int) -> np.ndarray:
     return out
 
 
-def _framed_mad(vals: list[float]) -> float:
-    """The MAD in the frame about the lower middle value; NaN when a deviation overflows it."""
-    lower_middle = sorted(vals)[(len(vals) - 1) // 2]
-    y = [v - lower_middle for v in vals]
-    if not all(math.isfinite(d) for d in y):
-        return math.nan
+def _deviation_median(y: list[float]) -> float:
     med = _sorted_median(y)
     return _sorted_median([abs(v - med) for v in y])
 
 
+def _framed_mad(vals: list[float]) -> float:
+    """The MAD in the frame about the lower middle value; NaN when a deviation overflows it. A
+    middle gap an odd multiple of 2**-1074 (its half rounds) is retaken doubled, halved once,
+    wherever the doubled read is finite."""
+    s = sorted(vals)
+    lower_middle = s[(len(s) - 1) // 2]
+    y = [v - lower_middle for v in vals]
+    if not all(math.isfinite(d) for d in y):
+        return math.nan
+    gap = s[len(s) // 2] - lower_middle
+    if gap / 2.0 * 2.0 != gap:
+        lifted = _deviation_median([2.0 * d for d in y]) / 2.0
+        if math.isfinite(lifted):
+            return lifted
+    return _deviation_median(y)
+
+
 def rolling_mad(arr: np.ndarray, window: int) -> np.ndarray:
     """Median absolute deviation about the SAME window's median, unscaled — in the window's
-    frame about its lower middle value (the median itself on an odd window); a window wider than
-    the double range in its halves, doubled."""
+    frame about its lower middle value (the median itself on an odd window); an even window's
+    subnormal middle gap doubled, a window wider than the double range in its halves, doubled."""
     n = arr.shape[0]
     out = np.full(n, np.nan, dtype=np.float64)
     for i in range(window - 1, n):

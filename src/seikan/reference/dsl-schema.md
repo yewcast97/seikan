@@ -487,7 +487,9 @@ range reads that recurrence's value to its rounding.
   and 0.5 once translated by `−2**52` exactly, so `rolling_agg(X, 6, "mad") > rolling_agg(X − B,
   6, "mad")` fired. A window wider than the double range (a member more than the largest double
   from that value) reads its `mad` in its halves, doubled — `[−1e308, 1e308]` read NaN for its
-  MAD of 1e308.
+  MAD of 1e308 — and an even window whose middle pair lies an odd multiple of `2**-1074` apart
+  (the half of that gap rounds in the frame) reads it doubled and halved once: `[u, 3u, 4u, 5u]`
+  (u = `5e-324`) read 2u for its MAD of u.
 - `drawdown` (optional `input` defaulting to close, optional `window`) — fractional depth below a
   peak: `(input − peak) / peak` (≤ 0; 80 under a peak of 100 is exactly −0.2). POSITIVE-scale
   domain: a non-positive peak → NaN (the ratio inverts on a negative scale; signed series compose

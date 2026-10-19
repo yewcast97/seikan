@@ -2780,6 +2780,28 @@ def test_a_window_wider_than_the_double_range_reads_its_mad_in_its_halves():
             assert rolling_agg_1d(x, w, "mad")[-1] == _rational_mad(x.tolist()), x
 
 
+def test_an_even_windows_subnormal_middle_gap_keeps_its_half_in_the_mad():
+    # The review's window: [u, 3u, 4u, 5u] (u = 5e-324) has the median 3.5u and the MAD u, but
+    # the half of its middle gap u rounded to 0 in the lower middle value's frame, the deviations
+    # about it read a MAD of 2u, and `rolling_mad(x, 4) > u` fired on every window. The window is
+    # retaken doubled, where the gap's half is exact, and halved once.
+    u = 5e-324
+    assert set(rolling_agg_1d(np.array([u, 3 * u, 4 * u, 5 * u] * 21), 4, "mad")[3:]) == {u}
+    # 1.5u is a tie, rounded once to 2u; an odd window's median is a member, never retaken
+    assert rolling_agg_1d(np.array([u, 3 * u, 4 * u, 6 * u]), 4, "mad")[-1] == 2 * u
+    assert rolling_agg_1d(np.array([u, 3 * u, 4 * u, 5 * u, 9 * u]), 5, "mad")[-1] == u
+    # on the subnormal grid every doubled step is exact: the exact rational MAD, rounded once
+    rng = np.random.default_rng(31)
+    for w in (2, 4, 6, 8):
+        for _ in range(400):
+            x = rng.integers(0, 40, w) * u
+            assert rolling_agg_1d(x, w, "mad")[-1] == _rational_mad(x.tolist()), x
+    # members the doubling overflows reach the middle deviations only where the MAD is past
+    # 2**1022, and there the direct read stands
+    x = np.array([-1e308, u, 4 * u, 1.7e308])
+    assert rolling_agg_1d(x, 4, "mad")[-1] == _rational_mad(x.tolist()) == 1e308 / 2
+
+
 def test_an_even_median_and_its_mad_never_overflow_at_the_ceiling():
     # The review's case: a constant window of 1e308 read its mean 1e308 but its median and MAD
     # NaN — numpy's even median sums its middle pair, and np.nanmedian summed even an odd row's
