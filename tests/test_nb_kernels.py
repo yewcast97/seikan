@@ -17,7 +17,7 @@ from numpy.lib.stride_tricks import sliding_window_view
 
 from seikan.compiler import nb
 from seikan.constants import MAX_BAR_COUNT_PARAM, MIN_EW_ALPHA
-from seikan.numeric import MIN_NORMAL, log_ratio, log_ratio_array
+from seikan.numeric import MIN_NORMAL, log_ratio, log_ratio_array, pct_change
 
 from . import _reference_nb as ref
 
@@ -321,6 +321,35 @@ def test_log_ratio_twins_share_one_rule_at_the_range_edges():
     assert log_ratio(levels[1], levels[0]) == 921.0340371976183
     assert log_ratio(levels[0], levels[1]) == -921.0340371976183
     assert log_ratio(levels[2], levels[3]) == math.log(3.0 / 2.0)
+
+
+def test_pct_change_is_the_difference_over_its_base():
+    # num/den − 1 rounds the quotient at 1's ulp before the exact subtraction: 100 → 110 read
+    # 0.10000000000000009 and 100 → 90 −0.09999999999999998, a pair summing to 1.1e-16. The
+    # difference over its base is correctly rounded wherever that difference is exact
+    # (den/2 ≤ num ≤ 2·den, Sterbenz), so the pair is ±0.1 — in the rule and in every kernel
+    # reading it — and cancels exactly.
+    assert (110.0 / 100.0 - 1.0) + (90.0 / 100.0 - 1.0) > 0.0  # the premise
+    np.testing.assert_array_equal(pct_change([110.0, 90.0], 100.0), [0.1, -0.1])
+    walk = np.array([100.0, 100.0, 110.0, 90.0])
+    np.testing.assert_array_equal(change_1d(walk, 2, "pct"), [np.nan, np.nan, 0.1, -0.1])
+    np.testing.assert_array_equal(drawdown_1d(np.array([100.0, 80.0, 90.0])), [0.0, -0.2, -0.1])
+    np.testing.assert_array_equal(runup_1d(np.array([100.0, 110.0, 150.0])), [0.0, 0.1, 0.5])
+    # Against exact rationals on two-decimal levels: within Sterbenz every change is the
+    # correctly rounded quotient, where the ratio form misses on a large share; beyond it, two
+    # roundings of relative size.
+    rng = np.random.RandomState(4)
+    den = np.round(rng.uniform(1.0, 1000.0, 4000), 2)
+    num = np.round(den * np.exp(rng.uniform(-1.5, 1.5, 4000)), 2)
+    exact = [(Fraction(a) - Fraction(b)) / Fraction(b) for a, b in zip(num, den, strict=True)]
+    want = np.array([float(e) for e in exact])
+    got = pct_change(num, den)
+    inside = (den / 2 <= num) & (num <= 2 * den)
+    np.testing.assert_array_equal(got[inside], want[inside])
+    assert (num / den - 1.0 != want)[inside].mean() > 0.3
+    outside = [(Fraction(g), e) for g, e, i in zip(got, exact, inside, strict=True) if not i]
+    worst = max(abs(g - e) / abs(e) for g, e in outside)
+    assert worst <= Fraction(2**-52) * (1 + Fraction(2**-52))
 
 
 # ---- ema vs reference -------------------------------------------------------
@@ -1284,8 +1313,10 @@ def test_drawdown_trailing_matches_composed_ratio():
     window = 10
     peak = rolling_agg_1d(arr, window, "max")
     with np.errstate(invalid="ignore", divide="ignore"):
-        want = np.where(np.isfinite(arr) & np.isfinite(peak) & (peak > 0), arr / peak - 1.0, np.nan)
-    _assert(drawdown_1d(arr, window), want)
+        want = np.where(
+            np.isfinite(arr) & np.isfinite(peak) & (peak > 0), (arr - peak) / peak, np.nan
+        )
+    np.testing.assert_array_equal(drawdown_1d(arr, window), want)
 
 
 def test_drawdown_nan_prefix_stays_nan():
@@ -1533,9 +1564,9 @@ def test_runup_trailing_matches_composed_ratio():
     trough = rolling_agg_1d(arr, window, "min")
     with np.errstate(invalid="ignore", divide="ignore"):
         want = np.where(
-            np.isfinite(arr) & np.isfinite(trough) & (trough > 0), arr / trough - 1.0, np.nan
+            np.isfinite(arr) & np.isfinite(trough) & (trough > 0), (arr - trough) / trough, np.nan
         )
-    _assert(runup_1d(arr, window), want)
+    np.testing.assert_array_equal(runup_1d(arr, window), want)
 
 
 def test_runup_matches_reference():

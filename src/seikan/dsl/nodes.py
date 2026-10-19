@@ -329,9 +329,9 @@ class RollingAgg(_Strict):
 
 
 class Drawdown(_Strict):
-    # Fractional depth below a peak: ``input / peak − 1`` (≤ 0). ``window`` set → trailing N-bar
-    # peak; omitted → expanding (all-time) peak. ``input`` defaults to the target's close. Counts
-    # as one operator level, recovering nesting budget vs composing
+    # Fractional depth below a peak: ``(input − peak) / peak`` (≤ 0). ``window`` set → trailing
+    # N-bar peak; omitted → expanding (all-time) peak. ``input`` defaults to the target's close.
+    # Counts as one operator level, recovering nesting budget vs composing
     # ``binary_op(close / rolling_agg(...))``. "In a ≥30% drawdown" is ``drawdown < -0.30``.
     # POSITIVE-scale domain: a non-positive peak makes the ratio meaningless (it inverts on a
     # negative scale), so those bars are NaN — undecidable, never a sign-flipped depth. For
@@ -342,7 +342,7 @@ class Drawdown(_Strict):
 
 
 class Runup(_Strict):
-    # Fractional height above a trough: ``input / trough − 1`` (≥ 0) — the exact mirror of
+    # Fractional height above a trough: ``(input − trough) / trough`` (≥ 0) — the exact mirror of
     # ``drawdown``. ``window`` set → trailing N-bar trough; omitted → expanding (all-time) trough.
     # ``input`` defaults to the target's close. Reads both ways: ``runup >= 0.05`` as a recovery/
     # stabilization guard after a trough, or as an extension/overheat read near a peak. Counts as
@@ -367,7 +367,7 @@ class BarsSinceExtremum(_Strict):
 
 
 class Change(_Strict):
-    # k-period change of ``input``, mirroring ``Outcome.kind``: ``pct`` = (cur/prev − 1),
+    # k-period change of ``input``, mirroring ``Outcome.kind``: ``pct`` = (cur − prev)/prev,
     # ``log`` = ln(cur/prev), ``diff`` = cur − prev (level change — the honest form for
     # rates/spreads/multiples where a percent is dimensionally wrong). ``periods`` may be a list
     # (sweeps as ``change_periods``). ``pct`` and ``log`` require BOTH endpoints strictly

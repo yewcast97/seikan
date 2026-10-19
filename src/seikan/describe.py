@@ -11,9 +11,10 @@ Containment, by construction:
 - plain numpy/pandas only — no numba, no RNG, and NOTHING imported from ``compiler/``,
   ``analysis/`` or ``gate/``: the one thing it shares with the run summary is the clock
   geometry stamp, :func:`seikan.dataio.bar_spacing`, which lives with the data layer so both
-  emit it in one vocabulary, and the two rules it shares with the engine — the ``log``
-  algebra's log ratio and where the normal range begins (:data:`~seikan.numeric.MIN_NORMAL`,
-  its std's edge) — live in the leaf :mod:`seikan.numeric` for the same reason;
+  emit it in one vocabulary, and the rules it shares with the engine — the ``pct`` algebra's
+  percent change, the ``log`` algebra's log ratio and where the normal range begins
+  (:data:`~seikan.numeric.MIN_NORMAL`, its std's edge) — live in the leaf :mod:`seikan.numeric`
+  for the same reason;
 - admission is :func:`seikan.dataio.read_strict_csv` — the SAME strict reader ``check-data``
   runs, called identically, so the ``data_report`` this module builds is byte-equal to
   ``check-data``'s over the same files (a refused file is refused for the same reason by both,
@@ -47,7 +48,7 @@ import numpy as np
 import pandas as pd
 
 from seikan.dataio import FileReport, bar_spacing, build_data_report, read_strict_csv
-from seikan.numeric import MIN_NORMAL, log_ratio, log_ratio_array, midrange
+from seikan.numeric import MIN_NORMAL, log_ratio, log_ratio_array, midrange, pct_change
 from seikan.types import (
     ChangeBlock,
     DescribeResult,
@@ -103,7 +104,7 @@ def _change_block(x: np.ndarray, w: int) -> ChangeBlock:
         return out
     out["diff"] = diff
     if a > 0 and b > 0:
-        pct = b / a - 1.0
+        pct = float(pct_change(b, a))
         if _finite(pct):
             out["pct"] = pct
         else:
@@ -115,14 +116,14 @@ def _change_block(x: np.ndarray, w: int) -> ChangeBlock:
 
 
 def _ratio(last: float, base: float) -> tuple[float | None, RatioReason | None]:
-    """``(last/base − 1, None)`` on a strictly positive pair — the one positive-domain ratio
-    read the range-position and full-sample blocks share — else ``(None, tag)`` naming why it
-    refused: a non-positive leg, or a ratio that left the double range (``last/base``
+    """``(pct_change(last, base), None)`` on a strictly positive pair — the one positive-domain
+    ratio read the range-position and full-sample blocks share — else ``(None, tag)`` naming why
+    it refused: a non-positive leg, or a change that left the double range (its quotient
     overflowing; an underflow reads −1.0, exact to rounding). The caller states the tag as its
     block's ``ratio_reason``."""
     if not (last > 0 and base > 0):
         return None, "non_positive_endpoint"
-    r = last / base - 1.0
+    r = float(pct_change(last, base))
     return (r, None) if _finite(r) else (None, "not_representable")
 
 
@@ -163,7 +164,7 @@ def _dispersion_block(x: np.ndarray, w: int) -> ChangeBlock:
         # as ``not_representable``: squared pct deviations past it are rescaled like diff's, and
         # the std of finite pct changes — each ≥ −1 — stays under ~0.71·DBL_MAX. The log
         # changes are scale-safe (|change| < 1455), so their std is finite here.
-        pct = _std(tail[1:] / tail[:-1] - 1.0)
+        pct = _std(pct_change(tail[1:], tail[:-1]))
         if _finite(pct):
             out["pct"] = pct
         else:

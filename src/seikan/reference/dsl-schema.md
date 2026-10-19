@@ -450,10 +450,12 @@ range reads that recurrence's value to its rounding.
   `count(value < current)/window` in `[0, (window−1)/window]` (the current bar sits in its own
   window, so exactly 1 is unattainable).
 - `change` (input, periods=1, kind `"pct"|"log"|"diff"` default `"pct"`) — k-period change,
-  mirroring `Outcome.kind`: `pct` = (cur/prev − 1), `log` = ln(cur/prev), `diff` = cur − prev
+  mirroring `Outcome.kind`: `pct` = (cur − prev)/prev, `log` = ln(cur/prev), `diff` = cur − prev
   (level change — the honest form for rates/spreads/multiples). `pct` and `log` require BOTH
   endpoints strictly positive and are NaN otherwise (ratio algebras invert silently on a signed
-  scale — the same rule the forward outcome applies); signed series belong to `diff`. `log` is
+  scale — the same rule the forward outcome applies); signed series belong to `diff`. `pct` is
+  the difference over its base, so a rise and the mirror fall off one base cancel exactly
+  (100 → 110 is 0.1, 100 → 90 is −0.1). `log` is
   scale-safe — finite for every positive pair, even where the quotient leaves the double range
   (1e200 → 1e-200 is −921.03…) — and signed: a move's reverse reads its exact negation, so the
   log changes of 100 → 110 → 100 sum to exactly 0. A `pct` or `diff` past the range is NaN. A list
@@ -485,14 +487,15 @@ range reads that recurrence's value to its rounding.
   and 0.5 once translated by `−2**52` exactly, so `rolling_agg(X, 6, "mad") > rolling_agg(X − B,
   6, "mad")` fired.
 - `drawdown` (optional `input` defaulting to close, optional `window`) — fractional depth below a
-  peak: `input / peak − 1` (≤ 0). POSITIVE-scale domain: a non-positive peak → NaN (the ratio
-  inverts on a negative scale; signed series compose level reads with `change(kind:"diff")`
-  instead). Omit `input` to read the target's close. `window` set → trailing
+  peak: `(input − peak) / peak` (≤ 0; 80 under a peak of 100 is exactly −0.2). POSITIVE-scale
+  domain: a non-positive peak → NaN (the ratio inverts on a negative scale; signed series compose
+  level reads with `change(kind:"diff")` instead). Omit `input` to read the target's close.
+  `window` set → trailing
   N-bar peak; omit `window` → expanding (all-time) peak. "In a ≥30% drawdown" is
   `{"type": "threshold", "left": {"type": "drawdown"}, "op": "<", "right": {"type": "constant", "value": -0.30}}`.
   Counts as one operator level (recovers nesting budget vs composing `binary_op` + `rolling_agg`).
 - `runup` (optional `input` defaulting to close, optional `window`) — fractional height above a
-  trough: `input / trough − 1` (≥ 0), the exact mirror of `drawdown` — positive-scale domain
+  trough: `(input − trough) / trough` (≥ 0), the exact mirror of `drawdown` — positive-scale domain
   included (a non-positive trough → NaN). Reads both ways: recovery/
   stabilization after a trough (`runup >= 0.05`) or extension/overheat near a peak.
 - `bars_since_extremum` (`extremum`: `"max"|"min"`, optional `input` defaulting to close, optional
@@ -1071,8 +1074,11 @@ because `extra="forbid"` applies to every DSL model:
   censors the observation as `exit_reason="no_outcome"` instead of minting a garbage return — which
   the per-cell `outcome_coverage` check then refuses. `diff` is untouched (a yield crossing zero is
   a real move, not a domain error). OHLCV targets cannot reach this; series targets and feed
-  outcomes can. `log` = ln(b/a) is scale-safe (the decision-side `change` and `describe` read the
-  same rule): finite for every positive pair, even where `b/a` leaves the double range
+  outcomes can. `pct` = (b − a)/a, the difference over its base (the decision-side `change`,
+  `drawdown`/`runup` and `describe` read the same rule), so a rise and the mirror fall off one
+  base cancel exactly (100 → 110 is 0.1, 100 → 90 is −0.1), never a rounding residue the support
+  floor could grade. `log` = ln(b/a) is scale-safe (the decision-side `change` and `describe`
+  read the same rule): finite for every positive pair, even where `b/a` leaves the double range
   (1e200 → 1e-200 measures −921.03…, never ln(0)), and signed — ln(a/b) is −ln(b/a) bit for
   bit, so a move and its reverse (100 → 110 → 100) cancel exactly, never a rounding residue the
   support floor could grade (a cycle through three or more levels only to rounding, as any
@@ -1980,7 +1986,7 @@ scale-safe — squared deviations past the double range are rescaled, never refu
 refuses as `not_representable` only where a 1-bar ratio leaves the range), `range_position`
 (trailing high/low with timestamps — most-recent tie rule — distance from each, and
 `percentile_rank` within the window; requires the full window, `insufficient_bars` otherwise, never
-silently shortened), `full_sample` (whole-file extremes plus `drawdown_pct = last/high − 1` and
+silently shortened), `full_sample` (whole-file extremes plus `drawdown_pct = (last − high)/high` and
 `runup_pct`, with diff twins), `missingness` (pure counts), and — OHLCV with volume only — `volume`
 (last, trailing mean, `last_to_mean`; otherwise null). The `diff` read rides every block that did
 not refuse whole: where it has no double to be — levels of opposite sign more than ~1.8e308 apart,

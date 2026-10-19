@@ -324,7 +324,7 @@ class Outcome(_Strict):
     # is the target's forward PERCENT return on the next-open anchor. ``series`` picks the measured
     # series: ``"target"`` = the target's own value column; a declared external feed name = that
     # feed's forward evolution (e.g. realized vol, a credit spread, an IV index — "when X fires,
-    # Y moves"). ``kind`` picks the measurement algebra: ``pct`` = (b/a − 1), ``log`` = ln(b/a)
+    # Y moves"). ``kind`` picks the measurement algebra: ``pct`` = (b − a)/a, ``log`` = ln(b/a)
     # (both need a positive-scale series), ``diff`` = (b − a) — the honest form for
     # rates/spreads/multiples, where a percent of a near-zero or sign-crossing level is meaningless
     # (a 10y yield falling 4.0 → 3.5 is −0.5 in ``diff``, not −12.5%). The anchor stays next-bar

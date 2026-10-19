@@ -99,7 +99,7 @@ from seikan.dsl.schema import (
     render_series,
     series_cross_nodes,
 )
-from seikan.numeric import log_ratio_array
+from seikan.numeric import log_ratio_array, pct_change
 from seikan.types import (
     EXCLUSION_REASONS,
     EXIT_REASONS,
@@ -1331,9 +1331,12 @@ def run_backtest(thesis: Thesis, md: MarketData) -> EventStudyResult:
     horizon_values = cfg.horizon_values
     bench_mode, bench_col = cfg.bench_mode, cfg.bench_col
 
-    # The measurement algebra (params.outcome.kind): pct = (b/a − 1), log = ln(b/a),
-    # diff = (b − a). Non-finite (0-division, log of a non-positive ratio) → NaN, censoring the
-    # observation like any other unmeasurable window — a pct or diff past the double range
+    # The measurement algebra (params.outcome.kind): pct = (b − a)/a, log = ln(b/a),
+    # diff = (b − a). `pct` reads through `numeric.pct_change`, the difference over its base, so
+    # a rise and the equal fall off one base cancel exactly — read as b/a − 1, its quotient
+    # rounded at 1's ulp first, 100 → 110 beside 100 → 90 averaged 5.6e-17, a positive mean the
+    # support floor graded. Non-finite (0-division, log of a non-positive ratio) → NaN, censoring
+    # the observation like any other unmeasurable window — a pct or diff past the double range
     # included: it has no representable value, so it censors as `no_outcome` (silently: the
     # overflow is expected, hence `over="ignore"`). `log` reads through the scale-safe, signed
     # `numeric.log_ratio_array`: finite for every positive pair (1e200 → 1e-200 is −921.03…,
@@ -1354,7 +1357,7 @@ def run_backtest(thesis: Thesis, md: MarketData) -> EventStudyResult:
     def _measure(num: np.ndarray, den: np.ndarray) -> np.ndarray:
         with np.errstate(divide="ignore", over="ignore", invalid="ignore"):
             if outcome_kind == "pct":
-                r = np.where((num > 0.0) & (den > 0.0), num / den - 1.0, np.nan)
+                r = np.where((num > 0.0) & (den > 0.0), pct_change(num, den), np.nan)
             elif outcome_kind == "log":
                 r = np.where((num > 0.0) & (den > 0.0), log_ratio_array(num, den), np.nan)
             else:  # diff

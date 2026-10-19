@@ -3,8 +3,9 @@
 A leaf module by design: it imports ``math`` and ``numpy`` and nothing from the package, so
 ``describe.py`` (which may import nothing from ``compiler/``, ``analysis/`` or ``gate/``) and the
 engine's kernels, outcome algebra and pool statistics can share ONE rule without a dependency
-between them. No numba either: no ``@njit`` kernel forms a log ratio (``nb.change_apply_nb`` is a
-vectorized numpy kernel), and ``describe`` must stay numba-free.
+between them. No numba either: no ``@njit`` kernel forms a log ratio or a percent change
+(``nb.change_apply_nb``, ``drawdown_apply_nb`` and ``runup_apply_nb`` are vectorized numpy
+kernels), and ``describe`` must stay numba-free.
 
 **The normal range.** :data:`MIN_NORMAL` is where it begins, defined once: the kernels' variance
 tests (``compiler.nb._normal`` and the lifted windows), the pool statistics'
@@ -27,8 +28,20 @@ the direct form and its exact bits stand: the difference of logs rounds differen
 every ordinary pair. Each twin keeps its callers' log implementation (``math.log`` for the scalar
 reads, ``np.log`` for the array reads). A test pins the twins to the same rule.
 
+**The percent change.** ``num/den − 1`` rounds the quotient at the ulp of 1 before the exact
+subtraction, so a change under +100% carried an ABSOLUTE rounding of up to 2**-53 however small
+it was: 100 → 110 read 0.10000000000000009 and 100 → 90 −0.09999999999999998, so a rise and the
+mirror fall off one base averaged 5.6e-17 — a positive mean the support floor graded — and a
+rolling mean of such changes read ``> 0`` where exact arithmetic reads 0. :func:`pct_change` forms
+``(num − den) / den``: the difference is exact wherever ``den/2 ≤ num ≤ 2·den`` (Sterbenz — every
+move from −50% to +100%), so there the change is the correctly rounded quotient (``(110 − 100) /
+100`` is the double 0.1 and ``(90 − 100) / 100`` its negation, so the pair cancels exactly);
+beyond it, two roundings of RELATIVE size. On positive levels the difference cannot overflow, and
+the quotient leaves the double range exactly as the ratio did (an underflow still reads −1.0).
+
 Positive finite levels are the CALLERS' gate (both ratio algebras are positive-domain, and each
-caller already refuses or masks a non-positive endpoint); on them the fallback is always finite.
+caller already refuses or masks a non-positive endpoint); on them the log ratio is always finite,
+and the percent change wherever its quotient is.
 """
 
 from __future__ import annotations
@@ -93,4 +106,17 @@ def log_ratio_array(
         if past.any():
             r[past] = np.log(hi[past]) - np.log(lo[past])
     out: npt.NDArray[np.float64] = np.where(down, -r, r)
+    return out
+
+
+def pct_change(num: npt.ArrayLike, den: npt.ArrayLike) -> npt.NDArray[np.float64]:
+    """The percent change ``num/den − 1`` as ``(num − den) / den`` (the module note says why),
+    elementwise under numpy broadcasting — scalar operands included, whose result is a 0-d
+    array. Never warns: an element off the positive domain, or a quotient past the double range,
+    comes back as whatever IEEE arithmetic makes of it, for the caller's own positivity and
+    finiteness masks to discard."""
+    n = np.asarray(num, dtype=np.float64)
+    d = np.asarray(den, dtype=np.float64)
+    with np.errstate(divide="ignore", over="ignore", invalid="ignore"):
+        out: npt.NDArray[np.float64] = np.asarray((n - d) / d)
     return out

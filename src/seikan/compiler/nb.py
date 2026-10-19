@@ -41,7 +41,7 @@ from numba import njit
 from numpy.lib.stride_tricks import sliding_window_view
 
 from seikan.constants import MAX_BAR_COUNT_PARAM, MIN_EW_ALPHA
-from seikan.numeric import MIN_NORMAL, log_ratio_array
+from seikan.numeric import MIN_NORMAL, log_ratio_array, pct_change
 
 # =============================================================================
 # Vectorized numpy kernels (windowed + elementwise) — no Python time-loop.
@@ -436,7 +436,9 @@ def expanding_agg_apply_nb(arr: npt.NDArray[np.float64], agg: str) -> npt.NDArra
 def drawdown_apply_nb(
     arr: npt.NDArray[np.float64], window: int | None = None
 ) -> npt.NDArray[np.float64]:
-    """Fractional depth below peak: ``x / peak − 1`` (≤ 0) — defined on a POSITIVE scale only.
+    """Fractional depth below peak: ``(x − peak) / peak`` (≤ 0) — defined on a POSITIVE scale
+    only; the percent change :func:`seikan.numeric.pct_change`, so 80 under a peak of 100 is
+    exactly −0.2 (``x / peak − 1`` read −0.19999999999999996).
 
     ``window is None`` → expanding (all-time) peak; otherwise trailing ``window``-bar peak (same
     finite-window gate as ``rolling_agg`` max). Peak ≤ 0 / non-finite → NaN: the ratio is
@@ -450,21 +452,20 @@ def drawdown_apply_nb(
         if window is None
         else rolling_agg_apply_nb(a, window, "max")
     )
-    with np.errstate(all="ignore"):
-        dd = a / peak - 1.0
+    dd = pct_change(a, peak)
     return np.where(np.isfinite(a) & np.isfinite(peak) & (peak > 0.0) & np.isfinite(dd), dd, np.nan)
 
 
 def runup_apply_nb(
     arr: npt.NDArray[np.float64], window: int | None = None
 ) -> npt.NDArray[np.float64]:
-    """Fractional height above trough: ``x / trough − 1`` (≥ 0) — the mirror of ``drawdown``,
-    defined on a POSITIVE scale only.
+    """Fractional height above trough: ``(x − trough) / trough`` (≥ 0) — the mirror of
+    ``drawdown``, the same percent change, defined on a POSITIVE scale only.
 
     ``window is None`` → expanding (all-time) trough; otherwise trailing ``window``-bar trough
     (same finite-window gate as ``rolling_agg`` min). Trough ≤ 0 / non-finite → NaN — the same
     positive-scale domain as ``drawdown``, and with ``trough > 0`` the documented ``≥ 0`` bound
-    holds everywhere emitted (the running min is ≤ x, so x/trough ≥ 1).
+    holds everywhere emitted (the running min is ≤ x, so x − trough ≥ 0).
     """
     a = np.asarray(arr, dtype=float)
     trough = (
@@ -472,8 +473,7 @@ def runup_apply_nb(
         if window is None
         else rolling_agg_apply_nb(a, window, "min")
     )
-    with np.errstate(all="ignore"):
-        ru = a / trough - 1.0
+    ru = pct_change(a, trough)
     return np.where(
         np.isfinite(a) & np.isfinite(trough) & (trough > 0.0) & np.isfinite(ru), ru, np.nan
     )
@@ -596,18 +596,20 @@ def rolling_corr_apply_nb(
 def change_apply_nb(
     arr: npt.NDArray[np.float64], periods: int, kind: str = "pct"
 ) -> npt.NDArray[np.float64]:
-    """k-period change: ``pct`` = (cur/prev − 1), ``log`` = ln(cur/prev), ``diff`` = cur − prev.
+    """k-period change: ``pct`` = (cur − prev)/prev, ``log`` = ln(cur/prev), ``diff`` = cur − prev.
 
     Per-kind NaN guards: ``pct`` and ``log`` require BOTH endpoints strictly positive — they are
     ratio algebras, meaningless off a positive scale, and neither fails loudly there (a percent
     change through zero or between negative levels returns a finite number with an INVERTED sign:
     −4 → −2 reads as −50% while the level rose) — the same rule the runner's forward-outcome
     measurement applies; signed levels belong to ``diff``, which only needs both bars finite
-    (0 is a valid level base). ``log`` is the scale-safe, signed
-    :func:`seikan.numeric.log_ratio_array` — the runner's outcome rule too — so a quotient past
-    the double range (1e200 → 1e-200) still reads its finite log (−921.03…) instead of an
-    undecidable NaN, and a move's reverse reads its exact negation (a two-bar mean of the log
-    changes of 100 → 110 → 100 is exactly 0); a ``pct`` or ``diff`` past the range has no
+    (0 is a valid level base). ``pct`` is :func:`seikan.numeric.pct_change` and ``log`` the
+    scale-safe, signed :func:`seikan.numeric.log_ratio_array` — the runner's outcome rules too —
+    so a rise and the mirror fall off one base cancel exactly (a two-bar mean of the pct changes
+    of 100 → 110 and 100 → 90 is exactly 0, where ``cur/prev − 1`` read 5.6e-17), a log quotient
+    past the double range (1e200 → 1e-200) still reads its finite log (−921.03…) instead of an
+    undecidable NaN, and a log change's reverse reads its exact negation (a two-bar mean of the
+    log changes of 100 → 110 → 100 is exactly 0); a ``pct`` or ``diff`` past the range has no
     representable value and stays NaN.
     """
     a = np.asarray(arr, dtype=float)
@@ -620,7 +622,7 @@ def change_apply_nb(
     with np.errstate(all="ignore"):
         if kind == "pct":
             valid = finite & (prev > 0.0) & (cur > 0.0)
-            r = cur / prev - 1.0
+            r = pct_change(cur, prev)
         elif kind == "log":
             valid = finite & (prev > 0.0) & (cur > 0.0)
             r = log_ratio_array(cur, prev)

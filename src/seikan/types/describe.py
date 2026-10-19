@@ -30,7 +30,7 @@ type BlockReason = Literal["insufficient_bars", "endpoint_missing", "not_represe
 
 #: Why a block's ratio reads refused while ``diff`` lives: a non-positive endpoint (the
 #: positivity rule — a ratio through zero mints a garbage sign), or a ``pct`` read whose ratio
-#: left the double range (``b/a − 1`` overflowing — for a dispersion std, any one 1-bar ratio,
+#: left the double range (``(b − a)/a`` overflowing — for a dispersion std, any one 1-bar ratio,
 #: its squared deviations past the range being rescaled, never refused; ``log`` is scale-safe and
 #: never refuses on it).
 type RatioReason = Literal["non_positive_endpoint", "not_representable"]

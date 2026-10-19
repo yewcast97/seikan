@@ -422,7 +422,7 @@ def test_dispersion_pct_std_keeps_its_value_where_its_squares_leave_the_range(tm
     walk = 100.0 * np.exp(np.cumsum(np.random.RandomState(5).normal(0.0, 0.02, 300)))
     for w in (2, 5, 21, 63, 252):
         tail = walk[-(w + 1) :]
-        want = _offset_std(tail[1:] / tail[:-1] - 1.0)
+        want = _offset_std((tail[1:] - tail[:-1]) / tail[:-1])
         assert _dispersion_block(walk, w)["pct"] == want, w
     # end to end: computed, never refused, while every 1-bar ratio is a double — the alternating
     # file's pct changes are 1e200 and −1, a std of (1e200 + 1)/√3
@@ -612,6 +612,21 @@ def test_ordinary_log_reads_are_the_signed_direct_form_bit_for_bit(tmp_path, cap
         assert std == _offset_std(np.where(up >= dn, np.log(up / dn), -np.log(dn / up)))
         n_dispersion_moves += std != _offset_std(np.log(tail[1:]) - np.log(tail[:-1]))
     assert n_change_moves > 0 and n_dispersion_moves > 0
+
+
+def test_pct_reads_are_the_difference_over_the_base(tmp_path, capsys):
+    # The run's pct rule, (b − a)/a: 100 → 110 reads the double 0.1 and 100 → 90 its negation
+    # in every pct read — a change, a range distance, a drawdown or run-up — where b/a − 1
+    # rounded the quotient at 1's ulp first, 0.10000000000000009 and −0.09999999999999998.
+    assert 110.0 / 100.0 - 1.0 != 0.1 and 90.0 / 100.0 - 1.0 != -0.1  # the premise
+    y = _write_series(tmp_path / "y.csv", [(100.0, 100.0), (110.0, 90.0)], columns=("up", "dn"))
+    code, doc = _run(capsys, ["describe", str(y), "--windows", "1,2"])
+    assert code == 0
+    up, dn = (_series_profile(doc, column=c) for c in ("up", "dn"))
+    assert up["changes"]["1"]["pct"] == up["range_position"]["2"]["from_low"]["pct"] == 0.1
+    assert up["full_sample"]["runup_pct"] == 0.1
+    assert dn["changes"]["1"]["pct"] == dn["range_position"]["2"]["from_high"]["pct"] == -0.1
+    assert dn["full_sample"]["drawdown_pct"] == -0.1
 
 
 def test_volume_block_hand_computed_and_absent_without_volume(tmp_path, capsys):

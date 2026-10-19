@@ -2671,9 +2671,9 @@ def test_mae_and_mfe_behind_a_hole_read_their_own_window(tmp_path):
     # …nor forwards: a window that starts AFTER the hole reads its own extremum. The reviewer's
     # fixture: lows [1, 95, NaN, 10, 90, 99, 95, 100] with highs mirroring them, a firing on
     # bar 2 filled at open[3] = 100, horizon 4 — the path is bars 3..6 plus the exit print
-    # open[7] = 100, so MAE = 10/100 − 1 and MFE = 190/100 − 1. scipy's filters carried the
-    # NaN's state past its window and read 90 and 110 (−0.10 / +0.10) beside a trough index
-    # pointing at the low of 10.
+    # open[7] = 100, so MAE = (10 − 100)/100 = −0.9 and MFE = (190 − 100)/100 = 0.9. scipy's
+    # filters carried the NaN's state past its window and read 90 and 110 (−0.10 / +0.10) beside
+    # a trough index pointing at the low of 10.
     nan = float("nan")
     lows = [1, 95, nan, 10, 90, 99, 95, 100]
     highs = [199, 105, nan, 190, 110, 101, 105, 100]
@@ -2682,8 +2682,8 @@ def test_mae_and_mfe_behind_a_hole_read_their_own_window(tmp_path):
     tr = _ohlc_obs(tmp_path / "mae_behind.csv", rows, _lt(100.0), horizon=4)
     closed = tr[~tr["is_open"]]
     assert len(closed) == 1
-    assert closed.iloc[0]["mae"] == 10.0 / 100.0 - 1.0
-    assert closed.iloc[0]["mfe"] == 190.0 / 100.0 - 1.0
+    assert closed.iloc[0]["mae"] == -0.9
+    assert closed.iloc[0]["mfe"] == 0.9
     assert closed.iloc[0]["bars_to_trough"] == 0.0
 
 
@@ -3491,6 +3491,50 @@ def test_log_outcome_of_a_closed_price_cycle_reads_exactly_zero(tmp_path):
     change = {"type": "change", "input": {"type": "field", "column": "close"}, "kind": "log"}
     smoothed = {"type": "rolling_agg", "input": change, "window": 2, "agg": "mean"}
     assert run(_gt0(smoothed)).summary["cells"][0]["by_target"]["target"]["n"] == 0
+
+
+def test_pct_outcome_of_a_rise_and_the_equal_fall_reads_exactly_zero(tmp_path):
+    """The review's paths: 360 bars cycling [50, 100, 110, 50, 100, 90], entries at 50, h = 1 —
+    60 closed returns of 100 → 110 and 60 of 100 → 90, exactly 0 in sum. Read as b/a − 1, each
+    quotient rounded at 1's ulp first, the two read 0.10000000000000009 and −0.09999999999999998:
+    mean_ret 5.6e-17, and the cell met its support floor. On [100, 100, 110, 90] the decision
+    side read the same rule: `close == 90 AND rolling_mean(change(close, 2, pct), 2) > 0` — a mean
+    of exactly 0 — fired 30 times."""
+    from seikan.gate import GateThresholds, evaluate_gate
+
+    assert (110.0 / 100.0 - 1.0) + (90.0 / 100.0 - 1.0) > 0.0  # the premise
+
+    def run(closes, entry):
+        path = _series_bars(tmp_path / "y.csv", closes)
+        thesis = Thesis.model_validate(
+            {
+                "name": "mirror",
+                "data": {"targets": ["target"]},
+                "entry": entry,
+                "params": {"horizon": 1},
+            }
+        )
+        return run_backtest(thesis, load(thesis, {"target": path})).summary
+
+    def at(level):
+        return {
+            "type": "threshold",
+            "left": {"type": "field", "column": "close"},
+            "op": "==",
+            "right": {"type": "constant", "value": level},
+        }
+
+    summary = run([50.0, 100.0, 110.0, 50.0, 100.0, 90.0] * 60, at(50.0))
+    panel = summary["cells"][0]["by_target"]["target"]
+    assert panel["n"] == 120 and panel["mean_ret"] == 0.0
+    checks = evaluate_gate(summary, GateThresholds()).cells[0].checks
+    assert next(c for c in checks if c.name == "support").met is False
+    close = {"type": "field", "column": "close"}
+    change = {"type": "change", "input": close, "periods": 2, "kind": "pct"}
+    smoothed = {"type": "rolling_agg", "input": change, "window": 2, "agg": "mean"}
+    entry = {"type": "and", "conditions": [at(90.0), _gt0(smoothed)]}
+    summary = run([100.0, 100.0, 110.0, 90.0] * 30, entry)
+    assert summary["cells"][0]["by_target"]["target"]["n"] == 0
 
 
 def test_diff_conjunction_withholds_the_cross_target_value_reads(tmp_path):
@@ -4770,10 +4814,12 @@ def _walk_prices(n=240):
 
 def _pct_legs(prices, order, h, off=1):
     """The (bars × members) signed pct legs the runner measures at each firing bar t —
-    ``open[t + off + h] / open[t + off] − 1``, NaN past the end — members in ``order``."""
+    ``(open[t + off + h] − open[t + off]) / open[t + off]``, NaN past the end — members in
+    ``order``."""
     px = np.stack([np.asarray(prices[m], dtype=float) for m in order], axis=1)
     legs = np.full(px.shape, np.nan)
-    legs[: px.shape[0] - off - h] = px[off + h :] / px[off : px.shape[0] - h] - 1.0
+    base = px[off : px.shape[0] - h]
+    legs[: px.shape[0] - off - h] = (px[off + h :] - base) / base
     return legs
 
 
@@ -5328,9 +5374,9 @@ def test_cross_mean_swept_horizons_each_mount_their_own_pooled_mean(tmp_path):
     assert per_order[0] == per_order[1]
 
 
-def test_market_basket_pooled_mean_is_the_plain_pool_mean(tmp_path):
+def test_market_basket_pooled_mean_is_the_mean_of_its_rows(tmp_path):
     # The raw-leg route is for cross_mean only: a market-benchmarked basket's pooled mean is the
-    # plain mean of its closed rows, bit for bit.
+    # exactly rounded mean of its closed rows, bit for bit (`np.mean` agrees only to rounding).
     n = 100
     idx = pd.date_range("2021-01-01", periods=n, freq="1D")
     rng = np.random.RandomState(22)
@@ -5348,8 +5394,10 @@ def test_market_basket_pooled_mean_is_the_plain_pool_mean(tmp_path):
         }
     )
     res = run_backtest(thesis, load(thesis, files))
-    for got, plain in _cm_closed_means(res):
-        assert got == plain
+    closed = res.trades[~res.trades["is_open"]]
+    for cell in res.summary["cells"]:
+        rows = closed[closed["horizon"] == cell["params"]["horizon"]]["ret"].to_numpy(float)
+        assert cell["pooled"]["mean_ret"] == exact_mean(rows)
 
 
 def test_cross_mean_full_basket_with_a_holed_member_is_exactly_zero(tmp_path):

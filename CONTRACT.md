@@ -867,7 +867,15 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   overflows on every bar is warmup throughout, whatever its input. The ratio transforms
   (`change(kind="pct")`, `drawdown`, `runup`) are POSITIVE-domain like the pct/log outcome
   algebras: off a positive scale they invert silently, so a non-positive base censors as NaN
-  instead of minting a sign-flipped number. Signed series belong to `diff`. The LOG ratio is
+  instead of minting a sign-flipped number. Signed series belong to `diff`. The PERCENT change is
+  one rule for `change(kind="pct")`, `drawdown`, `runup`, the `pct` outcome (benchmark leg,
+  `pre_ret`, excursions included) and `describe`'s `pct` reads (`seikan.numeric.pct_change`): the
+  difference over its base, `(b − a)/a`, correctly rounded wherever the difference is exact
+  (`a/2 ≤ b ≤ 2a`, every move from −50% to +100%), so 100 → 110 is the double 0.1 and 100 → 90
+  its negation, and a rise and the equal fall off one base cancel exactly. Read as `b/a − 1`, the
+  quotient rounded at the ulp of 1 first, the two read 0.10000000000000009 and
+  −0.09999999999999998, and entries alternating them measured a `mean_ret` of 5.6e-17 that met the
+  support floor. The LOG ratio is
   scale-safe, one rule for `change(kind="log")`, the `log` outcome (benchmark leg, `pre_ret`,
   excursions included) and `describe`'s `log` reads (`seikan.numeric`). It is SIGNED: `ln(hi/lo)`
   of the larger level over the smaller, negated where the level fell, so `ln(a/b)` is `−ln(b/a)`

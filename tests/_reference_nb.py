@@ -305,7 +305,7 @@ def runup(arr: np.ndarray, window: int | None = None) -> np.ndarray:
         v, t = arr[i], trough[i]
         if np.isnan(v) or np.isnan(t) or t <= 0.0:
             continue
-        r = v / t - 1.0
+        r = (v - t) / t
         if np.isfinite(r):
             out[i] = r
     return out
@@ -379,10 +379,11 @@ def change(arr: np.ndarray, periods: int, kind: str = "pct") -> np.ndarray:
             continue
         if kind == "pct":
             # Positive-domain like `log` (and the runner's outcome guard): a ratio between
-            # non-positive levels returns a finite number with an inverted sign.
+            # non-positive levels returns a finite number with an inverted sign. The difference
+            # over its base, never cur/prev − 1, which rounds the quotient at 1's ulp first.
             if prev <= 0.0 or cur <= 0.0:
                 continue
-            r = cur / prev - 1.0
+            r = (cur - prev) / prev
             if np.isfinite(r):
                 out[i] = r
         elif kind == "log":
@@ -612,7 +613,7 @@ def drawdown(arr: np.ndarray, window: int | None) -> np.ndarray:
         v, p = arr[i], peak[i]
         if np.isnan(v) or np.isnan(p) or p <= 0.0:
             continue
-        r = v / p - 1.0
+        r = (v - p) / p
         if np.isfinite(r):
             out[i] = r
     return out
