@@ -809,8 +809,8 @@ def test_describe_shares_the_log_ratio_rule_through_a_leaf_never_the_engine():
 
 def test_the_normal_range_edge_has_one_definition():
     # The smallest normal double decides every out-of-range rule — the log ratio's quotient, the
-    # kernels' variance tests, the pool statistics', CSCV's split moments, describe's std — and it
-    # is DEFINED once, in the leaf: each layer reads the same object, so no copy can drift.
+    # kernels' variance tests, the pool statistics', CSCV's split variances, describe's std — and
+    # it is DEFINED once, in the leaf: each layer reads the same object, so no copy can drift.
     import sys
 
     import seikan.describe
@@ -819,8 +819,9 @@ def test_the_normal_range_edge_has_one_definition():
     from seikan.compiler import nb
 
     assert seikan.numeric.MIN_NORMAL == sys.float_info.min == 2.0**-1022
-    for module in (nb, _pools, _cscv, seikan.describe):
+    for module in (nb, _pools, seikan.describe):
         assert module.MIN_NORMAL is seikan.numeric.MIN_NORMAL, module.__name__
+    assert _cscv._normal is _pools._normal  # CSCV reads the pools' rule
     src = Path(seikan.numeric.__file__).parent
     defining = sorted(
         str(p.relative_to(src))

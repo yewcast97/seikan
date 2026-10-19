@@ -4,22 +4,23 @@ over the declared grid."""
 from __future__ import annotations
 
 import math
-from collections.abc import Container, Mapping
+from collections.abc import Container, Mapping, Sequence
 from itertools import combinations
 from typing import NamedTuple, cast
 
 import numpy as np
 
 from seikan.analysis._pools import (
+    _EPS,
     _NEAR_CONSTANT_ULPS,
     BarNumerators,
+    _fsum,
     _near_constant,
     _normal,
     exact_mean,
-    exact_sum,
+    integer_terms,
     parts_table,
 )
-from seikan.numeric import MIN_NORMAL
 from seikan.types import (
     CellKey,
     DegradationSlopeReason,
@@ -42,19 +43,23 @@ _PBO_BLOCK_FALLBACKS = (6, 4)
 
 
 class _Column(NamedTuple):
-    """One scored column's per-block accumulators over its kept rows: ``moments`` (3, S) — the
-    row counts, the exact block sums of the rows' shifts from the block's own offset
-    (:func:`_offsets`, off its extrema), and the exact block sums of those shifts' squared
-    deviations from their block's mean (each block's centered second moment) — ``extrema`` (2, S)
-    the per-block ``(min, max)`` (``+inf`` / ``-inf`` on an empty block: a split's pool is EXACTLY
-    constant iff its chosen blocks' min equals their max), and ``sums`` (S, J) each block's exact
-    row sum times ``scale``, as exact parts (``_pools.parts_table``). Reducing them over a split's
-    blocks makes its score a pure arithmetic reduction (:func:`_split_scores`)."""
+    """One scored column's per-block reads over its kept rows, one entry per block: ``counts``
+    the row counts; ``lo`` / ``hi`` the extrema (``+inf`` / ``-inf`` on an empty block: a split's
+    pool is EXACTLY constant iff its chosen blocks' min equals their max); ``sums`` each block's
+    exact row sum times ``scale``, as exact parts (``_pools.parts_table``); and ``first`` /
+    ``second`` the rows' moments as EXACT integers — every return ``P / den`` over the column's
+    one power-of-two denominator (``_pools.integer_terms``), ``first[g] = ΣP`` and ``second[g]
+    = ΣP²`` over block ``g``'s rows. A split's score is a pure arithmetic reduction of its blocks'
+    entries (:func:`_split_score`)."""
 
-    moments: np.ndarray
-    extrema: np.ndarray
-    sums: np.ndarray
+    counts: list[int]
+    lo: list[float]
+    hi: list[float]
+    sums: list[list[float]]
     scale: int
+    first: list[int]
+    second: list[int]
+    den: int
 
 
 def _kept_rows(cell: ReliabilityCell, edges: np.ndarray, off: int) -> tuple[np.ndarray, np.ndarray]:
@@ -68,86 +73,55 @@ def _kept_rows(cell: ReliabilityCell, edges: np.ndarray, off: int) -> tuple[np.n
     return t[keep], b[keep]
 
 
-def _offsets(lo: np.ndarray, hi: np.ndarray) -> np.ndarray:
-    """Each pool's offset — the midpoint of its range ``(lo, hi)``, the rule of
-    :func:`~seikan.numeric.midrange` over arrays (the centre the pools' ddof=1 std and the kernels'
-    cross-sections take): a value's deviation from it is exact wherever the pool lies within a
-    factor of two of it. NaN on an empty block's ``(+inf, −inf)``."""
-    out: np.ndarray = hi / 2.0 + lo / 2.0
-    return out
-
-
 def _column(b: np.ndarray, r: np.ndarray, parts: np.ndarray, scale: int, s: int) -> _Column:
     """The :class:`_Column` over rows in blocks ``b`` with returns ``r``, whose rows of exact
     ``parts`` sum to ``scale`` times the rows' sum: each row's own return over 1, or on a
     ``cross_mean`` grid the rows' bar numerators over the member count
-    (``_pools.BarNumerators.at``). The second moments are two-pass about each BLOCK's own offset
-    (:func:`_offsets`) — the block's shifts are exact wherever it lies within a factor of two of
-    it, then each block's shifts about their own mean — and :func:`_split_scores` merges the
-    blocks in the split's own frame, so a block keeps its spread whatever level the column's
-    other blocks sit at. Shifted by the whole COLUMN's mean instead, a block far below the
-    column's level lost its spread to that mean's ulp: one alternating 0 and 2**-56 beside blocks
-    at 1 read every shift as −0.55, a variance of 0 and a split Sharpe of NaN where it is √(19/20),
-    and two of a grid's 70 splits went unscored. A shift, a deviation or a square past the double
-    range is no input to a score: :func:`_split_scores` nulls every split it reaches
-    (``_representable``), so it overflows silently here."""
-    n = np.bincount(b, minlength=s).astype(float)
+    (``_pools.BarNumerators.at``). Every read is exact — integers, exact parts, extrema — so a
+    column's blocks carry the same entries whatever order their rows come in."""
     lo = np.full(s, np.inf)
     hi = np.full(s, -np.inf)
     np.minimum.at(lo, b, r)
     np.maximum.at(hi, b, r)
-    with np.errstate(over="ignore", invalid="ignore"):
-        shift = r - _offsets(lo, hi)[b]
-        s1 = _block_sums(b, shift, s)
-        dev = shift - (s1 / np.maximum(n, 1.0))[b]
-        m2 = _block_sums(b, dev * dev, s)
+    nums, den = integer_terms(r.tolist())
+    first, second = [0] * s, [0] * s
+    for g, p in zip(b.tolist(), nums, strict=True):
+        first[g] += p
+        second[g] += p * p
     return _Column(
-        np.stack((n, s1, m2)),
-        np.stack((lo, hi)),
-        parts_table([parts[b == g].ravel().tolist() for g in range(s)]),
+        np.bincount(b, minlength=s).tolist(),
+        lo.tolist(),
+        hi.tolist(),
+        parts_table([parts[b == g].ravel().tolist() for g in range(s)]).tolist(),
         scale,
+        first,
+        second,
+        den,
     )
 
 
-def _block_sums(b: np.ndarray, w: np.ndarray, s: int) -> np.ndarray:
-    """``(s,)``: each block's EXACTLY ROUNDED sum of the values ``w`` in it (``b`` is each value's
-    block; 0.0 on an empty block) — one double whatever order the block's rows come in. A running
-    sum (``np.bincount``'s weights) rounded in row order: two candidates holding the same returns
-    in every block, in other orders, scored apart by their last bits, and every split between them
-    — a tie in exact arithmetic — read a winner and a loser (``pbo`` 0.571 for 0)."""
-    return np.array([exact_sum(w[b == g]) for g in range(s)])
-
-
-def _disperses(lo: np.ndarray, hi: np.ndarray, mean: np.ndarray, eps: float) -> np.ndarray:
+def _disperses(lo: float, hi: float, mean: float) -> bool:
     """A pool with extrema ``(lo, hi)`` and mean ``mean`` has usable dispersion: it is not exactly
-    constant (``hi > lo``; an empty pool's ``(+inf, -inf)`` is not either) and its largest
-    deviation from the mean exceeds ``_NEAR_CONSTANT_ULPS`` ulps of the mean's magnitude."""
-    with np.errstate(invalid="ignore"):
-        spread = np.maximum(hi - mean, mean - lo)
-        ok: np.ndarray = (hi > lo) & ~(spread < _NEAR_CONSTANT_ULPS * eps * np.abs(mean))
-    return ok
+    constant (``hi > lo``) and its largest deviation from the mean exceeds
+    ``_NEAR_CONSTANT_ULPS`` ulps of the mean's magnitude."""
+    return hi > lo and not max(hi - mean, mean - lo) < _NEAR_CONSTANT_ULPS * _EPS * abs(mean)
 
 
-def _representable(mean: np.ndarray, var: np.ndarray) -> np.ndarray:
-    """The split's ``mean`` is finite and its ``var`` a positive NORMAL double (the
-    ``_pools._normal`` rule) — the Sharpe ``mean / sd`` is read off representable moments only
-    (see :func:`_split_scores`)."""
-    ok: np.ndarray = np.isfinite(mean) & (var >= MIN_NORMAL) & (var < np.inf)
-    return ok
+def _split_variance(col: _Column, blocks: Sequence[int], n: int) -> float:
+    """The ddof=1 variance of the ``n`` rows in ``col``'s ``blocks``, EXACT and rounded once:
+    ``(n·ΣP² − (ΣP)²) / (den²·n·(n − 1))`` over the blocks' integer moments (:class:`_Column`),
+    one quotient of integers, correctly rounded by Python's true division — ``inf`` where it
+    leaves the double range (its ``OverflowError``)."""
+    s1 = sum(col.first[g] for g in blocks)
+    s2 = sum(col.second[g] for g in blocks)
+    try:
+        return (n * s2 - s1 * s1) / (col.den * col.den * n * (n - 1))
+    except OverflowError:
+        return math.inf
 
 
-def _split_scores(
-    moments: np.ndarray,
-    extrema: np.ndarray,
-    sums: np.ndarray,
-    scales: np.ndarray,
-    block_idx: np.ndarray,
-) -> np.ndarray:
-    """Per-candidate split score over the chosen blocks — the per-observation Sharpe of each of
-    the candidate's scored columns (:class:`_Column`), the weakest of them: under conjunction a
-    column per target (the weakest-target score its caller selects on), under basket ONE column,
-    the members' kept rows pooled (:func:`cscv_pbo`). ``moments`` (Q, C, 3, S), ``extrema``
-    (Q, C, 2, S), ``sums`` (Q, C, S, J) and ``scales`` (Q, C) stack the columns' fields.
+def _split_score(col: _Column, blocks: Sequence[int]) -> float:
+    """The per-observation Sharpe of ``col``'s rows in the chosen ``blocks``, or NaN.
 
     A split's MEAN is its rows' EXACTLY ROUNDED sum — one ``math.fsum`` over its blocks' exact
     parts, over ``scale`` times its row count — so it has the exact sum's sign and is 0.0
@@ -163,53 +137,48 @@ def _split_scores(
     rows ranked in the order the targets were declared: on a grid of all-full candidates every
     split mean is exactly 0.0 and every scoreable candidate ties.
 
-    A split's VARIANCE merges its blocks' centered moments, ``Σ m2_b + Σ n_b·(m_b − m)²`` — each
-    block's squared deviations about its own mean, then each block mean's about the split's —
-    every term a square, so nothing cancels at any level: the raw ``Σx² − n·mean²`` form read a
-    diff outcome at level 1e9 as pure rounding noise, and its column-shifted twin refused as
-    residue every split inside one regime of a column at ±0.01 with a 1e-9 spread. The block
-    means are placed in the split's OWN frame — each block's offset (its range midpoint,
-    :func:`_offsets`) less the split's, exact wherever the split lies within a factor of two of
-    its midpoint, plus the block's mean shift — never in the column's: shifted by the column's
-    mean, a block at 2**-56 beside blocks at 1 read its every shift as that mean's ulp, a variance
-    of 0 and NaN for √(19/20), and a grid scored 68 of its 70 splits. The second moments read the
-    rows' own returns — a row's excess is its own, only its bar's SUM is exact — so the Sharpe is
-    the exact mean over the rows' sd.
+    A split's VARIANCE is exact arithmetic's, rounded once (:func:`_split_variance`): its blocks'
+    integer moments merge exactly, so it is a function of the split's exact count, sum and sum of
+    squares alone — at any level, in any row order, whatever the held-out blocks hold. Merged
+    from the blocks' centered moments, ``Σ m2_b + Σ n_b·(m_b − m)²``, every row's squared
+    deviation was rounded on its own: two candidates holding ``α·[10, 13, 13, 16]`` and
+    ``α·[11, 11, 14, 16]`` in every block — the same count, sum and sum of squares, so the same
+    Sharpe on every split — scored apart in their last bits (16 of one grid's 70 splits), and 99
+    of 100 such grids read a nonzero ``pbo`` (up to 0.214) where every split is a full tie. The
+    second moments read the rows' own returns — a row's excess is its own, only its bar's SUM is
+    exact — so the Sharpe is the exact mean over the rows' sd.
 
     A split pool with no usable dispersion scores NaN: one whose chosen blocks' min equals their
     max is EXACTLY constant, and one whose largest deviation from its mean is within
     ``_NEAR_CONSTANT_ULPS`` ulps of the mean is constant to rounding — the gate the HAC applies to
     a cell's pool (``_pools._near_constant``), read here off the extrema, so it does not depend on
-    what the column's OTHER blocks hold. A split whose mean left the double range (or met a bar
-    whose sum did), or whose variance is not a normal double, scores NaN as well: ``mean / inf``
-    is a FINITE 0.0 Sharpe (block moments can each stay finite while their merge overflows), an
-    infinite mean would win every ranking, and a subnormal variance (returns under ~1e-154) has
-    lost the bits the Sharpe divides by.
+    what the column's OTHER blocks hold. A split of fewer than two rows scores NaN, and so does
+    one whose mean left the double range (or met a bar whose sum did) or whose variance is not a
+    normal double (``_pools._normal``): ``mean / inf`` is a FINITE 0.0 Sharpe, an infinite mean
+    would win every ranking, and a subnormal variance (returns under ~1e-154) holds fewer bits
+    than the Sharpe divides by.
     """
-    n_b, s1_b, m2_b = (moments[:, :, i][:, :, block_idx] for i in range(3))  # (Q, C, B) each
-    lo_b, hi_b = (extrema[:, :, i][:, :, block_idx] for i in range(2))  # (Q, C, B) each
-    lo_g, hi_g = lo_b.min(axis=2), hi_b.max(axis=2)  # (Q, C)
-    chosen = sums[:, :, block_idx].reshape(scales.size, -1)  # each column's chosen parts
-    total = np.array([exact_sum(v) for v in chosen]).reshape(scales.shape)
-    eps = float(np.finfo(np.float64).eps)
-    # Moments past the double range (returns past ~1e154 square out of it), an empty block's
-    # offset (inf − inf, masked below) and splits with fewer than two rows: `_representable` and
-    # the count gate decide every such split — an expected input, never a warning.
-    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
-        n_g = n_b.sum(axis=2)
-        mean = total / (scales * n_g)
-        # each block's mean in the split's own frame (see the docstring); 0 on an empty block
-        frame = _offsets(lo_b, hi_b) - _offsets(lo_g, hi_g)[:, :, None]
-        m_b = np.where(n_b > 0, frame + s1_b / np.maximum(n_b, 1.0), 0.0)
-        m = (n_b * m_b).sum(axis=2) / n_g
-        ss_g = m2_b.sum(axis=2) + (n_b * (m_b - m[:, :, None]) ** 2).sum(axis=2)
-        var_g = ss_g / (n_g - 1.0)
-        scoreable_g = (n_g >= 2) & _disperses(lo_g, hi_g, mean, eps) & _representable(mean, var_g)
-        sr = np.where(scoreable_g, mean / np.sqrt(var_g), np.nan)
+    n = sum(col.counts[g] for g in blocks)
+    if n < 2:
+        return _NAN
+    lo, hi = min(col.lo[g] for g in blocks), max(col.hi[g] for g in blocks)
+    mean = _fsum([p for g in blocks for p in col.sums[g]]) / (col.scale * n)
+    var = _split_variance(col, blocks, n)
+    if not (_disperses(lo, hi, mean) and math.isfinite(mean) and _normal(var)):
+        return _NAN
+    return mean / math.sqrt(var)
+
+
+def _split_scores(columns: list[list[_Column]], blocks: Sequence[int]) -> np.ndarray:
+    """(Q,): each candidate's score over the chosen ``blocks`` — the weakest of its scored
+    columns' Sharpes (:func:`_split_score`; NaN where any is): under conjunction a column per
+    target (the weakest-target score its caller selects on), under basket ONE column, the
+    members' kept rows pooled (:func:`cscv_pbo`)."""
+    scores = np.array([[_split_score(c, blocks) for c in cols] for cols in columns])
     # The weakest column's Sharpe, one value per combo — an axis-wise reduction, which
     # numpy's own signature can only type as `Any` (its element-wise overload returns a
     # scalar); the cast states the (Q,) array it is here.
-    return cast("np.ndarray", np.min(sr, axis=1))
+    return cast("np.ndarray", np.min(scores, axis=1))
 
 
 def _degradation_slope(
@@ -265,9 +234,9 @@ def cscv_pbo(
     < 0 flags inverse transfer; null with ``oos_degradation_slope_reason`` =
     "degenerate_train_scores" when the train scores carry no usable spread — see
     :func:`_degradation_slope`), and ``prob_oos_loss`` (fraction of splits whose winner scored
-    below zero on test). A split's mean is its rows' exactly rounded sum and its variance the
-    merge of its blocks' centered moments (:func:`_split_scores`), so a mean has its exact sign
-    and level-heavy return columns score instead of cancelling to zero variance. Grid-level
+    below zero on test). A split's mean is its rows' exactly rounded sum and its variance exact
+    arithmetic's, rounded once (:func:`_split_score`), so a mean has its exact sign and
+    level-heavy return columns score instead of cancelling to zero variance. Grid-level
     evidence — no cell's grade reads it.
 
     The population is ledgered, never assumed: ``n_combos <= n_combos_scoreable <=
@@ -285,9 +254,9 @@ def cscv_pbo(
     are MIDRANKS (ties share their average rank; a full tie is λ = 0 — a split that cannot
     distinguish candidates is not evidence of overfitting), and the training winner's tie-break
     is first-index / declaration order (``np.nanargmax``), deterministic by construction. A
-    column's block moments and sums are exact, the same doubles in any row order, so two
-    candidates holding the same returns in every block tie on every split — under basket however
-    the returns fall across members.
+    column's block moments and sums are exact, the same in any row order, so two candidates whose
+    rows have the same count, sum and sum of squares in every block tie on every split — under
+    basket however the returns fall across members.
 
     ``mode`` is the thesis's declared ``target_mode`` and sets the SPLIT SCORE — the score
     mirrors the statistic the caller of that mode selects on, because PBO describes the
@@ -444,13 +413,6 @@ def cscv_pbo(
             for combo, rows in rows_by_combo.items()
         ]
         n_combos = len(columns)
-        moments = np.array([[c.moments for c in cols] for cols in columns])  # (Q, C, 3, S)
-        extrema = np.array([[c.extrema for c in cols] for cols in columns])  # (Q, C, 2, S)
-        j = max(c.sums.shape[1] for cols in columns for c in cols)
-        sums = np.array(
-            [[np.pad(c.sums, ((0, 0), (0, j - c.sums.shape[1]))) for c in cols] for cols in columns]
-        )  # (Q, C, S, J)
-        scales = np.array([[c.scale for c in cols] for cols in columns])  # (Q, C)
 
         lambdas: list[float] = []
         pairs: list[tuple[float, float]] = []
@@ -464,13 +426,11 @@ def cscv_pbo(
         n_candidates_min = n_combos
         for train in combinations(range(s), s // 2):
             n_splits_attempted += 1
-            train_idx = np.asarray(train)
-            test_idx = np.setdiff1d(np.arange(s), train_idx)
-            tr = _split_scores(moments, extrema, sums, scales, train_idx)
+            tr = _split_scores(columns, train)
             if np.all(np.isnan(tr)):
                 continue
             bi = int(np.nanargmax(tr))
-            te = _split_scores(moments, extrema, sums, scales, test_idx)
+            te = _split_scores(columns, [g for g in range(s) if g not in train])
             te_best = te[bi]
             finite_te = te[~np.isnan(te)]
             if math.isnan(te_best) or finite_te.shape[0] < 2:

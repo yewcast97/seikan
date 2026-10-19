@@ -13,6 +13,7 @@ from seikan.analysis._pools import (
     _normal,
     exact_mean,
     exact_sum,
+    integer_terms,
 )
 
 _NAN = float("nan")
@@ -96,15 +97,14 @@ def _exact_deviation_sums(
     mean ``μ = Σ_g S_g / (scale·n)``, correctly rounded — ``S_g`` the sum of the group's
     ``values`` (``groups[i]`` is value ``i``'s group), ``k_g = counts[g]`` the rows it stands for
     and ``n`` their total. The values are read as integers over one power-of-two denominator
-    (every double is one, ``float.as_integer_ratio``), so ``(n·S_g − k_g·Σ S) / (scale·n·den)``
+    (:func:`~seikan.analysis._pools.integer_terms`), so ``(n·S_g − k_g·Σ S) / (scale·n·den)``
     is a quotient of integers, rounded once by Python's true division: 0.0 exactly where the
     group sits at the mean, and no row's deviation rounded before its group sums it. Raises
     ``OverflowError`` where a sum leaves the double range."""
-    ratios = [v.as_integer_ratio() for v in values]
-    den = max(q for _, q in ratios)
+    nums, den = integer_terms(values)
     sums = [0] * counts.shape[0]
-    for g, (p, q) in zip(groups.tolist(), ratios, strict=True):
-        sums[g] += p * (den // q)
+    for g, p in zip(groups.tolist(), nums, strict=True):
+        sums[g] += p
     total = sum(sums)
     n = int(counts.sum())
     return np.array(

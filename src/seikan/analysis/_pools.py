@@ -178,6 +178,19 @@ def exact_mean(v: np.ndarray, scale: int = 1) -> float:
     return _exact_quotient(v.ravel().tolist(), scale * n)
 
 
+def integer_terms(values: list[float]) -> tuple[list[int], int]:
+    """``(nums, den)``: each finite double ``values[i]`` as the integer ``nums[i]`` over ONE
+    power-of-two denominator ``den`` — ``float.as_integer_ratio`` reads every double as ``p/q``
+    with ``q`` a power of two, and ``den`` is the largest ``q`` (1 on no values). Sums, squares
+    and products of the values are then integer arithmetic, exact at any magnitude, and a
+    quotient of two such integers is correctly rounded by Python's true division, which raises
+    ``OverflowError`` past the double range — the exact moments the HAC's per-bar deviation sums
+    and CSCV's split variances read."""
+    ratios = [v.as_integer_ratio() for v in values]
+    den = max((q for _, q in ratios), default=1)
+    return [p * (den // q) for p, q in ratios], den
+
+
 #: The least mass no double holds — the largest double plus half its ulp, where an exact sum rounds
 #: to inf. A pool whose |return| mass reaches it has no shares (:func:`mass_share`).
 _PAST_DOUBLE = Fraction(sys.float_info.max) + Fraction(math.ulp(sys.float_info.max)) / 2

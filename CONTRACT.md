@@ -965,15 +965,20 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   split's mean is its rows' exactly rounded sum over their count, one `math.fsum` over its
   blocks' exact parts — rebuilt from the column's mean, an exact 0 read −2.6e-18 and two
   candidates cycling through ±0.3 read `pbo` 2/70 and `prob_oos_loss` 1/70 for 1/70 and 0 —
-  and its block moments are exactly rounded sums (each block's returns about its OWN range
-  midpoint — about the column's mean, a block alternating 0 and 2**-56 beside blocks at 1 read
-  every shift as that mean's ulp, a variance of 0 and NaN for a Sharpe of √(19/20), two of a
-  grid's 70 splits unscored — each block's deviations from the block's mean squared), the same
-  doubles in any row
-  order: two candidates holding the same returns in every block, in other orders, ranked apart
-  by row-order rounding (`pbo` 0.571 for a grid of full ties). A split's variance merges its
-  blocks' moments in the split's own frame, its range midpoint (`Σ m2_b + Σ n_b·(m_b − m)²`,
-  every term a square, ordinary arithmetic). The HAC's per-bar deviation
+  and its variance is exact arithmetic's, rounded once: the rows read as integers over one
+  power-of-two denominator, each block carrying its count and the exact sums of those integers
+  and of their squares, so a split's variance is one quotient of integers,
+  `(n·ΣP² − (ΣP)²) / (den²·n·(n − 1))` — the same double in any row order, at any level, and
+  whatever the held-out blocks hold. Merged from the blocks' centered moments, every row's
+  squared deviation rounded on its own, two candidates holding `α·[10, 13, 13, 16]` and
+  `α·[11, 11, 14, 16]` in every block — other returns with the same count, sum and sum of
+  squares, a full tie on every split — read a nonzero `pbo` on 99 of 100 such grids (up to
+  0.214); summed in row order before that, candidates holding the same returns in other orders
+  read `pbo` 0.571 for a grid of full ties, and about the column's mean a block alternating 0
+  and 2**-56 beside blocks at 1 read a variance of 0 and NaN for a Sharpe of √(19/20). A
+  variance past the double range scores NaN, and one that is a double scores however its rows'
+  squares overflow (returns at 2**518 read the unscaled grid's block, where the merge declined).
+  The HAC's per-bar deviation
   sums are exact about the pool's EXACT mean, each rounded once (the returns read as integers over
   one power-of-two denominator), so a bar at the mean reads 0 and a pool and its translate read
   one `hac_se`: rounded per row about the pool's range midpoint, three members alternating

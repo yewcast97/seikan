@@ -16,7 +16,7 @@ import pytest
 from scipy import stats as sps
 
 from seikan.analysis._conditioning import _bucket_monotonicity
-from seikan.analysis._cscv import _column, _degradation_slope, _split_scores
+from seikan.analysis._cscv import _column, _degradation_slope, _split_scores, _split_variance
 from seikan.analysis._hac import _bar_deviation_sums
 from seikan.analysis._pools import _near_constant
 from seikan.analysis._rotation import _fwd_ffts, _rotation_num_den, _tail_p
@@ -4127,11 +4127,9 @@ def test_cscv_constant_split_pool_is_never_ranked(mode, targets):
     assert out["n_candidates_min"] == 4
 
 
-def _split_tensors(r, b, s=4):
-    """One candidate × one member, stacked the way ``cscv_pbo`` stacks them for
-    ``_split_scores``: the column's moments, extrema, exact block sums and scale."""
-    c = _column(b, r, r[:, None], 1, s)
-    return c.moments[None, None], c.extrema[None, None], c.sums[None, None], np.array([[c.scale]])
+def _split_columns(r, b, s=4):
+    """One candidate × one member, the way ``cscv_pbo`` hands them to ``_split_scores``."""
+    return [[_column(b, r, r[:, None], 1, s)]]
 
 
 def test_cscv_split_score_reads_exact_constancy_per_split():
@@ -4142,10 +4140,10 @@ def test_cscv_split_score_reads_exact_constancy_per_split():
     # two levels varies and scores.
     r = np.array([0.1] * 5 + [0.3] * 5)
     b = np.array([0, 0, 1, 1, 1, 2, 2, 3, 3, 3])
-    tensors = _split_tensors(r, b)
+    columns = _split_columns(r, b)
     for blocks in ([0, 1], [2, 3]):
-        assert np.isnan(_split_scores(*tensors, np.array(blocks))).all()
-    assert np.isfinite(_split_scores(*tensors, np.array([0, 2]))).all()
+        assert np.isnan(_split_scores(columns, np.array(blocks))).all()
+    assert np.isfinite(_split_scores(columns, np.array([0, 2]))).all()
 
 
 def test_cscv_split_score_nulls_dispersion_below_rounding():
@@ -4155,28 +4153,27 @@ def test_cscv_split_score_nulls_dispersion_below_rounding():
     r = np.array([0.005] * 5 + [0.022] * 5)
     r[1] = np.nextafter(0.005, 1.0)
     b = np.array([0, 0, 1, 1, 1, 2, 2, 3, 3, 3])
-    tensors = _split_tensors(r, b)
-    assert np.isnan(_split_scores(*tensors, np.array([0, 1]))).all()
-    assert np.isfinite(_split_scores(*tensors, np.array([0, 2]))).all()
+    columns = _split_columns(r, b)
+    assert np.isnan(_split_scores(columns, np.array([0, 1]))).all()
+    assert np.isfinite(_split_scores(columns, np.array([0, 2]))).all()
 
 
 def test_cscv_split_score_of_an_overflowed_sd_is_nan_never_zero():
-    # A column with one observation in each of two blocks, X and Y: each block's moments stay
-    # finite, but the merge's term for the block means' spread, 2·((X − Y)/2)², overflows — sd =
-    # inf, and `mean / inf` scored a FINITE 0.0 Sharpe that entered the split's ranking. NaN
-    # drops it from the split instead.
+    # A column with one observation in each of two blocks, X and Y: their exact variance
+    # (X − Y)²/2 is past the double range — sd = inf, and `mean / inf` scored a FINITE 0.0
+    # Sharpe that entered the split's ranking. NaN drops it from the split instead.
     x, y = 1.3e154, -1.2e154
-    tensors = _split_tensors(np.array([x, y]), np.array([0, 1]), s=2)
-    assert all(np.isfinite(t).all() for t in tensors)
-    assert np.isnan(_split_scores(*tensors, np.array([0, 1]))).all()
+    assert (Fraction(x) - Fraction(y)) ** 2 / 2 > Fraction(np.finfo(float).max)  # the premise
+    columns = _split_columns(np.array([x, y]), np.array([0, 1]), s=2)
+    assert _split_variance(columns[0][0], [0, 1], 2) == math.inf
+    assert np.isnan(_split_scores(columns, [0, 1])).all()
 
 
-@pytest.mark.parametrize("scale", [1e156, 1e160])
-def test_cscv_pbo_over_returns_whose_squares_overflow_declines_silently(scale):
-    # Returns of ~1e158 square past the double range in the per-block moment accumulators: every
-    # split's variance overflows and scores NaN, so no split ranks and the block declines — the
-    # overflow an expected input there (`_representable` decides it), never a warning. At ~1e154
-    # the per-block sums stay finite and it is their sum over a split's blocks that overflows.
+@pytest.mark.parametrize("scale", [1e157, 1e160])
+def test_cscv_pbo_over_returns_whose_variance_overflows_declines_silently(scale):
+    # Returns of ~1e155 and past have a variance past the double range: every split's exact
+    # variance overflows (inf) and scores NaN, so no split ranks and the block declines — the
+    # overflow an expected input there (`_pools._normal` decides it), never a warning.
     rng = np.random.RandomState(5)
     cells = _pbo_cells(rng, 800, 12)
     for c in cells:
@@ -4186,19 +4183,34 @@ def test_cscv_pbo_over_returns_whose_squares_overflow_declines_silently(scale):
     assert out["n_splits"] == 0 and out["n_combos"] == 12
 
 
+def test_cscv_pbo_scores_returns_whose_squares_overflow_while_their_variance_is_a_double():
+    # At 2**518 the largest return squares past the double range while every split's variance
+    # is a double: exact, every split scores, and the power of two keeps every bit — the unscaled
+    # grid's block. Accumulated from the rows' squared deviations, the grid declined
+    # `insufficient_data`.
+    keys = ("pbo", "n_splits", "lambda_mean", "prob_oos_loss", "oos_degradation_slope")
+    cells = _pbo_cells(np.random.RandomState(5), 800, 12)
+    base = cscv_pbo(cells, 800, ["t"], n_combos_declared=12)
+    for c in cells:
+        c["fwd_col"] = np.asarray(c["fwd_col"]) * 2.0**518
+    assert max(np.max(np.abs(c["fwd_col"])) for c in cells) > math.sqrt(np.finfo(float).max)
+    out = cscv_pbo(cells, 800, ["t"], n_combos_declared=12)
+    assert base["reason"] is None and base["n_splits"] == 70
+    assert {k: out[k] for k in keys} == {k: base[k] for k in keys}
+
+
 def test_cscv_split_score_of_a_subnormal_variance_is_nan_never_a_sharpe():
-    # Returns of ~1e-161 square into the SUBNORMAL range, where the rounding floor the split's
-    # sum of squares is tested against has itself underflowed to 0.0: the Sharpe was read off a
-    # variance that had lost its bits — 0.13804 for 0.13853. While the variance stays normal the
-    # power-of-two scale keeps every bit of the score.
+    # Returns of ~1e-161 have a SUBNORMAL variance, which holds fewer bits than the Sharpe divides
+    # by (read off one, the score was 0.13804 for 0.13853): NaN. While the variance stays normal
+    # the power-of-two scale keeps every bit of the score.
     r = np.random.RandomState(8).randn(40)
     b = np.repeat(np.arange(4), 10)
     blocks = np.array([0, 2])
-    score = _split_scores(*_split_tensors(r, b), blocks)
+    score = _split_scores(_split_columns(r, b), blocks)
     assert np.isfinite(score).all()
-    scaled = _split_scores(*_split_tensors(r * 2.0**-500, b), blocks)
+    scaled = _split_scores(_split_columns(r * 2.0**-500, b), blocks)
     np.testing.assert_array_equal(scaled, score)
-    assert np.isnan(_split_scores(*_split_tensors(r * 2.0**-535, b), blocks)).all()
+    assert np.isnan(_split_scores(_split_columns(r * 2.0**-535, b), blocks)).all()
 
 
 def test_cscv_near_constant_split_pool_is_never_ranked():
@@ -4243,8 +4255,8 @@ def test_cscv_split_score_of_an_exact_constant_pool_near_the_column_mean_is_nan(
     for _ in range(103):
         hi = np.nextafter(hi, 1.0)
     r = np.array([0.21] * 10 + [hi] * 10)
-    tensors = _split_tensors(r, np.repeat(np.arange(4), 5))
-    assert np.isnan(_split_scores(*tensors, np.array([0, 1]))).all()
+    columns = _split_columns(r, np.repeat(np.arange(4), 5))
+    assert np.isnan(_split_scores(columns, np.array([0, 1]))).all()
 
 
 def test_cscv_pbo_split_means_carry_their_rows_exact_sign():
@@ -4276,8 +4288,8 @@ def test_cscv_split_mean_is_the_rows_exact_sum_across_blocks():
     # exactly 0, so its Sharpe is 0.0. Added over the blocks in floating point, 2**55 swallowed
     # the 2 before its partner arrived, and the split's mean read −0.25.
     r = np.array([2.0**54, 1.0, -(2.0**54), -1.0, 0.5, -0.5, 0.25, -0.25] * 2)
-    tensors = _split_tensors(r, np.tile(np.arange(8), 2), s=8)
-    assert _split_scores(*tensors, np.arange(4))[0] == 0.0
+    columns = _split_columns(r, np.tile(np.arange(8), 2), s=8)
+    assert _split_scores(columns, np.arange(4))[0] == 0.0
 
 
 def test_cscv_split_pool_inside_one_regime_still_scores():
@@ -4296,21 +4308,53 @@ def test_cscv_split_pool_inside_one_regime_still_scores():
     assert out["n_candidates_min"] == 5
 
 
-def test_cscv_split_variance_merges_the_block_moments_at_any_level():
-    # Every split's Sharpe off the merged block moments against exact arithmetic, at level 1e9,
-    # where the raw one-pass Σx² − n·mean² form cancelled to rounding noise.
+def test_cscv_split_variance_is_exact_arithmetics_rounded_once():
+    # Every split's variance is the exact ddof=1 variance of its rows, correctly rounded — at
+    # level 1e9, where the raw one-pass Σx² − n·mean² form cancelled to rounding noise, and at
+    # level 0 — and its Sharpe the split's mean over its root.
     from itertools import combinations
 
-    rng = np.random.RandomState(12)
-    r = np.round(rng.normal(0.0, 0.01, 60), 6) + 1e9
-    b = rng.randint(0, 8, 60)
-    tensors = _split_tensors(r, b, s=8)
-    for split in combinations(range(8), 4):
-        held = [Fraction(float(x)) for x in r[np.isin(b, split)]]
-        mean = sum(held) / len(held)
-        var = sum((x - mean) ** 2 for x in held) / (len(held) - 1)
-        got = _split_scores(*tensors, np.array(split))[0]
-        assert got == pytest.approx(float(mean) / math.sqrt(var), rel=1e-12)
+    for level in (1e9, 0.0):
+        rng = np.random.RandomState(12)
+        r = np.round(rng.normal(0.0, 0.01, 60), 6) + level
+        b = rng.randint(0, 8, 60)
+        columns = _split_columns(r, b, s=8)
+        for split in combinations(range(8), 4):
+            held = [Fraction(float(x)) for x in r[np.isin(b, split)]]
+            mean = sum(held) / len(held)
+            var = sum((x - mean) ** 2 for x in held) / (len(held) - 1)
+            assert _split_variance(columns[0][0], split, len(held)) == float(var), (level, split)
+            got = _split_scores(columns, split)[0]
+            assert got == pytest.approx(float(mean) / math.sqrt(var), rel=1e-12)
+
+
+def test_cscv_pbo_candidates_with_the_same_exact_moments_tie():
+    # The review's construction: per block, candidate A holds α·[10, 13, 13, 16] and B
+    # α·[11, 11, 14, 16] — other returns with the same count, sum and sum of squares, so the same
+    # exact mean and variance on every split: a full tie, pbo and lambda_mean 0.0. Merged from
+    # the blocks' centered moments, each row's squared deviation rounded on its own, the two
+    # Sharpes parted in their last bits and 99 of 100 such grids read a nonzero pbo (up to 0.214).
+    # α spans binades and signs, its low six mantissa bits cleared so every multiple is exact.
+    s, per = 8, 6
+    rng = np.random.RandomState(0)
+    for _ in range(20):
+        fwd = np.full((2, s * per), np.nan)
+        for g in range(s):
+            mantissa = np.array([rng.uniform(1.0, 2.0)]).view(np.int64) & ~np.int64(63)
+            alpha = math.ldexp(float(mantissa.view(np.float64)[0]), int(rng.randint(-12, 4)))
+            alpha *= 1.0 if rng.rand() < 0.5 else -1.0
+            rows = slice(g * per, g * per + 4)  # the block's rows whose h = 1 window it holds
+            fwd[0, rows] = alpha * np.array([10.0, 13.0, 13.0, 16.0])
+            fwd[1, rows] = alpha * np.array([11.0, 11.0, 14.0, 16.0])
+            a, b = ([Fraction(float(x)) for x in f[rows]] for f in fwd)
+            assert sum(a) == sum(b) and sum(x * x for x in a) == sum(x * x for x in b)
+        cells = [
+            {"key": (k, "t"), "mask_col": np.ones(s * per), "fwd_col": fwd[k], "h": 1}
+            for k in range(2)
+        ]
+        out = cscv_pbo(cells, s * per, ["t"], n_combos_declared=2)
+        assert out["reason"] is None and out["n_splits"] == 70
+        assert out["pbo"] == out["lambda_mean"] == 0.0
 
 
 def test_cscv_split_score_reads_each_blocks_spread_at_its_own_level():
@@ -4324,7 +4368,7 @@ def test_cscv_split_score_reads_each_blocks_spread_at_its_own_level():
     beside_level = np.concatenate([tiny, np.array([1.0, 1.2] * 10)])
     beside_tiny = np.concatenate([tiny, tiny])
     scores = [
-        _split_scores(*_split_tensors(r, b), np.array([0, 1]))[0]
+        _split_scores(_split_columns(r, b), np.array([0, 1]))[0]
         for r in (beside_level, beside_tiny)
     ]
     assert scores[0] == scores[1] == pytest.approx(math.sqrt(19 / 20))
@@ -4557,20 +4601,13 @@ def test_cscv_split_mean_sums_the_bars_exact_excess_sums():
     for on in (full, partial):
         bars, members = np.nonzero(on)
         parts = cross_mean_bar_numerators(raw, on).at(bars, members)
-        columns.append(_column(b[bars], excess[bars, members], parts, 3, s))
+        columns.append([_column(b[bars], excess[bars, members], parts, 3, s)])
     rows = excess[np.nonzero(full)]
-    columns.append(_column(b[np.nonzero(full)[0]], rows, rows[:, None], 1, s))
-    j = max(c.sums.shape[1] for c in columns)
-    tensors = (
-        np.array([[c.moments] for c in columns]),
-        np.array([[c.extrema] for c in columns]),
-        np.array([[np.pad(c.sums, ((0, 0), (0, j - c.sums.shape[1])))] for c in columns]),
-        np.array([[c.scale] for c in columns]),
-    )
+    columns.append([_column(b[np.nonzero(full)[0]], rows, rows[:, None], 1, s)])
     legs = [[Fraction(float(x)) for x in row] for row in raw]
     residue = []
     for split in combinations(range(s), 2):
-        got = _split_scores(*tensors, np.array(split))
+        got = _split_scores(columns, np.array(split))
         assert got[0] == 0.0
         residue.append(got[2])
         # the partial candidate: the exact excess sum its split holds, over its rows' own sd
