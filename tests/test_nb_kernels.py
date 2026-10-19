@@ -2757,10 +2757,27 @@ def test_rolling_median_mad_apply_nb_are_columnwise():
             _assert(got[:, j], fn(a[:, j], 5))
 
 
-def test_rolling_mad_overflow_yields_nan_never_inf():
-    x = np.array([-1e308, 1e308, 1e308])
-    got = rolling_agg_1d(x, 3, "mad")
-    assert not np.isinf(got).any()
+def test_a_window_wider_than_the_double_range_reads_its_mad_in_its_halves():
+    # The review's window: [-1e308, 1e308] has the MAD 1e308 (median 0, both deviations 1e308),
+    # but its deviation from the lower middle value overflowed the frame and read NaN. An
+    # overflowing deviation could also displace the median of the rest: this window read
+    # 1.108e308 for 1.009e308. Such a window reads its MAD in its halves, doubled.
+    np.testing.assert_array_equal(
+        rolling_agg_1d(np.array([-1e308, 1e308]), 2, "mad"), [np.nan, 1e308]
+    )
+    x = np.ldexp(np.array([-2270207.0, -12172030.0, 16568487.0, 8508056.0]), 1000)
+    assert rolling_agg_1d(x, 4, "mad")[-1] == _rational_mad(x.tolist()) == 9419347 * 2.0**1000
+    # an odd window's overflowing deviations sort past its middle: it read its MAD and still does
+    np.testing.assert_array_equal(
+        rolling_agg_1d(np.array([-1e308, 1e308, 1e308]), 3, "mad"), [np.nan, np.nan, 0.0]
+    )
+    # on a 2**1000 grid every step of either frame is exact, so each window — about a third
+    # of them wider than the double range — reads the exact rational MAD
+    rng = np.random.default_rng(29)
+    for w in (2, 3, 4, 5, 6, 9):
+        for _ in range(200):
+            x = np.ldexp(rng.integers(-(2**24) + 1, 2**24, w).astype(float), 1000)
+            assert rolling_agg_1d(x, w, "mad")[-1] == _rational_mad(x.tolist()), x
 
 
 def test_an_even_median_and_its_mad_never_overflow_at_the_ceiling():

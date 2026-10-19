@@ -273,6 +273,24 @@ def _sorted_median(s: npt.NDArray[np.float64], k: int) -> npt.NDArray[np.float64
     return _midpoint(s[..., (k - 1) // 2], s[..., k // 2])
 
 
+def _sorted_mad(s: npt.NDArray[np.float64], k: int) -> npt.NDArray[np.float64]:
+    """The median absolute deviation over the last axis of ``s``, laid out as for
+    :func:`_sorted_median`: about the SAME values' median, unscaled, the deviations taken in their
+    frame about the lower middle value (the median itself when ``k`` is odd) — exact wherever the
+    values lie within a factor of two of it. About the ROUNDED median, 2**52 + [0, 1, 1, 2, 2, 3]
+    read 1.0 for 0.5 (its median B + 1.5 rounds to B + 2) and 0.5 once translated by −B exactly,
+    so ``rolling_mad(X, 6) > rolling_mad(X − B, 6)`` fired.
+
+    NaN where a value lies farther than the largest double from the lower middle one: that
+    deviation overflows, and an infinite one can displace the median of the rest (``[-2270207,
+    -12172030, 16568487, 8508056] * 2**1000`` read 1.108e308 for 1.009e308). Callers silence the
+    overflow."""
+    y = s - s[..., (k - 1) // 2][..., None]
+    dev = np.sort(np.abs(y - _sorted_median(y, k)[..., None]), axis=-1)
+    held = np.isfinite(y[..., 0]) & np.isfinite(y[..., -1])
+    return np.where(held, _sorted_median(dev, k), np.nan)
+
+
 def zscore_sma_apply_nb(arr: npt.NDArray[np.float64], window: int) -> npt.NDArray[np.float64]:
     a = np.asarray(arr, dtype=float)
     n = a.shape[0]
@@ -397,19 +415,19 @@ def rolling_agg_apply_nb(
                 # midpoint (bit for bit ``np.median`` wherever that is finite): a constant window
                 # reads its value and a MAD of exactly 0.0, at any level.
                 s = np.sort(w, axis=-1)
-                v = _sorted_median(s, window)
-                if agg == "mad":
-                    # Median absolute deviation about the SAME window's median, unscaled — taken
-                    # in the window's frame about its lower middle value (the median itself on an
-                    # odd window), where the deviations are exact wherever the window lies within
-                    # a factor of two of it. About the ROUNDED median, 2**52 + [0, 1, 1, 2, 2, 3]
-                    # read 1.0 for 0.5 (its median B + 1.5 rounds to B + 2) and 0.5 once
-                    # translated by −B exactly, so `rolling_mad(X, 6) > rolling_mad(X − B, 6)`
-                    # fired. Members farther apart than the double range overflow the frame:
-                    # NaN, the variance's rule.
-                    y = s - s[..., (window - 1) // 2][..., None]
-                    dev = np.sort(np.abs(y - _sorted_median(y, window)[..., None]), axis=-1)
-                    v = _sorted_median(dev, window)
+                if agg == "median":
+                    v = _sorted_median(s, window)
+                else:
+                    # A window wider than the double range overflows the frame and reads its MAD
+                    # in its halves, doubled — the midpoint's rule. Its lower middle value is then
+                    # at least 2**970 in magnitude, so every deviation is 0 or past 2**800, far
+                    # above the one bit halving can drop (a member's below 2**-1021): the doubled
+                    # read is the direct form's value in an unbounded exponent range. The direct
+                    # frame stays wherever it holds the window.
+                    v = _sorted_mad(s, window)
+                    wide = finite_all & np.isnan(v)
+                    if wide.any():
+                        v[wide] = 2.0 * _sorted_mad(s[wide] / 2.0, window)
             else:
                 raise ValueError(f"unknown rolling_agg agg: {agg!r}")
         # `isfinite(v)`: a finite window can still overflow its sum/squared deviations to ±inf.

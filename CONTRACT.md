@@ -907,7 +907,9 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   are taken in the window's frame about its lower middle value (the median itself on an odd
   window), exact wherever the window lies within a factor of two of it — about the rounded median,
   `2**52 + [0, 1, 1, 2, 2, 3]` read 1.0 for 0.5 and 0.5 once translated by `−2**52` exactly, a
-  MAD apart from its exact translate's. Nor is a cross-section's
+  MAD apart from its exact translate's — and a window wider than the double range (a member more
+  than the largest double from that value) reads its MAD in its halves, doubled: `[−1e308,
+  1e308]` read NaN for its MAD of 1e308. Nor is a cross-section's
   exact sum or mean: a row whose largest member reaches `2**996` is summed in a frame scaled by
   `2**-28`, chosen off the members' magnitudes, so `cross_agg` `mean`, the `cross_mean` bench leg
   and every exact deviation read the same in any member order (summed directly,

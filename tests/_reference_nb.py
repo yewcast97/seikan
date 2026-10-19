@@ -916,19 +916,28 @@ def rolling_median(arr: np.ndarray, window: int) -> np.ndarray:
     return out
 
 
+def _framed_mad(vals: list[float]) -> float:
+    """The MAD in the frame about the lower middle value; NaN when a deviation overflows it."""
+    lower_middle = sorted(vals)[(len(vals) - 1) // 2]
+    y = [v - lower_middle for v in vals]
+    if not all(math.isfinite(d) for d in y):
+        return math.nan
+    med = _sorted_median(y)
+    return _sorted_median([abs(v - med) for v in y])
+
+
 def rolling_mad(arr: np.ndarray, window: int) -> np.ndarray:
     """Median absolute deviation about the SAME window's median, unscaled — in the window's
-    frame about its lower middle value (the median itself on an odd window)."""
+    frame about its lower middle value (the median itself on an odd window); a window wider than
+    the double range in its halves, doubled."""
     n = arr.shape[0]
     out = np.full(n, np.nan, dtype=np.float64)
     for i in range(window - 1, n):
         vals = [float(v) for v in arr[i - window + 1 : i + 1]]
         if any(math.isnan(v) for v in vals):
             continue
-        lower_middle = sorted(vals)[(window - 1) // 2]
-        y = [v - lower_middle for v in vals]
-        med = _sorted_median(y)
-        out[i] = _sorted_median([abs(v - med) for v in y])
+        mad = _framed_mad(vals)
+        out[i] = mad if not math.isnan(mad) else 2.0 * _framed_mad([v / 2.0 for v in vals])
     return out
 
 

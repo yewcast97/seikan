@@ -485,7 +485,9 @@ range reads that recurrence's value to its rounding.
   window), exact wherever the window lies within a factor of two of it: about the ROUNDED
   median, `2**52 + [0, 1, 1, 2, 2, 3]` read 1.0 for 0.5 (its median `B + 1.5` rounds to `B + 2`)
   and 0.5 once translated by `−2**52` exactly, so `rolling_agg(X, 6, "mad") > rolling_agg(X − B,
-  6, "mad")` fired.
+  6, "mad")` fired. A window wider than the double range (a member more than the largest double
+  from that value) reads its `mad` in its halves, doubled — `[−1e308, 1e308]` read NaN for its
+  MAD of 1e308.
 - `drawdown` (optional `input` defaulting to close, optional `window`) — fractional depth below a
   peak: `(input − peak) / peak` (≤ 0; 80 under a peak of 100 is exactly −0.2). POSITIVE-scale
   domain: a non-positive peak → NaN (the ratio inverts on a negative scale; signed series compose
