@@ -1081,7 +1081,8 @@ because `extra="forbid"` applies to every DSL model:
   outcomes can. `pct` = (b − a)/a, the difference over its base (the decision-side `change`,
   `drawdown`/`runup` and `describe` read the same rule), so a rise and the mirror fall off one
   base cancel exactly (100 → 110 is 0.1, 100 → 90 is −0.1), never a rounding residue the support
-  floor could grade. `log` = ln(b/a) is scale-safe (the decision-side `change` and `describe`
+  floor could grade (three or more moves only to rounding, as any floating-point sum: +10%, +20%
+  and −30% read 0.1, 0.2 and −0.3, whose doubles sum exactly to `2**-55`). `log` = ln(b/a) is scale-safe (the decision-side `change` and `describe`
   read the same rule): finite for every positive pair, even where `b/a` leaves the double range
   (1e200 → 1e-200 measures −921.03…, never ln(0)), and signed — ln(a/b) is −ln(b/a) bit for
   bit, so a move and its reverse (100 → 110 → 100) cancel exactly, never a rounding residue the

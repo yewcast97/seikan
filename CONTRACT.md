@@ -884,7 +884,10 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   its negation, and a rise and the equal fall off one base cancel exactly. Read as `b/a − 1`, the
   quotient rounded at the ulp of 1 first, the two read 0.10000000000000009 and
   −0.09999999999999998, and entries alternating them measured a `mean_ret` of 5.6e-17 that met the
-  support floor. The LOG ratio is
+  support floor. Three or more moves whose exact changes cancel do so only to rounding, as any
+  floating-point terms: +10%, +20% and −30% off one base read the correctly rounded 0.1, 0.2 and
+  −0.3, whose doubles sum exactly to `2**-55`. The observation is that double, and every pool read
+  is exact arithmetic over the observations, never re-derived from the levels. The LOG ratio is
   scale-safe, one rule for `change(kind="log")`, the `log` outcome (benchmark leg, `pre_ret`,
   excursions included) and `describe`'s `log` reads (`seikan.numeric`). It is SIGNED: `ln(hi/lo)`
   of the larger level over the smaller, negated where the level fell, so `ln(a/b)` is `−ln(b/a)`
@@ -954,7 +957,8 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   fitted however small its spread — its deviations about its offset are exact), and a CSCV
   split scores NaN when its pool is exactly constant (the per-block extrema) or within the HAC's
   ~10 ulps. The pool MEANS the checklist grades, and their direct twins — the legs,
-  the eras, the baseline, the HAC's `t` numerator — are the exact sum over `n`, rounded ONCE
+  the eras, the baseline, the HAC's `t` numerator — are the exact sum over `n` of the observations
+  as measured (each a correctly rounded double, the one rounding no pool read undoes), rounded ONCE
   (the sum's exact parts as rationals, so one double in any order, at the range too —
   `[1e308, 1e308, −1e308, −1e308]` read NaN off `math.fsum` and its alternating order 0.0): the
   exact sum's sign, exactly 0.0 where it is 0 (a pairwise float sum lost a term a larger one

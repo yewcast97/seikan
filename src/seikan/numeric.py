@@ -36,8 +36,10 @@ rolling mean of such changes read ``> 0`` where exact arithmetic reads 0. :func:
 ``(num − den) / den``: the difference is exact wherever ``den/2 ≤ num ≤ 2·den`` (Sterbenz — every
 move from −50% to +100%), so there the change is the correctly rounded quotient (``(110 − 100) /
 100`` is the double 0.1 and ``(90 − 100) / 100`` its negation, so the pair cancels exactly);
-beyond it, two roundings of RELATIVE size. On positive levels the difference cannot overflow, and
-the quotient leaves the double range exactly as the ratio did (an underflow still reads −1.0).
+beyond it, two roundings of RELATIVE size. Three moves off one base whose exact changes cancel
+(+10%, +20%, −30%) cancel only to rounding, as any sum of rounded terms does: their doubles sum
+exactly to ``2**-55``. On positive levels the difference cannot overflow, and the quotient leaves
+the double range exactly as the ratio did (an underflow still reads −1.0).
 
 Positive finite levels are the CALLERS' gate (both ratio algebras are positive-domain, and each
 caller already refuses or masks a non-positive endpoint); on them the log ratio is always finite,
