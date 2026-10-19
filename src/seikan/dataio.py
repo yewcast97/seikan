@@ -370,14 +370,18 @@ class StrictCsvReader:
 def _read_blob(path: str, rep: FileReport) -> bytes | None:
     """Stage 1: the single byte read — one buffer feeds the digest, the header sniff, the
     record-shape scan, the parse and its cross-check, so the reported sha256 describes exactly
-    the bytes the engine measured."""
+    the bytes the engine measured.
+
+    Every ``OSError`` here (a directory, a denied read, a regular file as a parent directory, a
+    name past the filesystem's limit) is a fact about the path, never an engine fault: the file
+    is unreadable and the batch keeps its report."""
     try:
         with open(path, "rb") as fh:
             return fh.read()
     except FileNotFoundError:
         rep.error("file_missing", f"{path}: file not found")
         return None
-    except (IsADirectoryError, PermissionError) as exc:
+    except OSError as exc:
         rep.error("unreadable", f"{path}: {exc}")
         return None
 

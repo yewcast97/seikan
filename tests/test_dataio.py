@@ -321,6 +321,20 @@ def test_missing_file(tmp_path):
     assert df is None and {e["code"] for e in rep.errors} == {"file_missing"}
 
 
+@pytest.mark.parametrize("case", ["file_as_parent", "name_too_long"])
+def test_any_filesystem_error_at_the_read_is_an_unreadable_file(tmp_path, case):
+    # Only a directory and a denied read were caught: a regular file named as a parent
+    # (NotADirectoryError) or a name past the filesystem's limit (ENAMETOOLONG) escaped the reader
+    # as a bare OSError, which the CLI answered as exit 4 `internal` with no data_report.
+    if case == "file_as_parent":
+        path = _write(tmp_path, _GOOD) + "/x.csv"
+    else:
+        path = str(tmp_path / ("x" * 300 + ".csv"))
+    df, rep = read_strict_csv(path)
+    assert df is None and [e["code"] for e in rep.errors] == ["unreadable"]
+    assert rep.sha256 is None
+
+
 def test_utf8_bom_tolerated(tmp_path):
     p = tmp_path / "bom.csv"
     p.write_bytes(b"\xef\xbb\xbf" + _GOOD.encode())

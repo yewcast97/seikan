@@ -2007,6 +2007,25 @@ def test_run_bad_data_exits_2_with_report(tmp_path, capsys):
     assert not out.exists()  # a refused run vouches for nothing
 
 
+def test_a_filesystem_error_reading_a_data_file_is_a_data_refusal(tmp_path, capsys):
+    # A regular file named as a parent directory: the strict reader caught only a directory and
+    # a denied read, so the NotADirectoryError escaped every command as exit 4 `internal`, and
+    # the batch lost its data_report. It is an unreadable file: exit 2, coded, the report kept.
+    child = _write_ohlcv(tmp_path / "px.csv") / "x.csv"
+    thesis = _write_thesis(tmp_path / "t.json")
+    out = tmp_path / "r.json"
+    for argv in (
+        ["check-data", str(child)],
+        ["describe", str(child)],
+        ["run", str(thesis), *_target(child), "--report-out", str(out)],
+    ):
+        code, doc = _run(capsys, argv)
+        assert code == 2, argv
+        (entry,) = doc["data_report"]["files"]
+        assert [e["code"] for e in entry["errors"]] == ["unreadable"]
+    assert not out.exists()
+
+
 @pytest.mark.parametrize("horizon", [20, 2**31 - 1])
 def test_run_report_insufficient_bars_exits_2(tmp_path, capsys, horizon):
     # 2**31 − 1 is the bar-count ceiling itself: a legal horizon (refused at parse only past it,
