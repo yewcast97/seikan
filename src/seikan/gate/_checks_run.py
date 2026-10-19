@@ -12,6 +12,7 @@ from seikan.gate._read import (
     _int,
     _mode,
     _num,
+    _stamp,
     _str_keyed,
     _targets,
 )
@@ -265,17 +266,22 @@ def _check_source_coverage(s: Mapping[str, object], t: GateThresholds) -> GateCh
     the thesis declares it reads. Such a leaf decides nothing itself and so refuses nowhere
     downstream — a decisive sibling (``T∨U = T``) settles the root over it, ``support`` grades
     the sibling's firings — which makes this branch the ONE place it can refuse (v3; it was the
-    one hole size that passed). ``n_bars`` is pure geometry (the joined index length), so
-    ``n_missing <= n_bars`` and "the union cannot outnumber its parts" are verifiable arithmetic
-    no property of the data can bend. Unconditional: there is no threshold knob for how much of
-    the thesis may be unevaluable."""
+    one hole size that passed). A start that exists is the first bar the input was available
+    on, a bar of the run: a timezone-naive ISO-8601 timestamp inside ``[index_start,
+    index_end]`` (:func:`~seikan.gate._read._stamp`) — read as "a string is a start", ``""``,
+    ``"not-a-date"`` and a stamp years past the interval's end each met the check. ``n_bars`` is
+    pure geometry (the joined index length), so ``n_missing <= n_bars`` and "the union cannot
+    outnumber its parts" are verifiable arithmetic no property of the data can bend.
+    Unconditional: there is no threshold knob for how much of the thesis may be unevaluable."""
     threshold = (
         "per target: sources.n_missing == 0 — every raw decision input the entry tree reads is "
         "available on every bar of the evaluated interval from its own first_available on (a "
         "series that merely starts late is warmup) — and first_available is non-null: an input "
-        "that never became available at all refuses, because warmup requires a start to exist. "
-        "With sources.n_bars == summary.n_bars, every per-source count in 0..n_bars, and the "
-        "union no larger than the sum of parts. Unconditional; no knob"
+        "that never became available at all refuses, because warmup requires a start to exist; "
+        "a start is a timezone-naive ISO-8601 timestamp within [index_start, index_end], the "
+        "first bar the input was available on. With sources.n_bars == summary.n_bars, every "
+        "per-source count in 0..n_bars, and the union no larger than the sum of parts. "
+        "Unconditional; no knob"
     )
     targets = _targets(s)
     tset = set(targets) if targets else None
@@ -296,6 +302,12 @@ def _check_source_coverage(s: Mapping[str, object], t: GateThresholds) -> GateCh
         unmet.append(
             "summary carries no countable n_bars — the geometry every availability count is "
             "verified against is unrecorded; drifted input"
+        )
+    start, end = _stamp(s.get("index_start")), _stamp(s.get("index_end"))
+    if start is None or end is None:
+        unmet.append(
+            "summary carries no readable index_start / index_end — the evaluated interval every "
+            "first_available is verified against is unrecorded; drifted input"
         )
     by_target: dict[str, dict[str, object] | None] = {}
     observed: dict[str, object] = {"n_bars": run_bars, "by_target": by_target}
@@ -345,20 +357,18 @@ def _check_source_coverage(s: Mapping[str, object], t: GateThresholds) -> GateCh
             leaf = leaves[label]
             leaf = _as_dict(leaf)
             n_miss = _int(leaf.get("n_missing"))
-            per_by_source[label] = {
-                "n_missing": n_miss,
-                "first_available": leaf.get("first_available"),
-            }
+            first = leaf.get("first_available")
+            per_by_source[label] = {"n_missing": n_miss, "first_available": first}
             # The never-available branch (v3), fail-closed on garbage like every read here: a
-            # missing key or a non-string non-null value is drifted input, an explicit null is
-            # the runner's honest "no bar ever carried this input" — and the refusal, not the
-            # ledger, is this check's to own. No timestamp is ever parsed: a string is a start.
+            # missing key, or a start that is no bar of the run, is drifted input, an explicit
+            # null is the runner's honest "no bar ever carried this input" — and the refusal,
+            # not the ledger, is this check's to own.
             if "first_available" not in leaf:
                 unmet.append(
                     f"{tgt}.sources[{label}]: first_available is absent — whether this input "
                     "ever existed cannot be verified; drifted input"
                 )
-            elif leaf.get("first_available") is None:
+            elif first is None:
                 unmet.append(
                     f"{tgt}: decision input {label} was never available on any bar of the "
                     "evaluated interval (first_available is null) — a never-available input "
@@ -366,10 +376,16 @@ def _check_source_coverage(s: Mapping[str, object], t: GateThresholds) -> GateCh
                     "(T∨U = T) and every firing was taken without it; supply the series or "
                     "remove the leaf from the entry"
                 )
-            elif not isinstance(leaf.get("first_available"), str):
+            elif (stamp := _stamp(first)) is None:
                 unmet.append(
-                    f"{tgt}.sources[{label}]: first_available is neither a timestamp string "
-                    "nor null — drifted input"
+                    f"{tgt}.sources[{label}]: first_available={first!r} is neither a "
+                    "timezone-naive ISO-8601 timestamp nor null — drifted input"
+                )
+            elif start is not None and end is not None and not start <= stamp <= end:
+                unmet.append(
+                    f"{tgt}.sources[{label}]: first_available={first!r} lies outside the "
+                    f"evaluated interval [{start.isoformat()}, {end.isoformat()}] — the first "
+                    "bar an input was available on is a bar of the run; drifted input"
                 )
             if n_miss is None or n_miss < 0 or n_miss > s_bars:
                 unmet.append(

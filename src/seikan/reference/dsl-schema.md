@@ -1433,8 +1433,10 @@ complete statistics are still in `summary.cells[i]` — a checklist result never
   an expanding extremum reaches `signal_coverage` too: see "Transforms"). A NaN computed INSIDE the
   expression (`log` of a non-positive value, `x/0`) is no raw leaf's: absorbed, it moves no
   decision; inside a warmup, it only delays the first value — ledgered nowhere either way. **A feed
-  that merely starts late is WARMUP, not a hole** — its `first_available` is
-  reported as evidence and never refuses; ordinary sparse stamping (a weekly feed on daily bars) is
+  that merely starts late is WARMUP, not a hole** — its `first_available`, the first bar it was
+  available on (a timezone-naive ISO-8601 timestamp within `[index_start, index_end]`, or the
+  check refuses it as drifted input), is reported as evidence; a NULL `first_available`, a feed
+  never available on any bar, refuses. Ordinary sparse stamping (a weekly feed on daily bars) is
   available throughout after its first stamp.
 - `search_cap` — `n_hypotheses_attempted` (the DECLARED grid; non-firing combos cannot shrink it)
   ≤ 64. This is the only multiplicity input the policy carries, and a grid above the cap is refused

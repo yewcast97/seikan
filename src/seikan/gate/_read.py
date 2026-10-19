@@ -5,9 +5,13 @@ funnels, refusing rather than crashing.
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Mapping
 from typing import SupportsFloat, cast
 
+import pandas as pd
+
+from seikan.constants import PAST_NANOSECOND_FRACTION
 from seikan.types import (
     EXIT_REASONS,
     OUTCOME_KINDS,
@@ -59,6 +63,21 @@ def _prob(value: object) -> float | None:
     if v is None or not (0.0 <= v <= 1.0):
         return None
     return v
+
+
+def _stamp(value: object) -> pd.Timestamp | None:
+    """A timezone-naive ISO-8601 timestamp string as the instant it names, or None — the strict
+    rule the loader holds the CSV clock to and the DSL its ``start`` / ``end``: parsed with
+    ``format="ISO8601"`` (no format guessing, so ``"1 Jan 2020"`` and ``"2020-13-01"`` are
+    None), and None for an empty string (NaT), a timezone offset, or fractional seconds past the
+    nanosecond, which would be truncated into another instant."""
+    if not isinstance(value, str) or re.search(PAST_NANOSECOND_FRACTION, value):
+        return None
+    try:
+        ts = pd.to_datetime(value, format="ISO8601")
+    except (ValueError, TypeError):
+        return None
+    return None if pd.isna(ts) or ts.tzinfo is not None else ts
 
 
 def _targets(s: Mapping[str, object]) -> list[str] | None:

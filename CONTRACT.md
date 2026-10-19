@@ -265,7 +265,8 @@ enumerating files that never appeared is not a state this CLI can reach. There i
 would have to be some cell's, and naming one cell is the selection this engine does not perform.
 `policy_version` (**4** — v4: a cell names its horizon, which bounds its non-overlapping
 counts, no two cells name one assignment, a basket's one-name read is the largest share of
-its member decomposition, and a mean lies within its pool's extrema; v3: a never-available source refuses, and the support floor reads the renamed
+its member decomposition, a mean lies within its pool's extrema, and a source's start is a
+timestamp inside the evaluated interval; v3: a never-available source refuses, and the support floor reads the renamed
 `n_nonoverlap`) names the checklist semantics (two cell results compare only
 under the same version); `summary.statistics_version` (**5** — v2 ADDED evidence: the p05/p95
 quantile tails, the promoted per-cell shape reads, `benchmark_regression`, `timing` and the
@@ -521,7 +522,10 @@ counted whatever the expression's reach, as every leaf is counted whichever para
 available on every bar from its own
 `first_available` on — with `sources.n_bars == summary.n_bars`, every per-source count in `0..n_bars`,
 and the union no larger than the sum of parts; a source that merely STARTS LATE is warmup, not a
-hole, and `first_available` is evidence, never a refusal; no knob); and `search_cap`
+hole, and its `first_available` is evidence — but a null one, an input never available on any
+bar, refuses, and a start is the first bar the input was available on, a timezone-naive ISO-8601
+timestamp within `[index_start, index_end]` (`""`, `"not-a-date"` and a stamp past the interval
+each met the check); no knob); and `search_cap`
 (`n_hypotheses_attempted` — the DECLARED grid, which non-firing combos cannot shrink — ≤ 64, the
 ONLY multiplicity input this policy carries).
 

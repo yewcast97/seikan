@@ -836,22 +836,53 @@ def test_a_never_available_source_refuses():
     assert obs["first_available"] is None
 
 
-@pytest.mark.parametrize("bad", [7, {}, [], 1.5, True])
-def test_a_garbage_first_available_refuses(bad):
-    # first_available is a timestamp string or an explicit null — anything else is drifted
-    # input, refused fail-closed like every other unreadable field here.
-    s = _summary(
+def _first_available(stamp, **over) -> dict:
+    """A summary whose one external leaf became available at ``stamp``."""
+    return _summary(
         sources={
-            "AAA": _sources(
-                by_source={
-                    "external:iv30": {"n_missing": 0, "first_available": bad},
-                }
-            )
-        }
+            "AAA": _sources(by_source={"external:iv30": {"n_missing": 0, "first_available": stamp}})
+        },
+        **over,
     )
-    check = _run(evaluate_gate(s))["source_coverage"]
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        *(7, {}, [], 1.5, True),
+        *("", "not-a-date", "1 Jan 2020", "2020-13-01"),
+        *("2021-03-01T00:00:00Z", "2021-03-01T00:00:00+00:00", "2021-03-01T00:00:00.0000000001"),
+    ],
+)
+def test_a_garbage_first_available_refuses(bad):
+    # first_available is a timezone-naive ISO-8601 timestamp or an explicit null — anything else
+    # is drifted input, refused fail-closed like every other unreadable field here. Read as "a
+    # string is a start", the empty string and "not-a-date" met the check; the stamp is held to
+    # the loader's rule: no format guessing, no offset, nothing past the nanosecond.
+    check = _run(evaluate_gate(_first_available(bad)))["source_coverage"]
     assert not check.met
-    assert "neither a timestamp string nor null" in check.detail
+    assert "is neither a timezone-naive ISO-8601 timestamp nor null" in check.detail
+
+
+def test_a_first_available_lies_inside_the_evaluated_interval():
+    # The review's stamp: "2030-01-01T00:00:00" beside an interval ending 2022-05-24 met the
+    # check. A start is the first bar the input was available on — a bar of the run — so a stamp
+    # past index_end or before index_start refuses; the endpoints themselves and a nanosecond
+    # stamp inside meet.
+    for stamp in ("2030-01-01T00:00:00", "2022-05-24T00:00:00.000000001", "2019-12-31T23:59:59"):
+        check = _run(evaluate_gate(_first_available(stamp)))["source_coverage"]
+        assert not check.met, stamp
+        assert (
+            f"first_available={stamp!r} lies outside the evaluated interval "
+            "[2020-01-01T00:00:00, 2022-05-24T00:00:00]" in check.detail
+        )
+    for stamp in ("2020-01-01T00:00:00", "2022-05-24T00:00:00", "2021-03-01T09:30:00.000000001"):
+        assert _run(evaluate_gate(_first_available(stamp)))["source_coverage"].met, stamp
+    # the interval itself must be readable to verify a start against
+    for over in ({"index_start": None}, {"index_end": "2022-05-24 junk"}):
+        check = _run(evaluate_gate(_first_available("2021-03-01T00:00:00", **over)))
+        check = check["source_coverage"]
+        assert not check.met and "no readable index_start / index_end" in check.detail
 
 
 def test_a_missing_first_available_key_refuses():

@@ -49,8 +49,10 @@ METRIC_ROLES: dict[str, JsonValue] = {
             "sources[*].{n_bars,n_missing}",
             "sources[*].by_source[*].{n_missing,first_available} (a null first_available — an "
             "input that never became available — refuses; a late START is warmup and stays "
-            "evidence)",
+            "evidence, and a start is a timezone-naive ISO-8601 timestamp within "
+            "[index_start, index_end])",
             "n_bars (the geometry every availability count is verified against)",
+            "index_start + index_end (the evaluated interval every start is verified against)",
         ],
         "search_cap": [
             "n_hypotheses_attempted",
@@ -490,8 +492,9 @@ METRIC_ROLES_DOC: dict[str, JsonValue] = {
         "moves no decision; inside a warmup, it only delays the first value — ledgered nowhere "
         "either way. A source that merely STARTS LATE is warmup, not a hole — its "
         "first_available is reported as evidence — but warmup requires a start to EXIST: a null "
-        "first_available, an input that never became available at all, refuses. Unconditional; "
-        "no knob)",
+        "first_available, an input that never became available at all, refuses, and a start is "
+        "the first bar the input was available on, a timezone-naive ISO-8601 timestamp within "
+        "[index_start, index_end]. Unconditional; no knob)",
         "n_hypotheses_attempted (search_cap — the DECLARED grid, which non-firing combos cannot "
         "shrink, bounded by thesis_max_hypotheses. It is the ONLY multiplicity input this policy "
         "carries: cells are graded independently and no cross-cell correction is taken, so the "
@@ -1616,7 +1619,9 @@ GATE_CONTRACT_DOC: dict[str, JsonValue] = {
             "warmup, it only delays the first value — ledgered nowhere either way. A source that "
             "merely STARTS LATE is warmup, not a hole — its first_available is reported as "
             "evidence — but warmup requires a start to exist: a null first_available, an input "
-            "that never became available at all, refuses. Unconditional, with no threshold knob"
+            "that never became available at all, refuses, and a start is the first bar the input "
+            "was available on, a timezone-naive ISO-8601 timestamp within [index_start, "
+            "index_end]. Unconditional, with no threshold knob"
         ),
         "search_cap": (
             "n_hypotheses_attempted (the DECLARED grid — non-firing combos cannot shrink it) "
