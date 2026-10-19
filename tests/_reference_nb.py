@@ -542,7 +542,8 @@ def rolling_corr_ref(left: np.ndarray, right: np.ndarray, window: int) -> np.nda
     The moments ``k·Σa² − (Σa)²``, ``k·Σb² − (Σb)²`` and ``k·Σab − ΣaΣb`` in exact rationals, each
     leg scaled into its window's frame (:func:`_corr_frame`) and each moment rounded once; NaN
     unless the whole window is finite in BOTH inputs, both variances are nonzero (neither leg is
-    constant) and both frames hold every member; the ratio over :func:`_sqrt_product`, clipped
+    constant) and both frames hold every member; exactly ±1 where ``cov² == va·vb`` (equality in
+    Cauchy–Schwarz: a collinear window), elsewhere the ratio over :func:`_sqrt_product` clipped
     to ``[−1, 1]``; matches ``nb.rolling_corr_apply_nb``.
     """
     n = left.shape[0]
@@ -558,11 +559,14 @@ def rolling_corr_ref(left: np.ndarray, right: np.ndarray, window: int) -> np.nda
         if fa is None or fb is None:
             continue
         sa, sb = sum(fa), sum(fb)
-        va = float(window * sum(x * x for x in fa) - sa * sa)
-        vb = float(window * sum(y * y for y in fb) - sb * sb)
-        if va > 0.0 and vb > 0.0:
-            cov = float(window * sum(x * y for x, y in zip(fa, fb, strict=True)) - sa * sb)
-            out[i] = min(max(cov / _sqrt_product(va, vb), -1.0), 1.0)
+        va = window * sum(x * x for x in fa) - sa * sa
+        vb = window * sum(y * y for y in fb) - sb * sb
+        if va > 0 and vb > 0:
+            cov = window * sum(x * y for x, y in zip(fa, fb, strict=True)) - sa * sb
+            if cov * cov == va * vb:
+                out[i] = 1.0 if cov > 0 else -1.0
+            else:
+                out[i] = min(max(float(cov) / _sqrt_product(float(va), float(vb)), -1.0), 1.0)
     return out
 
 

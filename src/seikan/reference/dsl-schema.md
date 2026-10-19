@@ -512,8 +512,10 @@ range reads that recurrence's value to its rounding.
   the exact covariance's sign, reads 0.0 where that is 0, and `rolling_corr(x, x)` is exactly 1
   at any scale, 1e300 and subnormal values included; a window holding a nonzero member below
   `2**-880` of its leg's largest is NaN. The value is clipped to `[−1, 1]` (numpy's `corrcoef`
-  rule): an exactly linear window's rounding read 1.0000000000000002, which
-  `rolling_corr(x, 3x + 7, 3) > 1` fired on. Counts as one
+  rule) and is exactly ±1 on a collinear window — every pair on one line, tested in exact
+  arithmetic: an exactly linear window's rounding read 1.0000000000000002, which
+  `rolling_corr(x, 3x + 7, 3) > 1` fired on, and 0.9999999999999998, which
+  `rolling_corr(X, 3X, 5) < 1` fired on. Counts as one
   operator level with two children. Recipe for "corr(stock daily return, Δ option EOD IV30)":
   declare the IV feed in `data.external`, then
   `rolling_corr(change(close), change(iv30, kind="diff"), window)`.

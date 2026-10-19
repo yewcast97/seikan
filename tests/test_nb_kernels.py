@@ -594,26 +594,52 @@ def test_rolling_corr_is_exact_arithmetics_rounded_once():
 def test_rolling_corr_never_leaves_its_range():
     # The review's windows: y = ±3x + 7 over [−83, 70, −13] correlate exactly ±1, and the
     # computed ratio read ±1.0000000000000002 — `rolling_corr(x, y) > 1` fired where it is
-    # unreachable. The ratio is clipped to [−1, 1] (numpy's corrcoef and scipy's pearsonr
-    # rule), so every exactly linear window reads within an ulp or two of ±1, never past it.
+    # unreachable. A collinear window reads exactly ±1, and every other ratio is clipped to
+    # [−1, 1] (numpy's corrcoef and scipy's pearsonr rule).
     x = np.array([-83.0, 70.0, -13.0])
     for k in (3.0, -3.0):
         assert rolling_corr_1d(x, k * x + 7.0, 3)[-1] == k / 3.0
     rng = np.random.RandomState(17)
-    on_bound = 0
     for _ in range(200):
         x = rng.randint(-100, 100, 40).astype(float)
         k = float(rng.choice([3.0, -3.0, 0.5, -1.75, 7.0]))
         w = int(rng.randint(3, 10))
-        got = rolling_corr_1d(x, k * x + float(rng.choice([0.0, 7.0, -2.5])), w)
-        finite = got[np.isfinite(got)]
-        assert (np.abs(finite) <= 1.0).all()
-        np.testing.assert_allclose(finite, math.copysign(1.0, k), rtol=1e-15)
-        on_bound += int((np.abs(finite) == 1.0).sum())
-        np.testing.assert_array_equal(
-            ref.rolling_corr_ref(x, k * x, w), rolling_corr_1d(x, k * x, w)
-        )
-    assert on_bound > 0
+        y = k * x + float(rng.choice([0.0, 7.0, -2.5]))
+        got = rolling_corr_1d(x, y, w)
+        np.testing.assert_array_equal(got[np.isfinite(got)], math.copysign(1.0, k))
+        np.testing.assert_array_equal(ref.rolling_corr_ref(x, y, w), got)
+        y[::3] = np.nextafter(y[::3], np.inf)  # off the line by an ulp: the ratio, clipped
+        got = rolling_corr_1d(x, y, w)
+        assert (np.abs(got[np.isfinite(got)]) <= 1.0).all()
+        np.testing.assert_array_equal(ref.rolling_corr_ref(x, y, w), got)
+
+
+def test_rolling_corr_of_a_collinear_window_is_exactly_pm_one():
+    # The review's pair: X over 30-bit integers scaled by 2**-23, against 3X. Every window
+    # correlates exactly 1, and the three rounded moments and the ratio read 0.9999999999999998
+    # on 38 of its 396 windows, so `rolling_corr(X, 3X, 5) < 1` fired there. A ratio within
+    # 2**-48 of ±1 has its window tested for collinearity in exact arithmetic: every pair of
+    # y = λx + μ — any slope, offset, binade and window — reads exactly sign(λ), and the frozen
+    # reference (exact cov² == va·vb) agrees bit for bit.
+    x = np.random.default_rng(1907).integers(1, 2**30, 400) * 2.0**-23
+    np.testing.assert_array_equal(rolling_corr_1d(x, 3.0 * x, 5)[4:], 1.0)
+    rng = np.random.default_rng(41)
+    for lam in (3.0, -5.0, 1234.0, 0.75, -(2.0**-20)):
+        for e in (-1000, -60, 0, 300):
+            x = rng.integers(-(2**28), 2**28, 120) * 2.0**e
+            y = lam * x + float(rng.integers(-(2**20), 2**20)) * 2.0**e
+            for w in (3, 5, 20, 60):
+                got = rolling_corr_1d(x, y, w)
+                np.testing.assert_array_equal(got[w - 1 :], math.copysign(1.0, lam))
+                np.testing.assert_array_equal(ref.rolling_corr_ref(x, y, w), got)
+    # one member moved an ulp breaks the line: the windows holding it read their own ratio,
+    # some of them below the bound — never pulled onto it
+    x = np.random.default_rng(1907).integers(1, 2**30, 400) * 2.0**-23
+    y = 3.0 * x
+    y[::7] = np.nextafter(y[::7], np.inf)
+    got = rolling_corr_1d(x, y, 5)
+    np.testing.assert_array_equal(ref.rolling_corr_ref(x, y, 5), got)
+    assert ((got[4:] < 1.0) & (got[4:] > 1.0 - 2.0**-48)).any()
 
 
 def test_rolling_corr_past_the_variance_range_reads_the_unscaled_correlation():

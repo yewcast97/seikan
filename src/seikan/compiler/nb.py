@@ -166,7 +166,7 @@ from seikan.numeric import MIN_NORMAL, log_ratio_array, pct_change
 # with any variation whose variance is a normal double is the direct two-pass form about its
 # offset, bit for bit (the SMA and cross-sectional z-scores over their exact numerators, clipped
 # to their population bounds ``√(k−1)``; a correlation is its exact moments', clipped to
-# ``[−1, 1]`` where their roundings carried an exactly linear window past it; ``ema_1d`` differs
+# ``[−1, 1]`` and exactly ±1 where its window is collinear; ``ema_1d`` differs
 # from its plain update only on the steps whose rounded update left its exact interval, and the
 # EW z-score carries its mean compensated — the plain West recurrence's value to its rounding, not
 # bit for bit; the out-of-range windows and the lifted EW frame are the note above); "constant"
@@ -579,10 +579,13 @@ def rolling_corr_apply_nb(
     ``2**-880`` of its leg's largest has no exact moments in the frame: NaN.
 
     The ratio over ``sqrt(va·vb)`` is :func:`_sqrt_product`'s, exponent-safe, and it is clipped
-    to ``[−1, 1]``, numpy's ``corrcoef`` and scipy's ``pearsonr`` rule: the three roundings can
-    carry an exactly linear window an ulp past its bound (the direct form read ``y = 3x + 7``
-    over ``[−83, 70, −13]`` as 1.0000000000000002, and ``rolling_corr(x, y) > 1`` fired where it
-    is unreachable). The clip binds only where the ratio left the range.
+    to ``[−1, 1]``, numpy's ``corrcoef`` and scipy's ``pearsonr`` rule. A collinear window —
+    every pair on one line, the one case of equality in Cauchy–Schwarz — reads exactly ±1: the
+    roundings of the moments and the ratio carried such a window up to two ulps off its bound
+    either way (the direct form read ``y = 3x + 7`` over ``[−83, 70, −13]`` as
+    1.0000000000000002, so ``rolling_corr(x, y) > 1`` fired where it is unreachable; ``X``
+    against ``3X`` read 0.9999999999999998 on 38 of 396 windows, so ``< 1`` fired), so a ratio
+    within ``2**-48`` short of ±1 has its window tested exactly (:func:`_collinear`).
     """
     a = np.asarray(left, dtype=float)
     b = np.asarray(right, dtype=float)
@@ -1587,6 +1590,12 @@ def _rolling_exact_deviations(a: npt.NDArray[np.float64], window: int) -> npt.ND
 #: floor — ``2**-880`` of its window's largest — has no exact square there: the window is NaN.
 _CORR_TOP = 400
 _CORR_FLOOR = 2.0**-480
+#: Past this magnitude a correlation may be an exactly collinear window's ±1 read through the
+#: roundings of its three moments and of the ratio, which miss it by under five half-ulps of 1:
+#: a ratio between it and ±1 has its window tested for collinearity (:func:`_collinear`) and
+#: reads exactly ±1 if every pair lies on one line — a ratio at or past ±1 reads it already,
+#: through the clip.
+_CORR_UNIT_BAND = 1.0 - 2.0**-48
 
 
 @njit(cache=True)
@@ -1626,6 +1635,63 @@ def _framed_moment(
 
 
 @njit(cache=True)
+def _two_difference(x: float, y: float) -> tuple[float, float]:
+    """``(d, e)``: ``d = fl(x − y)`` and its error ``e``, ``x − y = d + e`` EXACTLY — Knuth's
+    two-sum."""
+    d = x - y
+    t = d - x
+    return d, (x - (d - t)) - (y + t)
+
+
+@njit(cache=True)
+def _collinear(
+    a: npt.NDArray[np.float64],
+    b: npt.NDArray[np.float64],
+    first: int,
+    last: int,
+    fa: int,
+    fb: int,
+) -> bool:
+    """Whether every pair of the window ``[first, last]`` lies on one line, EXACTLY — the one
+    window whose correlation is ±1 (:func:`_rolling_corr_1d`: every pair finite and framed as
+    ``ldexp(x, f)`` with no member below :data:`_CORR_FLOOR`, the ``a`` leg varying). The pairs
+    lie on the line through the first pair and the first ``r`` whose ``a`` differs from it iff
+    ``(b_j − b_0)·(a_r − a_0) = (b_r − b_0)·(a_j − a_0)`` at every ``j``. Each difference is
+    exact as two doubles (:func:`_two_difference`) and every product of them exact (the framed
+    members are multiples of ``2**-532``, :data:`_CORR_TOP`): where all four differences are
+    single doubles the two sides are equal iff their :func:`_two_product` pairs are, and
+    otherwise iff the expansion of their difference holds no partial — :func:`_expansion_add`
+    stores none that is zero. O(window)."""
+    xa0 = math.ldexp(a[first], fa)
+    xb0 = math.ldexp(b[first], fb)
+    r = first + 1
+    while a[r] == a[first]:
+        r += 1
+    da, da_e = _two_difference(math.ldexp(a[r], fa), xa0)
+    db, db_e = _two_difference(math.ldexp(b[r], fb), xb0)
+    acc = np.empty(16)
+    for j in range(first + 1, last + 1):
+        ea, ea_e = _two_difference(math.ldexp(a[j], fa), xa0)
+        eb, eb_e = _two_difference(math.ldexp(b[j], fb), xb0)
+        if da_e == 0.0 and db_e == 0.0 and ea_e == 0.0 and eb_e == 0.0:
+            p, e = _two_product(eb, da)
+            q, f = _two_product(db, ea)
+            if p != q or e != f:
+                return False
+            continue
+        n = 0
+        for u in (eb, eb_e):
+            for v in (da, da_e):
+                acc, n = _add_product(acc, n, u, v)
+        for u in (db, db_e):
+            for v in (ea, ea_e):
+                acc, n = _add_product(acc, n, -u, v)
+        if n > 0:
+            return False
+    return True
+
+
+@njit(cache=True)
 def _corr_frame(v: float) -> int:
     """The power of two scaling ``|v|`` into ``[2**(_CORR_TOP − 1), 2**_CORR_TOP)`` — 0 for 0."""
     return 0 if v == 0.0 else _CORR_TOP - math.frexp(v)[1]
@@ -1661,7 +1727,8 @@ def _rolling_corr_1d(
 ) -> None:
     """At the last bar of each trailing ``window`` of the pair ``(a, b)``, into ``out`` (left as
     given elsewhere): the correlation ``cov / sqrt(va·vb)`` (:func:`_sqrt_product`) clipped to
-    ``[−1, 1]``, its moments ``va = k·Σa² − (Σa)²``, ``vb = k·Σb² − (Σb)²`` and
+    ``[−1, 1]`` — exactly ±1 where the window is collinear (:func:`_collinear`, tested past
+    :data:`_CORR_UNIT_BAND`) — its moments ``va = k·Σa² − (Σa)²``, ``vb = k·Σb² − (Σb)²`` and
     ``cov = k·Σab − ΣaΣb`` those of the legs scaled into their frames (:data:`_CORR_TOP`), each
     EXACT and rounded once (:func:`_framed_moment`) — wherever the window holds ``window`` finite
     pairs, no nonzero member below :data:`_CORR_FLOOR` in its frame, and two varying legs (a
@@ -1745,7 +1812,10 @@ def _rolling_corr_1d(
         vb, acc = _framed_moment(window, qb, mqb, sb, msb, sb, msb, acc)
         if va > 0.0 and vb > 0.0:
             cov, acc = _framed_moment(window, ab, mab, sa, msa, sb, msb, acc)
-            out[i] = min(max(cov / _sqrt_product(va, vb), -1.0), 1.0)
+            corr = cov / _sqrt_product(va, vb)
+            if _CORR_UNIT_BAND < abs(corr) < 1.0 and _collinear(a, b, first, i, fa, fb):
+                corr = math.copysign(1.0, cov)
+            out[i] = min(max(corr, -1.0), 1.0)
 
 
 @njit(cache=True)

@@ -1467,6 +1467,39 @@ def test_rolling_corr_never_fires_past_its_bound(tmp_path):
         assert (res.summary["cells"][0]["by_target"]["target"]["n"] > 0) is fires
 
 
+def test_rolling_corr_of_an_exactly_proportional_pair_never_fires_below_one(tmp_path):
+    # The review's thesis: X over 30-bit integers scaled by 2**-23 against 3X correlates exactly
+    # 1 on every window, and the rounded ratio read 0.9999999999999998 on 38 of the 396, so
+    # `rolling_corr(X, 3X, 5) < 1` fired there. A collinear window reads exactly 1.
+    idx = pd.date_range("2020-01-01", periods=400, freq="D")
+    pd.DataFrame(
+        {"open": 100.0, "high": 100.0, "low": 100.0, "close": 100.0, "volume": 1.0}, index=idx
+    ).to_csv(tmp_path / "px.csv")
+    x = np.random.default_rng(1907).integers(1, 2**30, len(idx)) * 2.0**-23
+    pd.Series(x, index=idx, name="x").to_frame().to_csv(tmp_path / "x.csv")
+    pd.Series(3.0 * x, index=idx, name="y").to_frame().to_csv(tmp_path / "y.csv")
+    thesis = Thesis.model_validate(
+        {
+            "name": "corr_proportional",
+            "data": {"targets": ["target"], "external": {"x": {}, "y": {}}},
+            "entry": {
+                "type": "threshold",
+                "left": {
+                    "type": "rolling_corr",
+                    "left": {"type": "external", "name": "x"},
+                    "right": {"type": "external", "name": "y"},
+                    "window": 5,
+                },
+                "op": "<",
+                "right": {"type": "constant", "value": 1.0},
+            },
+            "params": {"horizon": 1},
+        }
+    )
+    files = {"target": tmp_path / "px.csv", "x": tmp_path / "x.csv", "y": tmp_path / "y.csv"}
+    assert run_backtest(thesis, load(thesis, files)).trades.empty
+
+
 def test_rolling_corr_of_an_exactly_uncorrelated_window_is_zero(tmp_path):
     # [1.1, 0.7, 1.1, 0.7, 0.9] against [0.7, 0.7, 1.1, 1.1, 0.9] covary by exactly 0: the
     # direct two-pass moments read a correlation of 4.3e-17, and on a ten-bar cycle

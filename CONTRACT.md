@@ -1065,10 +1065,12 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   varying window, exactly where the SMA z-score it guards is defined. A `rolling_corr` needs no
   lift — its exact moments are framed (above) and the root of their variance product is taken
   with the exponents moved out — so `rolling_corr(x, x)` is exactly 1 at any scale, 1e300 and
-  subnormal values included; and a correlation is clipped to `[−1, 1]`, the regression's `r2` to
-  at most 1 — an exactly linear window's or pool's rounding read 1.0000000000000002
-  (`rolling_corr(x, 3x + 7, 3) > 1` fired on it) — and the SMA `zscore` to its population bound
-  `±√(w−1)`, which a window of `w − 1` equal
+  subnormal values included, and a collinear window's correlation is exactly ±1 (tested in exact
+  arithmetic where the ratio lands within `2**-48` of it: `rolling_corr(X, 3X, 5)` read
+  0.9999999999999998 on 38 of 396 windows, and `< 1` fired); and a correlation is clipped to
+  `[−1, 1]`, the regression's `r2` to at most 1 — an exactly linear window's or pool's rounding
+  read 1.0000000000000002 (`rolling_corr(x, 3x + 7, 3) > 1` fired on it) — and the SMA `zscore`
+  to its population bound `±√(w−1)`, which a window of `w − 1` equal
   values beside one other sits ON: the ratio's rounding read 2.0000000000000004 for the exact 2 of
   `[100, 100, 100, 100, 100.3]`, and `zscore(close, 5) > 2` fired on every such window. The
   cross-sectional z-score, `cross_demean(x, scale="std")`, is clipped to its cross-section's
