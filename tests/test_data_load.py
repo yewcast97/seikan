@@ -352,6 +352,35 @@ def test_index_mismatch_listing_is_bounded(tmp_path):
     assert "+9 more" in detail  # 5 examples shown, remainder counted
 
 
+def test_target_clocks_compare_in_exact_ticks_past_the_nanosecond_range(tmp_path):
+    # The review's case: a nanosecond-stamped target beside one holding a 2500-01-01 bar (a
+    # microsecond clock). pandas' union promoted both to int64 nanoseconds and crashed the load
+    # (OutOfBoundsDatetime, exit 4) instead of naming the mismatch; in exact ticks it is the
+    # ordinary refusal, each target's missing stamp named.
+    a = tmp_path / "a.csv"
+    a.write_text(
+        "datetime,open,high,low,close\n"
+        + "".join(f"2021-01-0{d}T00:00:00.000000000,1,1,1,1\n" for d in (1, 2, 3)),
+        encoding="utf-8",
+    )
+    b = tmp_path / "b.csv"
+    b.write_text(
+        "datetime,open,high,low,close\n"
+        + "".join(f"{d},1,1,1,1\n" for d in ("2021-01-01", "2021-01-02", "2500-01-01")),
+        encoding="utf-8",
+    )
+    with pytest.raises(DataError) as e:
+        load(_thesis(["a", "b"]), {"a": a, "b": b})
+    assert _codes(e.value) == {"target_index_mismatch"}
+    detail = str(e.value)
+    assert "target 'a': missing 1 timestamp(s) present in other targets (2500-01-01T00:00:00)" in (
+        detail
+    )
+    assert "target 'b': missing 1 timestamp(s) present in other targets (2021-01-03T00:00:00)" in (
+        detail
+    )
+
+
 def test_case_insensitive_columns(tmp_path):
     idx = pd.date_range("2021-01-01", periods=4, freq="1D")
     df = pd.DataFrame(
@@ -612,3 +641,51 @@ def test_feed_anchoring_is_pandas_reindex_ffill_bit_for_bit_in_range(units):
         got = _anchor_feed(native, bars)
         pd.testing.assert_series_equal(got, native.reindex(bars, method="ffill"))
         assert np.isnan(got.iloc[0]) and (got.loc[native.index[:10]] == native.iloc[:10]).all()
+
+
+def test_a_benchmark_bar_past_the_nanosecond_range_is_ignored_not_a_crash(tmp_path):
+    # The review's case: a benchmark holding a 2500-01-01 bar (a microsecond clock) beside a
+    # nanosecond target. pandas' reindex promoted it to int64 nanoseconds and crashed the load
+    # (OutOfBoundsDatetime, exit 4) over a bar no target reads; matched in exact ticks it is
+    # ignored, each bar reading the benchmark stamped at exactly its instant, NaN where none is.
+    target = tmp_path / "target.csv"
+    target.write_text(
+        "datetime,open,high,low,close\n"
+        + "".join(f"2021-01-0{d}T00:00:00.00000000{d // 3},1,1,1,1\n" for d in (1, 2, 3)),
+        encoding="utf-8",
+    )
+    bench = tmp_path / "bench.csv"
+    bench.write_text(
+        "datetime,open,high,low,close\n"
+        + "".join(
+            f"{d},{v},{v},{v},{v}\n"
+            for d, v in (("2021-01-01", 1), ("2021-01-02", 2), ("2021-01-03", 3), ("2500-01-01", 9))
+        ),
+        encoding="utf-8",
+    )
+    md = load(_thesis(benchmark=True), {"target": target, "benchmark": bench})
+    assert md.index.unit == "ns"
+    np.testing.assert_array_equal(md.benchmark_open.to_numpy(), [1.0, 2.0, np.nan])
+    assert md.benchmark_open.index.equals(md.index)
+
+
+@pytest.mark.parametrize("units", [("us", "us"), ("us", "ns"), ("ns", "us"), ("s", "ms")])
+def test_benchmark_matching_is_pandas_reindex_bit_for_bit_in_range(units):
+    # Wherever the int64 comparison held, the matched value is the very one pandas' reindex (no
+    # fill) gave: the print stamped at exactly the bar's instant, NaN everywhere else.
+    from seikan.compiler.data import _match_feed
+
+    rng = np.random.default_rng(len(units[0]) * 11 + len(units[1]))
+    base = pd.Timestamp("1990-01-01").value
+    for _ in range(50):
+        f = np.unique(base + rng.integers(0, 4 * 10**17, 30) // 10**9 * 10**9)
+        t = np.unique(np.r_[base - 10**12, f[:10], base + rng.integers(0, 10**18, 40)])
+        native = pd.Series(
+            rng.standard_normal(f.size),
+            index=pd.DatetimeIndex(f.astype("datetime64[ns]")).as_unit(units[1]),
+            name="open",
+        )
+        bars = pd.DatetimeIndex(t.astype("datetime64[ns]")).as_unit(units[0])
+        got = _match_feed(native, bars)
+        pd.testing.assert_series_equal(got, native.reindex(bars))
+        assert (got.loc[native.index[:10]] == native.iloc[:10]).all()

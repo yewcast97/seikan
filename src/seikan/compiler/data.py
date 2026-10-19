@@ -331,6 +331,14 @@ def _prepare_feed(
     return s
 
 
+def _ticks(index: pd.DatetimeIndex, per_second: int) -> list[int]:
+    """The index's stamps as exact Python integers at ``per_second`` ticks a second — a multiple of
+    its own resolution, so two clocks of different units compare and difference exactly at any
+    span (pandas promotes both to int64 nanoseconds, which do not hold the range)."""
+    scale = per_second // ticks_per_second(index)
+    return [t * scale for t in index.asi8.tolist()]
+
+
 class _Asof(NamedTuple):
     """One feed clock read backward-asof on the bar clock (:func:`_asof`): per bar, the POSITION
     of the feed's latest stamp at or before it (−1 before the first) and the ticks the bar sits
@@ -351,8 +359,8 @@ def _asof(stamps: pd.DatetimeIndex, bars: pd.DatetimeIndex) -> _Asof:
     2500-01-01 beside nanosecond bars refused the load as ``OutOfBoundsDatetime``), and a feed
     stamped 1700 against 2026 bars overflowed the age past ~292 years and crashed it."""
     per_second = max(ticks_per_second(stamps), ticks_per_second(bars))
-    stamp_ticks = [t * (per_second // ticks_per_second(stamps)) for t in stamps.asi8.tolist()]
-    bar_ticks = [t * (per_second // ticks_per_second(bars)) for t in bars.asi8.tolist()]
+    stamp_ticks = _ticks(stamps, per_second)
+    bar_ticks = _ticks(bars, per_second)
     position = [bisect.bisect_right(stamp_ticks, t) - 1 for t in bar_ticks]
     behind = [
         t - stamp_ticks[j] if j >= 0 else None for t, j in zip(bar_ticks, position, strict=True)
@@ -369,6 +377,17 @@ def _anchor_feed(native: pd.Series, index: pd.DatetimeIndex) -> pd.Series:
     position = np.array(_asof(native.index, index).position)
     values = native.to_numpy(dtype=float)[np.maximum(position, 0)]
     return pd.Series(np.where(position >= 0, values, np.nan), index=index, name=native.name)
+
+
+def _match_feed(native: pd.Series, index: pd.DatetimeIndex) -> pd.Series:
+    """The exact-match twin of :func:`_anchor_feed`, off the same :func:`_asof` read: each bar
+    reads the value stamped at exactly its instant (0 ticks behind it), NaN where none is — a
+    reindex WITHOUT fill. pandas' ``reindex`` promoted a coarser clock to int64 nanoseconds and
+    refused the load (``OutOfBoundsDatetime``) on a stamp past 2262 that no bar reads."""
+    asof = _asof(native.index, index)
+    values = native.to_numpy(dtype=float)[np.maximum(asof.position, 0)]
+    hit = np.array([d == 0 for d in asof.behind], dtype=bool)
+    return pd.Series(np.where(hit, values, np.nan), index=index, name=native.name)
 
 
 def _feed_age_days(native: pd.Series, target_index: pd.DatetimeIndex) -> pd.Series:
@@ -661,37 +680,45 @@ def load_market_data(spec: DataSpec, files: DataFiles) -> MarketData:
     # missing from a single target delete that bar from EVERY target — before any coverage
     # ledger exists to record it — so trimming the rows under adverse firings would silently
     # shrink the graded pool and could turn an unmet cell into a met one. (The
-    # benchmark join below already refused this trade-off for exactly this reason: it reindexes
+    # benchmark join below already refused this trade-off for exactly this reason: it matches
     # WITHOUT intersecting so a hole censors rather than shrinks.) A caller with genuinely
     # mixed calendars pre-aligns the files, or carves an explicit `data.start`/`data.end`
     # window — which enters the DSL hash, making the evaluated interval part of the run's
-    # identity instead of an artifact of the data.
-    union: pd.DatetimeIndex | None = None
-    for df in frames.values():
-        union = df.index if union is None else union.union(df.index)
-    if union is not None:
+    # identity instead of an artifact of the data. The clocks compare as exact ticks in the
+    # finest target resolution (:func:`_ticks`): pandas' union promoted a coarser clock to int64
+    # nanoseconds, which overflowed on a stamp past 2262 beside a nanosecond target and crashed
+    # the load instead of naming the mismatch.
+    per_second = max(ticks_per_second(df.index) for df in frames.values())
+    clocks = {name: _ticks(df.index, per_second) for name, df in frames.items()}
+    first = next(iter(clocks.values()))
+    if any(clock != first for clock in clocks.values()):
+        # each instant any target carries, as the (target, position) it is read off
+        carried = {t: (name, i) for name, clock in clocks.items() for i, t in enumerate(clock)}
         mismatches: list[str] = []
         for name in targets:
-            missing = union.difference(frames[name].index)
-            if len(missing):
-                shown = ", ".join(ts.isoformat() for ts in missing[:MAX_EXAMPLES])
+            missing = sorted(carried.keys() - clocks[name])
+            if missing:
+                shown = ", ".join(
+                    frames[owner].index[i].isoformat()
+                    for owner, i in (carried[t] for t in missing[:MAX_EXAMPLES])
+                )
                 extra = len(missing) - min(len(missing), MAX_EXAMPLES)
                 mismatches.append(
                     f"target {name!r}: missing {len(missing)} timestamp(s) present in other "
                     f"targets ({shown}{f', +{extra} more' if extra else ''})"
                 )
-        if mismatches:
-            _fail(
-                "target_index_mismatch",
-                "targets do not share one bar clock — "
-                + "; ".join(mismatches)
-                + ". Every target must carry the same timestamps over the evaluated interval "
-                "(an intersection would delete those bars from every target and shrink the "
-                "graded pool invisibly); pre-align the files, or restrict the window with "
-                "data.start / data.end",
-            )
-    common = union
-    if common is None or len(common) < 2:
+        _fail(
+            "target_index_mismatch",
+            "targets do not share one bar clock — "
+            + "; ".join(mismatches)
+            + ". Every target must carry the same timestamps over the evaluated interval "
+            "(an intersection would delete those bars from every target and shrink the "
+            "graded pool invisibly); pre-align the files, or restrict the window with "
+            "data.start / data.end",
+        )
+    # every target carries the same instants: the finest clock is the one that holds them all
+    common = max((frames[name].index for name in targets), key=ticks_per_second)
+    if len(common) < 2:
         _fail(
             "insufficient_common_index",
             "targets share fewer than 2 common timestamps after alignment",
@@ -765,12 +792,13 @@ def load_market_data(spec: DataSpec, files: DataFiles) -> MarketData:
                 }
             )
 
-    # Benchmark: the targets define the timeline — reindex with NO ffill, so a bar where the
-    # benchmark is missing stays NaN and censors the observations anchored there (intersecting
-    # the index instead would silently shrink the sample and shift every transform).
+    # Benchmark: the targets define the timeline — an exact match with NO ffill, so a bar where
+    # the benchmark is missing stays NaN and censors the observations anchored there (intersecting
+    # the index instead would silently shrink the sample and shift every transform). A benchmark
+    # bar outside the evaluated interval matches no bar of it, so the file needs no slice.
     benchmark_open = None
-    if files.benchmark:
-        benchmark_open = _slice(raw_benchmark, spec.start, spec.end)["open"].reindex(common)
+    if raw_benchmark is not None:
+        benchmark_open = _match_feed(raw_benchmark["open"], common)
         cov = _coverage(benchmark_open)
         if cov < 1.0:
             join_warnings.append(
