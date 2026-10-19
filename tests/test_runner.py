@@ -5022,7 +5022,8 @@ def test_cross_mean_grid_pbo_reads_every_candidate_s_bar_numerators(tmp_path, mo
     without = cscv_pbo(*args, **{**kwargs, "bar_numerators": None})
     ledger = ("blocks", "n_splits", "n_splits_attempted", "n_combos", "n_combos_scoreable")
     assert {k: pbo[k] for k in ledger} == {k: without[k] for k in ledger}
-    assert pbo["oos_degradation_slope"] != without["oos_degradation_slope"]
+    assert pbo["lambda_mean"] != without["lambda_mean"]
+    assert pbo["prob_oos_loss"] != without["prob_oos_loss"]
 
 
 def test_cross_mean_swept_entry_axis_each_cell_mounts_its_own_pooled_mean(tmp_path):

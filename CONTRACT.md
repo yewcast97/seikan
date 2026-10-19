@@ -438,8 +438,8 @@ pool whose every bar's excess sum is exactly 0 (every bar full at a zero mean, o
 whose excesses cancel on each bar, where the rounded rows' bar sums are residue — a `t_hac` of
 5.43 beside a `mean_ret` of exactly 0) has no long-run variance: `t_hac` / `hac_se` null, as on
 identical legs; the grid-level CSCV reads them too — a block holds whole bars (its purge reads
-the bar and the cell's horizon alone), so every split's MEAN is the exactly rounded sum of its
-rows' bar numerators over `N` times its row count, over the rows' own sd, and every split a grid of all-full cells scores is a full tie (`pbo`,
+the bar and the cell's horizon alone), so every split's MEAN is the exact sum of its rows' bar
+numerators over `N` times its row count, rounded once, over the rows' own sd, and every split a grid of all-full cells scores is a full tie (`pbo`,
 `lambda_mean` and `prob_oos_loss` 0.0 whenever the block scores, in any target order, where the
 rounded rows ranked their residue — every train score tied, the first-declared candidate wins
 each split, so a sparse such grid can score fewer splits, fall back to a coarser S or decline
@@ -965,14 +965,17 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   only each episode's sum exactly rounded, seven episodes of the two doubles beside 0.1 (every
   draw's exact mean 0.1's double) read a zero-width interval at 0.09999999999999999 beside a
   `mean_ret` of 0.1. A CSCV
-  split's mean is its rows' exactly rounded sum over their count, one `math.fsum` over its
-  blocks' exact parts — rebuilt from the column's mean, an exact 0 read −2.6e-18 and two
-  candidates cycling through ±0.3 read `pbo` 2/70 and `prob_oos_loss` 1/70 for 1/70 and 0 —
-  and its variance is exact arithmetic's, rounded once: the rows read as integers over one
-  power-of-two denominator, each block carrying its count and the exact sums of those integers
-  and of their squares, so a split's variance is one quotient of integers,
-  `(n·ΣP² − (ΣP)²) / (den²·n·(n − 1))` — the same double in any row order, at any level, and
-  whatever the held-out blocks hold. Merged from the blocks' centered moments, every row's
+  split's mean and variance are exact arithmetic's, each rounded once: the rows (and a
+  `cross_mean` grid's bar numerators) read as integers over one power-of-two denominator, each
+  block carrying its count and the exact sums of those integers and of their squares, so a
+  split's mean is one quotient of integers — rebuilt from the column's mean, an exact 0 read
+  −2.6e-18 and two candidates cycling through ±0.3 read `pbo` 2/70 and `prob_oos_loss` 1/70 for
+  1/70 and 0 — and so is its variance, `(n·ΣP² − (ΣP)²) / (den²·n·(n − 1))`: the same double in
+  any row order, at any level, and whatever the held-out blocks hold. Candidates rank by their
+  EXACT Sharpes — the square with its sign, a rational of the split's exact moments — so equal
+  Sharpes tie: as the quotient of the rounded mean and the root of the rounded variance, a
+  candidate holding three times another's returns (the same Sharpe on every split) scored apart
+  in its last bits and twenty such grids read `pbo` 0.19 to 0.36 for full ties. Merged from the blocks' centered moments, every row's
   squared deviation rounded on its own, two candidates holding `α·[10, 13, 13, 16]` and
   `α·[11, 11, 14, 16]` in every block — other returns with the same count, sum and sum of
   squares, a full tie on every split — read a nonzero `pbo` on 99 of 100 such grids (up to

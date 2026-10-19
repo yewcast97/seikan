@@ -16,7 +16,7 @@ import pytest
 from scipy import stats as sps
 
 from seikan.analysis._conditioning import _bucket_monotonicity
-from seikan.analysis._cscv import _column, _degradation_slope, _split_scores, _split_variance
+from seikan.analysis._cscv import _column, _degradation_slope, _split_scores
 from seikan.analysis._hac import _bar_deviation_sums
 from seikan.analysis._pools import _near_constant
 from seikan.analysis._rotation import _fwd_ffts, _rotation_num_den, _tail_p
@@ -4152,6 +4152,11 @@ def _split_columns(r, b, s=4):
     return [[_column(b, r, r[:, None], 1, s)]]
 
 
+def _split_values(columns, blocks):
+    """Each candidate's split Sharpe as a double, NaN where the split leaves it unscored."""
+    return np.array([np.nan if sc is None else sc.value for sc in _split_scores(columns, blocks)])
+
+
 def test_cscv_split_score_reads_exact_constancy_per_split():
     # The column varies (0.1 in blocks 0-1, 0.3 in blocks 2-3), but a split over blocks {0, 1}
     # alone is a constant pool. Shifted by the WHOLE column's mean, with unequal block counts,
@@ -4162,8 +4167,8 @@ def test_cscv_split_score_reads_exact_constancy_per_split():
     b = np.array([0, 0, 1, 1, 1, 2, 2, 3, 3, 3])
     columns = _split_columns(r, b)
     for blocks in ([0, 1], [2, 3]):
-        assert np.isnan(_split_scores(columns, np.array(blocks))).all()
-    assert np.isfinite(_split_scores(columns, np.array([0, 2]))).all()
+        assert np.isnan(_split_values(columns, np.array(blocks))).all()
+    assert np.isfinite(_split_values(columns, np.array([0, 2]))).all()
 
 
 def test_cscv_split_score_nulls_dispersion_below_rounding():
@@ -4174,8 +4179,8 @@ def test_cscv_split_score_nulls_dispersion_below_rounding():
     r[1] = np.nextafter(0.005, 1.0)
     b = np.array([0, 0, 1, 1, 1, 2, 2, 3, 3, 3])
     columns = _split_columns(r, b)
-    assert np.isnan(_split_scores(columns, np.array([0, 1]))).all()
-    assert np.isfinite(_split_scores(columns, np.array([0, 2]))).all()
+    assert np.isnan(_split_values(columns, np.array([0, 1]))).all()
+    assert np.isfinite(_split_values(columns, np.array([0, 2]))).all()
 
 
 def test_cscv_split_score_of_an_overflowed_sd_is_nan_never_zero():
@@ -4185,8 +4190,7 @@ def test_cscv_split_score_of_an_overflowed_sd_is_nan_never_zero():
     x, y = 1.3e154, -1.2e154
     assert (Fraction(x) - Fraction(y)) ** 2 / 2 > Fraction(np.finfo(float).max)  # the premise
     columns = _split_columns(np.array([x, y]), np.array([0, 1]), s=2)
-    assert _split_variance(columns[0][0], [0, 1], 2) == math.inf
-    assert np.isnan(_split_scores(columns, [0, 1])).all()
+    assert _split_scores(columns, [0, 1]) == [None]
 
 
 @pytest.mark.parametrize("scale", [1e157, 1e160])
@@ -4226,11 +4230,11 @@ def test_cscv_split_score_of_a_subnormal_variance_is_nan_never_a_sharpe():
     r = np.random.RandomState(8).randn(40)
     b = np.repeat(np.arange(4), 10)
     blocks = np.array([0, 2])
-    score = _split_scores(_split_columns(r, b), blocks)
+    score = _split_values(_split_columns(r, b), blocks)
     assert np.isfinite(score).all()
-    scaled = _split_scores(_split_columns(r * 2.0**-500, b), blocks)
+    scaled = _split_values(_split_columns(r * 2.0**-500, b), blocks)
     np.testing.assert_array_equal(scaled, score)
-    assert np.isnan(_split_scores(_split_columns(r * 2.0**-535, b), blocks)).all()
+    assert np.isnan(_split_values(_split_columns(r * 2.0**-535, b), blocks)).all()
 
 
 def test_cscv_near_constant_split_pool_is_never_ranked():
@@ -4276,7 +4280,7 @@ def test_cscv_split_score_of_an_exact_constant_pool_near_the_column_mean_is_nan(
         hi = np.nextafter(hi, 1.0)
     r = np.array([0.21] * 10 + [hi] * 10)
     columns = _split_columns(r, np.repeat(np.arange(4), 5))
-    assert np.isnan(_split_scores(columns, np.array([0, 1]))).all()
+    assert np.isnan(_split_values(columns, np.array([0, 1]))).all()
 
 
 def test_cscv_pbo_split_means_carry_their_rows_exact_sign():
@@ -4309,7 +4313,7 @@ def test_cscv_split_mean_is_the_rows_exact_sum_across_blocks():
     # the 2 before its partner arrived, and the split's mean read −0.25.
     r = np.array([2.0**54, 1.0, -(2.0**54), -1.0, 0.5, -0.5, 0.25, -0.25] * 2)
     columns = _split_columns(r, np.tile(np.arange(8), 2), s=8)
-    assert _split_scores(columns, np.arange(4))[0] == 0.0
+    assert _split_values(columns, np.arange(4))[0] == 0.0
 
 
 def test_cscv_split_pool_inside_one_regime_still_scores():
@@ -4328,10 +4332,11 @@ def test_cscv_split_pool_inside_one_regime_still_scores():
     assert out["n_candidates_min"] == 5
 
 
-def test_cscv_split_variance_is_exact_arithmetics_rounded_once():
-    # Every split's variance is the exact ddof=1 variance of its rows, correctly rounded — at
-    # level 1e9, where the raw one-pass Σx² − n·mean² form cancelled to rounding noise, and at
-    # level 0 — and its Sharpe the split's mean over its root.
+def test_cscv_split_score_is_exact_arithmetics_rounded_once():
+    # Every split's mean and ddof=1 variance are its rows' exact ones, each correctly rounded —
+    # at level 1e9, where the raw one-pass Σx² − n·mean² form cancelled to rounding noise, and
+    # at level 0 — its Sharpe the mean over the variance's root, and its rank key the exact
+    # Sharpe's square with its sign.
     from itertools import combinations
 
     for level in (1e9, 0.0):
@@ -4343,9 +4348,9 @@ def test_cscv_split_variance_is_exact_arithmetics_rounded_once():
             held = [Fraction(float(x)) for x in r[np.isin(b, split)]]
             mean = sum(held) / len(held)
             var = sum((x - mean) ** 2 for x in held) / (len(held) - 1)
-            assert _split_variance(columns[0][0], split, len(held)) == float(var), (level, split)
-            got = _split_scores(columns, split)[0]
-            assert got == pytest.approx(float(mean) / math.sqrt(var), rel=1e-12)
+            (got,) = _split_scores(columns, split)
+            assert got.value == float(mean) / math.sqrt(float(var)), (level, split)
+            assert got.key == (1 if mean > 0 else -1) * mean * mean / var
 
 
 def test_cscv_pbo_candidates_with_the_same_exact_moments_tie():
@@ -4377,6 +4382,39 @@ def test_cscv_pbo_candidates_with_the_same_exact_moments_tie():
         assert out["pbo"] == out["lambda_mean"] == 0.0
 
 
+@pytest.mark.parametrize(("mode", "targets"), [("conjunction", ("t",)), ("basket", ("A", "B"))])
+def test_cscv_pbo_candidates_with_proportional_returns_tie(mode, targets):
+    # The review's pair: candidate 1 holds exactly three times candidate 0's returns on the same
+    # bars, so the same Sharpe on every split — a full tie. As the quotient of the rounded mean
+    # and the root of the rounded variance the two Sharpes parted in their last bits, and the
+    # strict train and test comparisons read a winner and a loser. Ranked by the exact Sharpe
+    # every split ties: pbo and lambda_mean 0.0, under basket with both members scaled.
+    T = 480
+    rng = np.random.RandomState(20)
+    for _ in range(10):
+        cells = []
+        for tg in targets:
+            m = (rng.rand(T) < 0.4).astype(float)
+            fwd = rng.randint(-(2**20), 2**20, T) * 2.0**-24
+            for k, lam in enumerate((1.0, 3.0)):
+                cells.append({"key": (k, tg), "mask_col": m, "fwd_col": lam * fwd, "h": 1})
+        out = cscv_pbo(cells, T, list(targets), mode=mode, n_combos_declared=2)
+        assert out["reason"] is None and out["n_splits"] == 70
+        assert out["pbo"] == out["lambda_mean"] == 0.0
+
+
+def test_cscv_split_over_a_block_holding_an_unknown_bar_sum_is_unscored():
+    # A `cross_mean` bar whose numerator leaves the double range carries NaN parts: a split
+    # holding its block has no exact mean and is unscored; the splits without it score.
+    r = np.array([0.1, -0.2, 0.3, 0.05, -0.1, 0.2, 0.15, -0.05])
+    b = np.repeat(np.arange(4), 2)
+    parts = np.column_stack([3.0 * r, np.zeros_like(r)])
+    parts[3] = np.nan
+    columns = [[_column(b, r, parts, 3, 4)]]
+    assert _split_scores(columns, [0, 1]) == _split_scores(columns, [1, 3]) == [None]
+    assert _split_scores(columns, [0, 2])[0] is not None
+
+
 def test_cscv_split_score_reads_each_blocks_spread_at_its_own_level():
     # Blocks 0-1 alternate 0 and 2**-56, blocks 2-3 sit at 1.0 / 1.2. Shifted by the whole
     # column's mean (≈ 0.55), every tiny row read −0.55: the split over blocks {0, 1} had a
@@ -4388,7 +4426,7 @@ def test_cscv_split_score_reads_each_blocks_spread_at_its_own_level():
     beside_level = np.concatenate([tiny, np.array([1.0, 1.2] * 10)])
     beside_tiny = np.concatenate([tiny, tiny])
     scores = [
-        _split_scores(_split_columns(r, b), np.array([0, 1]))[0]
+        _split_values(_split_columns(r, b), np.array([0, 1]))[0]
         for r in (beside_level, beside_tiny)
     ]
     assert scores[0] == scores[1] == pytest.approx(math.sqrt(19 / 20))
@@ -4628,14 +4666,15 @@ def test_cscv_split_mean_sums_the_bars_exact_excess_sums():
     residue = []
     for split in combinations(range(s), 2):
         got = _split_scores(columns, np.array(split))
-        assert got[0] == 0.0
-        residue.append(got[2])
+        assert got[0].value == 0.0 and got[0].key == 0
+        residue.append(got[2].value)
         # the partial candidate: the exact excess sum its split holds, over its rows' own sd
         held = list(zip(*np.nonzero(np.isin(b, split)[:, None] & partial), strict=True))
         exact = sum(legs[t][g] - sum(legs[t]) / 3 for t, g in held) / len(held)
         own = [Fraction(float(excess[t, g])) for t, g in held]
         var = sum((x - sum(own) / len(own)) ** 2 for x in own) / (len(own) - 1)
-        assert got[1] == pytest.approx(float(exact) / math.sqrt(var), rel=1e-14)
+        assert got[1].value == float(exact) / math.sqrt(float(var))
+        assert got[1].key == (1 if exact > 0 else -1) * exact * exact / var
     assert any(r != 0.0 for r in residue)  # the premise: the rounded rows read residue
 
 

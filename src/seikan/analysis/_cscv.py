@@ -5,8 +5,9 @@ from __future__ import annotations
 
 import math
 from collections.abc import Container, Mapping, Sequence
+from fractions import Fraction
 from itertools import combinations
-from typing import NamedTuple, cast
+from typing import NamedTuple
 
 import numpy as np
 
@@ -14,12 +15,10 @@ from seikan.analysis._pools import (
     _EPS,
     _NEAR_CONSTANT_ULPS,
     BarNumerators,
-    _fsum,
     _near_constant,
     _normal,
     exact_mean,
     integer_terms,
-    parts_table,
 )
 from seikan.types import (
     CellKey,
@@ -45,21 +44,32 @@ _PBO_BLOCK_FALLBACKS = (6, 4)
 class _Column(NamedTuple):
     """One scored column's per-block reads over its kept rows, one entry per block: ``counts``
     the row counts; ``lo`` / ``hi`` the extrema (``+inf`` / ``-inf`` on an empty block: a split's
-    pool is EXACTLY constant iff its chosen blocks' min equals their max); ``sums`` each block's
-    exact row sum times ``scale``, as exact parts (``_pools.parts_table``); and ``first`` /
-    ``second`` the rows' moments as EXACT integers — every return ``P / den`` over the column's
-    one power-of-two denominator (``_pools.integer_terms``), ``first[g] = ΣP`` and ``second[g]
-    = ΣP²`` over block ``g``'s rows. A split's score is a pure arithmetic reduction of its blocks'
-    entries (:func:`_split_score`)."""
+    pool is EXACTLY constant iff its chosen blocks' min equals their max); and EXACT integers
+    over the column's one power-of-two denominator ``den`` (``_pools.integer_terms``), which
+    reads every return as ``P / den`` — ``first[g] = ΣP`` and ``second[g] = ΣP²`` over block
+    ``g``'s rows, and ``sums[g]`` the sum of their parts' integers, ``den·scale`` times the rows'
+    exact sum. ``known[g]`` is False where a row's parts are not finite (a ``cross_mean`` bar
+    whose sum leaves the double range). A split's score is a pure arithmetic reduction of its
+    blocks' entries (:func:`_split_score`)."""
 
     counts: list[int]
     lo: list[float]
     hi: list[float]
-    sums: list[list[float]]
-    scale: int
     first: list[int]
     second: list[int]
+    sums: list[int]
+    known: list[bool]
     den: int
+    scale: int
+
+
+class _Score(NamedTuple):
+    """A split's per-observation Sharpe (:func:`_split_score`): ``key`` its EXACT rank — the
+    Sharpe's square with its sign, a rational of the split's exact moments, strictly increasing
+    in the Sharpe — and ``value`` the Sharpe as a double, the read the degradation fit takes."""
+
+    key: Fraction
+    value: float
 
 
 def _kept_rows(cell: ReliabilityCell, edges: np.ndarray, off: int) -> tuple[np.ndarray, np.ndarray]:
@@ -77,26 +87,34 @@ def _column(b: np.ndarray, r: np.ndarray, parts: np.ndarray, scale: int, s: int)
     """The :class:`_Column` over rows in blocks ``b`` with returns ``r``, whose rows of exact
     ``parts`` sum to ``scale`` times the rows' sum: each row's own return over 1, or on a
     ``cross_mean`` grid the rows' bar numerators over the member count
-    (``_pools.BarNumerators.at``). Every read is exact — integers, exact parts, extrema — so a
-    column's blocks carry the same entries whatever order their rows come in."""
+    (``_pools.BarNumerators.at``). Every read is exact — integers and extrema — so a column's
+    blocks carry the same entries whatever order their rows come in."""
     lo = np.full(s, np.inf)
     hi = np.full(s, -np.inf)
     np.minimum.at(lo, b, r)
     np.maximum.at(hi, b, r)
-    nums, den = integer_terms(r.tolist())
-    first, second = [0] * s, [0] * s
-    for g, p in zip(b.tolist(), nums, strict=True):
+    n, j = parts.shape
+    finite = np.isfinite(parts).all(axis=1)
+    nums, den = integer_terms(r.tolist() + parts[finite].ravel().tolist())
+    first, second, sums = [0] * s, [0] * s, [0] * s
+    for g, p in zip(b.tolist(), nums[:n], strict=True):
         first[g] += p
         second[g] += p * p
+    for k, g in enumerate(b[finite].tolist()):
+        sums[g] += sum(nums[n + k * j : n + (k + 1) * j])
+    known = [True] * s
+    for g in b[~finite].tolist():
+        known[g] = False
     return _Column(
         np.bincount(b, minlength=s).tolist(),
         lo.tolist(),
         hi.tolist(),
-        parts_table([parts[b == g].ravel().tolist() for g in range(s)]).tolist(),
-        scale,
         first,
         second,
+        sums,
+        known,
         den,
+        scale,
     )
 
 
@@ -107,25 +125,13 @@ def _disperses(lo: float, hi: float, mean: float) -> bool:
     return hi > lo and not max(hi - mean, mean - lo) < _NEAR_CONSTANT_ULPS * _EPS * abs(mean)
 
 
-def _split_variance(col: _Column, blocks: Sequence[int], n: int) -> float:
-    """The ddof=1 variance of the ``n`` rows in ``col``'s ``blocks``, EXACT and rounded once:
-    ``(n·ΣP² − (ΣP)²) / (den²·n·(n − 1))`` over the blocks' integer moments (:class:`_Column`),
-    one quotient of integers, correctly rounded by Python's true division — ``inf`` where it
-    leaves the double range (its ``OverflowError``)."""
-    s1 = sum(col.first[g] for g in blocks)
-    s2 = sum(col.second[g] for g in blocks)
-    try:
-        return (n * s2 - s1 * s1) / (col.den * col.den * n * (n - 1))
-    except OverflowError:
-        return math.inf
+def _split_score(col: _Column, blocks: Sequence[int]) -> _Score | None:
+    """The per-observation Sharpe of ``col``'s rows in the chosen ``blocks``, or None.
 
-
-def _split_score(col: _Column, blocks: Sequence[int]) -> float:
-    """The per-observation Sharpe of ``col``'s rows in the chosen ``blocks``, or NaN.
-
-    A split's MEAN is its rows' EXACTLY ROUNDED sum — one ``math.fsum`` over its blocks' exact
-    parts, over ``scale`` times its row count — so it has the exact sum's sign and is 0.0
-    exactly where the rows cancel, however they fall across blocks. Rebuilt as the split's mean
+    A split's MEAN is its rows' exact sum over their count, rounded once — its blocks' part
+    integers over ``den·scale`` times its row count, one quotient of integers — so it has the
+    exact sum's sign and is 0.0 exactly where the rows cancel, however they fall across blocks.
+    Rebuilt as the split's mean
     shift plus the column's mean, an exact 0 read the shift's residue (−2.6e-18), and a split
     whose block sums cancelled read the float sum over them (−0.25 for 0 off ``[2**54, 1, −2**54,
     −1]``): two candidates cycling through ±0.3 read ``pbo`` 2/70 and ``prob_oos_loss`` 1/70
@@ -137,9 +143,10 @@ def _split_score(col: _Column, blocks: Sequence[int]) -> float:
     rows ranked in the order the targets were declared: on a grid of all-full candidates every
     split mean is exactly 0.0 and every scoreable candidate ties.
 
-    A split's VARIANCE is exact arithmetic's, rounded once (:func:`_split_variance`): its blocks'
-    integer moments merge exactly, so it is a function of the split's exact count, sum and sum of
-    squares alone — at any level, in any row order, whatever the held-out blocks hold. Merged
+    A split's VARIANCE is exact arithmetic's, rounded once — ``(n·ΣP² − (ΣP)²) / (den²·n·(n −
+    1))``, its blocks' integer moments merged exactly, one quotient of integers — so it is a
+    function of the split's exact count, sum and sum of squares alone: at any level, in any row
+    order, whatever the held-out blocks hold. Merged
     from the blocks' centered moments, ``Σ m2_b + Σ n_b·(m_b − m)²``, every row's squared
     deviation was rounded on its own: two candidates holding ``α·[10, 13, 13, 16]`` and
     ``α·[11, 11, 14, 16]`` in every block — the same count, sum and sum of squares, so the same
@@ -148,37 +155,59 @@ def _split_score(col: _Column, blocks: Sequence[int]) -> float:
     second moments read the rows' own returns — a row's excess is its own, only its bar's SUM is
     exact — so the Sharpe is the exact mean over the rows' sd.
 
-    A split pool with no usable dispersion scores NaN: one whose chosen blocks' min equals their
+    Candidates RANK by the Sharpe's exact value: the ``key`` ``sign(M)·M²·(n − 1) / (scale²·n·
+    (n·ΣP² − (ΣP)²))``, ``M`` the split's part integers, is its square with its sign, compared
+    as a rational. A quotient of the rounded mean and the root of the rounded variance parts
+    equal Sharpes in their last bits — the review's candidate holding three times another's
+    returns, the same Sharpe on every split, scored apart on 24 of 70 and read ``pbo`` 0.1 —
+    so two candidates whose exact Sharpes are equal tie, and any two others order as exact
+    arithmetic orders them.
+
+    A split pool with no usable dispersion scores None: one whose chosen blocks' min equals their
     max is EXACTLY constant, and one whose largest deviation from its mean is within
     ``_NEAR_CONSTANT_ULPS`` ulps of the mean is constant to rounding — the gate the HAC applies to
     a cell's pool (``_pools._near_constant``), read here off the extrema, so it does not depend on
-    what the column's OTHER blocks hold. A split of fewer than two rows scores NaN, and so does
-    one whose mean left the double range (or met a bar whose sum did) or whose variance is not a
-    normal double (``_pools._normal``): ``mean / inf`` is a FINITE 0.0 Sharpe, an infinite mean
-    would win every ranking, and a subnormal variance (returns under ~1e-154) holds fewer bits
-    than the Sharpe divides by.
+    what the column's OTHER blocks hold. A split of fewer than two rows scores None, and so does
+    one whose mean leaves the double range (or meets a bar whose sum does) or whose variance is
+    not a normal double (``_pools._normal``): ``mean / inf`` is a FINITE 0.0 Sharpe, an infinite
+    mean would win every ranking, and a subnormal variance (returns under ~1e-154) holds fewer
+    bits than the Sharpe divides by.
     """
-    n = sum(col.counts[g] for g in blocks)
+    n = m = s1 = s2 = 0
+    lo, hi = math.inf, -math.inf
+    for g in blocks:
+        if not col.known[g]:
+            return None
+        n += col.counts[g]
+        m += col.sums[g]
+        s1 += col.first[g]
+        s2 += col.second[g]
+        lo, hi = min(lo, col.lo[g]), max(hi, col.hi[g])
     if n < 2:
-        return _NAN
-    lo, hi = min(col.lo[g] for g in blocks), max(col.hi[g] for g in blocks)
-    mean = _fsum([p for g in blocks for p in col.sums[g]]) / (col.scale * n)
-    var = _split_variance(col, blocks, n)
-    if not (_disperses(lo, hi, mean) and math.isfinite(mean) and _normal(var)):
-        return _NAN
-    return mean / math.sqrt(var)
+        return None
+    ss = n * s2 - s1 * s1
+    try:
+        mean = m / (col.den * col.scale * n)
+        var = ss / (col.den * col.den * n * (n - 1))
+    except OverflowError:  # past the double range
+        return None
+    if not (_disperses(lo, hi, mean) and _normal(var)):
+        return None
+    sign = (m > 0) - (m < 0)
+    key = Fraction(sign * m * m * (n - 1), col.scale * col.scale * n * ss)
+    return _Score(key, mean / math.sqrt(var))
 
 
-def _split_scores(columns: list[list[_Column]], blocks: Sequence[int]) -> np.ndarray:
-    """(Q,): each candidate's score over the chosen ``blocks`` — the weakest of its scored
-    columns' Sharpes (:func:`_split_score`; NaN where any is): under conjunction a column per
-    target (the weakest-target score its caller selects on), under basket ONE column, the
-    members' kept rows pooled (:func:`cscv_pbo`)."""
-    scores = np.array([[_split_score(c, blocks) for c in cols] for cols in columns])
-    # The weakest column's Sharpe, one value per combo — an axis-wise reduction, which
-    # numpy's own signature can only type as `Any` (its element-wise overload returns a
-    # scalar); the cast states the (Q,) array it is here.
-    return cast("np.ndarray", np.min(scores, axis=1))
+def _split_scores(columns: list[list[_Column]], blocks: Sequence[int]) -> list[_Score | None]:
+    """Each candidate's score over the chosen ``blocks`` — the weakest of its scored columns'
+    Sharpes (:func:`_split_score`; None where any is): under conjunction a column per target
+    (the weakest-target score its caller selects on), under basket ONE column, the members'
+    kept rows pooled (:func:`cscv_pbo`)."""
+    out: list[_Score | None] = []
+    for cols in columns:
+        scores = [sc for c in cols if (sc := _split_score(c, blocks)) is not None]
+        out.append(min(scores) if len(scores) == len(cols) else None)
+    return out
 
 
 def _degradation_slope(
@@ -234,10 +263,9 @@ def cscv_pbo(
     < 0 flags inverse transfer; null with ``oos_degradation_slope_reason`` =
     "degenerate_train_scores" when the train scores carry no usable spread — see
     :func:`_degradation_slope`), and ``prob_oos_loss`` (fraction of splits whose winner scored
-    below zero on test). A split's mean is its rows' exactly rounded sum and its variance exact
-    arithmetic's, rounded once (:func:`_split_score`), so a mean has its exact sign and
-    level-heavy return columns score instead of cancelling to zero variance. Grid-level
-    evidence — no cell's grade reads it.
+    below zero on test). A split's mean and variance are exact arithmetic's, each rounded once
+    (:func:`_split_score`), so a mean has its exact sign and level-heavy return columns score
+    instead of cancelling to zero variance. Grid-level evidence — no cell's grade reads it.
 
     The population is ledgered, never assumed: ``n_combos <= n_combos_scoreable <=
     n_combos_declared`` — the DISTINCT candidates entering CSCV (the population a scored block
@@ -253,10 +281,11 @@ def cscv_pbo(
     would hand the train winner the worst test rank purely for tying with itself. Test ranks
     are MIDRANKS (ties share their average rank; a full tie is λ = 0 — a split that cannot
     distinguish candidates is not evidence of overfitting), and the training winner's tie-break
-    is first-index / declaration order (``np.nanargmax``), deterministic by construction. A
-    column's block moments and sums are exact, the same in any row order, so two candidates whose
-    rows have the same count, sum and sum of squares in every block tie on every split — under
-    basket however the returns fall across members.
+    is first-index / declaration order, deterministic by construction. A column's block moments
+    and sums are exact, the same in any row order, and candidates rank by their EXACT Sharpes
+    (:func:`_split_score`), so two candidates whose Sharpes are equal tie on every split — rows
+    with the same count, sum and sum of squares in every block, under basket however the
+    returns fall across members, or one candidate's returns a positive multiple of the other's.
 
     ``mode`` is the thesis's declared ``target_mode`` and sets the SPLIT SCORE — the score
     mirrors the statistic the caller of that mode selects on, because PBO describes the
@@ -274,8 +303,8 @@ def cscv_pbo(
     ``bar_numerators`` (basket only; the runner's per-cell ``cross_mean`` bar numerators over
     ``targets``, keyed by the combo prefix — ``_pools.cross_mean_bar_numerators``; a candidate it
     does not key sums its rows' own returns) carries each bar's exact numerator on its first
-    closed member, zeros on the others: every split's mean is their exactly rounded sum over the
-    member count times its row count — the read the cell's pooled panel's bar-closed sums take —
+    closed member, zeros on the others: every split's mean is their exact sum over the member
+    count times its row count, rounded once — the read the cell's pooled panel's mean takes —
     so a split's mean is the exact sum of the excesses it holds, never rounding residue, and on
     a grid of all-full candidates every scored split is a full tie (λ = 0, no test loss: a
     scored block reads ``pbo``, ``lambda_mean`` and ``prob_oos_loss`` 0.0). Its tied train
@@ -426,28 +455,29 @@ def cscv_pbo(
         n_candidates_min = n_combos
         for train in combinations(range(s), s // 2):
             n_splits_attempted += 1
-            tr = _split_scores(columns, train)
-            if np.all(np.isnan(tr)):
+            tr = {q: sc for q, sc in enumerate(_split_scores(columns, train)) if sc is not None}
+            if not tr:
                 continue
-            bi = int(np.nanargmax(tr))
+            # the exact best, a tie to the first-declared candidate (max keeps the first)
+            bi = max(tr, key=lambda q: tr[q].key)
             te = _split_scores(columns, [g for g in range(s) if g not in train])
             te_best = te[bi]
-            finite_te = te[~np.isnan(te)]
-            if math.isnan(te_best) or finite_te.shape[0] < 2:
+            keys = [sc.key for sc in te if sc is not None]
+            if te_best is None or len(keys) < 2:
                 continue
-            # MIDRANK among the finite test scores, rank 1 = worst: ties share their average
-            # rank, so a full tie — every candidate identical on test — lands at (N+1)/2,
-            # ω = 0.5, λ = 0: a split that cannot DISTINGUISH candidates is not evidence of
-            # overfitting. (Strict `<` + 1 handed the winner the WORST rank for tying, reading
-            # a grid of near-clones as maximal overfitting.) Untied scores reproduce the
-            # classic count-strictly-worse + 1 exactly.
-            worse = float(np.sum(finite_te < te_best))
-            tied = float(np.sum(finite_te == te_best))  # >= 1: te_best itself is finite here
+            # MIDRANK among the scored test candidates, rank 1 = worst: ties share their
+            # average rank, so a full tie — every candidate's exact Sharpe equal on test — lands
+            # at (N+1)/2, ω = 0.5, λ = 0: a split that cannot DISTINGUISH candidates is not
+            # evidence of overfitting. (Strict `<` + 1 handed the winner the WORST rank for
+            # tying, reading a grid of near-clones as maximal overfitting.) Untied scores
+            # reproduce the classic count-strictly-worse + 1 exactly.
+            worse = sum(k < te_best.key for k in keys)
+            tied = sum(k == te_best.key for k in keys)  # >= 1: te_best itself is scored here
             rank = worse + (tied + 1.0) / 2.0
-            n_candidates_min = min(n_candidates_min, int(finite_te.shape[0]))
-            omega = rank / (finite_te.shape[0] + 1.0)
+            n_candidates_min = min(n_candidates_min, len(keys))
+            omega = rank / (len(keys) + 1.0)
             lambdas.append(math.log(omega / (1.0 - omega)))
-            pairs.append((float(tr[bi]), float(te_best)))
+            pairs.append((tr[bi].value, te_best.value))
 
         if len(lambdas) < _PBO_MIN_SPLITS:
             # `empty` already carries the population ledger (`n_combos` IS `n_distinct`: every
