@@ -1203,7 +1203,7 @@ def test_rolling_corr_external_feed_discovery_via_left_and_right():
 
 
 def test_rolling_corr_window_sweep_registers_as_rolling_corr_window():
-    from seikan.compiler.vectorize import collect_sweeps
+    from seikan.dsl.traverse import iter_sweep_axes
 
     entry = {
         "type": "threshold",
@@ -1217,7 +1217,7 @@ def test_rolling_corr_window_sweep_registers_as_rolling_corr_window():
         "right": {"type": "constant", "value": 0.0},
     }
     t = Thesis.model_validate(_th(entry))
-    assert collect_sweeps(t.entry) == [("rolling_corr_window", [10, 20, 30])]
+    assert iter_sweep_axes(t.entry) == [("rolling_corr_window", [10, 20, 30])]
 
 
 # ---- benchmark (excess-return) fields ----------------------------------------
@@ -2463,9 +2463,9 @@ def test_lag_condition_parses_with_default_bounds_and_sweep():
         }
     )
     assert declared_grid_size(swept.entry, swept.params.horizon) == 6
-    from seikan.dsl.traverse import _iter_sweep_axis_names
+    from seikan.dsl.traverse import iter_sweep_axis_names
 
-    assert _iter_sweep_axis_names(swept.entry) == ["lag_periods"]
+    assert iter_sweep_axis_names(swept.entry) == ["lag_periods"]
 
 
 def test_json_schema_generates_under_the_mutual_recursion():
@@ -2871,9 +2871,9 @@ def test_sweeps_in_where_and_group_count_toward_the_grid():
     }
     t = Thesis.model_validate(_basket_over(node, {"elig": _PER, "sector": _PER}))
     assert declared_grid_size(t.entry, t.params.horizon) == 6
-    from seikan.dsl.traverse import _iter_sweep_axis_names
+    from seikan.dsl.traverse import iter_sweep_axis_names
 
-    assert _iter_sweep_axis_names(t.entry) == ["rolling_window", "shift_periods"]
+    assert iter_sweep_axis_names(t.entry) == ["rolling_window", "shift_periods"]
 
 
 def test_where_operands_are_depth_checked_as_roots_and_group_counts_as_a_second_child():
@@ -2985,12 +2985,12 @@ def test_ew_alpha_floor_itself_is_admitted():
 
 
 def test_ema_alpha_sweeps_as_its_own_axis_and_refuses_duplicates():
-    from seikan.dsl.traverse import _iter_sweep_axis_names
+    from seikan.dsl.traverse import iter_sweep_axis_names
 
     t = Thesis.model_validate(
         _entry_over({"type": "ema", "input": _FIELD_CLOSE, "alpha": [0.05, 0.1]})
     )
-    assert _iter_sweep_axis_names(t.entry) == ["ema_alpha"]
+    assert iter_sweep_axis_names(t.entry) == ["ema_alpha"]
     assert declared_grid_size(t.entry, t.params.horizon) == 2
     with pytest.raises(ValidationError, match="repeats the value"):
         Thesis.model_validate(
@@ -3144,9 +3144,9 @@ def test_axis_ref_parses_in_every_sweepable_series_param(left):
 )
 def test_axis_ref_parses_in_every_sweepable_condition_param(entry):
     t = Thesis.model_validate(_axes_doc(entry, {"N": [1, 2]}))
-    from seikan.dsl.traverse import _iter_sweep_axis_names
+    from seikan.dsl.traverse import iter_sweep_axis_names
 
-    assert _iter_sweep_axis_names(t.entry, t.axes) == ["N"]
+    assert iter_sweep_axis_names(t.entry, t.axes) == ["N"]
 
 
 def test_horizon_refuses_axis_ref():
@@ -3431,9 +3431,9 @@ def test_axis_ref_in_features_refused():
 def test_axis_of_length_one_is_legal():
     t = Thesis.model_validate(_axes_doc(_beta_entry(), {"N": [20]}))
     assert declared_grid_size(t.entry, t.params.horizon, t.axes) == 1
-    from seikan.compiler.vectorize import collect_sweeps
+    from seikan.dsl.traverse import iter_sweep_axes
 
-    assert collect_sweeps(t.entry, t.axes) == [("N", [20])]
+    assert iter_sweep_axes(t.entry, t.axes) == [("N", [20])]
 
 
 def test_declared_grid_counts_shared_axis_once():

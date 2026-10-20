@@ -216,10 +216,9 @@ def series_source_leaves(node: Series) -> Iterator[tuple[str, str]]:
 
 # ---- sweeps -------------------------------------------------------------------------------
 #
-# ONE scan state, the exact twin of ``compiler.vectorize._make_resolver``: the same tree order,
-# the same occurrence counter, the same dedupe of shared-axis sites (a parity test pins the two
-# together). A parse-time refusal here is the same refusal the engine would raise after a data
-# load — surfaced at exit 3 instead of exit 4.
+# ONE scan names every sweep axis, for the parse-time refusals and for the engine's grid alike;
+# ``compiler.vectorize._make_resolver`` reads each site's level back out of a combo with the same
+# tree order and occurrence counter (a parity test pins that every site reads its own level).
 
 
 class _SweepSite(NamedTuple):
@@ -414,11 +413,10 @@ def _iter_sweep_sites(
 
 
 def _fold_sites(sites: list[_SweepSite]) -> list[tuple[str, list[int] | list[float]]]:
-    """The dedupe rule, implemented VERBATIM in ``vectorize.collect_sweeps``: fold left to right;
-    a shared site whose level was already recorded as shared is dropped; every other site is
-    appended. A level then appearing twice is a duplicate (list↔list, list↔axis and
-    constant-name↔axis alike) — the callers refuse it; the first occurrence fixes the axis
-    position."""
+    """The dedupe rule: fold left to right; a shared site whose level was already recorded as
+    shared is dropped; every other site is appended. A level then appearing twice is a duplicate
+    (list↔list, list↔axis and constant-name↔axis alike) — ``Thesis`` refuses it at parse; the
+    first occurrence fixes the axis position."""
     out: list[tuple[str, list[int] | list[float]]] = []
     shared_seen: set[str] = set()
     for site in sites:
@@ -431,21 +429,20 @@ def _fold_sites(sites: list[_SweepSite]) -> list[tuple[str, list[int] | list[flo
     return out
 
 
-def _iter_sweep_axes(
+def iter_sweep_axes(
     entry: Condition, axes: Axes | None = None
 ) -> list[tuple[str, list[int] | list[float]]]:
-    """Ordered ``[(level, values)]`` — the exact twin of ``vectorize.collect_sweeps`` minus its
-    refusals (the parity test compares the full lists, values included)."""
+    """Ordered ``[(level, values)]`` for every sweep axis across the entry tree — a list-valued
+    param under its auto/explicit name, a shared axis ONCE under its declared name at its first
+    reference: the grid ``vectorize.iter_param_assignments`` expands. Raises ``ValueError`` on a
+    reference to an axis ``axes`` does not declare."""
     return _fold_sites(_iter_sweep_sites(entry, axes))
 
 
-def _iter_sweep_axis_names(entry: Condition, axes: Axes | None = None) -> list[str]:
-    """Ordered sweep-axis names for every swept param across the entry tree — the exact names
-    ``compiler.vectorize.collect_sweeps`` produces (a parity test pins the equality). Lets the
-    ``Thesis`` validator refuse a reserved/duplicate/column-colliding axis at PARSE time (exit 3)
-    instead of the runner discovering it after a data load (exit 4). Shared axes appear once, at
-    their first reference."""
-    return [lvl for lvl, _ in _iter_sweep_axes(entry, axes)]
+def iter_sweep_axis_names(entry: Condition, axes: Axes | None = None) -> list[str]:
+    """The level names of :func:`iter_sweep_axes`, in order — what the ``Thesis`` validator
+    checks for reserved, duplicate and column-colliding names at parse time."""
+    return [lvl for lvl, _ in iter_sweep_axes(entry, axes)]
 
 
 def _series_has_sweep(node: Series) -> bool:
@@ -461,7 +458,7 @@ def declared_grid_size(entry: Condition, horizon: int | list[int], axes: Axes | 
     quantity the runner records as ``n_hypotheses_attempted``, computed structurally so it is
     knowable BEFORE any data is read. Non-firing combos cannot shrink it."""
     size = len(horizon) if isinstance(horizon, list) else 1
-    for _lvl, values in _iter_sweep_axes(entry, axes):
+    for _lvl, values in iter_sweep_axes(entry, axes):
         size *= len(values)
         if size > MAX_DECLARED_GRID:  # early exit — no need to multiply out a runaway grid
             return size
@@ -526,7 +523,7 @@ def iter_cross_series(node: Condition) -> Iterator[CrossRank | CrossDemean | Cro
 
     The breadth companion of :func:`iter_source_leaves`: each cross kernel reduces over the
     entering members of every population (the whole cross-section, or each ``group`` label) that
-    clears ``max(min_valid, 2)`` and then discards that count ``k``, while member warmup legally
+    clears ``min_valid`` and then discards that count ``k``, while member warmup legally
     thins the cross-section (a late start is warmup, not a hole) — so which members a cross read
     actually stood on is visible nowhere unless it is recorded. The runner walks these nodes
     per scalarized combo to emit ``summary["cross_breadth"]``, recomputing ``k``

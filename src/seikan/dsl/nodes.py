@@ -45,8 +45,8 @@ def _distinct_sweep[T](values: list[T]) -> list[T]:
     apparent support and can flip the ``support`` floor from unmet to met.
 
     Refusing here — at validation, before a byte of data is read — is the same discipline
-    ``vectorize.collect_sweeps`` applies to duplicate axis NAMES, and for the same stated
-    reason: a collision that miscounts silently must never reach the engine.
+    ``Thesis`` applies to duplicate axis NAMES, and for the same stated reason: a collision that
+    miscounts silently must never reach the engine.
     """
     seen: list[T] = []
     dupes: list[T] = []
@@ -177,7 +177,7 @@ class Constant(_Strict):
 
     @model_validator(mode="after")
     def _require_name_when_swept(self) -> Constant:
-        if isinstance(self.value, list) and not (isinstance(self.name, str) and self.name.strip()):
+        if isinstance(self.value, list) and not (self.name or "").strip():
             raise ValueError(
                 "a swept constant (list 'value') requires a non-empty 'name' to label its "
                 "sweep axis"

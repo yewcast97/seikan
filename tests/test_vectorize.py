@@ -2,7 +2,7 @@
 
 ``build_series``/``build_condition`` (value component) must reproduce an independent reference
 oracle (``_ref_series``/``_ref_cond``) built on the frozen, vectorbt-free kernels.
-``collect_sweeps``/``iter_param_assignments`` expand the param grid. There is no
+``iter_sweep_axes``/``iter_param_assignments`` expand the param grid. There is no
 technical-indicator family (no RSI/ROC/ATR/ADX/OBV/VWAP/Rank) and no dedicated ``CrossCondition``
 state machine: ``Change``
 spells the percent, log and diff readings of one series in a single node, and the crossover recipe
@@ -11,9 +11,12 @@ is ``first_true(threshold(fast, ">", slow))``.
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pandas as pd
 import pytest
+from pydantic import BaseModel
 
 from seikan.compiler import vectorize as vz
 from seikan.compiler.data import MarketData
@@ -49,6 +52,7 @@ from seikan.dsl.schema import (
     ThresholdCondition,
     UnaryOp,
     ZScore,
+    iter_sweep_axes,
 )
 
 from . import _reference_nb as ref
@@ -237,8 +241,6 @@ _EVENT_NODES = ("bars_since_event", "event_value", "event_agg")
 
 def _warmup_of(alpha: float) -> int:
     """The alpha form's warmup, spelled independently of ``nb.ema_params``."""
-    import math
-
     return max(1, math.ceil(round(2.0 / alpha - 1.0, 9)))
 
 
@@ -929,7 +931,7 @@ def test_cross_rank_inner_sweep_registers_no_new_axis():
         op="<=",
         right=Constant(value=0.34),
     )
-    sweeps = vz.collect_sweeps(entry)
+    sweeps = iter_sweep_axes(entry)
     assert [lvl for lvl, _ in sweeps] == [
         "change_periods"
     ]  # the cross node adds no axis of its own
@@ -1045,7 +1047,7 @@ def test_weighted_cross_mean_averages_both_aggregates_over_one_population():
 # ---- parameter sweeps ------------------------------------------------------
 
 
-def test_collect_sweeps_orders_and_names():
+def test_sweep_axes_orders_and_names():
     # All sweeps live in the entry tree (there is no exit); an AndCondition walks left-to-right.
     entry = AndCondition(
         conditions=[
@@ -1061,7 +1063,7 @@ def test_collect_sweeps_orders_and_names():
             ),
         ]
     )
-    sweeps = vz.collect_sweeps(entry)
+    sweeps = iter_sweep_axes(entry)
     assert [lvl for lvl, _ in sweeps] == ["ema_window", "percentile_window"]
     assert [vals for _, vals in sweeps] == [[10, 20], [14, 21, 28]]
 
@@ -1094,14 +1096,14 @@ def test_iter_param_assignments_cartesian():
     assert isinstance(e2.conditions[0].left.window, int)
 
 
-def test_collect_sweeps_through_nested_input():
+def test_sweep_axes_through_nested_input():
     # A swept window inside a nested input registers before the outer node's own param.
     entry = ThresholdCondition(
         left=ZScore(input=EMA(input=Field(column="close"), window=[10, 20]), window=[30, 60]),
         op=">",
         right=Constant(value=0.0),
     )
-    assert [lvl for lvl, _ in vz.collect_sweeps(entry)] == ["ema_window", "zscore_window"]
+    assert [lvl for lvl, _ in iter_sweep_axes(entry)] == ["ema_window", "zscore_window"]
 
 
 def test_binary_op_child_sweeps_collected():
@@ -1114,7 +1116,7 @@ def test_binary_op_child_sweeps_collected():
         op=">",
         right=Constant(value=0.0),
     )
-    sweeps = vz.collect_sweeps(entry)
+    sweeps = iter_sweep_axes(entry)
     assert [lvl for lvl, _ in sweeps] == ["ema_window", "percentile_window"]
     assert [vals for _, vals in sweeps] == [[5, 10], [14, 21]]
 
@@ -1127,14 +1129,14 @@ def test_no_sweep_yields_single_assignment():
     assert len(combos) == 1 and combos[0][0] == {}
 
 
-def test_collect_sweeps_named_constant_axis():
+def test_sweep_axes_named_constant_axis():
     # A swept constant becomes its own axis labelled by `name`, ordered after entry-tree transforms.
     entry = ThresholdCondition(
         left=Percentile(input=Field(column="close"), window=[14, 21]),
         op=">",
         right=Constant(value=[0.55, 0.6, 0.65], name="percentile_thresh"),
     )
-    sweeps = vz.collect_sweeps(entry)
+    sweeps = iter_sweep_axes(entry)
     assert [lvl for lvl, _ in sweeps] == ["percentile_window", "percentile_thresh"]
     assert [vals for _, vals in sweeps] == [[14, 21], [0.55, 0.6, 0.65]]
 
@@ -1145,7 +1147,7 @@ def test_scalar_constant_is_not_a_sweep_axis():
         op=">",
         right=Constant(value=0.6),
     )
-    assert [lvl for lvl, _ in vz.collect_sweeps(entry)] == ["percentile_window"]
+    assert [lvl for lvl, _ in iter_sweep_axes(entry)] == ["percentile_window"]
 
 
 def test_iter_param_assignments_includes_constant_axis():
@@ -1164,33 +1166,39 @@ def test_iter_param_assignments_includes_constant_axis():
     assert e2.right.value == combo["percentile_thresh"] and isinstance(e2.right.value, float)
 
 
-def test_collect_sweeps_rejects_duplicate_axis_name():
-    # A constant `name` colliding with a transform axis (or another constant) would miscount
-    # silently.
-    entry = ThresholdCondition(
-        left=Percentile(input=Field(column="close"), window=[14, 21]),
-        op=">",
-        right=Constant(value=[1, 2], name="percentile_window"),
-    )
-    with pytest.raises(ValueError, match="duplicate sweep axis"):
-        vz.collect_sweeps(entry)
+def _nodes_by_path(node, path=()):
+    """Every model in a DSL tree keyed by its field path — a walk independent of both sweep
+    walks."""
+    yield path, node
+    for field in type(node).model_fields:
+        value = getattr(node, field)
+        for i, child in enumerate(value if isinstance(value, list) else [value]):
+            if isinstance(child, BaseModel):
+                yield from _nodes_by_path(child, (*path, field, i))
 
 
-@pytest.mark.parametrize("reserved", ["target", "horizon", "timestamps"])
-def test_collect_sweeps_rejects_reserved_axis_name(reserved):
-    entry = ThresholdCondition(
-        left=Field(column="close"), op=">", right=Constant(value=[1, 2], name=reserved)
-    )
-    with pytest.raises(ValueError, match="reserved"):
-        vz.collect_sweeps(entry)
+def _assert_every_site_reads_its_own_level(entry, axes=None):
+    from seikan.dsl.traverse import _iter_sweep_sites
+
+    entry = type(entry).model_validate(entry.model_dump())  # no node object at two paths
+    sweeps = iter_sweep_axes(entry, axes)
+    sites = _iter_sweep_sites(entry, axes)
+    path_of = {id(node): path for path, node in _nodes_by_path(entry)}
+    combos = list(vz.iter_param_assignments(entry, axes))
+    assert len(combos) == math.prod(len(values) for _, values in sweeps)
+    for combo, tree in combos:
+        assert list(combo) == [lvl for lvl, _ in sweeps]
+        at = dict(_nodes_by_path(tree))
+        for site in sites:
+            assert getattr(at[path_of[id(site.node)]], site.param) == combo[site.level], site
 
 
-def test_sweep_axis_names_match_collect_sweeps_order_exact():
-    # The schema's parse-time _iter_sweep_axis_names must name every axis EXACTLY as the engine's
-    # collect_sweeps does — same order, same occurrence-counter spelling — or the Thesis validator
-    # would refuse a different set of names than the runner assigns. Pins the two walkers together.
+def test_every_sweep_site_reads_its_own_level():
+    # The assignment pass (vectorize._make_resolver) names each site the way traverse's scan does
+    # — same tree order, same occurrence counter, shared references off the counter — or a site
+    # would read another site's level under a correct-looking combo. Checked through a third,
+    # field-order walk: in every combo's scalarized tree each swept param holds its own level.
     from seikan.dsl import schema as sc
-    from seikan.dsl.traverse import _iter_sweep_axes, _iter_sweep_axis_names
 
     def c(col):
         return sc.Field(column=col)
@@ -1390,8 +1398,7 @@ def test_sweep_axis_names_match_collect_sweeps_order_exact():
         ),
     ]
     for entry in trees:
-        assert _iter_sweep_axis_names(entry) == [lvl for lvl, _ in vz.collect_sweeps(entry)]
-        assert _iter_sweep_axes(entry) == vz.collect_sweeps(entry)
+        _assert_every_site_reads_its_own_level(entry)
     # ... and with SHARED axes: the full (level, values) lists, dedupe rule included.
     N = sc.AxisRef(axis="N")
     K = sc.AxisRef(axis="K")
@@ -1441,23 +1448,23 @@ def test_sweep_axis_names_match_collect_sweeps_order_exact():
         ),
     ]
     for entry in shared_trees:
-        assert _iter_sweep_axes(entry, axes) == vz.collect_sweeps(entry, axes)
+        _assert_every_site_reads_its_own_level(entry, axes)
 
 
 # ---- rolling-condition window sweep ----------------------------------------
 
 
-def test_collect_sweeps_rolling_window_axis():
+def test_sweep_axes_rolling_window_axis():
     # A list `window` on a rolling condition becomes its own auto-named `rolling_window` axis.
     inner = ThresholdCondition(
         left=Percentile(input=Field(column="close"), window=14), op=">", right=Constant(value=0.5)
     )
-    sweeps = vz.collect_sweeps(RollingCondition(window=[3, 5], agg="all", condition=inner))
+    sweeps = iter_sweep_axes(RollingCondition(window=[3, 5], agg="all", condition=inner))
     assert [lvl for lvl, _ in sweeps] == ["rolling_window"]
     assert [vals for _, vals in sweeps] == [[3, 5]]
 
 
-def test_collect_sweeps_rolling_window_orders_after_inner_sweep():
+def test_sweep_axes_rolling_window_orders_after_inner_sweep():
     # The inner condition's swept transform registers before the rolling's own window (inner-first).
     inner = ThresholdCondition(
         left=Percentile(input=Field(column="close"), window=[14, 21]),
@@ -1465,10 +1472,10 @@ def test_collect_sweeps_rolling_window_orders_after_inner_sweep():
         right=Constant(value=0.5),
     )
     entry = RollingCondition(window=[3, 5], agg="all", condition=inner)
-    assert [lvl for lvl, _ in vz.collect_sweeps(entry)] == ["percentile_window", "rolling_window"]
+    assert [lvl for lvl, _ in iter_sweep_axes(entry)] == ["percentile_window", "rolling_window"]
 
 
-def test_collect_sweeps_two_rolling_windows_use_occurrence_counter():
+def test_sweep_axes_two_rolling_windows_use_occurrence_counter():
     # Two swept rolling windows disambiguate via the occurrence counter, like repeated transforms.
     c1 = ThresholdCondition(left=Field(column="close"), op=">", right=Field(column="open"))
     c2 = ThresholdCondition(left=Field(column="close"), op="<", right=Field(column="high"))
@@ -1478,7 +1485,7 @@ def test_collect_sweeps_two_rolling_windows_use_occurrence_counter():
             RollingCondition(window=[2, 4], agg="any", condition=c2),
         ]
     )
-    assert [lvl for lvl, _ in vz.collect_sweeps(entry)] == ["rolling_window", "rolling_window_2"]
+    assert [lvl for lvl, _ in iter_sweep_axes(entry)] == ["rolling_window", "rolling_window_2"]
 
 
 def test_iter_param_assignments_rolling_window_scalarized():
@@ -1511,30 +1518,30 @@ def test_rolling_window_sweep_parity(ohlcv_ext):
         _assert_cond(scalarized, ohlcv_ext, externals={"rate"})
 
 
-def test_collect_sweeps_change_periods_axis(ohlcv):
+def test_sweep_axes_change_periods_axis(ohlcv):
     entry = ThresholdCondition(
         left=Change(input=Field(column="close"), periods=[1, 5], kind="pct"),
         op=">",
         right=Constant(value=0.0),
     )
-    sweeps = vz.collect_sweeps(entry)
+    sweeps = iter_sweep_axes(entry)
     assert sweeps == [("change_periods", [1, 5])]
     combos = [c for c, _ in vz.iter_param_assignments(entry)]
     assert combos == [{"change_periods": 1}, {"change_periods": 5}]
 
 
-def test_collect_sweeps_percentile_input_child(ohlcv_ext):
+def test_sweep_axes_percentile_input_child(ohlcv_ext):
     # sweeps inside a Percentile's input register through the recursive walk
     entry = ThresholdCondition(
         left=Percentile(window=[10, 14], input=Change(input=External(name="rate"), periods=[1, 2])),
         op="<",
         right=Constant(value=0.3),
     )
-    sweeps = dict(vz.collect_sweeps(entry))
+    sweeps = dict(iter_sweep_axes(entry))
     assert sweeps == {"change_periods": [1, 2], "percentile_window": [10, 14]}
 
 
-def test_collect_sweeps_shift_periods_axis(ohlcv):
+def test_sweep_axes_shift_periods_axis(ohlcv):
     from seikan.dsl.schema import Shift
 
     entry = ThresholdCondition(
@@ -1542,7 +1549,7 @@ def test_collect_sweeps_shift_periods_axis(ohlcv):
         op=">",
         right=Constant(value=0.0),
     )
-    sweeps = vz.collect_sweeps(entry)
+    sweeps = iter_sweep_axes(entry)
     assert sweeps == [("shift_periods", [1, 5])]
     combos = [c for c, _ in vz.iter_param_assignments(entry)]
     assert combos == [{"shift_periods": 1}, {"shift_periods": 5}]
@@ -1591,7 +1598,7 @@ def test_rolling_corr_sweep_registers_rolling_corr_window():
         op=">",
         right=Constant(value=0.0),
     )
-    sweeps = vz.collect_sweeps(entry)
+    sweeps = iter_sweep_axes(entry)
     assert sweeps == [("rolling_corr_window", [10, 20])]
     combos = [c for c, _ in vz.iter_param_assignments(entry)]
     assert combos == [{"rolling_corr_window": 10}, {"rolling_corr_window": 20}]
@@ -3206,7 +3213,7 @@ def test_event_condition_shared_by_several_nodes_is_built_once():
     assert calls.count(ev.model_dump_json()) == 1
 
 
-def test_collect_sweeps_lag_periods_axis():
+def test_sweep_axes_lag_periods_axis():
     entry = AndCondition(
         conditions=[
             RollingCondition(
@@ -3215,7 +3222,7 @@ def test_collect_sweeps_lag_periods_axis():
             _c_gt(2.0),
         ]
     )
-    assert vz.collect_sweeps(entry) == [("lag_periods", [1, 2])]
+    assert iter_sweep_axes(entry) == [("lag_periods", [1, 2])]
     combos = [combo for combo, _ in vz.iter_param_assignments(entry)]
     assert combos == [{"lag_periods": 1}, {"lag_periods": 2}]
 
@@ -3232,7 +3239,7 @@ def test_embedded_condition_sweeps_count_once_in_declared_grid():
         op="<",
         right=Field(column="close"),
     )
-    assert vz.collect_sweeps(single) == [("first_true_cooldown", [0, 3]), ("ema_window", [5, 10])]
+    assert iter_sweep_axes(single) == [("first_true_cooldown", [0, 3]), ("ema_window", [5, 10])]
     assert declared_grid_size(single, 1) == 4
     # The SAME event condition written into two nodes is two OCCURRENCES of a swept param — two
     # independent axes (`first_true_cooldown`, `first_true_cooldown_2`), exactly as two swept
@@ -3243,7 +3250,7 @@ def test_embedded_condition_sweeps_count_once_in_declared_grid():
             single,
         ]
     )
-    assert [lvl for lvl, _ in vz.collect_sweeps(entry)] == [
+    assert [lvl for lvl, _ in iter_sweep_axes(entry)] == [
         "first_true_cooldown",
         "first_true_cooldown_2",
         "ema_window",
@@ -3759,7 +3766,7 @@ def test_a_group_label_initialized_with_no_value_yet_is_ledgered_by_the_rank():
     assert not undefined[:, [0, 2, 3]].any()
 
 
-def test_collect_sweeps_cross_where_and_group_order_is_input_where_group():
+def test_sweep_axes_cross_where_and_group_order_is_input_where_group():
     entry = ThresholdCondition(
         left=CrossRank(
             input=Change(input=Field(column="close"), periods=[5, 10]),
@@ -3769,7 +3776,7 @@ def test_collect_sweeps_cross_where_and_group_order_is_input_where_group():
         op=">=",
         right=Constant(value=0.8),
     )
-    assert [lvl for lvl, _ in vz.collect_sweeps(entry)] == [
+    assert [lvl for lvl, _ in iter_sweep_axes(entry)] == [
         "change_periods",
         "rolling_window",
         "shift_periods",
@@ -3891,11 +3898,11 @@ def _beta_tree(n):
     )
 
 
-def test_collect_sweeps_shared_axis_recorded_once_rolling_beta():
+def test_sweep_axes_shared_axis_recorded_once_rolling_beta():
     # The review's case: three [20, 60] lists were three axes and eight cells; one shared N is
     # one axis, two combos, and every window in each scalarized tree reads combo["N"].
     entry = _beta_tree("N")
-    assert vz.collect_sweeps(entry, {"N": [20, 60]}) == [("N", [20, 60])]
+    assert iter_sweep_axes(entry, {"N": [20, 60]}) == [("N", [20, 60])]
     combos = list(vz.iter_param_assignments(entry, {"N": [20, 60]}))
     assert [c for c, _ in combos] == [{"N": 20}, {"N": 60}]
     for combo, tree in combos:
@@ -3907,7 +3914,7 @@ def test_collect_sweeps_shared_axis_recorded_once_rolling_beta():
     assert len(list(vz.iter_param_assignments(listed))) == 8
 
 
-def test_collect_sweeps_shared_axis_does_not_advance_occurrence_counter():
+def test_sweep_axes_shared_axis_does_not_advance_occurrence_counter():
     from seikan.dsl.schema import AxisRef
 
     entry = ThresholdCondition(
@@ -3915,48 +3922,21 @@ def test_collect_sweeps_shared_axis_does_not_advance_occurrence_counter():
         op=">",
         right=EMA(input=Field(column="close"), window=[3, 4]),
     )
-    assert vz.collect_sweeps(entry, {"N": [20, 60]}) == [
+    assert iter_sweep_axes(entry, {"N": [20, 60]}) == [
         ("ema_window", [5, 10]),
         ("N", [20, 60]),
         ("ema_window_2", [3, 4]),
     ]
 
 
-def test_collect_sweeps_shared_axis_colliding_with_auto_axis_refused():
-    from seikan.dsl.schema import AxisRef
-
-    entry = AndCondition(
-        conditions=[
-            ThresholdCondition(
-                left=EMA(input=Field(column="close"), window=[3, 4]),
-                op=">",
-                right=Field(column="close"),
-            ),
-            ThresholdCondition(
-                left=EMA(input=Field(column="close"), window=AxisRef(axis="ema_window")),
-                op=">",
-                right=Field(column="close"),
-            ),
-        ]
-    )
-    with pytest.raises(ValueError, match="duplicate sweep axis name 'ema_window'"):
-        vz.collect_sweeps(entry, {"ema_window": [5, 6]})
-
-
-@pytest.mark.parametrize("reserved", ["target", "horizon", "timestamps"])
-def test_collect_sweeps_shared_axis_reserved_name_refused(reserved):
-    with pytest.raises(ValueError, match=f"sweep axis name '{reserved}' is reserved"):
-        vz.collect_sweeps(_beta_tree(reserved), {reserved: [20, 60]})
-
-
-def test_make_resolver_refuses_axis_ref_without_axes():
+def test_sweep_axes_refuse_an_axis_ref_without_axes():
     with pytest.raises(
         ValueError,
         match=r"rolling_corr.window references shared axis 'N', .*\(declared: \[\]\)",
     ):
-        vz.collect_sweeps(_beta_tree("N"))
+        iter_sweep_axes(_beta_tree("N"))
     with pytest.raises(ValueError, match=r"declared: \['M'\]"):
-        vz.collect_sweeps(_beta_tree("N"), {"M": [20, 60]})
+        iter_sweep_axes(_beta_tree("N"), {"M": [20, 60]})
 
 
 def test_iter_param_assignments_shared_axis_serves_constant_and_window():

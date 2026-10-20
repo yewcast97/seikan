@@ -2321,8 +2321,8 @@ def test_run_colliding_sweep_axis_exits_3_without_reading_data(tmp_path, capsys,
     # A swept-constant name colliding with a reserved axis (target/horizon), a trade column (ret),
     # or a default feature (vol_14) is refused at PARSE time (exit 3), before any CSV is read —
     # pointing the --data pair at a nonexistent file proves the ordering (a data-first path would
-    # exit 2). Raising the same collision inside collect_sweeps / the runner — after a data load —
-    # would surface it as exit 4, an internal error, for what is a malformed request.
+    # exit 2). Raised after a data load, the same collision would surface as exit 4, an internal
+    # error, for what is a malformed request.
     dsl = {
         "name": "cli-e2e",
         "data": {"targets": ["target"]},

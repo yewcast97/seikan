@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Sequence
 from fractions import Fraction
 from typing import TYPE_CHECKING, Literal
 
@@ -29,7 +28,6 @@ from pydantic import ValidationError
 from seikan.dsl.conditions import Condition
 from seikan.dsl.nodes import AxisValues, HorizonParam, Series, _Strict
 from seikan.dsl.traverse import (
-    _iter_sweep_axis_names,
     _iter_sweep_sites,
     _series_depth,
     _series_external_names,
@@ -38,6 +36,7 @@ from seikan.dsl.traverse import (
     iter_condition_series,
     iter_external_names,
     iter_series_depth_roots,
+    iter_sweep_axis_names,
     series_cross_nodes,
 )
 
@@ -225,17 +224,10 @@ class DataSpec(_Strict):
         if not self.targets:
             raise ValueError("data.targets must name at least one target series")
         seen: dict[str, str] = {}
-        # Typed ``Sequence[object]`` because that is how this check reads them — a name is a
-        # candidate --data key until it has been shown to be a string, and the isinstance below is
-        # the check that shows it. Naming the declared element type here instead would make that
-        # first clause statically dead.
-        groups: tuple[tuple[str, Sequence[object]], ...] = (
-            ("target", self.targets),
-            ("external feed", list(self.external)),
-        )
+        groups = (("target", self.targets), ("external feed", list(self.external)))
         for kind, names in groups:
             for name in names:
-                if not isinstance(name, str) or not name or name != name.strip():
+                if not name or name != name.strip():
                     raise ValueError(
                         f"{kind} name {name!r} must be a non-empty string with no surrounding "
                         "whitespace — it is typed as a --data key"
@@ -271,7 +263,7 @@ class DataSpec(_Strict):
             raw = getattr(self, field)
             if raw is None:
                 continue
-            if not isinstance(raw, str) or not raw.strip():
+            if not raw.strip():
                 raise ValueError(f"data.{field} must be a non-empty ISO-8601 timestamp string")
             try:
                 ts = pd.to_datetime(raw, format="ISO8601")
@@ -413,11 +405,8 @@ class BacktestParams(_Strict):
                 "params.features, when given, must be non-empty — omit the field entirely for "
                 "the default momentum/volatility snapshots"
             )
-        # ``Iterable[object]`` like ``DataSpec._check_key_namespace``: the isinstance below is what
-        # establishes these keys are strings, so it stays a live check, not a dead clause.
-        feature_names: Iterable[object] = self.features or {}
-        for name in feature_names:
-            if not isinstance(name, str) or not name.strip():
+        for name in self.features or {}:
+            if not name.strip():
                 raise ValueError("feature names must be non-empty strings")
             if name in RESERVED_FEATURE_NAMES:
                 raise ValueError(
@@ -589,11 +578,8 @@ class Thesis(_Strict):
                 "axes, when given, must be non-empty — omit the field entirely when no "
                 "parameter is shared"
             )
-        # ``Iterable[object]`` like ``DataSpec._check_key_namespace``: the isinstance is what
-        # establishes these keys are strings, so it stays a live check.
-        axis_names: Iterable[object] = axes or {}
-        for name in axis_names:
-            if not isinstance(name, str) or not name or name != name.strip():
+        for name in axes or {}:
+            if not name or name != name.strip():
                 raise ValueError(
                     f"shared axis name {name!r} must be a non-empty string with no surrounding "
                     "whitespace — it labels a result column"
@@ -661,15 +647,11 @@ class Thesis(_Strict):
 
     @model_validator(mode="after")
     def _check_sweep_axis_names(self) -> Thesis:
-        # The runner's vectorize.collect_sweeps rejects reserved (target/horizon/timestamps) and
-        # duplicate sweep-axis names, and the runner rejects trade/feature-column collisions — but
-        # both fire only AFTER a data load, surfacing as exit 4 (internal). Reproduce the SAME
-        # refusals here, at parse time (exit 3), off the exact axis names the engine will assign.
-        # The runtime checks stay as library-boundary backstops for a model_construct-built
-        # thesis.
-        # Shared axes are in the folded list under their declared names (once each), so the
-        # reserved / duplicate / column scans below cover them with no new logic.
-        names = _iter_sweep_axis_names(self.entry, self.axes)
+        # A reserved (target/horizon/timestamps), duplicate or trade/feature-column axis name
+        # would silently overwrite a result column or miscount the grid; the names checked are
+        # the ones the engine assigns. Shared axes are in the folded list under their declared
+        # names (once each), so the scans below cover them with no new logic.
+        names = iter_sweep_axis_names(self.entry, self.axes)
         seen: set[str] = set()
         for lvl in names:
             if lvl in RESERVED_SWEEP_LEVELS:

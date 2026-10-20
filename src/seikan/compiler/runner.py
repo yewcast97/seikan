@@ -94,10 +94,9 @@ from seikan.dsl.schema import (
     Series,
     Thesis,
     fmt_num,
-    iter_condition_series,
     iter_cross_series,
+    iter_sweep_axis_names,
     render_series,
-    series_cross_nodes,
 )
 from seikan.numeric import log_ratio_array, pct_change
 from seikan.types import (
@@ -294,10 +293,7 @@ class _RunConfig(NamedTuple):
     """Everything ``run_backtest`` resolves from (thesis, md) before any measurement: the
     directional sign, the declared mode, the anchor offset, the outcome read, the measured base
     frame and its geometry, the feature snapshots, the horizon axis, the sweep levels, and the
-    benchmark column. Resolution also holds the four library-boundary guards (basket+diff,
-    cross-nodes-outside-basket, market+diff, cross_mean-outside-basket) — each unreachable
-    through ``Thesis.model_validate`` and re-refused here so a ``model_construct`` forgery
-    cannot reach the arithmetic."""
+    benchmark column."""
 
     sign: float
     basket: bool
@@ -334,29 +330,6 @@ def _resolve_run_config(thesis: Thesis, md: MarketData) -> _RunConfig:
     outcome_series = thesis.params.outcome.series
     outcome_kind = thesis.params.outcome.kind
     custom_outcome = outcome_series != "target"
-    if basket and outcome_kind == "diff":
-        # Unreachable through `Thesis.model_validate` (the DSL refuses this pairing); this closes
-        # the library boundary, where a hand-built `model_construct` thesis would otherwise pool
-        # level-unit returns across members the engine cannot certify commensurable.
-        raise ValueError(
-            "target_mode='basket' is incommensurable with outcome kind 'diff' (pooled "
-            "cross-member returns need a common unit); use outcome kind 'pct'/'log'"
-        )
-    cross_kinds = sorted(
-        {
-            n.type
-            for series in (
-                *iter_condition_series(thesis.entry),
-                *(thesis.params.features or {}).values(),
-            )
-            for n in series_cross_nodes(series)
-        }
-    )
-    if cross_kinds and not basket:
-        # Unreachable through `Thesis.model_validate`; closes the library boundary like the
-        # guards above — the transforms-layer >= 2-columns check cannot see the MODE, so a
-        # model_construct thesis could otherwise rank across a conjunction's targets.
-        raise ValueError(f"cross-sectional node(s) {cross_kinds} require target_mode='basket'")
     if custom_outcome:
         base_np = md.external_values(outcome_series)  # (rows × targets) asof feed values
     else:
@@ -389,23 +362,12 @@ def _resolve_run_config(thesis: Thesis, md: MarketData) -> _RunConfig:
     swept_horizon = isinstance(hz, list)
     horizon_values: list[int] = list(hz) if isinstance(hz, list) else [hz]
 
-    param_levels = [lvl for lvl, _ in vectorize.collect_sweeps(thesis.entry, thesis.axes)]
+    param_levels = iter_sweep_axis_names(thesis.entry, thesis.axes)
     # The entry-tree sweep axes alone — a combo dict's exact key set, BEFORE the horizon axis is
     # appended below. The canonical per-combo lookup key everywhere a combo indexes a dict.
     sweep_levels = list(param_levels)
     if swept_horizon:
         param_levels.append("horizon")
-    # A swept-constant 'name' colliding with the columns this module writes (target / trade fields /
-    # feature snapshots) would silently overwrite one of them. collect_sweeps already rejects
-    # constant↔constant and reserved-level (target/horizon) collisions; this covers the column
-    # namespace it can't see (features live in params).
-    reserved_cols = {"target", *_TRADE_COLUMNS, *feature_names}
-    collisions = reserved_cols.intersection(param_levels)
-    if collisions:
-        raise ValueError(
-            f"sweep axis name(s) {sorted(collisions)} collide with reserved trade/feature columns; "
-            f"rename the swept constant's 'name'"
-        )
 
     # Benchmark adjustment (params.benchmark). "market" subtracts the `benchmark` key's series same-
     # window return; "cross_mean" (basket mode) subtracts the basket's own same-window mean.
@@ -415,28 +377,17 @@ def _resolve_run_config(thesis: Thesis, md: MarketData) -> _RunConfig:
     bench_mode = thesis.params.benchmark
     bench_col: np.ndarray | None = None
     if bench_mode == "market":
-        if outcome_kind == "diff":
-            # Unreachable through `Thesis.model_validate` (the DSL refuses this pairing); this
-            # closes the library boundary, where a hand-built `model_construct` thesis would
-            # otherwise reach the excess arithmetic and subtract a return from a level.
-            raise ValueError(
-                "params.benchmark='market' is incommensurable with outcome kind 'diff' "
-                "(level units minus a benchmark return); use outcome kind 'pct'/'log'"
-            )
         if md.benchmark_open is None:
             raise ValueError(
                 "params.benchmark='market' but MarketData has no benchmark_open "
                 "(load via DataSpec.benchmark)"
             )
         bench_col = md.benchmark_open.to_numpy(dtype=float).reshape(-1, 1)
-    elif bench_mode == "cross_mean":
-        if not basket or len(targets) < 2:
-            # Unreachable through `Thesis.model_validate` (cross_mean requires
-            # target_mode='basket', which requires >= 2 targets); closes the library boundary
-            # exactly like the market+diff guard above.
-            raise ValueError(
-                "params.benchmark='cross_mean' requires target_mode='basket' with >= 2 targets"
-            )
+    elif bench_mode == "cross_mean" and len(targets) < 2:
+        # A hand-built MarketData can carry fewer members than the basket declares.
+        raise ValueError(
+            f"params.benchmark='cross_mean' needs >= 2 targets, but MarketData carries {targets}"
+        )
 
     return _RunConfig(
         sign=sign,
@@ -1148,7 +1099,6 @@ def _measure_grid(
             # whose every group sat below it, or overflowed, produced nothing, however many
             # members entered in total.
             k = vectorize.cross_reduced(cross_node, md).sum(axis=1)
-            eff_min_valid = max(int(cross_node.min_valid), 2)  # the kernels' hard floor
             evaluated = k > 0
             k_eval = k[evaluated]
             full = k == len(targets)
@@ -1156,7 +1106,7 @@ def _measure_grid(
                 {
                     "node": render_series(cross_node),
                     "params": combo_params,
-                    "min_valid": eff_min_valid,
+                    "min_valid": cross_node.min_valid,
                     "n_bars": int(n_bars),
                     "n_bars_evaluated": int(evaluated.sum()),
                     "n_bars_below_full": int((evaluated & ~full).sum()),

@@ -18,7 +18,7 @@ if TYPE_CHECKING:  # annotations only — nothing beyond the stdlib is imported 
 
 #: One swept axis's assigned value — a transform window/period, a swept ``Constant`` cutoff, or
 #: the measurement horizon. Ints and floats only: the sweep axes are numeric by construction
-#: (``vectorize.collect_sweeps``), and a target NAME is never a parameter.
+#: (``dsl.traverse.iter_sweep_axes``), and a target NAME is never a parameter.
 type ParamValue = int | float
 
 #: A cell's parameter assignment as a tuple, in ``summary["params"]`` order (the horizon last

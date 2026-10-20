@@ -86,11 +86,8 @@ def transform_values(
         case EMA(window=w, alpha=a):
             out = nb.ema_apply_nb(x, *nb.ema_params(_scalar_or_none(w), _scalar_float_or_none(a)))
         case ZScore(window=w, alpha=a, mean_type=mt):
-            if mt == "sma":
-                ws = _scalar_or_none(w)
-                if ws is None:  # validator-guaranteed; the library-boundary backstop
-                    raise ValueError("zscore mean_type='sma' requires 'window'")
-                out = nb.zscore_sma_apply_nb(x, ws)
+            if mt == "sma":  # the SMA form always carries a window (``ZScore``'s validator)
+                out = nb.zscore_sma_apply_nb(x, cast("int", w))
             else:
                 out = nb.zscore_ema_apply_nb(
                     x, *nb.ema_params(_scalar_or_none(w), _scalar_float_or_none(a))

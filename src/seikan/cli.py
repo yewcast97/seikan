@@ -934,8 +934,7 @@ def _cmd_describe(args: argparse.Namespace) -> int:
     # data_report is byte-equal to check-data's over the same argv), and the exit code carries
     # the same meaning — 0 all admitted, 2 any refused, document emitted EITHER WAY. Files are
     # profiled in argument order, never sorted: the argv is the caller's declaration.
-    windows = list(DEFAULT_WINDOWS) if args.windows is None else args.windows
-    body = describe_files(args.files, shape=args.shape, windows=windows)
+    body = describe_files(args.files, shape=args.shape, windows=args.windows)
     doc = _base_doc("describe")
     doc["data_report"] = body["data_report"]
     doc["profiles"] = body["profiles"]
@@ -1114,7 +1113,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--windows",
         type=_windows_arg,
-        default=None,
+        default=DEFAULT_WINDOWS,
         help="comma-separated trailing windows in BARS, emitted in the given order "
         f"(default {','.join(str(w) for w in DEFAULT_WINDOWS)}; "
         f"at most {MAX_DESCRIBE_WINDOWS})",

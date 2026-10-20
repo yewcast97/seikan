@@ -33,14 +33,13 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Iterator
-from typing import Literal
+from typing import Literal, cast
 
 import numpy as np
 import numpy.typing as npt
 from numba import njit
 from numpy.lib.stride_tricks import sliding_window_view
 
-from seikan.constants import MAX_BAR_COUNT_PARAM, MIN_EW_ALPHA
 from seikan.numeric import MIN_NORMAL, log_ratio_array, pct_change
 
 # =============================================================================
@@ -759,7 +758,7 @@ def cross_rank_apply_nb(arr: npt.NDArray[np.float64], min_valid: int) -> npt.NDA
     """Cross-sectional fraction rank ACROSS targets at each bar (axis=1, no time window).
 
     At bar t with k finite values, column g gets (avg_rank(x_g) - 1) / (k - 1) in [0, 1]
-    (average ranks on ties). NaN where x_g is NaN or k < max(min_valid, 2). Inherently 2-D —
+    (average ranks on ties). NaN where x_g is NaN or k < min_valid. Inherently 2-D —
     there is no 1-D form (a single column has no cross-section and returns all NaN).
     """
     from scipy.stats import rankdata
@@ -776,7 +775,7 @@ def cross_rank_apply_nb(arr: npt.NDArray[np.float64], min_valid: int) -> npt.NDA
     r = rankdata(np.where(finite, a, np.nan), method="average", axis=1, nan_policy="omit")
     with np.errstate(invalid="ignore", divide="ignore"):
         frac = (r - 1.0) / (k - 1.0)
-    ok = finite & (k >= float(max(min_valid, 2)))
+    ok = finite & (k >= float(min_valid))
     return np.where(ok, frac, np.nan)
 
 
@@ -791,7 +790,7 @@ def cross_demean_apply_nb(arr: npt.NDArray[np.float64], min_valid: int) -> npt.N
     ``x == 0 AND cross_demean(x) > 0`` fired; about the raw rounded mean ``[2**52, 2**52 + 1,
     2**52 + 1]`` read ``[0, 1, 1]`` for ``[−2/3, 1/3, 1/3]``. A cross-section whose members all
     share one value demeans to exactly 0.0. NaN where x_g is NaN, where its deviation leaves the
-    double range, or fewer than max(min_valid, 2) targets are finite. Inherently 2-D — no 1-D
+    double range, or fewer than min_valid targets are finite. Inherently 2-D — no 1-D
     form.
     """
     a = np.asarray(arr, dtype=float)
@@ -801,7 +800,7 @@ def cross_demean_apply_nb(arr: npt.NDArray[np.float64], min_valid: int) -> npt.N
     finite = np.isfinite(a)
     k = finite.sum(axis=1, keepdims=True)
     dev = cross_deviations(np.ascontiguousarray(a), np.ascontiguousarray(finite))
-    ok = finite & (k >= max(min_valid, 2)) & np.isfinite(dev)
+    ok = finite & (k >= min_valid) & np.isfinite(dev)
     return np.where(ok, dev, np.nan)
 
 
@@ -821,7 +820,7 @@ def cross_agg_apply_nb(
 ) -> npt.NDArray[np.float64]:
     """Cross-sectional AGGREGATE across targets at each bar, broadcast to every column (axis=1, no
     time window). Unlike ``cross_rank``/``cross_demean`` the value is a property of the
-    cross-section itself, so every column carries it wherever at least ``max(min_valid, 2)`` targets
+    cross-section itself, so every column carries it wherever at least ``min_valid`` targets
     are finite —
     a column whose own value is NaN still sees the group's aggregate. ``mean`` is the finite
     members' exact sum over their count, rounded once — the ``cross_mean`` bench leg's
@@ -868,7 +867,7 @@ def cross_agg_apply_nb(
         else:
             raise ValueError(f"unknown cross_agg agg: {agg!r}")
     # `isfinite(v)`: the row sums and squared deviations can overflow from finite members.
-    ok = (k >= float(max(min_valid, 2))) & np.isfinite(v)
+    ok = (k >= float(min_valid)) & np.isfinite(v)
     # (n, 1) aggregate → all columns
     return np.broadcast_to(np.where(ok, v, np.nan), a.shape).copy()
 
@@ -972,65 +971,22 @@ def cross_grouped_apply_nb(
 
 
 def ema_params(window: int | None, alpha: float | None) -> tuple[float, int]:
-    """The ``(alpha, warmup)`` pair the EW kernels take, from EXACTLY one of the two DSL forms.
+    """The ``(alpha, warmup)`` pair the EW kernels take, from the one DSL form that is set.
 
     ``window`` → ``(2/(window+1), window)`` — the classic span form. ``alpha`` →
-    ``(alpha, max(1, ceil(2/alpha − 1)))`` — the equivalent span, so ``alpha = 2/(w+1)``
-    reproduces warmup ``w`` exactly for every ``w`` below 5,935,198 (rounded to 9 places before
-    the ceiling, so the float reciprocal cannot land one bar late); past that the reciprocal's
-    error, which grows with ``w``, outgrows the 9-place rounding and the alpha form can warm ONE
-    bar later than the window form (the same ``alpha``, so the same values wherever both emit).
-    The ceiling's own pair is exact — ``MIN_EW_ALPHA`` is a power of two, so ``alpha = 2**-30``
-    IS ``window = MAX_BAR_COUNT_PARAM``. RiskMetrics 0.06 warms 33 observations. Wilder's 1/N
+    ``(alpha, max(1, ceil(2/alpha − 1)))`` — the equivalent span, rounded to 9 places before the
+    ceiling so ``alpha = 2/(w+1)`` reproduces warmup ``w`` exactly for every ``w`` below 5,935,198;
+    past that the reciprocal's error outgrows the rounding and the alpha form can warm ONE bar
+    later (the same ``alpha``, so the same values wherever both emit). The DSL holds the window to
+    a bar count and the alpha to ``[MIN_EW_ALPHA, 1]``, so the span never passes
+    ``MAX_BAR_COUNT_PARAM``; ``MIN_EW_ALPHA`` is a power of two, so ``alpha = 2**-30`` IS
+    ``window = MAX_BAR_COUNT_PARAM``. RiskMetrics 0.06 warms 33 observations. Wilder's 1/N
     smoother is ``alpha = 1/N`` with THIS seed (the first finite value), not an SMA seed.
-
-    The span is a bar count, held to ``MAX_BAR_COUNT_PARAM`` like every other: a span past it —
-    a window over the ceiling, a positive alpha below ``MIN_EW_ALPHA`` (``1e-19`` implies a
-    2e19-bar warmup), an alpha whose span is not finite (``5e-324``, ``0``, NaN) — raises
-    ``ValueError`` here, naming the domain. One refusal for the whole range: a span short of 2**64
-    used to come back and run all warmup (from 2**63 on numba typed it unsigned, so it crashed
-    instead — "int too big to convert" — wherever the same kernel already held its signed
-    specialization in the process: the outcome hung on evaluation order), a longer one reached a
-    kernel as an integer no machine type holds (a numba ``TypingError`` / ``OverflowError``), and
-    a non-finite one failed inside ``math.ceil`` (or divided by zero at 0). A window that is no
-    bar count at all — below 1, or fractional — raises its own ``ValueError``: ``0`` and the
-    negatives made ``2/(window+1)`` a decay outside ``(0, 1]`` (``-1`` divided by zero,
-    ``-10**20`` reached the kernel as an integer it cannot take) and ``2.5`` was truncated to a
-    2-bar warmup its own decay does not imply. The DSL refuses the same values at parse
-    (``dsl.nodes``: every EW window is a ``PosInt`` / ``Ge2Int``, shared axes and sweep levels
-    re-validated through them); this is defense in depth for a library caller reaching the kernels
-    around the schema (the kernels' own ``0 < alpha <= 1`` guard still answers an alpha outside it
-    — negative, above 1, infinite, warmup 1 here — with NaN). A span within the ceiling but longer
-    than the series is legal and keeps the ordinary outcome: every bar is warmup and the kernel
-    never emits.
     """
-    if (window is None) == (alpha is None):
-        raise ValueError("ema takes exactly one of 'window' or 'alpha'")
     if window is not None:
-        if window > MAX_BAR_COUNT_PARAM:
-            raise ValueError(
-                f"EW window {window} exceeds the bar-count ceiling MAX_BAR_COUNT_PARAM = "
-                f"{MAX_BAR_COUNT_PARAM}"
-            )
-        # ``>= 1`` first: NaN and -inf fail it, so ``int()`` only ever sees a finite value.
-        if not (window >= 1 and window == int(window)):
-            raise ValueError(
-                f"EW window {window} is not a bar count: the span form takes a whole number of "
-                "bars, at least 1"
-            )
-        return 2.0 / (window + 1.0), int(window)
-    a = float(alpha)  # type: ignore[arg-type]  # narrowed by the xor above
-    # Python float division never overflows to an exception (``2.0 / 5e-324 == inf``); only an
-    # exact zero raises, so it is mapped onto the infinite span it denotes.
-    span = round(2.0 / a - 1.0, 9) if a != 0.0 else math.inf
-    if not (math.isfinite(span) and span <= MAX_BAR_COUNT_PARAM):
-        raise ValueError(
-            f"EW alpha {a!r} implies an equivalent span 2/alpha − 1 of {span!r} bars, "
-            f"past the bar-count ceiling: the span must be finite and at most "
-            f"MAX_BAR_COUNT_PARAM = {MAX_BAR_COUNT_PARAM}, i.e. alpha >= MIN_EW_ALPHA = "
-            f"{MIN_EW_ALPHA!r} (2**-30)"
-        )
-    return a, max(1, math.ceil(span))
+        return 2.0 / (window + 1.0), window
+    a = cast("float", alpha)
+    return a, max(1, math.ceil(round(2.0 / a - 1.0, 9)))
 
 
 #: The EW z-score's recurrence (``zscore_ema_1d``) runs in a FRAME lifted by ``2**_LIFT`` — at most

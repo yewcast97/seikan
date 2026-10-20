@@ -21,8 +21,6 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import pytest
-from pydantic import ValidationError
 
 from seikan import dataio
 from seikan.api import compile_thesis, list_entries
@@ -740,20 +738,6 @@ def test_listing_after_backtest_rebuilds_nothing(tmp_path, monkeypatch):
     ) == keys  # and it needed nothing the backtest had not already built
     assert len(listing.entries) == 2  # sanity: both swept combos listed
     assert any(r["timestamps"] for r in listing.entries)  # and the shared mask actually fires
-
-
-def test_api_boundary_revalidates_a_mutated_thesis(tmp_path):
-    # The models are frozen, but freezing is shallow: nested lists/dicts stay mutable. The public
-    # API revalidates a private copy at entry, so a post-validation poisoning of the targets list
-    # refuses instead of driving an engine run no validator ever saw.
-    path = _bars(tmp_path / "px.csv", [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0])
-    thesis = _thesis(_lt(100.0))
-    md = load(thesis, {"target": path})
-    thesis.data.targets.append("target")  # a duplicate name — refused by DataSpec validation
-    with pytest.raises(ValidationError):
-        compile_thesis(thesis, md)
-    with pytest.raises(ValidationError):
-        list_entries(thesis, md)
 
 
 def test_each_result_carries_its_own_horizon_warning(tmp_path):

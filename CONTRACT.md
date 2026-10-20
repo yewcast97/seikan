@@ -1176,15 +1176,14 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   and bare-number forms refused — never pandas' parser, which read `"nan"` as NaT (a declared
   publication delay silently degraded to zero, the look-ahead direction), truncated past the
   nanosecond, read `"5"` as five nanoseconds and `"1,5h"` as fifteen hours, and was a nanosecond
-  short on `"0.57 days"`, and the public API (`compile_thesis`/`list_entries`) revalidates a
-  private copy at the boundary because freezing is shallow. The schema's domain is the
+  short on `"0.57 days"`. The engine trusts the validated model: a `model_construct` or mutated
+  thesis is outside the contract. The schema's domain is the
   EXECUTABLE domain: every bar-count parameter (windows, periods, `cooldown`, `min_count`,
   `horizon`, shared-axis values read by them — and `min_valid`, a member count sharing their
   integer type) is at most `MAX_BAR_COUNT_PARAM` = 2^31 − 1 and an EW `alpha` at least
   `MIN_EW_ALPHA` = 2^-30 (its warmup span is then within the same ceiling), so an ema
   `window: 10**20` or `alpha: 1e-19` refuses at parse (exit 3) instead of crashing a numba
-  kernel (exit 4); `nb.ema_params` re-refuses an over-ceiling span, and a window that is no
-  bar count (below 1, fractional), with a `ValueError` for library callers. A shared int axis
+  kernel (exit 4). A shared int axis
   value read by a float param (`constant.value`) must be one a double holds exactly: the param
   executes the double, so `2**63 − 1` would run `2**63`'s threshold under its own label, and
   refuses at parse instead.

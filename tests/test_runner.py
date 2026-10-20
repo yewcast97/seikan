@@ -3038,8 +3038,7 @@ def test_bars_since_extremum_window_sweep(tmp_path):
 
 
 def test_constant_sweep_name_colliding_with_trade_column_rejected_at_validation():
-    # A swept constant whose name collides with a trades-frame column is refused at PARSE time
-    # (the runner's reserved-column check is a library backstop for model_construct paths).
+    # A swept constant whose name collides with a trades-frame column is refused at PARSE time.
     with pytest.raises(ValueError, match="reserved trade/feature columns"):
         Thesis.model_validate(
             {
@@ -3057,8 +3056,7 @@ def test_constant_sweep_name_colliding_with_trade_column_rejected_at_validation(
 
 
 def test_horizon_reserved_as_sweep_axis_name_rejected_at_validation():
-    # A swept constant named "horizon" collides with the horizon axis → rejected at PARSE time
-    # (collect_sweeps keeps the same refusal as a runtime backstop).
+    # A swept constant named "horizon" collides with the horizon axis → rejected at PARSE time.
     with pytest.raises(ValueError, match="reserved"):
         Thesis.model_validate(
             {
@@ -3073,31 +3071,6 @@ def test_horizon_reserved_as_sweep_axis_name_rejected_at_validation():
                 "params": {"horizon": 3},
             }
         )
-
-
-def test_runner_reserved_column_backstop_survives_a_forged_thesis(tmp_path):
-    # The parse-time validator refuses a sweep axis colliding with a trade column, but the runner
-    # keeps its OWN reserved-column check as a library backstop for a model_construct/forged thesis
-    # that bypassed validation. Forge a validated swept constant's name to a trade column and
-    # confirm run_backtest still refuses at the boundary.
-    _bars(tmp_path / "col.csv", [110.0] + [95.0] * 10)
-    valid = Thesis.model_validate(
-        {
-            "name": "forge",
-            "data": {"targets": ["target"]},
-            "entry": {
-                "type": "threshold",
-                "left": {"type": "field", "column": "close"},
-                "op": "<",
-                "right": {"type": "constant", "value": [90.0, 100.0], "name": "cutoff"},
-            },
-            "params": {"horizon": 3},
-        }
-    )
-    forged = valid.model_copy(deep=True)
-    object.__setattr__(forged.entry.right, "name", "ret")  # collides with the trades 'ret' column
-    with pytest.raises(ValueError, match="reserved trade/feature columns"):
-        run_backtest(forged, load(forged, {"target": tmp_path / "col.csv"}))
 
 
 def test_entry_bar_column_matches_firing_bars(tmp_path):
@@ -3257,32 +3230,6 @@ def test_unbenchmarked_run_raw_leg_is_the_return_and_bench_leg_is_null(tmp_path)
     assert res.trades["ret_bench"].isna().all()
     st = res.summary["cells"][0]["by_target"]["target"]
     assert st["mean_ret_raw"] == st["mean_ret"] and math.isnan(st["mean_ret_bench"])
-
-
-def test_diff_outcome_with_benchmark_is_refused_at_the_library_boundary(tmp_path):
-    """The DSL refuses this pairing; the runner refuses it again so a hand-built
-    ``model_construct`` thesis cannot reach the excess arithmetic and subtract a return from a
-    level."""
-    tgt = np.array([100.0, 102.0, 104.0, 100.0, 108.0, 112.0])
-    bench = np.array([50.0, 50.5, 51.0, 50.0, 52.0, 53.0])
-    idx = pd.date_range("2021-01-01", periods=len(tgt), freq="1D")
-    files = {
-        "target": _write_bars(tmp_path / "tgt.csv", tgt, idx),
-        "benchmark": _write_bars(tmp_path / "bench.csv", bench, idx),
-    }
-    valid = Thesis.model_validate(
-        {
-            "name": "b",
-            "data": {"targets": ["target"]},
-            "entry": _lt(1e9),
-            "params": {"horizon": 2, "benchmark": "market", "outcome": {"kind": "pct"}},
-        }
-    )
-    # Bypass validation the way a library caller could, then flip the algebra underneath it.
-    forged = valid.model_copy(deep=True)
-    object.__setattr__(forged.params.outcome, "kind", "diff")
-    with pytest.raises(ValueError, match="incommensurable"):
-        run_backtest(forged, load(forged, files))
 
 
 def test_shortonly_market_excess_flips_sign(tmp_path):
@@ -5621,87 +5568,6 @@ def test_cross_mean_log_leg_past_the_double_range_no_longer_censors_the_bar(tmp_
     assert cov["B"]["exit_reasons"]["no_outcome"] == 0
 
 
-# ---- basket library-boundary backstops ---------------------------------------
-# Every mode-gating rule the DSL enforces is re-raised inside `run_backtest`, so a hand-built
-# `model_construct`/`__setattr__` thesis cannot slide a refused pairing past validation and into
-# the measurement arithmetic. Modeled on the market+diff backstop above
-# (test_diff_outcome_with_benchmark_is_refused_at_the_library_boundary): forge the one field
-# validation would have refused, and the runner refuses it again.
-
-
-def test_basket_diff_outcome_is_refused_at_the_library_boundary(tmp_path):
-    # Basket + diff pools level-unit returns across members the engine cannot certify
-    # commensurable; the DSL refuses the pairing, and the runner re-refuses the forged spelling.
-    idx = pd.date_range("2021-01-01", periods=40, freq="1D")
-    files = {
-        "A": _write_bars(tmp_path / "A.csv", 100 + np.arange(40, dtype=float), idx),
-        "B": _write_bars(tmp_path / "B.csv", 80 + np.arange(40, dtype=float), idx),
-    }
-    valid = Thesis.model_validate(
-        {
-            "name": "b",
-            "target_mode": "basket",
-            "data": {"targets": ["A", "B"]},
-            "entry": _lt(1e9),
-            "params": {"horizon": 2, "outcome": {"kind": "pct"}},
-        }
-    )
-    forged = valid.model_copy(deep=True)
-    object.__setattr__(forged.params.outcome, "kind", "diff")
-    with pytest.raises(ValueError, match="incommensurable"):
-        run_backtest(forged, load(forged, files))
-
-
-def test_cross_mean_outside_basket_is_refused_at_the_library_boundary(tmp_path):
-    # cross_mean couples the targets in the OUTCOME exactly as cross nodes couple them in the
-    # signal — legal only where the mode declares one cross-section, and a single-target
-    # conjunction has no basket to demean against.
-    idx = pd.date_range("2021-01-01", periods=40, freq="1D")
-    px = _write_bars(tmp_path / "tgt.csv", 100 + np.arange(40, dtype=float), idx)
-    valid = Thesis.model_validate(
-        {
-            "name": "t",
-            "data": {"targets": ["target"]},
-            "entry": _lt(1e9),
-            "params": {"horizon": 2},
-        }
-    )
-    forged = valid.model_copy(deep=True)
-    object.__setattr__(forged.params, "benchmark", "cross_mean")
-    with pytest.raises(ValueError, match="cross_mean"):
-        run_backtest(forged, load(forged, {"target": px}))
-
-
-def test_cross_nodes_outside_basket_are_refused_at_the_library_boundary(tmp_path):
-    # The transforms-layer >= 2-columns check cannot see the MODE, so without this backstop a
-    # forged conjunction thesis could rank across a regime's targets — the exact coupling
-    # conjunction exists to forbid. The runner scans the entry (and features) for cross nodes
-    # and refuses them under any stamp but basket.
-    idx = pd.date_range("2021-01-01", periods=40, freq="1D")
-    files = {
-        "A": _write_bars(tmp_path / "A.csv", 100 + np.arange(40, dtype=float), idx),
-        "B": _write_bars(tmp_path / "B.csv", 80 - np.arange(40, dtype=float) * 0.1, idx),
-    }
-    valid = Thesis.model_validate(
-        {
-            "name": "x",
-            "target_mode": "basket",
-            "data": {"targets": ["A", "B"]},
-            "entry": {
-                "type": "threshold",
-                "left": {"type": "cross_rank", "input": {"type": "field", "column": "close"}},
-                "op": "<=",
-                "right": {"type": "constant", "value": 0.5},
-            },
-            "params": {"horizon": 2},
-        }
-    )
-    forged = valid.model_copy(deep=True)
-    object.__setattr__(forged, "target_mode", "conjunction")
-    with pytest.raises(ValueError, match="cross-sectional node"):
-        run_backtest(forged, load(forged, files))
-
-
 # ---- basket mode: the per-cell POOLED cross-target block ---------------------
 # The panel the basket checklist grades INSTEAD of per-member floors. `by_target` stays exactly
 # as it is in conjunction (attribution evidence, read by no check); `pooled` is additive and
@@ -7626,12 +7492,3 @@ def test_shared_axis_serving_constant_and_window_reports_one_param(tmp_path):
         {"N": 5, "horizon": 3},
         {"N": 10, "horizon": 3},
     ]
-
-
-def test_runner_backstop_refuses_forged_axis_ref_without_axes(tmp_path):
-    closes = (100 + np.random.RandomState(3).randn(120).cumsum()).tolist()
-    px = _bars(tmp_path / "px.csv", closes)
-    valid = Thesis.model_validate(_beta_doc({"N": [20, 60]}, 5))
-    forged = valid.model_construct(**{**dict(valid), "axes": None})
-    with pytest.raises(ValueError, match="references shared axis 'N', which is not declared"):
-        run_backtest(forged, load(valid, {"target": px}))

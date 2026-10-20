@@ -264,9 +264,6 @@ def _full_sample_block(x: np.ndarray, index: pd.DatetimeIndex) -> FullSampleBloc
     }
     vals = np.asarray(x, dtype=float)
     finite = np.isfinite(vals)
-    if not finite.any():  # unreachable through the strict loader (all-NaN columns refuse)
-        out["reason"] = "endpoint_missing"
-        return out
     hi_pos = _most_recent_extremum(np.where(finite, vals, -np.inf), "max")
     lo_pos = _most_recent_extremum(np.where(finite, vals, np.inf), "min")
     hi, lo = float(vals[hi_pos]), float(vals[lo_pos])
@@ -297,13 +294,6 @@ def _missingness_block(s: pd.Series) -> MissingnessBlock:
     n_missing = int(s.isna().sum())
     first_valid = s.first_valid_index()
     last_valid = s.last_valid_index()
-    if first_valid is None:  # unreachable through the strict loader
-        return {
-            "n_missing": n_missing,
-            "n_interior_missing": 0,
-            "first_valid": None,
-            "last_valid": None,
-        }
     return {
         "n_missing": n_missing,
         "n_interior_missing": int(s.loc[first_valid:last_valid].isna().sum()),
@@ -473,13 +463,7 @@ def describe_files(
     :func:`profile_file`; a refused file gets the ``{path, sha256, ok, reason}`` stub — the
     document is complete either way, and ``data_report["ok"]`` says which exit code the CLI
     owes (0 all admitted, 2 any refused).
-
-    Library-boundary backstop (unreachable through the CLI, whose ``--windows`` parsing
-    refuses first): windows must be a non-empty list of positive ints.
     """
-    windows = [int(w) for w in windows]
-    if not windows or any(w < 1 for w in windows):
-        raise ValueError("windows must be a non-empty list of positive bar counts")
     reports: list[FileReport] = []
     profiles: list[FileProfile | RefusalStub] = []
     for path in paths:

@@ -1,12 +1,11 @@
-"""The hardcoded pre-write integrity gate (``seikan.dataio.check_frame``)."""
+"""The frame-level integrity invariants (``seikan.dataio.check_frame``)."""
 
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-import pytest
 
-from seikan.dataio import IntegrityError, check_frame
+from seikan.dataio import check_frame
 
 
 def _idx(dates):
@@ -21,37 +20,21 @@ def _ohlcv(dates, o, h, lo, c, v=None):
 
 
 def test_accepts_clean_ohlcv_and_series():
-    check_frame(
-        _ohlcv(["2024-01-02", "2024-01-03"], [10, 11], [12, 13], [9, 10], [11, 12], [100, 200]),
-        shape="ohlcv",
-    )
+    clean = _ohlcv(["2024-01-02", "2024-01-03"], [10, 11], [12, 13], [9, 10], [11, 12], [100, 200])
+    assert check_frame(clean, shape="ohlcv") == []
     df = pd.DataFrame(
         {"iv30": [0.2, 0.22], "iv_skew": [-1.0, -0.9]}, index=_idx(["2024-01-02", "2024-01-03"])
     )
-    check_frame(df, shape="series")  # negative values are fine for non-ohlcv
+    assert check_frame(df, shape="series") == []  # negative values are fine for non-ohlcv
 
 
-def test_flags_unsorted_and_duplicate_index():
-    df = pd.DataFrame(
-        {"v": [1.0, 2.0, 3.0]}, index=_idx(["2024-01-03", "2024-01-02", "2024-01-02"])
-    )
-    with pytest.raises(IntegrityError) as e:
-        check_frame(df, shape="series")
-    assert "sorted" in str(e.value) and "duplicate" in str(e.value)
-
-
-def test_flags_nan_column_and_non_datetime_index():
+def test_flags_nan_column():
     nan = pd.DataFrame({"v": [np.nan, np.nan]}, index=_idx(["2024-01-02", "2024-01-03"]))
-    with pytest.raises(IntegrityError):
-        check_frame(nan, shape="series")
-    with pytest.raises(IntegrityError):
-        check_frame(pd.DataFrame({"v": [1.0, 2.0]}, index=[0, 1]), shape="series")
+    assert check_frame(nan, shape="series") == ["column 'v' is entirely NaN"]
 
 
 def test_flags_ohlcv_invariants():
-    with pytest.raises(IntegrityError) as e:
-        check_frame(_ohlcv(["2024-01-02"], [10], [8], [9], [9.5]), shape="ohlcv")  # high < low
-    assert "high < low" in str(e.value)
-    with pytest.raises(IntegrityError) as e:
-        check_frame(_ohlcv(["2024-01-02"], [0.0], [1.0], [-1.0], [0.5]), shape="ohlcv")
-    assert "non-positive" in str(e.value)
+    high_below_low = _ohlcv(["2024-01-02"], [10], [8], [9], [9.5])
+    assert "ohlcv has bars where high < low" in check_frame(high_below_low, shape="ohlcv")
+    non_positive = _ohlcv(["2024-01-02"], [0.0], [1.0], [-1.0], [0.5])
+    assert "ohlcv has non-positive prices" in check_frame(non_positive, shape="ohlcv")

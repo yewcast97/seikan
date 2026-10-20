@@ -83,6 +83,8 @@ from seikan.dsl.traverse import (
     iter_embedded_conditions,
     iter_external_names,
     iter_source_leaves,
+    iter_sweep_axes,
+    iter_sweep_axis_names,
     series_cross_nodes,
     series_source_leaves,
 )
@@ -153,6 +155,8 @@ __all__ = [
     "iter_embedded_conditions",
     "iter_external_names",
     "iter_source_leaves",
+    "iter_sweep_axes",
+    "iter_sweep_axis_names",
     "render_condition",
     "render_series",
     "series_cross_nodes",

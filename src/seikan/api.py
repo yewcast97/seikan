@@ -150,14 +150,10 @@ def compile_thesis(thesis: Thesis, md: MarketData) -> EventStudyResult:
     ranked, or crowned; the whole grid is measured on the whole sample. The result carries the
     ``data_report`` describing everything that was read and checked.
 
-    The thesis is revalidated as a private copy at this boundary: the models are frozen but
-    freezing is shallow, so a caller that mutated a nested list or dict after validation gets a
-    ``ValidationError`` here (the CLI maps it to exit 3) instead of an engine run over a document
-    no validator ever saw. The cost is microseconds against a backtest. The summary handed back
-    is validated against its declared contract the same way (:func:`seikan.emitted.
-    validate_summary`) — a few milliseconds against an O(grid × length) run.
+    The summary handed back is validated against its declared contract
+    (:func:`seikan.emitted.validate_summary`) — a few milliseconds against an O(grid × length)
+    run.
     """
-    thesis = Thesis.model_validate(thesis.model_dump(mode="json"))
     _ensure_loaded_for(md, thesis)
     data_report = _sufficient_report(md, thesis)
     _ensure_volume_available(md, thesis, include_features=True)
@@ -207,11 +203,8 @@ def list_entries(thesis: Thesis, md: MarketData) -> EntryListReport:
     per-(combo × target) timestamp lists have no CLI output, so a caller wanting firings in list
     shape rather than as a per-bar matrix comes through here.
 
-    Like :func:`compile_thesis`, the thesis is revalidated as a private copy at this boundary —
-    frozen models are shallow, and a mutated nested list/dict must refuse here, not run — and
-    ``md`` must be a load of its data declaration.
+    Like :func:`compile_thesis`, ``md`` must be a load of the thesis's data declaration.
     """
-    thesis = Thesis.model_validate(thesis.model_dump(mode="json"))
     _ensure_loaded_for(md, thesis)
     _ensure_volume_available(md, thesis, include_features=False)
     rows: list[EntryRow] = []

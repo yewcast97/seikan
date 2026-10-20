@@ -80,14 +80,6 @@ _SPACED_QUOTE = re.compile(rb'\n[ \t]+"')
 _NUMBER = r"[+-]?(?:(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?|(?i:inf|infinity))"
 
 
-class IntegrityError(ValueError):
-    """Raised by :func:`check_frame` with the full list of integrity violations."""
-
-    def __init__(self, violations: list[str]) -> None:
-        self.violations = violations
-        super().__init__("; ".join(violations))
-
-
 class DataError(ValueError):
     """Input data failed strict validation — maps to CLI exit 2. Carries the structured report."""
 
@@ -155,34 +147,16 @@ def build_data_report(
     }
 
 
-def check_frame(df: pd.DataFrame, *, shape: str) -> None:
-    """Validate a canonical frame. Raises :class:`IntegrityError` listing every violation.
+def check_frame(df: pd.DataFrame, *, shape: str) -> list[str]:
+    """Every integrity violation of a frame the strict read built (a sorted, unique, non-empty
+    ``DatetimeIndex`` over float value columns) — empty when it is clean.
 
     ``shape`` is ``"ohlcv"`` or ``"series"``. Interior NaN holes are tolerated (the engine censors
     them as ``no_outcome``); all-NaN columns and non-finite (inf) values are not.
     """
     v: list[str] = []
-
-    # --- general well-formedness ----------------------------------------------------------
-    if not isinstance(df.index, pd.DatetimeIndex):
-        v.append("index is not a DatetimeIndex")
-    else:
-        if df.index.isna().any():
-            v.append("index has unparsed timestamps (NaT)")
-        if not df.index.is_monotonic_increasing:
-            v.append("index is not sorted ascending")
-        if df.index.has_duplicates:
-            v.append("index has duplicate timestamps")
-    if len(df) == 0:
-        v.append("frame has no rows")
-    if df.shape[1] == 0:
-        v.append("frame has no columns")
-
     for c in df.columns:
-        if not pd.api.types.is_numeric_dtype(df[c]):
-            v.append(f"column {c!r} is not numeric")
-            continue
-        col = df[c].to_numpy(dtype="float64", na_value=np.nan)
+        col = df[c].to_numpy(dtype=float)
         if np.isnan(col).all():
             v.append(f"column {c!r} is entirely NaN")
         elif np.isinf(col).any():
@@ -220,9 +194,7 @@ def check_frame(df: pd.DataFrame, *, shape: str) -> None:
                 v.append("ohlcv has non-positive prices")
             if "volume" in df.columns and (df["volume"] < 0).any():
                 v.append("ohlcv has negative volume")
-
-    if v:
-        raise IntegrityError(v)
+    return v
 
 
 def _examples(
@@ -772,11 +744,8 @@ def _shape_and_integrity(
         )
     shape = expected_shape or detected
     rep.shape = detected
-    try:
-        check_frame(df, shape=shape)
-    except IntegrityError as exc:
-        for violation in exc.violations:
-            rep.error("integrity", f"{path}: {violation}")
+    for violation in check_frame(df, shape=shape):
+        rep.error("integrity", f"{path}: {violation}")
     return detected
 
 
