@@ -113,11 +113,10 @@ class MarketData:
     # Riding the materialized data scopes the memos to exactly the bars they derive from — ONE
     # memo per CLI run, populated by whichever compute path builds first (the backtest) and
     # reused by the other (the listing). Cached frames are immutable by contract, and so are the
-    # loaded frames they derive from — the loader's read-only buffers trip an in-place value
-    # write, but a replaced column or a write through a shallow copy goes through and leaves
-    # these memos stale (``_frozen_frame``). The memos live as long as this MarketData, so a
-    # long-lived instance reused across many theses accumulates entries — ``clear_memo()`` is the
-    # caller's release valve, and the reset after any mutation.
+    # loaded frames they derive from: a mutation past the loader's tripwire leaves these memos
+    # stale (``_frozen_frame``). The memos live as long as this MarketData, so a long-lived
+    # instance reused across many theses accumulates entries — ``clear_memo()`` is the caller's
+    # release valve, and the reset after any mutation.
     series_memo: dict[str, tuple[pd.DataFrame, pd.DataFrame]] = dataclasses.field(
         default_factory=dict, repr=False, compare=False
     )
@@ -188,7 +187,7 @@ def _slice(df: pd.DataFrame, start: str | None, end: str | None) -> pd.DataFrame
     """Inclusive [start, end] window by explicit Timestamp bounds.
 
     Deliberately NOT ``df.loc[start:end]``: label slicing resolves a partial spelling like
-    "2024-01" to the whole month, so the evaluated interval depended on how the bound was
+    "2024-01" to the whole month, so the evaluated interval would depend on how the bound was
     SPELLED rather than on what it says. ``DataSpec`` has already enforced strict ISO-8601, and
     an explicit comparison makes the boundary the exact instant given — the interval a report
     certifies is then readable straight off the DSL.
@@ -314,9 +313,9 @@ def _prepare_feed(
     )
     # Publication lag: shift timestamps to availability time before anchoring, so a value is not
     # usable on bars before its real release. A shift past the clock's range has no instant to
-    # land on — pandas raised OverflowError for a nanosecond stamp near its last instant (an exit
-    # 4 out of the load) and OutOfBoundsDatetime for a coarser stamp past 2262 that a sub-
-    # microsecond lag promotes to nanoseconds — so it refuses, naming the feed, stamp and lag.
+    # land on — pandas raises OverflowError for a nanosecond stamp near its last instant, and
+    # OutOfBoundsDatetime for a coarser stamp past 2262 that a sub-microsecond lag promotes to
+    # nanoseconds — so it refuses, naming the feed, stamp and lag.
     if lag is not None and lag > pd.Timedelta(0):
         s = s.copy()
         try:
@@ -350,13 +349,12 @@ class _Asof(NamedTuple):
 
 
 def _asof(stamps: pd.DatetimeIndex, bars: pd.DatetimeIndex) -> _Asof:
-    """The ONE asof read, which :func:`anchor_feed` and :func:`_feed_age_days` share: both
-    clocks as Python integers in the finer of their two resolutions, each bar's latest stamp at or
-    before it found by bisection, and the tick difference kept exact. pandas formed both in int64
-    nanoseconds, which do not hold the range: a coarser feed clock promoted to nanoseconds
-    overflowed on a print past 2262 that no bar ever reads (a reindex-ffill of a feed stamped
-    2500-01-01 beside nanosecond bars refused the load as ``OutOfBoundsDatetime``), and a feed
-    stamped 1700 against 2026 bars overflowed the age past ~292 years and crashed it."""
+    """The ONE asof read, which :func:`anchor_feed`, :func:`_match_feed` and
+    :func:`_feed_age_days` share: both clocks as Python integers in the finer of their two
+    resolutions, each bar's latest stamp at or before it found by bisection, and the tick
+    difference kept exact. Never pandas' int64 nanoseconds, which do not hold the range: a coarser
+    feed clock promoted to nanoseconds overflows on a print past 2262 that no bar ever reads, and
+    an age past ~292 years overflows."""
     per_second = max(ticks_per_second(stamps), ticks_per_second(bars))
     stamp_ticks = _ticks(stamps, per_second)
     bar_ticks = _ticks(bars, per_second)
@@ -381,8 +379,8 @@ def anchor_feed(native: pd.Series, index: pd.DatetimeIndex) -> pd.Series:
 def _match_feed(native: pd.Series, index: pd.DatetimeIndex) -> pd.Series:
     """The exact-match twin of :func:`anchor_feed`, off the same :func:`_asof` read: each bar
     reads the value stamped at exactly its instant (0 ticks behind it), NaN where none is — a
-    reindex WITHOUT fill. pandas' ``reindex`` promoted a coarser clock to int64 nanoseconds and
-    refused the load (``OutOfBoundsDatetime``) on a stamp past 2262 that no bar reads."""
+    reindex WITHOUT fill, never pandas' ``reindex``, which promotes a coarser clock to int64
+    nanoseconds and refuses (``OutOfBoundsDatetime``) a stamp past 2262 that no bar reads."""
     asof = _asof(native.index, index)
     values = native.to_numpy(dtype=float)[np.maximum(asof.position, 0)]
     hit = np.array([d == 0 for d in asof.behind], dtype=bool)
@@ -392,11 +390,10 @@ def _match_feed(native: pd.Series, index: pd.DatetimeIndex) -> pd.Series:
 def _feed_age_days(native: pd.Series, target_index: pd.DatetimeIndex) -> pd.Series:
     """Calendar days since the feed's most recent native stamp at or before each bar (float; NaN
     before the first stamp): the asof read's exact tick difference over the day's ticks, rounded
-    once (:func:`_asof`; ``int / int`` is correctly rounded). A double of the difference rounded
-    a span past 2**53 ticks before the division rounded again: 120 days and 1 ns read 120.0, so
-    ``days_since <= 120`` fired. The stamps are availability times (post-lag), so the age is
-    exactly how stale the value a decision at that bar would read is — and 'an event happened
-    within the last N days' is ``days_since <= N``."""
+    once (:func:`_asof`; ``int / int`` is correctly rounded) — never a double of the difference,
+    which rounds a span past 2**53 ticks before the division rounds again. The stamps are
+    availability times (post-lag), so the age is exactly how stale the value a decision at that
+    bar would read is — and 'an event happened within the last N days' is ``days_since <= N``."""
     asof = _asof(native.index, target_index)
     day = 86_400 * asof.per_second
     ages = np.array([math.nan if d is None else d / day for d in asof.behind], dtype=float)
@@ -406,15 +403,15 @@ def _feed_age_days(native: pd.Series, target_index: pd.DatetimeIndex) -> pd.Seri
 def _frozen_frame(df: pd.DataFrame) -> pd.DataFrame:
     """Rebuild ``df`` over a READ-ONLY buffer: a TRIPWIRE for the in-place value write
     (``md.close.iloc[0, 0] = x``) — the one mutation the engine itself could make by accident —
-    which raises instead of silently serving stale results out of the evaluation memos (keyed by
-    node identity, trusting these frames never to move). It is no immutability, which pandas
+    which raises instead of silently serving stale results out of the evaluation memos (keyed by the
+    node's canonical JSON, trusting these frames never to move). It is no immutability, which pandas
     cannot give: replacing a column (``md.close["A"] = …``) rebinds the frame's block, and under
     copy-on-write a write beside a live shallow copy lands in a fresh one. Both succeed, and both
-    are a caller's breach of the contract that loaded frames are never mutated — the memos are
-    stale from there until ``MarketData.clear_memo()``. The freeze must happen BEFORE
-    construction: under pandas copy-on-write, flipping ``.values`` flags after the fact freezes a
-    lazy copy, not the block a later write goes through. Loader-only: a hand-built
-    ``MarketData`` keeps whatever mutability its caller gave it."""
+    are a caller's breach of the contract that loaded frames are never mutated — the memos are stale
+    from there until ``MarketData.clear_memo()``. The freeze must happen BEFORE construction: under
+    pandas copy-on-write, flipping ``.values`` flags after the fact freezes a lazy copy, not the
+    block a later write goes through. Loader-only: a hand-built ``MarketData`` keeps whatever
+    mutability its caller gave it."""
     arr = df.to_numpy(dtype=float)
     arr.setflags(write=False)
     return pd.DataFrame(arr, index=df.index, columns=df.columns, copy=False)
@@ -586,9 +583,8 @@ def load_market_data(spec: DataSpec, files: DataFiles) -> MarketData:
     (``ValueError``, before a file is read). The load is stamped with its declaration
     (``MarketData.spec``, which :func:`~seikan.api.compile_thesis` and
     :func:`~seikan.api.list_entries` compare against the thesis), so bindings resolved for another
-    declaration would load a target set the stamp misstates: an A-only resolution loaded under an
-    A + B declaration measured A alone as the A + B thesis. The targets load in the declaration's
-    order, whatever order ``files`` lists them in.
+    declaration would load a target set the stamp misstates. The targets load in the
+    declaration's order, whatever order ``files`` lists them in.
     """
     detail = "; ".join(
         f"{what} {part}"
@@ -678,15 +674,14 @@ def load_market_data(spec: DataSpec, files: DataFiles) -> MarketData:
     # Targets must share ONE bar clock exactly. Intersecting instead would let a timestamp
     # missing from a single target delete that bar from EVERY target — before any coverage
     # ledger exists to record it — so trimming the rows under adverse firings would silently
-    # shrink the graded pool and could turn an unmet cell into a met one. (The
-    # benchmark join below already refused this trade-off for exactly this reason: it matches
-    # WITHOUT intersecting so a hole censors rather than shrinks.) A caller with genuinely
-    # mixed calendars pre-aligns the files, or carves an explicit `data.start`/`data.end`
-    # window — which enters the DSL hash, making the evaluated interval part of the run's
-    # identity instead of an artifact of the data. The clocks compare as exact ticks in the
-    # finest target resolution (:func:`_ticks`): pandas' union promoted a coarser clock to int64
-    # nanoseconds, which overflowed on a stamp past 2262 beside a nanosecond target and crashed
-    # the load instead of naming the mismatch.
+    # shrink the graded pool and could turn an unmet cell into a met one. (The benchmark join
+    # below matches WITHOUT intersecting for the same reason, so a hole censors rather than
+    # shrinks.) A caller with genuinely mixed calendars pre-aligns the files, or carves an
+    # explicit `data.start`/`data.end` window — which enters the DSL hash, making the evaluated
+    # interval part of the run's identity instead of an artifact of the data. The clocks compare
+    # as exact ticks in the finest target resolution (:func:`_ticks`), never through pandas'
+    # union, which promotes a coarser clock to int64 nanoseconds and overflows on a stamp past
+    # 2262 beside a nanosecond target.
     per_second = max(ticks_per_second(df.index) for df in frames.values())
     clocks = {name: _ticks(df.index, per_second) for name, df in frames.items()}
     first = next(iter(clocks.values()))
@@ -753,10 +748,9 @@ def load_market_data(spec: DataSpec, files: DataFiles) -> MarketData:
                 externals_native[fname] = _frozen_series(native)
             else:
                 # Each MEMBER of a per-target feed is bound under its own derived key, so the
-                # members may now name DIFFERENT columns — deliberate, and the symmetric twin of
-                # the per-member ``--data <feed>@<target>=PATH`` that already exists: whoever may
-                # point two members at two files may also point them at two column headers. The
-                # single DSL ``column`` could only say one name for the whole family.
+                # members may name DIFFERENT columns — the symmetric twin of the per-member
+                # ``--data <feed>@<target>=PATH``: whoever may point two members at two files may
+                # also point them at two column headers.
                 natives = {
                     name: _prepare_feed(
                         raw_feeds[fname][name],

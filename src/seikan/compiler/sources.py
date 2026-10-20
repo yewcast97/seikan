@@ -86,11 +86,8 @@ def source_availability(thesis: Thesis, md: MarketData) -> dict[str, LeafMasks]:
     tree reads.
 
     The decision-side completeness contract is enforced HERE, at the sources, rather than at the
-    root condition: the root's three-valued ``defined`` channel is masked wherever every completion
-    of a hole decides the node the same way — an operand settled by a decisive sibling (Kleene
-    ``F∧U = F``), a ``first_true`` hole whose completions re-converge before they disagree on any
-    fire — and a hole inside a windowed transform's warmup only delays its first value: either way
-    the root reads no undecided bar while an input is missing.
+    root condition, whose ``defined`` channel can read no undecided bar while an input is missing
+    (absorption, or a hole inside a windowed transform's warmup — see the module docstring).
 
     "Available" is the finiteness of the JOINED per-bar value, which is what the decision
     actually reads. For an external feed that is the post-asof-ffill value, so ordinary sparse
@@ -129,8 +126,7 @@ def source_coverage(
     index: every bar a decision could have been taken on is covered, including the stretches no
     cell happened to fire in. The ledger stays FACTUAL on a never-available leaf (zero
     post-warmup holes, a null ``first_available``): the refusal is
-    ``gate._check_source_coverage``'s (policy v3), never the emission's — refused three times,
-    trusted zero."""
+    ``gate._checks_run._check_source_coverage``'s, never the emission's."""
     n_bars = len(index)
     union = np.zeros(n_bars, dtype=bool)
     by_source: dict[str, SourceAvailability] = {}
@@ -140,9 +136,7 @@ def source_coverage(
         first = int(np.argmax(started)) if bool(started.any()) else None
         hole = ~avail
         if first is None:
-            # Never available at all: no bar was ever post-warmup, so the hole count is
-            # vacuously zero — the ledger stays factual and the null first_available below is
-            # what the gate refuses.
+            # Never available: no bar was ever post-warmup, so the hole count is vacuously zero.
             hole[:] = False
         else:
             hole[:first] = False

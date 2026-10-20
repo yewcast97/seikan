@@ -93,11 +93,10 @@ def _string_lag_ns(lag: str) -> int:
     (:data:`_LAG_TERM`, :func:`_lag_unit_ns`).
 
     pandas' own string parser is not exact and not strict, so it is not used: it TRUNCATES past
-    the nanosecond (``"0.5ns"`` read as no lag, ``"1.0000000001s"`` as 1s), reads ``"0.57 days"``
-    a nanosecond short, reads ``"5"`` as five NANOSECONDS, drops a comma (``"1,5h"`` as 15
-    hours), mis-reads ISO-8601 durations (``"P1DT1.5H"``), returns NaT for ``"nan"`` — which
-    compares False against every bound, so the shift was silently skipped, a declared delay
-    read as none (the look-ahead direction) — and warns on the ``d``/``w``/``H``/``S``
+    the nanosecond (``"0.5ns"`` reads as no lag), reads ``"5"`` as five NANOSECONDS, drops a
+    comma (``"1,5h"`` as 15 hours), mis-reads ISO-8601 durations, returns NaT for ``"nan"`` —
+    which compares False against every bound, so the shift would be silently skipped, a declared
+    delay read as none (the look-ahead direction) — and warns on the ``d``/``w``/``H``/``S``
     spellings, an exception under ``-W error``. A lag that is not a whole number of nanoseconds
     names a shift the nanosecond clock cannot hold, and is refused like a CSV stamp past the
     nanosecond (``dataio``); clock (``01:30:00``), ISO-8601 and bare-number forms are refused,
@@ -122,7 +121,7 @@ def _string_lag_ns(lag: str) -> int:
         if pos == len(text):
             break
     # The range first: the fraction's message below formats ``float(total)``, which raises
-    # OverflowError past the double range (a 400-digit lag escaped as an internal error).
+    # OverflowError past the double range.
     if total > _MAX_LAG_NS:
         raise ValueError(
             f"external feed lag {lag!r} is past the clock's range (at most {_MAX_LAG_NS} ns, "
@@ -182,11 +181,8 @@ class DataSpec(StrictModel):
     # a DIFFERENT document — ``dsl_hash`` would move for a reason that has nothing to do with what
     # is being asked, and a thesis could not be re-measured next month without being rewritten —
     # so the DSL names a series and the invocation locates it. A column name is that same fact one
-    # level in: it is a property of the FILE that happens to answer a key (this vendor ships three
-    # yields in one CSV under its own spellings, that one ships each in a file of its own), never a
-    # property of the thesis, so while it lived here the same exam over a RE-SHAPED CSV was
-    # likewise a different document — a column rename or a split file moved a hash the question
-    # never moved.
+    # level in: a property of the FILE that happens to answer a key, never of the thesis — here, a
+    # column rename or a split file would move a hash the question never moved (``ExternalFeed``).
     # All time series are STRICT CSV files with an ISO-8601 timezone-naive datetime index (see
     # ``dataio.read_strict_csv`` — no format guessing, ever): a full-OHLCV file is a
     # price target; a file WITHOUT open/high/low/close is a SERIES target (a yield, a spread, a
@@ -353,8 +349,7 @@ class BacktestParams(StrictModel):
     # at a bar censors the WHOLE bar's benchmark leg, so every member's firing there exits as
     # ``no_benchmark`` — a hole in one member never silently reshapes the others' benchmark.
     direction: Literal["longonly", "shortonly"] = "longonly"
-    # A scalar or a list — never a shared-axis reference: the horizon is the measurement window,
-    # its own result axis by construction, and no entry param shares it.
+    # A scalar or a list, never a shared-axis reference (``HorizonParam`` says why).
     horizon: HorizonParam = PField(default=1)
     features: dict[str, Series] | None = PField(default=None)
     benchmark: Literal["market", "cross_mean"] | None = None
@@ -381,7 +376,7 @@ class BacktestParams(StrictModel):
     @model_validator(mode="after")
     def _check_feature_names(self) -> BacktestParams:
         # Feature snapshots are written into the trades frame BESIDE the engine's own columns,
-        # so a colliding name either overwrites evidence (a feature named `ret` replaced the
+        # so a colliding name either overwrites evidence (a feature named `ret` would replace the
         # measured forward return) or duplicates a column — after which `trades["ret"]` is a
         # DataFrame, the statistics read a 2-D array, and `trades["is_open"]` crashes the
         # boolean index. The runner cannot catch this: by the time it sees the name, the
@@ -590,7 +585,7 @@ class Thesis(StrictModel):
         # here exactly as the same literal would in the param itself) AND the node's own
         # model validators (so ``rolling``'s min_count floor is checked against every value)
         # while reusing the child instances by identity. Cost O(ref sites × axis length),
-        # bounded by the 64-cell cap.
+        # bounded by the search cap.
         for site in sites:
             if not site.shared:
                 continue

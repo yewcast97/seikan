@@ -98,7 +98,7 @@ def excursion_extremum(frame: np.ndarray, base: np.ndarray, h: int, which: str) 
     ONLY the exit print ``base[t+h]`` — the mark the ``h``-bar return closes at.
 
     The exit bar's own high/low print AFTER the exit and belong to the NEXT holding period:
-    including them (the pre-v3 inclusive window ``[t, t+h]``) let post-exit prices alter the
+    including them (an inclusive window ``[t, t+h]``) would let post-exit prices alter the
     reported path. ``h=1`` degenerates to the fill bar's own extremum plus the exit print, and
     the brackets ``mae <= 0 <= mfe`` (the fill bar's H/L straddle the fill open) and
     ``mae <= ret <= mfe`` (the exit print is a member of the extremum set) hold by construction.
@@ -109,8 +109,8 @@ def excursion_extremum(frame: np.ndarray, base: np.ndarray, h: int, which: str) 
     already NaN (unclosed), so no emitted number rides that leg. Right-censoring falls out of
     the joint mask: the H/L part censors ``t+h-1 >= n`` and the shifted exit print censors
     ``t > n-1-h``. On a custom-outcome frame (``frame is base`` — feed outcomes, series-shaped
-    targets) the split is IDENTICAL to the old inclusive window on every closed row: the exit
-    "print" is the measured series itself.
+    targets) the split is IDENTICAL to the inclusive window ``[t, t+h]`` on every closed row: the
+    exit "print" is the measured series itself.
     """
     _, hl = _first_extrema(np.ascontiguousarray(frame, dtype=float), h, which == "min")
     exit_print = shift_rows(base, h)
@@ -128,10 +128,10 @@ def bars_to_positive_full(
     after at least one forward bar. A non-finite step before recovery, a non-finite entry, and a
     right-censored anchor (window past end) all yield NaN. A pure function of the anchor index
     given (horizon, target) — the same shape as ``mae`` — so it is computed ONCE per horizon over
-    every anchor and indexed per cell, instead of per (combo × fill × j) with 1-element arrays.
-    The equivalent per-anchor scan is a state machine over j = 1..h (non-finite → stop as NaN;
-    first ``sign·v >= 0`` → j; exhaustion → NaN); the ``undecided`` latch below reproduces each
-    transition on the same per-element floats, so the recorded counts are bit-identical.
+    every anchor and indexed per cell. The equivalent per-anchor scan is a state machine over
+    j = 1..h (non-finite → stop as NaN; first ``sign·v >= 0`` → j; exhaustion → NaN); the
+    ``undecided`` latch below reproduces each transition on the same per-element floats, so the
+    recorded counts are bit-identical.
     """
     n = base_np.shape[0]
     out = np.full(base_np.shape, np.nan)
@@ -142,9 +142,9 @@ def bars_to_positive_full(
         recover = finite & (v >= 0.0)
         out[undecided & recover] = float(j)
         undecided &= finite & ~recover
-    # The per-fill scan skipped (→ NaN) anchors with a non-finite entry and anchors whose window
+    # The per-anchor scan skips (→ NaN) anchors with a non-finite entry and anchors whose window
     # runs past the data end; ``measure_fn`` alone does not imply either (a ±inf entry can still
-    # measure finite under pct), so both skips are restored explicitly.
+    # measure finite under pct), so both skips are applied explicitly.
     out[~np.isfinite(base_np)] = np.nan
     out[max(n - h, 0) :] = np.nan
     return out
@@ -166,9 +166,8 @@ def bars_to_trough_full(
     are NaN. Computed once per horizon over every anchor (see ``bars_to_positive_full``); NOT
     derived from the per-horizon ``mae_ext`` frame + equality matching, which would mis-rank a
     window containing ±inf. The H/L windows are scanned once per column
-    (:func:`_first_extremum_1d`, O(n) whatever ``h``): ``argmin`` over a ``sliding_window_view``
-    of them copied the whole (anchors × targets × h) stack — 170 MiB for a 0.73 MiB frame of
-    3,000 bars × 32 targets at h = 252, ~4.5 GiB at 5,000 × 500.
+    (:func:`_first_extremum_1d`, O(n) whatever ``h``), never by ``argmin`` over a
+    ``sliding_window_view``, which copies the whole (anchors × targets × h) stack.
     Evidence for adverse-path trough duration: how many bars until the worst interim mark.
     """
     n = adverse_np.shape[0]

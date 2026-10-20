@@ -2,10 +2,13 @@
 
 Two responsibilities:
 
-1. **Parameter grid** — ``iter_param_assignments`` walks a thesis's entry tree, finds every
-   list-valued transform param, and yields one scalarized ``(combo, entry)`` per
-   point of the Cartesian product (a transform-param grid). Each swept param gets a stable
-   level name (``"{kind}_{param}"``, disambiguated by occurrence) used to label result columns.
+1. **Parameter grid** — ``iter_param_assignments`` walks a thesis's entry tree and yields one
+   scalarized ``(combo, entry)`` per point of the Cartesian product of its sweep axes
+   (``dsl.traverse.iter_sweep_axes``): every list-valued param — a transform's, a swept
+   ``constant``'s, a ``rolling`` / ``first_true`` / ``lag`` condition's — and every shared
+   axis an ``AxisRef`` reads. A list sweeps under ``"{kind}_{param}"`` (disambiguated by
+   occurrence) or a constant's ``name``, a shared axis under its declared name; the level names
+   label the result columns.
 
 2. **Signal arrays** — ``build_series``/``build_condition`` turn a (scalar-param) node into a
    (rows × targets) DataFrame. A Series carries ``(value, init)``; a Condition carries THREE
@@ -390,9 +393,8 @@ def _rolling_full_window(frame: pd.DataFrame, window: int) -> np.ndarray:
 def _latch(values: np.ndarray) -> npt.NDArray[np.bool_]:
     """Once a column first produces a finite value it stays 'initialized' (matches the observer).
 
-    ``isfinite``, matching the docstring's word: the kernels sanitize their outputs to finite or
-    NaN, so this is defense-in-depth — a ±inf that slipped through must read as warmup/hole, never
-    latch the column initialized."""
+    ``isfinite``: the kernels sanitize their outputs to finite or NaN, so this is defense-in-depth
+    — a ±inf that slipped through must read as warmup/hole, never latch the column initialized."""
     return np.maximum.accumulate(np.isfinite(values).astype(np.int8), axis=0).astype(bool)
 
 
@@ -465,13 +467,11 @@ def _derived_latch_at(
     there with no value since its init (:func:`_pending`). Init latches never turn back off, so
     an input initialized at ``s`` is initialized over the whole run.
 
-    Read at ``t`` instead, a snapshot taken during the input's warmup became usable the moment
-    the input initialized, with no new event: a ``cross_agg`` broadcasts the basket's value into a
-    member whose own input has not started, and ``event_value(E, cross_agg(X, mean)) > 0`` fired a
-    late member from its first own bar off a value read before it — where the same predicate
-    captured at the event, ``event_value(E, mask(cross_agg(X, mean) > 0))``, never fires. For an
-    input whose init is its own finiteness latch this IS :func:`_derived_latch` (a finite value
-    read at ``s`` means the input was initialized there).
+    Read at ``t`` instead, a snapshot taken during the input's warmup would become usable the
+    moment the input initialized, with no new event — a late member firing from its first own bar
+    off a ``cross_agg`` broadcast read before it. For an input whose init is its own finiteness
+    latch this IS :func:`_derived_latch` (a finite value read at ``s`` means the input was
+    initialized there).
 
     Where ``unknown`` (E initialized, its anchor unknowable after a hole) there is no event bar
     to read, so the input's init is read at ``t``: initialized there, some reading of the hole
@@ -528,14 +528,13 @@ def _transform(
     a LAGGED read (``shift``, ``change``) reaches back past it, so it is initialized once the bar
     it reads was (:func:`_lagged`). A transform that carries state (:func:`_carries_state`)
     has no value from its input's first post-init hole on. Its kernel skips a NaN bar — that is
-    its warmup rule — and carried across a hole its state (a peak the hidden bar may have
-    exceeded, a mean it would have moved) read as decided on every later bar, while a domain NaN
-    is no raw leaf's hole for ``sources`` to count: ``expanding_max(mask(log(z) > 0)) < 0.5``
-    fired on every bar after a ``z`` of −1, as after a 1, where a 2 stops it. So from that bar on
-    it is NaN and initialized: undefined to a threshold (``signal_coverage``), a hole to a series
-    computed from it — or, where the hole came before its first value, an input with no value
-    since its init (:func:`_pending`). Two readings stay as they are: a reader still in its own
-    warmup when its input dies warms on, a windowed reader's warmup over a hole made permanent
+    its warmup rule — so carried across a hole its state (a peak the hidden bar may have
+    exceeded, a mean it would have moved) would read as decided on every later bar, and a domain
+    NaN is no raw leaf's hole for ``sources`` to count. So from that bar on it is NaN and
+    initialized: undefined to a threshold (``signal_coverage``), a hole to a series computed from
+    it — or, where the hole came before its first value, an input with no value since its init
+    (:func:`_pending`). Two readings stay as they are: a reader still in its own warmup when its
+    input dies warms on, a windowed reader's warmup over a hole made permanent
     (``rolling_agg(ema(log(z), 5), 20, "max")`` never initializes over a hole after the ``ema``'s
     first value and before its own), and a ``cross_agg`` broadcast still reaches a member it no
     longer reduces over (``cross_breadth``'s ``k`` records it)."""
@@ -678,9 +677,9 @@ def cross_membership(
     is finite AND initialized: what the kernel sees before applying its floor (see
     :func:`cross_reduced`). A value an input carries before its own init (a ``cross_agg``
     broadcast into a member whose own input has not started, or a series computed from one) is
-    no observation of that member yet; entered, it ranked, demeaned and averaged its initialized
-    siblings over a member still in warmup. For plain data the two coincide (its init is its
-    finiteness latch)."""
+    no observation of that member yet; entered, it would rank, demean and average its
+    initialized siblings over a member still in warmup. For plain data the two coincide (its init
+    is its finiteness latch)."""
     xv, xi = build_series(node.input, md)
     entering: npt.NDArray[np.bool_] = (
         cross_population(node, md) & np.isfinite(xv.to_numpy(dtype=float)) & xi.to_numpy(dtype=bool)
@@ -750,8 +749,8 @@ def _build_series(node: Series, md: MarketData) -> tuple[pd.DataFrame, pd.DataFr
         case Constant(value=val):
             # Scalar-param node (see the docstring): ``iter_param_assignments`` resolved every
             # swept list into one level before this tree was built, so the list form the DSL also
-            # admits never reaches a kernel. The three casts in this file's evaluation half say
-            # exactly that and nothing else.
+            # admits never reaches a kernel. The ``xf.scalar`` casts in this file's evaluation
+            # half say exactly that and nothing else.
             arr = np.full((len(md.index), len(md.targets)), float(xf.scalar(val)))
             return _df(arr, md), _df(_all_true(md), md)  # always finite
         case External(name=name):
@@ -782,19 +781,17 @@ def _build_series(node: Series, md: MarketData) -> tuple[pd.DataFrame, pd.DataFr
             if isinstance(node, CrossAgg):
                 # The aggregate broadcasts a finite value into EVERY member column wherever the
                 # cross-section is thick enough — including a member whose own series has not
-                # yet produced a value (the sanctioned semantics: a warming member INSIDE the
-                # population still sees the group's breadth) — but it stops at the population
-                # boundary. Letting a warming column latch ``init`` off the broadcast would FIRE
-                # a member before its own data begins (and classify every such firing
-                # ``no_outcome``, hard-refusing the cell), so the warmup latch is gated by the
-                # member's OWN input as well: a finite value on a bar where the input is
-                # initialized (``_pending``'s rule). Neither alone is the member's own — an event
-                # node's init can precede its first value (a hole before the first event), and a
-                # value can precede the init: an inner broadcast snapshotted by an ``event_value``
-                # while the member warmed, read beside an init that arrived later (the snapshot's
-                # anchor turned unknowable, leaving it initialized with no value), latched the
-                # member and fired it off the broadcast on every bar after the hole, where the
-                # hole-free run fires it nowhere.
+                # yet produced a value (a warming member INSIDE the population still sees the
+                # group's breadth) — but it stops at the population boundary. Letting a warming
+                # column latch ``init`` off the broadcast would FIRE a member before its own data
+                # begins (and classify every such firing ``no_outcome``, hard-refusing the cell),
+                # so the warmup latch is gated by the member's OWN input as well: a finite value
+                # on a bar where the input is initialized (``_pending``'s rule). Neither alone is
+                # the member's own: an event node's init can precede its first value (a hole
+                # before the first event), and a value can precede the init (an inner broadcast
+                # an ``event_value`` snapshotted while the member warmed, beside an init that
+                # arrives when the snapshot's anchor turns unknowable) — latched on either, the
+                # member would fire off the broadcast where the hole-free run fires it nowhere.
                 arr = np.where(pop, arr, np.nan)
                 own = _latch_mask(np.isfinite(x) & xi.to_numpy(dtype=bool))
                 return _df(arr, md), _df(_latch(arr) & own, md)
@@ -849,16 +846,13 @@ def _build_series(node: Series, md: MarketData) -> tuple[pd.DataFrame, pd.DataFr
             cv, _ci, cd_ = condition_arrays(c, md)
             # init AND values are gated by C's FULLY-initialized mask, the gate ``not`` reads:
             # 0.0 claims a decided False, which an ``or`` that is False only because a branch
-            # still warms is not (``mask(C) == 0`` is ``not(C)`` spelled as a number). Its True
-            # there IS decided (the `or` fires on it, T∨U = T), but a series emitting only those
-            # Trues while the Falses stay unknown is a VALUE-SELECTED history: an ema, an
-            # expanding min, a cross-section's breadth — every reader that skips NaN — would read
-            # "C held on every bar it was seen", firings manufactured by how long a branch warms.
-            # So the mask is warmup until every branch is live, like any series that has not
-            # started: history reads begin there and a cross-section thins the member meanwhile
-            # (the cross_breadth k records it). A hole at C's first fully-initialized bar is
-            # ledgered rather than absorbed as warmup, by every series computed from the mask
-            # too (``_derived_latch``).
+            # still warms is not (``mask(C) == 0`` is ``not(C)`` spelled as a number), and its
+            # decided Trues alone would be a VALUE-SELECTED history (the module docstring). So the
+            # mask is warmup until every branch is live, like any series that has not started:
+            # history reads begin there and a cross-section thins the member meanwhile (the
+            # cross_breadth k records it). A hole at C's first fully-initialized bar is ledgered
+            # rather than absorbed as warmup, by every series computed from the mask too
+            # (``_derived_latch``).
             full = fully_initialized(c, md)
             arr = nb.mask_apply_nb(cv, cd_, full)
             return _df(arr, md), _df(full, md)
@@ -996,7 +990,7 @@ def condition_arrays(
 
     :func:`signal` and :func:`undefined_mask` are called back-to-back per combo on BOTH compute
     paths (the runner's measurement loop and ``api.list_entries``); without this layer each call
-    re-ran ``.to_numpy()`` three times on the very frames the memo had already built. Arrays are
+    would re-run ``.to_numpy()`` three times on the frames the memo already built. Arrays are
     immutable by the same contract as the cached frames (see :func:`build_series`).
     """
 
@@ -1056,11 +1050,11 @@ def _operand_full(node: Series, md: MarketData) -> npt.NDArray[np.bool_]:
     ``s(t)`` — and the event condition itself, whose history up to ``t`` places the anchor, at
     ``t``. Every other node reads its children through the current bar and ANDs them. Read flat
     at the current bar instead, ``not(shift(S, 20) > 1000)`` over ``S = bars_since_event(or(A >
-    0, B > 0))`` with ``A`` starting at bar 40 fired from bar 40 — reading, through the shift, a
-    bar where ``A`` still warmed and "no event" was no decided claim — where ``lag(not(S >
-    1000), 20)`` waits for bar 60. A bar whose anchor became unknowable (a hole in the event
-    condition) reads its input's mask at ``t``: the node is NaN there, a decision over it is
-    undefined, and it must stay ledgered, never become warmup."""
+    0, B > 0))`` would read, through the shift, a bar where ``A`` still warmed and "no event" was
+    no decided claim; read at the bars it reads, it waits for ``A`` as ``lag(not(S > 1000), 20)``
+    does. A bar whose anchor became unknowable (a hole in the event condition) reads its input's
+    mask at ``t``: the node is NaN there, a decision over it is undefined, and it must stay
+    ledgered, never become warmup."""
     match node:
         case Shift(input=inp, periods=p) | Change(input=inp, periods=p):
             return _lagged(_operand_full(inp, md), xf.scalar(p))

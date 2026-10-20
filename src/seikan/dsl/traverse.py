@@ -242,7 +242,7 @@ class _SweepScan:
     engine order. ``visit`` mirrors the engine resolver EXACTLY — an ``AxisRef`` yields the
     declared axis (its values, ``shared=True``) and never touches the occurrence counter; a list
     yields the auto-named (``{kind}_{param}``, disambiguated by occurrence) or explicitly named
-    level as today; a scalar yields nothing."""
+    level; a scalar yields nothing."""
 
     def __init__(self, axes: Axes | None, *, strict: bool) -> None:
         self.axes = axes
@@ -334,10 +334,8 @@ def _series_axis_names(node: Series, scan: _SweepScan) -> None:
             | CrossAgg(input=inp, where=wh, group=gr)
         ):
             # No swept params of their own (``min_valid`` is a plain int); the sweeps under
-            # input → where → group register through the recursion in THAT order (the engine's
-            # construction order; existing documents' axis names are unchanged) — dropping these
-            # cases would fall through to the wildcard and silently skip every axis inside a
-            # cross node, breaking the parse-time/engine parity the pin test enforces.
+            # input → where → group register through the recursion in THAT order, the engine's
+            # construction order (the parse-time/engine parity the pin test enforces).
             _series_axis_names(inp, scan)
             if wh is not None:
                 _condition_axis_names(wh, scan)
@@ -500,13 +498,10 @@ def iter_external_names(node: Condition) -> Iterator[str]:
 def iter_source_leaves(node: Condition) -> Iterator[tuple[SourceKind, str]]:
     """Deduplicated ``(kind, name)`` raw decision inputs a condition tree reads.
 
-    These are the leaves whose AVAILABILITY the engine must account for: the
-    three-valued ``defined`` channel reports whether the ROOT condition was decidable, which
-    absorption can mask (every completion of a hole decides the node the same way: a decisive
-    sibling, Kleene ``F∧U = F``; a ``first_true`` hole whose completions re-converge before they
-    disagree on any fire) and which a windowed transform's warmup can step over (a hole there
-    only delays its first value). Availability is read at the SOURCE instead, where no operator
-    can absorb it.
+    These are the leaves whose AVAILABILITY the engine must account for: the three-valued
+    ``defined`` channel reports whether the ROOT condition was decidable, which absorption can
+    mask and a windowed transform's warmup can step over (``compiler.sources``), so availability
+    is read at the SOURCE instead, where no operator can absorb it.
 
     ``Constant`` and ``Calendar`` are excluded — both are total by construction (a constant is
     finite by validation, a calendar attribute is a property of the index itself)."""

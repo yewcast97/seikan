@@ -52,7 +52,7 @@ def fmt_num(value: NumericParam) -> str:
 
 
 def _decay(window: NumericParam | None, alpha: NumericParam | None) -> str:
-    """The EW decay token: the window as before (``20``), or the alpha form as ``a=0.06``."""
+    """The EW decay token: the window (``20``), or the alpha form as ``a=0.06``."""
     if window is not None:
         return str(window)
     return f"a={fmt_num(alpha)}" if alpha is not None else "?"

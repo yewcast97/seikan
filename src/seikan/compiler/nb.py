@@ -23,8 +23,9 @@ Two implementation styles, **no vectorbt**:
 
 The production surface is the 2D ``*_apply_nb`` form (rows × columns → rows × columns), applied per
 target. For the numpy kernels the 2D form IS the vectorized implementation; only the numba kernels
-keep a 1D form (``ema_1d``, ``zscore_ema_1d``, ``first_true_1d``, ``_bars_since_extremum_1d`` —
-scalar recurrences), which their 2D form loops over per column. The parity tests
+keep a 1D form (``ema_1d``, ``zscore_ema_1d``, ``first_true_1d``, ``_bars_since_extremum_1d``,
+``event_anchor_1d``, ``event_agg_1d``, ``_rolling_exact_1d``, ``_rolling_corr_1d`` — scalar
+recurrences), which their 2D form loops over per column. The parity tests
 (``tests/test_nb_kernels.py`` against the frozen ``tests/_reference_nb.py``) wrap the 2D forms in
 their own single-column helpers.
 """
@@ -53,13 +54,12 @@ from seikan.numeric import MIN_NORMAL, log_ratio_array, pct_change
 #
 # BOUNDED window stacks: the trailing windows are a ``(rows − window + 1, cols, window)`` view, and
 # every reduction over it — a moment, a sort, a comparison, even the ``isnan(...).any`` gate —
-# materializes temporaries of that whole size: a peak of 162 MiB for 2,000 bars × 16 targets at
-# window 252 (a 0.24 MiB input), ~13–22 GiB at 5,000 × 500. The
-# kernels reduce the view in row batches of at most ``_WINDOW_STACK`` values
-# (``_window_batches``). A batch is a basic slice of the view, with its strides, so numpy reduces
-# each window in the same order and every output keeps its bits; what reads the whole input (the
-# constant windows, the exact sums, the lifted values) is computed once per call. The path side's
-# first extremum (``paths._first_extremum_1d``) never stacks its windows either.
+# materializes temporaries of that whole size, so the kernels reduce the view in row batches of
+# at most ``_WINDOW_STACK`` values (``_window_batches``). A batch is a basic slice of the view,
+# with its strides, so numpy reduces each window in the same order and every output keeps its
+# bits; what reads the whole input (the constant windows, the exact sums, the lifted values) is
+# computed once per call. The path side's first extremum (``paths._first_extremum_1d``) never
+# stacks its windows either.
 #
 # FINITE-OR-NaN invariant: every kernel's output is finite or NaN. Kernels whose arithmetic can
 # overflow from finite inputs (sums, ratios with denormal denominators, squared deviations)
@@ -67,112 +67,88 @@ from seikan.numeric import MIN_NORMAL, log_ratio_array, pct_change
 # initialized and never fires a threshold. Where that NaN lands is the node's warmup latch's call
 # (``vectorize._build_series``), never the overflow's: once the series has initialized, in the
 # undecidable ledger; before, it is the series' warmup exactly as a leading ``x / 0`` is, and no
-# ledger records it. A latch initializes a series no earlier than its first finite value, save one
-# arm that initializes it with no value yet: an event node whose anchor became unknowable before its
-# first event, a ``mask`` undecided on its first live bar, a transform carrying state across bars
-# from its input's first post-init hole (``_transform`` — these kernels skip a NaN, so the builder
-# gives the series no value from there), and (``_derived_latch``) a series on a bar every input is
-# initialized and one has none since its init. A ``cross_agg`` never takes it —
-# its broadcast waits for its own first finite value as well as for the member's own first value. So
-# a series NaN on every bar — a ``zscore`` of plain levels near 1e160, any ``cross_agg`` — never
-# initializes, never fires and is counted by no coverage ledger, while one that arm initialized
-# ledgers every overflowed bar from there on. Variances are computed CENTERED (two-pass or a
-# Welford/West recurrence), never as E[x²] − E[x]²: the one-pass form cancels catastrophically on
-# large-magnitude series (a price near 5000 with a std near 1 has already lost most of the
-# mantissa). The two-pass windows are centered about the window's OWN offset (its first value; a
-# cross-section's range midpoint — ``_window_variance``, ``cross_centre``), never about the rounded
-# mean of the raw values: that mean's rounding is the size of the level's ulp, and a spread at that
-# scale (``[2**52, 2**52 + 1]``) read a std of 0.707 for 0.5 and a z-score past its bound.
+# ledger records it. A latch initializes a series no earlier than its first finite value, save the
+# arms that initialize one with no value yet (``vectorize._derived_latch``, ``_transform``: these
+# kernels skip a NaN, so the builder gives a stateful series no value from its input's first
+# post-init hole); a ``cross_agg`` broadcast takes none. So a series NaN on every bar — a
+# ``zscore`` of plain levels near 1e160, any ``cross_agg`` — never initializes, never fires and is
+# counted by no coverage ledger, while one an arm initialized ledgers every overflowed bar from
+# there on. Variances are computed CENTERED (two-pass or a Welford/West recurrence), never as
+# E[x²] − E[x]²: the one-pass form cancels catastrophically on large-magnitude series (a price near
+# 5000 with a std near 1 has already lost most of the mantissa). The two-pass windows are centered
+# about the window's OWN offset (its first value; a cross-section's range midpoint —
+# ``_window_variance``, ``cross_centre``), never about the rounded mean of the raw values, whose
+# rounding is the size of the level's ulp (:func:`_window_variance` says why that matters).
 #
 # EXACT means: every mean a decision reads — ``rolling_agg``'s, ``cross_agg``'s and ``event_agg``'s
 # ``mean`` — and the runner's ``cross_mean`` bench leg (``cross_means``) is its window's or row's
 # EXACT sum over its count, rounded ONCE (``_expansion_quotient``; the read
 # ``analysis._pools.exact_mean`` gives the graded pools). The exactly rounded sum over the count
-# rounds twice, and that is no rounding of the mean: ``[x − ulp, x, x, x, x]`` at
-# ``x = 0.9757632206350922`` read an ulp ABOVE its maximum, and ``rolling_agg(x, 5, mean) >
-# rolling_agg(x, 5, max)`` fired on 59 of 602 bars; rounded once, a mean never leaves its window's
-# range. (The centre ``cross_agg``'s std reduces about is the row's offset plus its differences'
-# rounded mean, ``cross_centre``, whose subtractions round.) A deviation from a cross-section's mean
-# that is read (``cross_demean``, the ``cross_mean`` excess) has its numerator ``k·x − S`` summed
-# exactly (``cross_deviations``) and rounded once over ``k``, so a member AT the mean reads exactly
-# 0.0 — about the rounded centre ``[0, 1, 1, −1 − 2**-52, −1 + 2**-52]``'s first member read
-# 2.2e-17, and ``x == 0 AND cross_demean(x) > 0`` fired. The sums are Shewchuk expansions
-# (``_expansion_add``, the ``math.fsum`` algorithm ``event_agg``'s running sum keeps): sliding
-# along a column (``_rolling_exact_means``, O(rows) whatever the window) or one per row
-# (``_row_exact_sums``). numpy sums pairwise, and a large term swallowed a small one before its
-# cancelling partner arrived: ``[1, −2**-54, −1, 2**-54, 0]`` sums to exactly 0 and its mean read
-# 1.1e-17, so ``cross_agg(x, mean) > 0`` fired on it — and read 0 after a permutation of the
-# members, the decision hanging on the order the targets were declared in. The mean has the exact
-# sum's sign and is 0.0 exactly where the sum is, in any member order. A cross-section whose
-# largest member reaches ``2**996`` is summed in a frame scaled by ``2**-28`` (``_row_expansion``,
-# chosen off the members' magnitudes — the same in any order), and is NaN where that frame cannot
-# hold a member exactly; a window's running sum is NaN where it leaves the double range on the way
-# (members near it), as the direct form's overflow was.
+# rounds twice, which is no rounding of the mean and can land outside the window's range; rounded
+# once, a mean never leaves it. (The centre ``cross_agg``'s std reduces about is the row's offset
+# plus its differences' rounded mean, ``cross_centre``, whose subtractions round.) A deviation
+# from a cross-section's mean that is read (``cross_demean``, the ``cross_mean`` excess) has its
+# numerator ``k·x − S`` summed exactly (``cross_deviations``) and rounded once over ``k``, so a
+# member AT the mean reads exactly 0.0. The sums are Shewchuk expansions (``_expansion_add``, the
+# ``math.fsum`` algorithm ``event_agg``'s running sum keeps): sliding along a column
+# (``_rolling_exact_means``, O(rows) whatever the window) or one per row (``_row_exact_sums``).
+# numpy sums pairwise, where a large term can swallow a small one before its cancelling partner
+# arrives, so numpy's mean of an exactly cancelling cross-section can take a sign that hangs on
+# the order the targets were declared in. The exact mean has the exact sum's sign and is 0.0
+# exactly where the sum is, in any member order. A cross-section whose largest member reaches
+# ``2**996`` is summed in a frame scaled by ``2**-28`` (``_row_expansion``, chosen off the members'
+# magnitudes — the same in any order), and is NaN where that frame cannot hold a member exactly; a
+# window's running sum is NaN where it leaves the double range on the way (members near it).
 # The SMA z-score's numerator is such a read deviation: the bar's exact deviation from its
 # window's exact mean, ``window·x − S`` summed exactly and rounded once over the window
-# (``_rolling_exact_deviations``), so a bar AT its window's mean reads exactly 0.0 — about the
-# direct two-pass centre ``[1.1, 0.7, 1.1, 0.7, 0.9]``'s last bar read +1.55e-16 (−1.55e-16 with
-# a 0.7 first), and ``close == 0.9 AND zscore(close, 5) > 0`` fired where ``close >
-# rolling_agg(close, 5, mean)`` did not. The centre a window's VARIANCE is reduced about
-# (``_window_variance``) stays the direct two-pass form about the window's offset: no threshold
-# compares against it, and the z-score's magnitude is known to the rounding of the window's own
-# spread. A CORRELATION reads its covariance's sign, so its moments are exact too
-# (``_rolling_corr_1d``): ``k·Σa² − (Σa)²``, ``k·Σb² − (Σb)²`` and ``k·Σab − ΣaΣb`` summed
-# exactly — five sliding expansions, every product two doubles (``_two_product``) — in a frame per
-# leg and window (the window's largest magnitude scaled by a power of two to ``2**400``) where
-# nothing leaves the double range, each rounded once. About the windows' offsets the direct
-# moments read 4.3e-17 for the exact 0 of ``[1.1, 0.7, 1.1, 0.7, 0.9]`` against ``[0.7, 0.7, 1.1,
-# 1.1, 0.9]``, and ``x == 0.9 AND rolling_corr(x, y, 5) > 0`` fired; exact, a correlation has the
-# covariance's sign, is 0.0 where it is, and is exactly invariant under power-of-two scaling of
-# either leg. A window holding a nonzero member below ``2**-880`` of its leg's largest has no
-# exact square in the frame and is NaN — the stated boundary, ``_row_expansion``'s rule.
+# (``_rolling_exact_deviations``), so a bar AT its window's mean reads exactly 0.0. The centre a
+# window's VARIANCE is reduced about (``_window_variance``) stays the direct two-pass form about
+# the window's offset: no threshold compares against it, and the z-score's magnitude is known to
+# the rounding of the window's own spread. A CORRELATION reads its covariance's sign, so its
+# moments are exact too, each rounded once, in a frame per leg and window where nothing leaves the
+# double range (``_rolling_corr_1d``): a correlation has the covariance's sign, is 0.0 where it
+# is, and is exactly invariant under power-of-two scaling of either leg. A window holding a
+# nonzero member below ``2**-880`` of its leg's largest has no exact square in the frame and is
+# NaN — the stated boundary, ``_row_expansion``'s rule.
 #
 # OUT-OF-RANGE intermediates: sanitizing the RESULT is not enough where an out-of-range intermediate
-# yields a FINITE one — ``x / inf`` is 0.0, so a correlation whose variance product overflowed read
-# 0.0 for ``corr(x, x)`` at 1e80 scale, and a z-score whose window variance overflowed read 0.0. A
-# window variance that OVERFLOWED (deviations past ~1.3e154) is therefore NaN wherever it is divided
-# by or reported, never a value: in the undecidable ledger once its series has initialized, and the
-# series' warmup before that (the note above) — a z-score of plain data whose every window
-# overflows, its first included, never fires and no ledger counts it, like a leading ``x / 0``. One
-# that fell BELOW the normal range is no overflow but a precision loss, and ordinary data reaches
-# it: an ``ema`` of a change decays geometrically through it over a held stretch. The squares of
-# deviations under ~1.5e-154 round to multiples of the smallest subnormal or to 0.0, reading a
-# z-score past its population bound ``√(w−1)`` or a varying window's std as the 0.0 an all-equal
-# window owns. Such a VARYING window is recomputed LIFTED by ``2**_LIFT`` (``_lifted_windows``):
-# scaling up by a power of two never rounds, and the lifted windows keep the direct form's layout
-# — the same summation order — so every moment is the direct one times its power of two (the
-# z-score's numerator the lifted values' exact deviation), and the z-score and std are the values
-# they have in an unbounded exponent range (a std under the smallest subnormal floors there: a
-# varying window is never zero dispersion). A cross-section is lifted the same way, its z-score's
-# deviation with it (``cross_agg_apply_nb``, ``cross_zscore_apply_nb``). Every window whose
-# variance is a normal double keeps every bit. A correlation needs no lift — its exact moments are
-# taken in a frame where nothing leaves the range (the exact-means note above), and the root of
-# their variance product with the exponents moved out (``_sqrt_product``) — so ``corr(x, x)`` is
-# exactly 1 at any scale. The EW z-score (``zscore_ema_1d``) carries its variance in a recurrence,
-# which the same rule reaches by moving the whole recurrence into a frame lifted by ``2**_LIFT``
-# once its variance nears the range (``_EW_LIFT_VAR``): its z is the recurrence's value in an
-# unbounded exponent range too — not NaN, nor collapsed toward 0 off a floored variance, nor past
-# its bound ``√((1−α)/α)``. Past the frame's reach only a HELD input's decay is left, a z exact
-# arithmetic has sent under ``2**-158/α`` by then: its variance and its deviation are floored at the
-# smallest subnormal there, sign kept — decided, imprecise in magnitude.
+# yields a FINITE one — ``x / inf`` is 0.0, so a correlation whose variance product overflowed, or
+# a z-score whose window variance overflowed, would read 0.0. A window variance that OVERFLOWED
+# (deviations past ~1.3e154) is therefore NaN wherever it is divided by or reported, never a
+# value: in the undecidable ledger once its series has initialized, and the series' warmup before
+# that (the note above). One that fell BELOW the normal range is no overflow but a precision loss,
+# and ordinary data reaches it: an ``ema`` of a change decays geometrically through it over a held
+# stretch. The squares of deviations under ~1.5e-154 round to multiples of the smallest subnormal
+# or to 0.0, reading a z-score past its population bound ``√(w−1)`` or a varying window's std as
+# the 0.0 an all-equal window owns. Such a VARYING window is recomputed LIFTED by ``2**_LIFT``
+# (``_lifted_windows``: exact, in the direct form's summation order, the z-score's numerator the
+# lifted values' exact deviation), so the z-score and std are the values they have in an
+# unbounded exponent range (a std under the smallest subnormal floors there: a varying window is
+# never zero dispersion). A cross-section is lifted the same way, its z-score's deviation with it
+# (``cross_agg_apply_nb``, ``cross_zscore_apply_nb``). Every window whose variance is a normal
+# double keeps every bit. A correlation needs no lift — its exact moments are taken in a frame
+# where nothing leaves the range (the exact-means note above), and the root of their variance
+# product with the exponents moved out (``_sqrt_product``) — so ``corr(x, x)`` is exactly 1 at any
+# scale. The EW z-score carries its variance in a recurrence, which the same rule reaches by
+# moving the whole recurrence into a lifted frame once its variance nears the range
+# (``_EW_LIFT_VAR``, ``zscore_ema_1d``, which states the floor past the frame's reach).
 #
 # EXACT zero dispersion: a window (or a cross-section) whose finite values are all equal is
 # detected exactly and given its exact answer instead of the arithmetic's: the mean of such a
 # window is the value itself, its deviations and std are 0.0, and every read that divides by its
 # dispersion (z-score, correlation) is undefined → NaN. The computed mean of a constant DECIMAL
 # window is not the constant (``(0.1 + 0.1 + 0.1) / 3 != 0.1``), so without the exact test the
-# residual minted a z-score of exactly ±1 and a correlation of 1 out of a constant series. The
-# recurrences hold the same line (``ema_1d``, ``zscore_ema_1d``, ``event_agg_1d``). Every window
-# with any variation whose variance is a normal double is the direct two-pass form about its
-# offset, bit for bit (the SMA and cross-sectional z-scores over their exact numerators, clipped
-# to their population bounds ``√(k−1)``; a correlation is its exact moments', clipped to
-# ``[−1, 1]`` and exactly ±1 where its window is collinear; ``ema_1d`` differs
-# from its plain update only on the steps whose rounded update left its exact interval, and the
-# EW z-score carries its mean compensated — the plain West recurrence's value to its rounding, not
-# bit for bit; the out-of-range windows and the lifted EW frame are the note above); "constant"
-# means bit-identical values — arithmetic on decimal levels (a spread ``y1 − y2`` moving in
-# lockstep) leaves residue at the operands' scale, which is variation as far as any kernel can
-# tell.
+# residual would read as dispersion — a z-score of ±1, a correlation of 1 — out of a constant
+# series. The recurrences hold the same line (``ema_1d``, ``zscore_ema_1d``, ``event_agg_1d``).
+# Every window with any variation whose variance is a normal double is the direct two-pass form
+# about its offset, bit for bit (the SMA and cross-sectional z-scores over their exact
+# numerators, clipped to their population bounds ``√(k−1)``; a correlation is its exact moments',
+# clipped to ``[−1, 1]`` and exactly ±1 where its window is collinear; ``ema_1d`` differs from its
+# plain update only on the steps whose rounded update left its exact interval, and the EW z-score
+# carries its mean compensated — the plain West recurrence's value to its rounding, not bit for
+# bit; the out-of-range windows and the lifted EW frame are the note above); "constant" means
+# bit-identical values — arithmetic on decimal levels (a spread ``y1 − y2`` moving in lockstep)
+# leaves residue at the operands' scale, which is variation as far as any kernel can tell.
 # =============================================================================
 
 
@@ -227,10 +203,10 @@ def _window_variance(win: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
     within a factor of two of that value), then ``y``'s mean and the deviations ``y − mean_y``.
 
     Centered about the rounded mean of the RAW values instead, a window whose spread sits near
-    its level's ulp lost that spread to the mean's rounding: the mean of ``[2**52, 2**52 + 1]``
-    rounds onto a member, so the deviations read ``[0, 1]`` for ``[−0.5, 0.5]``, the std 0.707
-    for 0.5, and the z-score 1.414 — past the population bound ``√(w−1) = 1``. Around the offset
-    they are the exact ``[−0.5, 0.5]``. Shifting commutes with the power-of-two lift
+    its level's ulp loses that spread to the mean's rounding: the mean of ``[2**52, 2**52 + 1]``
+    rounds onto a member, so the deviations would be ``[0, 1]`` for ``[−0.5, 0.5]`` — std 0.707
+    for 0.5, z-score 1.414, past the population bound ``√(w−1) = 1``. Around the offset they are
+    the exact ``[−0.5, 0.5]``. Shifting commutes with the power-of-two lift
     (:func:`_lifted_windows`), and a difference that overflows (members farther apart than the
     double range) overflows the variance with it. Stable at any level, where the one-pass
     ``E[x²] − E[x]²`` form NaNs out around 1e8 already."""
@@ -255,12 +231,11 @@ def _midpoint(lo: npt.NDArray[np.float64], hi: npt.NDArray[np.float64]) -> npt.N
     ``hi`` reads the value itself, an odd median's middle).
 
     ``(lo + hi) / 2`` — bit for bit numpy's even median, the mean of the pair — wherever that is
-    finite; where the SUM overflowed (two members past half the double range — a constant window
-    of 1e308 read NaN, where its mean read 1e308), the halves' sum ``lo/2 + hi/2``. That is exact
-    there: an overflowing sum has two operands of one sign, the smaller at least half the
-    largest double's ulp (2**970), so halving each never rounds and their sum is the correctly
-    rounded midpoint. The direct form stays wherever finite because halving a SUBNORMAL loses its
-    last bit (``5e-324 / 2`` is 0.0)."""
+    finite; where the SUM overflows (two members past half the double range), the halves' sum
+    ``lo/2 + hi/2``. That is exact there: an overflowing sum has two operands of one sign, the
+    smaller at least half the largest double's ulp (2**970), so halving each never rounds and
+    their sum is the correctly rounded midpoint. The direct form stays wherever finite because
+    halving a SUBNORMAL loses its last bit (``5e-324 / 2`` is 0.0)."""
     with np.errstate(over="ignore", invalid="ignore"):
         mid = (lo + hi) / 2.0
         out: npt.NDArray[np.float64] = np.where(np.isfinite(mid), mid, lo / 2.0 + hi / 2.0)
@@ -284,22 +259,18 @@ def _sorted_mad(s: npt.NDArray[np.float64], k: int) -> npt.NDArray[np.float64]:
     """The median absolute deviation over the last axis of ``s``, laid out as for
     :func:`_sorted_median`: about the SAME values' median, unscaled, the deviations taken in their
     frame about the lower middle value (the median itself when ``k`` is odd) — exact wherever the
-    values lie within a factor of two of it. About the ROUNDED median, 2**52 + [0, 1, 1, 2, 2, 3]
-    read 1.0 for 0.5 (its median B + 1.5 rounds to B + 2) and 0.5 once translated by −B exactly,
-    so ``rolling_mad(X, 6) > rolling_mad(X − B, 6)`` fired.
+    values lie within a factor of two of it. About the ROUNDED median a MAD would carry that
+    rounding, and a window and its exact translate would read different MADs.
 
     An even window whose middle pair lies an ODD multiple of 2**-1074 apart has no double for its
     median in that frame (the gap's half rounds), so it is retaken doubled — where the half is
-    exact and every step the direct form's in an unbounded exponent range — and halved once:
-    ``[u, 3u, 4u, 5u]`` (u = 2**-1074) read 2u for its MAD of u, and ``rolling_mad(x, 4) > u``
-    fired on every window. A member the doubling overflows sorts past the middle deviations
-    wherever the MAD is that small; where they reach it, the MAD is past 2**1022 and the direct
-    read stands.
+    exact and every step the direct form's in an unbounded exponent range — and halved once. A
+    member the doubling overflows sorts past the middle deviations wherever the MAD is that small;
+    where they reach it, the MAD is past 2**1022 and the direct read stands.
 
     NaN where a value lies farther than the largest double from the lower middle one: that
-    deviation overflows, and an infinite one can displace the median of the rest (``[-2270207,
-    -12172030, 16568487, 8508056] * 2**1000`` read 1.108e308 for 1.009e308). Callers silence the
-    overflow."""
+    deviation overflows, and an infinite one can displace the median of the rest. Callers silence
+    the overflow."""
     y = s - s[..., (k - 1) // 2][..., None]
     held = np.isfinite(y[..., 0]) & np.isfinite(y[..., -1])
     v = np.where(held, _deviation_median(y, k), np.nan)
@@ -323,10 +294,9 @@ def zscore_sma_apply_nb(arr: npt.NDArray[np.float64], window: int) -> npt.NDArra
     # mean's rounding leaves (see the zero-dispersion note above).
     varies = ~_constant_windows(a, window)
     # The population bound (Samuelson): no member of a window deviates from its mean by more than
-    # √(w−1) population stds, and a window of w−1 equal values beside one other sits ON it — where
-    # the ratio's last rounding carried it past: [100, 100, 100, 100, 100.3] read 2.0000000000000004
-    # for an exact 2, and `zscore(close, 5) > 2` fired on every such window. Clipped, as the EW
-    # z-score is to its own bound and a correlation to [−1, 1].
+    # √(w−1) population stds, and a window of w−1 equal values beside one other sits ON it, where
+    # the ratio's last rounding can carry it past. Clipped, as the EW z-score is to its own bound
+    # and a correlation to [−1, 1].
     bound = math.sqrt(window - 1)
     # The numerator is the current bar's EXACT deviation from its window's exact mean, rounded
     # once (the exact-means note above): a bar AT the mean reads 0.0, and the z-score has the
@@ -342,10 +312,8 @@ def zscore_sma_apply_nb(arr: npt.NDArray[np.float64], window: int) -> npt.NDArra
             # ``rolling_agg`` std pattern): the current bar's deviation over the window std.
             var = _window_variance(w)
             z = devs[rows] / np.sqrt(var)
-            # A VARYING window whose variance fell below the normal range (deviations under
-            # ~1.5e-154: a subnormal variance read |z| past its bound √(w−1), one of 0.0 read
-            # NaN) is recomputed lifted — the same z, every rounding scaled (the out-of-range
-            # note above).
+            # A VARYING window whose variance fell below the normal range is recomputed lifted —
+            # the same z, every rounding scaled (the out-of-range note above).
             lost = finite_all & varies[rows] & (var < MIN_NORMAL)
             if lost.any():
                 if lifted is None:
@@ -383,11 +351,11 @@ def rolling_agg_apply_nb(
     window: int,
     agg: Literal["max", "min", "mean", "std", "median", "mad"],
 ) -> npt.NDArray[np.float64]:
-    # Trailing-window aggregate (max/min/mean/std) along the time axis; the current value sits at
-    # the window's LAST bar. NaN unless the whole trailing window is finite (the percentile gate).
-    # ``std`` is the population std (ddof=0), computed two-pass (deviations from the window mean) so
-    # it matches the reference and stays numerically stable for large-magnitude series (e.g.
-    # prices).
+    # Trailing-window aggregate (max/min/mean/std/median/mad) along the time axis; the current value
+    # sits at the window's LAST bar. NaN unless the whole trailing window is finite (the percentile
+    # gate). ``std`` is the population std (ddof=0), computed two-pass (deviations from the window
+    # mean) so it matches the reference and stays numerically stable for large-magnitude series
+    # (e.g. prices).
     a = np.asarray(arr, dtype=float)
     n = a.shape[0]
     out = np.full(a.shape, np.nan)
@@ -476,7 +444,7 @@ def drawdown_apply_nb(
 ) -> npt.NDArray[np.float64]:
     """Fractional depth below peak: ``(x − peak) / peak`` (≤ 0) — defined on a POSITIVE scale
     only; the percent change :func:`seikan.numeric.pct_change`, so 80 under a peak of 100 is
-    exactly −0.2 (``x / peak − 1`` read −0.19999999999999996).
+    exactly −0.2.
 
     ``window is None`` → expanding (all-time) peak; otherwise trailing ``window``-bar peak (same
     finite-window gate as ``rolling_agg`` max). Peak ≤ 0 / non-finite → NaN: the ratio is
@@ -611,19 +579,15 @@ def rolling_corr_apply_nb(
     window's largest magnitude, where nothing leaves the double range: the correlation has
     exact arithmetic's sign, is 0.0 exactly where the covariance is, and is exactly invariant
     under scaling either leg by a power of two — ``corr(x, x)`` is 1 at any scale, subnormal
-    values included. About the windows' offsets the direct two-pass moments read 4.3e-17 for
-    the exact 0 of ``[1.1, 0.7, 1.1, 0.7, 0.9]`` against ``[0.7, 0.7, 1.1, 1.1, 0.9]``, and
-    ``x == 0.9 AND rolling_corr(x, y, 5) > 0`` fired. A window holding a nonzero member below
-    ``2**-880`` of its leg's largest has no exact moments in the frame: NaN.
+    values included. A window holding a nonzero member below ``2**-880`` of its leg's largest has
+    no exact moments in the frame: NaN.
 
     The ratio over ``sqrt(va·vb)`` is :func:`_sqrt_product`'s, exponent-safe, and it is clipped
     to ``[−1, 1]``, numpy's ``corrcoef`` and scipy's ``pearsonr`` rule. A collinear window —
     every pair on one line, the one case of equality in Cauchy–Schwarz — reads exactly ±1: the
-    roundings of the moments and the ratio carried such a window up to two ulps off its bound
-    either way (the direct form read ``y = 3x + 7`` over ``[−83, 70, −13]`` as
-    1.0000000000000002, so ``rolling_corr(x, y) > 1`` fired where it is unreachable; ``X``
-    against ``3X`` read 0.9999999999999998 on 38 of 396 windows, so ``< 1`` fired), so a ratio
-    within ``2**-48`` short of ±1 has its window tested exactly (:func:`_collinear`).
+    roundings of the moments and the ratio can carry such a window up to two ulps off its bound
+    either way, so a ratio within ``2**-48`` short of ±1 has its window tested exactly
+    (:func:`_collinear`).
     """
     a = np.asarray(left, dtype=float)
     b = np.asarray(right, dtype=float)
@@ -647,11 +611,11 @@ def change_apply_nb(
     (0 is a valid level base). ``pct`` is :func:`seikan.numeric.pct_change` and ``log`` the
     scale-safe, signed :func:`seikan.numeric.log_ratio_array` — the runner's outcome rules too —
     so a rise and the mirror fall off one base cancel exactly (a two-bar mean of the pct changes
-    of 100 → 110 and 100 → 90 is exactly 0, where ``cur/prev − 1`` read 5.6e-17), a log quotient
-    past the double range (1e200 → 1e-200) still reads its finite log (−921.03…) instead of an
-    undecidable NaN, and a log change's reverse reads its exact negation (a two-bar mean of the
-    log changes of 100 → 110 → 100 is exactly 0); a ``pct`` or ``diff`` past the range has no
-    representable value and stays NaN.
+    of 100 → 110 and 100 → 90 is exactly 0), a log quotient past the double range (1e200 →
+    1e-200) still reads its finite log (−921.03…) instead of an undecidable NaN, and a log
+    change's reverse reads its exact negation (a two-bar mean of the log changes of 100 → 110 →
+    100 is exactly 0); a ``pct`` or ``diff`` past the range has no representable value and stays
+    NaN.
     """
     a = np.asarray(arr, dtype=float)
     n = a.shape[0]
@@ -788,14 +752,11 @@ def cross_demean_apply_nb(arr: npt.NDArray[np.float64], min_valid: int) -> npt.N
 
     Column g gets x_g - mean(finite values at bar t), self included: each member's EXACT
     deviation, rounded once over the count (:func:`cross_deviations`), so a member at the
-    cross-section's mean demeans to exactly 0.0 and every other one has its deviation's sign.
-    About a rounded centre it did not: ``[0, 1, 1, −1 − 2**-52, −1 + 2**-52]`` sums to exactly
-    0, but its offset subtraction rounded two members and the first demeaned to 2.2e-17, so
-    ``x == 0 AND cross_demean(x) > 0`` fired; about the raw rounded mean ``[2**52, 2**52 + 1,
-    2**52 + 1]`` read ``[0, 1, 1]`` for ``[−2/3, 1/3, 1/3]``. A cross-section whose members all
-    share one value demeans to exactly 0.0. NaN where x_g is NaN, where its deviation leaves the
-    double range, or fewer than min_valid targets are finite. Inherently 2-D — no 1-D
-    form.
+    cross-section's mean demeans to exactly 0.0 and every other one has its deviation's sign —
+    about a rounded centre (an offset subtraction, or the raw rounded mean) neither holds. A
+    cross-section whose members all share one value demeans to exactly 0.0. NaN where x_g is NaN,
+    where its deviation leaves the double range, or fewer than min_valid targets are finite.
+    Inherently 2-D — no 1-D form.
     """
     a = np.asarray(arr, dtype=float)
     out = np.full(a.shape, np.nan)
@@ -850,7 +811,7 @@ def cross_agg_apply_nb(
         elif agg == "median":
             # NaN sorts last, so each row's k finite members lead its sorted copy; the middle
             # pair meets at the overflow-safe midpoint (``np.nanmedian`` bit for bit wherever
-            # finite — it summed even an odd row's middle with itself, overflowing at 1e308).
+            # finite — it sums even an odd row's middle with itself, which overflows at 1e308).
             s = np.sort(np.where(finite, a, np.nan), axis=1)
             v = np.full((a.shape[0], 1), np.nan)
             rows = np.flatnonzero(k.reshape(-1) > 0)
@@ -884,16 +845,13 @@ def cross_zscore_apply_nb(arr: npt.NDArray[np.float64], min_valid: int) -> npt.N
 
     Clipped to the population bound (Samuelson): no member of ``k`` deviates from their mean by
     more than ``√(k−1)`` population stds, and a row of ``k−1`` equal values beside one other sits
-    ON it, where the quotient's roundings carried it past — ``[100, 100, 100, 100, 109.3]`` read
-    2.0000000000000004 for an exact 2 in every member order, so ``cross_demean(x) /
-    cross_agg(x, "std") > 2`` fired where exact arithmetic never does (the SMA z-score's clip).
-    ``k`` is the row's finite members — a group's, under ``group``
-    (:func:`cross_grouped_apply_nb`). A VARYING row whose variance fell below the normal range is
-    computed on its values lifted by ``2**_LIFT``, deviation and variance alike (the SMA
-    z-score's rule): divided in the input frame, ``[0, 5e-324]``'s deviations round to −0.0 and
-    0.0 and read a z of 0 for −1 and 1. NaN where the deviation is (the ``min_valid`` floor), on
-    a row whose members all share one value (zero dispersion — undefined, never fired), and where
-    the variance overflowed (deviations past ~1.3e154: ``x / inf`` is a finite 0.0). Inherently
+    ON it, where the quotient's roundings can carry it past (the SMA z-score's clip). ``k`` is
+    the row's finite members — a group's, under ``group`` (:func:`cross_grouped_apply_nb`). A
+    VARYING row whose variance fell below the normal range is computed on its values lifted by
+    ``2**_LIFT``, deviation and variance alike (the SMA z-score's rule) — in the input frame such
+    a row's deviations round too. NaN where the deviation is (the ``min_valid`` floor), on a row
+    whose members all share one value (zero dispersion — undefined, never fired), and where the
+    variance overflowed (deviations past ~1.3e154: ``x / inf`` is a finite 0.0). Inherently
     2-D."""
     a = np.asarray(arr, dtype=float)
     out = np.full(a.shape, np.nan)
@@ -945,17 +903,16 @@ def cross_grouped_apply_nb(
     (rows × targets) input with every member masked to NaN but those holding their row's ``j``-th
     distinct label (:func:`row_group_ranks`), and keeps only those members' outputs. Every
     property the ungrouped kernel has — the per-group ``min_valid`` floor,
-    ``rankdata(method="average")`` ties, the overflow sanitization, ``cross_agg``'s broadcast (now
-    to the group's members only) — is inherited unchanged, and ONE label reproduces the
-    ungrouped result bit-exactly (a pandas ``groupby.transform`` was measured NOT bit-exact —
-    summation order — and rejected). Labels are point-in-time: a member's label may change from
-    bar to bar. A NaN label excludes the member.
+    ``rankdata(method="average")`` ties, the overflow sanitization, ``cross_agg``'s broadcast (to
+    the group's members only) — is inherited unchanged, and ONE label reproduces the ungrouped
+    result bit-exactly (a pandas ``groupby.transform`` is NOT bit-exact — summation order).
+    Labels are point-in-time: a member's label may change from bar to bar. A NaN label excludes
+    the member.
 
     Every kernel is row-wise, so a pass per ROW-rank is bit-exact with a pass per distinct label
     (each row's masked member set is the same) and costs at most ``targets`` passes, never one
-    per label the history holds: under a fresh label each bar (a date code, a running count) that
-    was a pass per bar — 1.3 s for 4,000 bars of four members, where one label took under a
-    millisecond."""
+    per label the history holds — under a fresh label each bar (a date code, a running count),
+    one per bar."""
     a = np.asarray(arr, dtype=float)
     lab = np.asarray(labels, dtype=float)
     if a.shape != lab.shape:
@@ -1013,36 +970,36 @@ def zscore_ema_1d(
     """EW z-score via the West variance recurrence: ``d = x − μ; μ += α·d; s = (1−α)(s + α·d²)``
     and ``z = (x − μ) / √s``.
 
-    Algebraically identical (in exact arithmetic) to the EW[x²] − EW[x]² pair it replaces, but
+    Algebraically identical (in exact arithmetic) to the one-pass EW[x²] − EW[x]² pair, but
     computed on centered quantities, so it is translation-invariant in floating point — the
-    one-pass form lost its mantissa to cancellation at large input levels and drifted with the
-    input offset. Same seeding (first finite value → μ = x, s = 0), same NaN-skipping warmup
-    (``warmup`` observations, from ``ema_params``), same ``s > 0`` emission gate.
+    one-pass form loses its mantissa to cancellation at large input levels and drifts with the
+    input offset. Seeded at the first finite value (μ = x, s = 0); NaN-skipping warmup of
+    ``warmup`` observations (``ema_params``); emits only where ``s > 0``.
 
     The mean is COMPENSATED: μ is held as the unevaluated sum ``mu + lo`` of two doubles, each
     update ``μ + α·d`` taken with TwoSum (Knuth), so ``lo`` keeps exactly the part of it ``mu``
     cannot represent, and every deviation is read ``(x − mu) − lo``. The mean is then known to the
     rounding of its STEPS, not of its level. A plain update rounds at the level: over ``[1, 1,
-    1 + 2**-52]`` at α 0.5 it rounded the mean back onto 1, so the deviation read the whole step
+    1 + 2**-52]`` at α 0.5 it rounds the mean back onto 1, so the deviation reads the whole step
     and the z-score 2 — past its bound ``√((1−α)/α) = 1``, which the exact z sits on. On a HELD
     input (the same value again) exact arithmetic moves the deviation to ``(1−α)·(x − μ)`` every
     bar — it decays and keeps its sign — and so does the compensated one: ``mu`` settles on the
     held value and the deviation decays in ``lo``, so ``z > 0`` reads the same on every bar of a
-    hold, however long (a plain mean stuck a few ulps off the value, its deviation froze at that
-    residue and the z locked at ``±1/√(1−α)``). A step of a few ulps whose update rounds ``mu``
-    ONTO the new value keeps its gap in ``lo``, and an input that moves exactly onto the computed
-    mean ``mu + lo`` reads a decided 0.0 for as long as it holds. The sign through a hold is exact
-    arithmetic's wherever the exact mean sits off the held value by more than its steps' rounding
-    (``t = lo + α·d`` rounds once a step); a held value the exact mean lands on within that
-    rounding reads the sign the rounding left: ``[0.1, 0.3, −0.09999999999999999]`` then 0.05 at
-    α 0.5 has exact z 0 on every held bar, and reads 5.9e-17. The z is clipped to
-    ``±√((1−α)/α)``: the exact z never exceeds that bound, and a step off a flat stretch sits ON
-    it, where the ratio's last rounding could carry it past.
+    hold, however long (a plain mean sticks a few ulps off the value, its deviation frozen at
+    that residue). A step of a few ulps whose update rounds ``mu`` ONTO the new value keeps its
+    gap in ``lo``, and an input that moves exactly onto the computed mean ``mu + lo`` reads a
+    decided 0.0 for as long as it holds. The sign through a hold is exact arithmetic's wherever
+    the exact mean sits off the held value by more than its steps' rounding (``t = lo + α·d``
+    rounds once a step); a held value the exact mean lands on within that rounding reads the
+    sign the rounding left: ``[0.1, 0.3, −0.09999999999999999]`` then 0.05 at α 0.5 has exact z 0
+    on every held bar, and reads 5.9e-17. The z is clipped to ``±√((1−α)/α)``: the exact z never
+    exceeds that bound, and a step off a flat stretch sits ON it, where the ratio's last rounding
+    could carry it past.
 
     Out of range: the squares of deviations under ~1.5e-154 lose their bits, and an input that
     DECAYS geometrically — an ``ema`` of a change over a held stretch, from ordinary levels — gets
-    there with a z exact arithmetic keeps constant. Read as computed, ``s`` rounded to subnormals
-    or to 0.0: the z read past its bound, NaN, or (floored) collapsed toward 0 — deciding
+    there with a z exact arithmetic keeps constant. Read as computed, ``s`` rounds to subnormals
+    or to 0.0, and the z reads past its bound, NaN, or (floored) collapses toward 0 — deciding
     thresholds the exact z does not. The recurrence therefore runs in a frame lifted by
     ``2**_LIFT`` once its variance nears the range (``_EW_LIFT_VAR``), lowered once the input
     returns. Scaling by a power of two never rounds, so every step in the frame is the plain step
@@ -1138,11 +1095,11 @@ def ema_1d(arr: npt.NDArray[np.float64], alpha: float, warmup: int) -> npt.NDArr
 
     The update is a convex combination, so its exact value lies between ``e`` and ``x`` —
     strictly, for ``alpha < 1``: it never reaches ``x``. The rounded one is held there, one ulp
-    short of ``x`` at the closest. Rounding could otherwise leave the interval: a constant input
-    drifted a few ulps off itself (``x > ema(x)`` then read a sign on a flat feed), and a held
-    stretch could settle on the wrong side of the held value or ON it (``x <= ema(x)`` then fired
-    on held bars exact arithmetic keeps above the mean). The guard binds only where the rounded
-    update left the open interval — every other step is bit-identical. The side of a held value
+    short of ``x`` at the closest. Unguarded, rounding can leave the interval: a constant input
+    drifts a few ulps off itself (``x > ema(x)`` then reads a sign on a flat feed), and a held
+    stretch can settle on the wrong side of the held value or ON it (``x <= ema(x)`` then fires on
+    held bars exact arithmetic keeps above the mean). The guard binds only where the rounded
+    update leaves the open interval — every other step is bit-identical. The side of a held value
     the EMA keeps is the one its rounded updates left it on: exact arithmetic's wherever the exact
     mean sits off the value by more than that rounding, the rounding's within it
     (``[0.1, 0.3, −0.09999999999999999]`` then 0.05 at α 0.5: exactly 0.05 from bar 2, computed one
@@ -1444,8 +1401,8 @@ def _expansion_quotient(p: npt.NDArray[np.float64], m: int, k: int) -> float:
     """``Σp[:m] / k`` correctly rounded — the partials' exact sum over a count ``k`` (an integer
     in ``1 .. 2**53``), rounded ONCE. The rounded sum over the count rounds twice, and
     ``fl(fl(S) / k)`` is within 1.5 ulp of the mean yet not always one of its two neighbours:
-    ``[x − ulp, x, x, x, x]`` at ``x = 0.9757632206350922`` read an ulp ABOVE its maximum, where
-    the mean rounds to ``x`` itself. Rounded once, a mean never leaves ``[min, max]``.
+    ``[x − ulp, x, x, x, x]`` at ``x = 0.9757632206350922`` reads an ulp ABOVE its maximum that
+    way, where the mean rounds to ``x`` itself. Rounded once, a mean never leaves ``[min, max]``.
 
     ``q = fl(fl(S) / k)`` is corrected off the EXACT residual ``R = S − k·q``: the mean is
     ``q + R/k``, so it rounds to the neighbour of ``q`` toward ``R`` wherever ``|R|`` passes ``k``
@@ -1456,8 +1413,8 @@ def _expansion_quotient(p: npt.NDArray[np.float64], m: int, k: int) -> float:
     Dekker's product of ``q``'s Veltkamp halves and ``k``'s in a frame scaled by
     :data:`_SPLIT_DOWN` from ``|fl(S)| ≥`` :data:`_SPLIT_MAX`, where the splitter's product — and
     ``k·q`` itself — can leave the double range while the mean has one: ``[max, 0, 0]`` at the
-    largest finite double has ``3·q`` infinite, and a residual formed in the input frame read
-    the sum itself and stepped toward it for good. The residual is carried doubled, against ``k``
+    largest finite double has ``3·q`` infinite, and a residual formed in the input frame would
+    read the sum itself and step toward it for good. The residual is carried doubled, against ``k``
     times the gap, wherever twice the sum cannot overflow, and plain against ``k`` times the
     exact half-gap past that (``q`` is normal there); nothing added to it leaves the range —
     ``fl(S)`` against partials below its half-ulp, then ``d`` and the half-gaps. Non-finite where
@@ -1507,9 +1464,9 @@ def _rolling_exact_1d(
 
     One SLIDING expansion (:func:`_expansion_add`): each bar takes back the value leaving the
     window and adds its own, so the partials hold the window's exact sum — O(rows) whatever the
-    window, where a fresh ``math.fsum`` per window was O(rows × window). An intermediate sum that
-    leaves the double range (members near it) leaves the partials without a value: they are
-    rebuilt from the window on its next full bar, and the window is NaN while that rebuild
+    window, where a fresh ``math.fsum`` per window would be O(rows × window). An intermediate
+    sum that leaves the double range (members near it) leaves the partials without a value: they
+    are rebuilt from the window on its next full bar, and the window is NaN while that rebuild
     overflows too (``math.fsum`` raises there)."""
     n = a.shape[0]
     out = np.full(n, np.nan)
@@ -1701,7 +1658,7 @@ def _sqrt_product(a: float, b: float) -> float:
     precision loss neither factor has), so each factor's exponent is taken out first (``frexp``,
     made even so the root halves it exactly) and put back after the root (``ldexp``). Power-of-two
     scaling of a normal factor never rounds, so the result is EXACTLY the direct form's value in
-    an unbounded exponent range — not ``sqrt(a)·sqrt(b)``, which rounds twice and read
+    an unbounded exponent range — not ``sqrt(a)·sqrt(b)``, which rounds twice and puts
     ``corr(x, x)`` one ulp off 1.0 on about half of all scales."""
     p = a * b
     if MIN_NORMAL <= p < math.inf:
@@ -1842,8 +1799,8 @@ def _row_expansion(
     """The exact sum of the row ``v``'s ``finite`` members as partials (:func:`_expansion_add`) in
     the row's frame: ``(p, m, scale, over)``. A row whose largest member reaches ``2**996`` is
     summed times ``scale = 2**-28`` — a frame read off the members' magnitudes, so the same in
-    any member order: summed directly, ``[1e308, 1e308, −1e308, −1e308]`` left the double range
-    on the way in this order and read 0 in another. ``over`` where a member marked finite is not
+    any member order: summed directly, ``[1e308, 1e308, −1e308, −1e308]`` leaves the double range
+    on the way in this order and reads 0 in another. ``over`` where a member marked finite is not
     (a value lifted past the range), or where the frame cannot hold a member exactly
     (``x · 2**-28`` rounds below ``2**-1046``): no sum, mean or deviation over the row is read
     off a rounded member."""
@@ -1868,11 +1825,10 @@ def _frame_quotient(p: npt.NDArray[np.float64], m: int, k: int, scale: float) ->
     """``Σp[:m] / k`` correctly rounded in the INPUT frame (:func:`_expansion_quotient`), the
     partials holding the sum in the frame ``scale`` (:func:`_row_expansion`): scaled back
     (exactly, in place) wherever the rounded sum is representable there, so the quotient rounds
-    once at the input frame's grid — divided inside the frame, a quotient below ``2**-994``
-    rounded at the frame's subnormal grid, and a deviation of −2**-1046 / 5 read −0.0; divided
-    inside the frame and scaled back where it is not (a mean, or a deviation, whose numerator is
-    past the range: the quotient there is far above the subnormal range, so scaling commutes with
-    its rounding)."""
+    once at the input frame's grid — divided inside the frame, a quotient below ``2**-994`` would
+    round at the frame's subnormal grid; divided inside the frame and scaled back where it is not
+    (a mean, or a deviation, whose numerator is past the range: the quotient there is far above
+    the subnormal range, so scaling commutes with its rounding)."""
     if np.isfinite(_expansion_value(p, m) / scale):
         for i in range(m):
             p[i] /= scale
@@ -1915,9 +1871,8 @@ def cross_deviations(
     computed in :func:`_row_expansion`'s frame scaled by ``2**-28`` and divided back in the input
     frame (:func:`_frame_quotient`); a deviation past the double range is ``±inf`` there, for the
     caller to test. NaN off the finite members, on every member of a row whose frame cannot hold
-    one of them exactly — the frame rounded ``[1e308, −1e308, 1e-320, 0]``'s last two
-    deviations, 7.5e-321 and −2.5e-321, to a decided 0.0 — and on a row whose exact numerator
-    leaves the double range (none can at fewer than ``2**26`` members)."""
+    one of them exactly (:func:`_row_expansion`), and on a row whose exact numerator leaves the
+    double range (none can at fewer than ``2**26`` members)."""
     rows, cols = a.shape
     out = np.full((rows, cols), np.nan)
     p = np.empty(8)
@@ -1998,9 +1953,8 @@ def event_agg_1d(
     The running sum is EXACT: it is kept as non-overlapping partials (:func:`_expansion_add`)
     and read correctly rounded on every bar — ``math.fsum`` of ``x[s .. t]`` — as is the mean,
     that exact sum over the count rounded once (:func:`_expansion_quotient`). A plain ``acc +=
-    v`` lost a term a larger one swallowed and never got it back when that term cancelled: after
-    ``[2**54, 1, −2**54]`` the exact sum is 1 and it read 0 from then on, so
-    ``event_agg(E, X, sum) == 0`` fired where it was false.
+    v`` loses a term a larger one swallows and never gets it back when that term cancels: after
+    ``[2**54, 1, −2**54]`` it reads 0 for 1.
 
     STRICT finite gate, the ``rolling_agg`` rule: one NaN input bar inside ``[s, t]`` POISONS the
     aggregate until the next event. A warmup bar carries no state; a hole bar drops the anchor

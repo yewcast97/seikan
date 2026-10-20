@@ -188,8 +188,7 @@ class _HorizonFrames(NamedTuple):
 
 #: The reliability read of a cell with no scored pool — every field at its "no evidence" value.
 #: A module-level constant (never mutated) so the panel assembly reads `.get(key,
-#: _MISSING_RELIABILITY)` with a TOTAL type instead of a union-with-empty-dict and four
-#: per-field defaults.
+#: _MISSING_RELIABILITY)` with a TOTAL type.
 _MISSING_RELIABILITY: ReliabilityRead = {
     "rot_p": _NAN,
     "rot_n_null": 0,
@@ -421,19 +420,15 @@ def _run_summary(
     # basket whose members fired only where no observation closes (the final bar) has no
     # per-target null at all while its pooled nulls rotated every shift.
     n_shifts = max(rel["n_shifts"], pooled_rel["n_shifts"] if pooled_rel is not None else 0)
-    # Per-SOURCE availability, computed UNCONDITIONALLY. Every raw decision leaf
-    # the entry tree reads (`Field`/`External`/`DaysSince`, and `native:<feed>` — the prints a
-    # native node reads), counted over the WHOLE evaluated interval from its own first_available
-    # on. This is the layer beneath each cell's
-    # `signal_coverage`: the root condition's `defined` channel answers "was the condition
-    # DECIDED?", which absorption can settle (every completion of a hole decides the node the same
-    # way: a decisive sibling, Kleene F∧U = F; a `first_true` hole whose completions re-converge
-    # before they disagree on any fire) and a windowed transform's warmup can step over (a hole
-    # there only delays its first value) — reading the raw inputs directly puts no operator
-    # between the hole and the count. It is combo-independent (the leaf SET is a property
-    # of the entry tree, not of any parameter assignment), so it is a run-level panel rather than a
-    # per-cell one, and it is built whether or not anything fired — a run whose sources are holed
-    # must say so even when the holes suppressed every firing.
+    # Per-SOURCE availability, computed UNCONDITIONALLY (`sources.source_availability`): every raw
+    # decision leaf the entry tree reads (`Field`/`External`/`DaysSince`, `native:<feed>`), counted
+    # over the WHOLE evaluated interval from its own first_available on — the layer beneath each
+    # cell's `signal_coverage`, whose `defined` channel absorption and windowed warmup can settle
+    # while an input is missing; reading the raw inputs puts no operator between the hole and the
+    # count. It is combo-independent (the leaf SET is a property of the entry tree, not of any
+    # parameter assignment), so it is a run-level panel rather than a per-cell one, and it is built
+    # whether or not anything fired — a run whose sources are holed must say so even when the holes
+    # suppressed every firing.
     src_avail = source_availability(thesis, md)
     return {
         # The two grid labels: the swept ENTRY axes (with "horizon" only when it was swept) and
@@ -498,10 +493,10 @@ def _run_summary(
         # ledger can say how far short of the declared grid the scored population fell:
         # rel_cells holds only fired-and-closed cells, and CSCV never sees the rest. Its split
         # MEANS sum a `cross_mean` cell's bars at their exact excess sums, as the pooled panel's
-        # `rets_pool` does (a CSCV block holds whole bars): every split a grid of all-full cells
-        # scores is a full tie, in any declaration order, where the rounded rows ranked their
-        # residue — and its tied train winner is the first-declared candidate, so a sparse such
-        # grid can score fewer splits or decline (`cscv_pbo`).
+        # `rets_pool` does (a CSCV block holds whole bars), never the rounded rows' residue: every
+        # split a grid of all-full cells scores is a full tie, in any declaration order — and its
+        # tied train winner is the first-declared candidate, so a sparse such grid can score fewer
+        # splits or decline (`cscv_pbo`).
         "pbo": cscv_pbo(
             rel_cells,
             cfg.n_bars,
@@ -551,7 +546,8 @@ class _DeclaredCell(TypedDict):
     and read by the per-cell panel loop.
 
     ``combo_key`` carries the swept axes in ``param_levels`` order (the horizon included when it
-    was swept) and indexes the trades partition; ``combo_tuple`` carries the ENTRY-TREE axes only
+    was swept) and keys the reliability reads and the ``cross_mean`` pooled dicts (the trades
+    frame partitions by declared-cell ordinal); ``combo_tuple`` carries the ENTRY-TREE axes only
     and indexes the undefined-decision masks, which are keyed by combo because the horizon has no
     say in decidability.
     """
@@ -628,8 +624,7 @@ def _pool_panel(
         # bar's FULL cross-section demeans to zero, but the pool holds only the members that
         # fired, so 0 appears only when firings are basket-wide or every member's leg is the
         # same value — a shared outcome feed, where every per-row excess is exactly 0.0 (exactly
-        # in both cases: the basket cell's pooled mean_ret is re-summed from the raw legs in
-        # `_measure_grid`, and its bar-closed sums read every bar's exact sum via `rets_pool`) — and
+        # in both cases: see `_measure_grid`'s pooled mean and `rets_pool`) — and
         # mean_ret_bench ≈ mean_ret_raw is the basket's own realized drift.
         "mean_ret_raw": mean_raw,
         "mean_ret_bench": mean_bench,
@@ -741,7 +736,7 @@ def _cells_panel(
     # rows are its target blocks in declaration order, ascending. A row belongs to the hypothesis
     # that produced it — never to whichever cell its axis columns' VALUES match: a frame types
     # its columns by the values it holds (int64 for 2**63 − 1, uint64 for 2**63), and the
-    # concatenation of the two reads both as one float64, so a value partition handed both
+    # concatenation of the two reads both as one float64, so a value partition would hand both
     # cells' rows to one of them and none to the other.
     row_groups: dict[int, list[np.ndarray]] = {}
     target_groups: dict[tuple[int, int], np.ndarray] = {}
@@ -892,9 +887,9 @@ def _cells_panel(
                 # `mean_ret / hac_se`. Same-bar pairs enter at Bartlett weight 1, so the
                 # long-run variance reads per-BAR deviation sums, and the rounded rows' sums
                 # carry residue where the exact one is 0: an all-zero-excess pool (all-full, or
-                # a firing subset whose excesses cancel on every bar) read a `t_hac` of 5.43
-                # beside a `mean_ret` of exactly 0. The reliability pass's read over the rounded
-                # rows is replaced on every pool.
+                # a firing subset whose excesses cancel on every bar) would read a nonzero
+                # `t_hac` beside a `mean_ret` of exactly 0. The reliability pass's read over the
+                # rounded rows is replaced on every pool.
                 pooled_panel["mean_ret"] = pooled_mean_ret[combo_key]
                 t_hac, hac_se = pooled_hac[combo_key]
                 pooled_panel["t_hac"] = t_hac
@@ -960,9 +955,8 @@ def _cells_panel(
         }
         cells_panel.append(cell)
 
-    # One entry per declared (combo × horizon), emitted in declaration order — the loop above walks
-    # `declared_cells`, which the measurement loop appended to exactly once per iteration of the
-    # same product, so this identity holds BY CONSTRUCTION and no cell can be dropped for having
+    # One entry per declared cell, in declaration order, BY CONSTRUCTION: the loop above walks
+    # `declared_cells` (`_measure_grid`'s declared grid), so no cell can be dropped for having
     # produced nothing.
     return cells_panel
 
@@ -1016,14 +1010,13 @@ def _measure_grid(
     # cell identity, which `_cells_panel` partitions the trades frame by.
     frame_cells: list[tuple[int, int]] = []
     rel_cells: list[ReliabilityCell] = []
-    # The basket's OWN reliability roster, kept SEPARATE from `rel_cells` on purpose: the pooled
-    # rotation null must rotate every FIRED member's COMPLETE mask — including a member whose
-    # every observation is censored (past the data end or by a hole), and one that opened no
+    # The basket's OWN reliability roster, kept SEPARATE from `rel_cells`: the pooled rotation
+    # null must rotate every FIRED member's COMPLETE mask — including a member whose every
+    # observation is censored (past the data end or by a hole), and one that opened no
     # observation at all (its only firing on the final bar, which has no next open to fill at),
     # neither of which `rel_cells` (closed-rows-only by construction) ever holds — while
     # `rel_cells` feeds the per-target reliability pass AND `cscv_pbo`, whose combo-admissibility
-    # reads would move if fired-but-uncloseable members appeared in it. Appending here instead
-    # keeps every conjunction number and both modes' CSCV byte-stable.
+    # reads would move if fired-but-uncloseable members appeared in it.
     pooled_cells: list[ReliabilityCell] = []
     # THE DECLARED GRID — one entry per (param combo × horizon), recorded as the loop declares it
     # and BEFORE anything about firing is known. `rel_cells` above only ever holds cells that fired
@@ -1058,8 +1051,8 @@ def _measure_grid(
     # The basket's pooled `cross_mean` excess mean per declared cell, from the RAW legs: each
     # bar's excess legs sum to exactly zero over the full cross-section, so a cell whose members
     # all fire together has a pooled mean of zero BY CONSTRUCTION — summed from the rounded
-    # per-row excesses it read ±1e-19, its sign set by the targets' declaration order, and the
-    # support floor's `mean_ret > 0` graded that residue. Mounted as `pooled.mean_ret`. Beside
+    # per-row excesses it would carry residue whose sign hangs on the targets' declaration order,
+    # and the support floor's `mean_ret > 0` would grade it. Mounted as `pooled.mean_ret`. Beside
     # it the pooled HAC around that mean over every bar's exact excess sum, from the same raw
     # legs (`pooled.t_hac` / `hac_se`, so `t_hac` IS `mean_ret / hac_se`), and the cell's bar
     # numerators — each bar's exact numerator on its first closed member, over the member count
@@ -1117,12 +1110,10 @@ def _measure_grid(
             for g, target in enumerate(targets):
                 fire_all = np.flatnonzero(mask[:, g])
                 if basket and fire_all.size:
-                    # Every FIRED member's COMPLETE mask reaches the pooled rotation null, closed
-                    # rows or not, fillable or not — hence BEFORE the fillable filter below: a
-                    # member whose every firing is censored (past the data end or by a hole), or
-                    # whose only firing is the final bar (no row at all), still shaped the
-                    # basket's cross-sectional firing pattern, and the common shift must preserve
-                    # what it rotates.
+                    # Every FIRED member's COMPLETE mask reaches the pooled rotation null (the
+                    # roster above), closed rows or not, fillable or not — hence BEFORE the
+                    # fillable filter below: the common shift must preserve the whole
+                    # cross-sectional firing pattern it rotates.
                     pooled_cells.append(
                         {
                             "key": (*combo_key, target),
@@ -1264,27 +1255,24 @@ def run_backtest(thesis: Thesis, md: MarketData) -> EventStudyResult:
 
     # The measurement algebra (params.outcome.kind): pct = (b − a)/a, log = ln(b/a),
     # diff = (b − a). `pct` reads through `numeric.pct_change`, the difference over its base, so
-    # a rise and the equal fall off one base cancel exactly — read as b/a − 1, its quotient
-    # rounded at 1's ulp first, 100 → 110 beside 100 → 90 averaged 5.6e-17, a positive mean the
-    # support floor graded. Non-finite (0-division, log of a non-positive ratio) → NaN, censoring
-    # the observation like any other unmeasurable window — a pct or diff past the double range
+    # a rise and the equal fall off one base cancel exactly (b/a − 1 rounds the quotient at 1's
+    # ulp first). Non-finite (0-division, log of a non-positive ratio) → NaN, censoring the
+    # observation like any other unmeasurable window — a pct or diff past the double range
     # included: it has no representable value, so it censors as `no_outcome` (silently: the
     # overflow is expected, hence `over="ignore"`). `log` reads through the scale-safe, signed
     # `numeric.log_ratio_array`: finite for every positive pair (1e200 → 1e-200 is −921.03…,
     # not ln(0) = −inf censoring a perfectly measurable window), and a move's reverse reads its
-    # exact negation, so the two sum to exactly 0 — read in its own direction, 100 → 110 → 100
-    # summed to 2e-17, a positive mean the support floor graded.
+    # exact negation, so the two sum to exactly 0.
     #
-    # pct and log additionally require both endpoints STRICTLY POSITIVE. Both
-    # are ratio algebras and are meaningless off a positive scale, but neither fails loudly:
-    # a percent change through zero or between negative levels returns a FINITE number with an
-    # inverted sign (−4 → −2 reads as +50% "gain" while the level fell), and ln of a
-    # negative/negative ratio is finite too. The engine would have recorded those as real
-    # returns. Censoring makes them `no_outcome`, which the gate's missingness contract then
-    # refuses inside a gate pool — the fail-closed direction. `diff` is untouched: signed
-    # levels are exactly what it exists to measure (a 10y yield crossing zero is a −0.5 move,
-    # not a domain error). OHLCV targets cannot reach this (the strict loader already refuses
-    # non-positive prices); series-shaped targets and feed outcomes can.
+    # pct and log additionally require both endpoints STRICTLY POSITIVE. Both are ratio algebras
+    # and are meaningless off a positive scale, but neither fails loudly: a percent change through
+    # zero or between negative levels returns a FINITE number with an inverted sign, and ln of a
+    # negative/negative ratio is finite too — both would be recorded as real returns. Censoring
+    # makes them `no_outcome`, which the gate's missingness contract then refuses inside a gate
+    # pool — the fail-closed direction. `diff` is untouched: signed levels are exactly what it
+    # exists to measure (a 10y yield crossing zero is a −0.5 move, not a domain error). OHLCV
+    # targets cannot reach this (the strict loader already refuses non-positive prices);
+    # series-shaped targets and feed outcomes can.
     def _measure(num: np.ndarray, den: np.ndarray) -> np.ndarray:
         with np.errstate(divide="ignore", over="ignore", invalid="ignore"):
             if outcome_kind == "pct":
@@ -1339,20 +1327,14 @@ def run_backtest(thesis: Thesis, md: MarketData) -> EventStudyResult:
             # which is also why the bar's mean IS the signed benchmark leg, needing no further
             # sign. Each excess is the member's EXACT deviation from the bar's mean, as the
             # `cross_demean` kernel takes it (`nb.cross_deviations`): a member at the basket mean
-            # reads exactly 0 — about a rounded centre the first leg of `[0, 1, 1, −1 − 2**-52,
-            # −1 + 2**-52]` read 2.2e-17, a row-level hit — and about the rounded raw mean
-            # `[2**52, 2**52 + 1, 2**52 + 1]` read excesses `[0, 1, 1]` for `[−2/3, 1/3, 1/3]`,
-            # three selected rows "all beating the basket". The bench leg is the bar's exactly
-            # rounded sum over its count (`nb.cross_means`, `cross_agg`'s mean), so it has the
-            # exact mean's sign and `ret == ret_raw − ret_bench` holds to its rounding: about
-            # the bar's offset, `c + mean(leg − c)`, the legs `[0, .5, .5, −.5 − 2**-53,
-            # −.5 + 2**-53]` read a bench leg of −1.1e-17 for an exact 0 (three subtractions
-            # rounded), and a member's regression on it beta 4 for 5. A bar whose legs are all
-            # EQUAL (a shared outcome feed broadcast to the basket) reads every excess exactly 0
-            # and its bench leg the value. Legs whose sum leaves the double range are summed in
-            # a scaled frame, so every bar of finite legs has its mean; a member whose own
-            # deviation leaves the range is NaN alone (as in the kernel) — silently, as
-            # `_measure`'s own overflow is.
+            # reads exactly 0, never a rounded centre's residue. The bench leg is the bar's
+            # exactly rounded sum over its count (`nb.cross_means`, `cross_agg`'s mean), so it
+            # has the exact mean's sign and `ret == ret_raw − ret_bench` holds to its rounding. A
+            # bar whose legs are all EQUAL (a shared outcome feed broadcast to the basket) reads
+            # every excess exactly 0 and its bench leg the value. Legs whose sum leaves the double
+            # range are summed in a scaled frame, so every bar of finite legs has its mean; a
+            # member whose own deviation leaves the range is NaN alone (as in the kernel) —
+            # silently, as `_measure`'s own overflow is.
             finite = np.isfinite(fwd)
             whole = finite.all(axis=1, keepdims=True)
             mu = nb.cross_means(np.ascontiguousarray(fwd), finite)[:, None]
@@ -1400,11 +1382,9 @@ def run_backtest(thesis: Thesis, md: MarketData) -> EventStudyResult:
     else:
         favorable_np = md.low.to_numpy(dtype=float)
     # EVERY combo-independent per-horizon frame, built once per horizon in ONE pass and carried
-    # as a single record instead of nine parallel `*_by_h` dicts (each entry's arithmetic is
-    # independent, so interleaving the builds changes no value). The path-evidence companions
-    # (bars-to-positive/-trough) are hoisted here for the same reason the extrema are:
-    # combo-independent, so computing them per cell repeated identical work up to grid-size
-    # times over.
+    # as a single record (each entry's arithmetic is independent, so the build order changes no
+    # value). The path-timing frames (bars-to-positive/-trough) are built here with the extrema:
+    # combo-independent, so a per-cell build would repeat identical work up to grid-size times.
     frames_by_h: dict[int, _HorizonFrames] = {}
     for h in horizon_values:
         fwd_h, tgt_finite_h, raw_h, bench_h = _forward(h)
@@ -1444,8 +1424,7 @@ def run_backtest(thesis: Thesis, md: MarketData) -> EventStudyResult:
     # each cell's per-target panel below; they are EVIDENCE (both estimators are known
     # anti-conservative — see analysis.stats), never a certificate.
     rel = reliability_summary(rel_cells, n_bars)
-    # The basket's pooled reliability reads, derived from the basket's OWN `pooled_cells` roster
-    # (every FIRED member's complete mask — a superset of the members `rel_cells` holds, see
+    # The basket's pooled reliability reads, off the basket's OWN `pooled_cells` roster (see
     # `_measure_grid`) — one pooled entry per combo × horizon: the common-shift rotation null (one
     # shift rotates every member's mask as a block, preserving the per-bar cross-sectional firing
     # pattern a rank signal fixes) and the pooled event-time HAC / greedy n_nonoverlap over the

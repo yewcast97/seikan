@@ -87,13 +87,13 @@ class AxisRef(StrictModel):
 
 
 # The bar-count aliases. Every one is capped at ``MAX_BAR_COUNT_PARAM`` (2**31 − 1): the schema's
-# domain is the EXECUTABLE domain, so a value no kernel can take (an ema ``window: 10**20``
-# reached numba as an integer no machine type holds — exit 4) refuses here, at parse, exit 3.
-# Within the ceiling a parameter longer than the sample is legal and keeps its ordinary outcome:
-# a window / periods / lag is all warmup and never emits, a cooldown holds every re-fire after its
-# first edge, and a horizon the index cannot close refuses a measuring run as insufficient data
-# (exit 2). ``Ge2Int`` also types the cross nodes' ``min_valid``, a MEMBER count capped only by
-# sharing the alias (its own floor, no more than the declared targets, binds first).
+# domain is the EXECUTABLE domain, so a value no kernel can take refuses here, at parse (exit 3),
+# never inside numba (exit 4). Within the ceiling a parameter longer than the sample is legal and
+# keeps its ordinary outcome: a window / periods / lag is all warmup and never emits, a cooldown
+# holds every re-fire after its first edge, and a horizon the index cannot close refuses a
+# measuring run as insufficient data (exit 2). ``Ge2Int`` also types the cross nodes'
+# ``min_valid``, a MEMBER count capped only by sharing the alias (its own floor, no more than the
+# declared targets, binds first).
 PosInt = Annotated[int, PField(gt=0, le=MAX_BAR_COUNT_PARAM)]
 
 PosIntParam = PosInt | Annotated[list[PosInt], *_Sweep] | AxisRef
@@ -127,10 +127,7 @@ FloatParam = FiniteFloat | Annotated[list[FiniteFloat], *_Sweep] | AxisRef
 #: An EW decay factor stated directly — the ``ema`` / ``zscore`` ``alpha`` and nothing else:
 #: ``MIN_EW_ALPHA <= alpha <= 1`` (RiskMetrics 0.06; Wilder's 1/N). The floor (2**-30) is the
 #: bar-count ceiling restated: ``alpha`` warms over the equivalent span ``ceil(2/alpha − 1)``, so a
-#: smaller decay is a warmup past it (it ran all warmup down to just above ~1.08e-19, ``2**-63``, a
-#: span of 2**64 — at or below ``2**-62`` only while no signed specialization of the kernel came
-#: first; from ``2**-63`` down no machine integer holds the span: ``1e-19`` was a numba
-#: ``TypingError``, ``5e-324`` an infinite span — both exit 4).
+#: smaller decay is a warmup past it — and from ``2**-63`` down a span no machine integer holds.
 UnitFloat = Annotated[float, PField(ge=MIN_EW_ALPHA, le=1, allow_inf_nan=False)]
 
 UnitFloatParam = UnitFloat | Annotated[list[UnitFloat], *_Sweep] | AxisRef
@@ -305,9 +302,8 @@ class RollingAgg(StrictModel):
     # mad))``. Note a rolling median of ``|x − rolling_median(x)|`` is NOT the MAD (each bar's
     # deviation would be taken about a different window's median); ``mad`` centres every
     # deviation on the one window it is computed over, in that window's frame about its lower
-    # middle value (exact wherever the window lies within a factor of two of it — about the
-    # rounded median, an even window at 2**52 read twice its MAD). Trailing-window only (no
-    # expanding form).
+    # middle value (exact wherever the window lies within a factor of two of it), never about the
+    # rounded median. Trailing-window only (no expanding form).
     type: Literal["rolling_agg"] = "rolling_agg"
     input: Series
     window: Ge2IntParam | None = None
@@ -421,8 +417,8 @@ class CrossRank(StrictModel):
     # population whose membership is unknowable is not a population — fail-closed. The canonical
     # idiom is ``and(E, cross_rank(x, where=E) >= q)``: a once-eligible member's later ineligible
     # bars are post-init NaN, so the bare threshold reads undefined, and the outer ``and(E, …)``
-    # absorbs it (Kleene F ∧ U = F). The guard does NOT absorb an undefined E (U ∧ U = U) —
-    # intended; ``source_coverage`` reports that feed hole too.
+    # absorbs it (Kleene F ∧ U = F). The guard does NOT absorb an undefined E (U ∧ U = U);
+    # ``source_coverage`` reports that feed hole too.
     # ``group`` — point-in-time LABELS (typically a ``per_target`` feed of integer codes; a
     # ``Constant`` is legal and equals no grouping): the node reduces WITHIN each distinct finite
     # label at each bar; a NaN label excludes the member, and so does one not yet initialized (a
@@ -450,8 +446,7 @@ class CrossDemean(StrictModel):
     # to the population bound ±√(k−1) of the k members it reduced over (per group under
     # ``group``), and NaN on a zero-dispersion bar (undefined, as the SMA ``zscore`` is: never
     # fires). The quotient ``binary_op(cross_demean(x), "/", cross_agg(x, "std"))`` stays legal
-    # arithmetic but is no bounded z: its roundings read 2.0000000000000004 for the exact 2 of
-    # ``[100, 100, 100, 100, 109.3]``, and ``> 2`` fired there in every member order.
+    # arithmetic but is no bounded z: its roundings can read past the bound.
     type: Literal["cross_demean"] = "cross_demean"
     input: Series
     min_valid: Ge2Int = 2
@@ -467,11 +462,10 @@ class CrossAgg(StrictModel):
     # ``std``). Unlike ``cross_rank``/``cross_demean`` the value is a property of the CROSS-SECTION,
     # not of the individual target, so a bar carries the VALUE (for every column) whenever at
     # least ``min_valid`` targets are finite — a target whose own value is still warming up sees
-    # the group's breadth like any other; intentional, do not "fix". The FIRING latch is stricter
-    # than the value: a member's warmup gates on its OWN input as well (``compiler.vectorize``),
-    # so a member whose series has not yet produced a value cannot fire off the broadcast — a
-    # pre-listing firing would censor as ``no_outcome`` and hard-refuse the cell it lands in.
-    # ``std`` is the population std
+    # the group's breadth like any other. The FIRING latch is stricter than the value: a member's
+    # warmup gates on its OWN input as well (``compiler.vectorize``), so a member whose series has
+    # not yet produced a value cannot fire off the broadcast — a pre-listing firing would censor
+    # as ``no_outcome`` and hard-refuse the cell it lands in. ``std`` is the population std
     # (ddof=0, matching ``rolling_agg``); ``frac_positive`` is the fraction of finite values > 0,
     # in [0, 1].
     type: Literal["cross_agg"] = "cross_agg"
@@ -532,12 +526,11 @@ class Mask(StrictModel):
     # ``shift``): it converts a decision into a number and nothing else. The bridge every
     # counting recipe rides — "at least K of A/B/C" is ``mask(A) + mask(B) + mask(C) >= K``,
     # "breadth of a condition" is ``cross_agg(mask(C), mean)``, "any/all/count of C since S" is
-    # ``event_agg(S, mask(C), max|min|sum)``. Its ``init`` is the condition's FULLY-initialized
-    # mask (every condition under it past warmup — the gate ``not`` reads, since
-    # ``mask(C) == 0`` is ``not(C)`` as a number): a threshold on it and every series computed
-    # from it wait for that, a cross-section thins the member meanwhile, and a hole at C's first
-    # fully-initialized bar is ledgered rather than absorbed as warmup — by every series computed
-    # from the mask too.
+    # ``event_agg(S, mask(C), max|min|sum)``. Its ``init`` is that same fully-initialized mask
+    # (the gate ``not`` reads, since ``mask(C) == 0`` is ``not(C)`` as a number): a threshold on
+    # it and every series computed from it wait for that, a cross-section thins the member
+    # meanwhile, and a hole at C's first fully-initialized bar is ledgered rather than absorbed
+    # as warmup — by every series computed from the mask too.
     type: Literal["mask"] = "mask"
     condition: Condition
 
