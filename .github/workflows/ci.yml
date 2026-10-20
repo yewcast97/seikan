@@ -40,3 +40,11 @@ jobs:
         run: uv run pytest -q
       - name: Build the wheel
         run: uv build --wheel
+      - name: Check the wheel ships its package data
+        run: |
+          uv run python - <<'EOF'
+          import glob, zipfile
+          names = set(zipfile.ZipFile(glob.glob("dist/*.whl")[0]).namelist())
+          missing = {"seikan/reference/dsl-schema.md", "seikan/py.typed"} - names
+          assert not missing, f"the wheel lacks {sorted(missing)}"
+          EOF

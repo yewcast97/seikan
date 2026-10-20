@@ -767,9 +767,9 @@ def _descriptive_warnings(
                 value=round(frac, 4),
             )
     if detected == "ohlcv" and len(df) > 1:
-        # ffill + fill_method=None == pct_change's deprecated pad default: a bar after a hole is
-        # still measured against the last pre-hole close (the hole itself stays NaN → no flag).
-        move = df["close"].ffill().pct_change(fill_method=None).abs()
+        # ffill first: a bar after a hole is still measured against the last pre-hole close (the
+        # hole itself stays NaN → no flag).
+        move = df["close"].ffill().pct_change().abs()
         big = move > _LARGE_MOVE
         if big.any():
             rep.warn(
@@ -795,7 +795,7 @@ def _descriptive_warnings(
                 )
 
 
-#: Ticks per second of each resolution a ``DatetimeIndex`` carries (pandas ≥ 2 keeps the parsed
+#: Ticks per second of each resolution a ``DatetimeIndex`` carries (pandas 3 keeps the parsed
 #: one: a second-stamped file builds a ``[us]`` index, a nanosecond-stamped one ``[ns]``).
 _TICKS_PER_SECOND = {"s": 1, "ms": 10**3, "us": 10**6, "ns": 10**9}
 
