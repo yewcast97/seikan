@@ -488,10 +488,12 @@ class CrossAgg(_Strict):
 
 
 class BinaryOp(_Strict):
+    # ``min`` / ``max`` return one operand exactly (NaN where either side is); the four arithmetic
+    # ops are rounded once.
     type: Literal["binary_op"] = "binary_op"
     left: Series
     right: Series
-    op: Literal["+", "-", "*", "/"]
+    op: Literal["+", "-", "*", "/", "min", "max"]
 
 
 class UnaryOp(_Strict):

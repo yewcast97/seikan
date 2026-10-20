@@ -608,9 +608,12 @@ with a filter bolted on afterwards:
   still a raw-source hole, and telling the two apart is a versioned ledger change.
 
 Combinators:
-- `{"type": "binary_op", "left": <Series>, "right": <Series>, "op": "+|-|*|/"}` — element-wise
-  arithmetic of two series (e.g. a fast−slow EMA spread, or a normalized ratio). Division by zero
-  yields NaN (the bar simply doesn't fire). `binary_op` is "free" for the nesting limit below.
+- `{"type": "binary_op", "left": <Series>, "right": <Series>, "op": "+|-|*|/|min|max"}` —
+  element-wise arithmetic of two series (e.g. a fast−slow EMA spread, or a normalized ratio).
+  Division by zero yields NaN (the bar simply doesn't fire). `min` / `max` return the smaller /
+  larger operand exactly, NaN where either side is; the identity `(a + b − |a − b|) / 2` rounds
+  twice and can read above `a` (`min(0.1, 0.2)` → 0.10000000000000002). Rendered `(a-b)`, or
+  `min(a,b)` / `max(a,b)`. `binary_op` is "free" for the nesting limit below.
 - `{"type": "unary_op", "input": <Series>, "op": "abs|log|sign|sqrt|neg"}` — element-wise unary
   arithmetic; out-of-domain (log of a non-positive, sqrt of a negative) → NaN. `abs` unlocks the
   magnitude classics (Amihud illiquidity `|ret|/dollar-volume`, |surprise| conditioning); for a
@@ -747,14 +750,15 @@ spelling), named sub-expression references (the memo makes a repeated subtree fr
 axis carries the identity that matters), and a looser `rolling(any)` over undecided bars
 (fail-closed by doctrine).
 
-**Exact compositions, no node needed** — each of these is one `binary_op` away and gets no
-operator of its own: a rolling SUM is `N · rolling_agg(x, N, mean)`; a binary MAX / MIN is
-`(a + b + |a − b|) / 2` / `(a + b − |a − b|) / 2`; a value-valued QUANTILE is not needed because
-`percentile(x, N) >= q` already answers "is x above its own trailing q-quantile"; a weighted
-cross-sectional mean is `cross_agg(x · w, mean) / cross_agg(w + 0 · x, mean)` — `0 · x` is NaN
-exactly where `x` is, so both means average over the same members (a plain `cross_agg(w, mean)`
-also counts a member whose `x` has not started, and reads below every available `x`), each mean
-exactly rounded and the quotient rounded once more; a rolling beta is
+**Compositions, no node needed** — each of these is a `binary_op` away and gets no operator of
+its own: a rolling SUM is `N · rolling_agg(x, N, mean)`, the exactly rounded mean times N (which
+can miss the sum's own double by an ulp: `3 · mean(0.1, 0.2, 0.3)` reads 0.6000000000000001); a
+value-valued QUANTILE is not needed because `percentile(x, N) >= q` already answers "is x above
+its own trailing q-quantile"; a weighted cross-sectional mean is
+`cross_agg(x · w, mean) / cross_agg(w + 0 · x, mean)` — `0 · x` is NaN exactly where `x` is, so
+both means average over the same members (a plain `cross_agg(w, mean)` also counts a member
+whose `x` has not started, and reads below every available `x`), each mean exactly rounded and
+the quotient rounded once more; a rolling beta is
 `rolling_corr(a, b, N) · rolling_agg(a, N, std) / rolling_agg(b, N, std)` (tie the three windows
 with a shared axis, see below).
 

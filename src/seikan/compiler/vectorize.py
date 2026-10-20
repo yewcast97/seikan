@@ -47,7 +47,6 @@ Two responsibilities:
 
 from __future__ import annotations
 
-import operator
 from collections.abc import Iterator, Sequence
 from itertools import product
 from typing import Protocol, cast
@@ -109,7 +108,14 @@ _OPS = {
     "==": np.equal,
     "!=": np.not_equal,
 }
-_ARITH = {"+": operator.add, "-": operator.sub, "*": operator.mul, "/": operator.truediv}
+_ARITH = {
+    "+": np.add,
+    "-": np.subtract,
+    "*": np.multiply,
+    "/": np.divide,
+    "min": np.minimum,
+    "max": np.maximum,
+}
 
 
 # ---- parameter grid --------------------------------------------------------

@@ -104,6 +104,8 @@ def render_series(node: Series) -> str:
             return f"cross_demean({render_series(inp)}{_cross_suffix(mv, wh, gr, sc)})"
         case CrossAgg(input=inp, agg=agg, min_valid=mv, where=wh, group=gr):
             return f"cross_agg({render_series(inp)},{agg}{_cross_suffix(mv, wh, gr)})"
+        case BinaryOp(left=left, right=right, op="min" | "max" as op):
+            return f"{op}({render_series(left)},{render_series(right)})"
         case BinaryOp(left=left, right=right, op=op):
             return f"({render_series(left)}{op}{render_series(right)})"
         case UnaryOp(input=inp, op=op):

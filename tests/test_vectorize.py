@@ -211,6 +211,9 @@ def _ref_series_raw(node, df) -> np.ndarray:
         )
     if t == "binary_op":
         a, b = _ref_series(node.left, df), _ref_series(node.right, df)
+        if node.op in ("min", "max"):
+            pick_a = a <= b if node.op == "min" else a >= b
+            return np.where(np.isnan(a) | np.isnan(b), np.nan, np.where(pick_a, a, b))
         fn = {"+": np.add, "-": np.subtract, "*": np.multiply, "/": np.divide}[node.op]
         with np.errstate(all="ignore"):
             out = fn(a, b)
@@ -572,6 +575,13 @@ def test_transform_over_transform_parity(ohlcv):
 def test_binary_op_parity(ohlcv):
     _assert_series(BinaryOp(left=Field(column="close"), right=Constant(value=2.0), op="*"), ohlcv)
     _assert_series(BinaryOp(left=Field(column="high"), right=Field(column="low"), op="-"), ohlcv)
+    for op in ("min", "max"):
+        _assert_series(
+            BinaryOp(
+                left=Field(column="close"), right=EMA(input=Field(column="open"), window=5), op=op
+            ),
+            ohlcv,
+        )
     _assert_series(
         BinaryOp(
             left=Change(input=Field(column="close"), periods=10, kind="pct"),
@@ -592,6 +602,38 @@ def test_binary_op_division_by_zero_is_nan(ohlcv):
     _assert_series(node, df, externals={"num", "den"})
     out = _series_val(node, df, externals={"num", "den"})
     assert np.isnan(out[:10]).all() and np.isfinite(out[10:]).all()
+
+
+def test_binary_op_min_max_return_one_operand_exactly(ohlcv):
+    # (a + b - |a - b|) / 2 rounds twice: it reads min(0.1, 0.2) above 0.1 and min(1, 1e-20) and
+    # min(1e16, 1) as 0. The ops return the operand itself, NaN where either side is.
+    df = ohlcv.iloc[:6].copy()
+    df["_ext_a"] = [0.1, 1.0, 1e16, np.nan, 2.0, -0.5]
+    df["_ext_b"] = [0.2, 1e-20, 1.0, 3.0, np.nan, -0.25]
+    a, b = External(name="a"), External(name="b")
+    ext = {"a", "b"}
+    lo = _series_val(BinaryOp(left=a, right=b, op="min"), df, externals=ext)
+    hi = _series_val(BinaryOp(left=a, right=b, op="max"), df, externals=ext)
+    np.testing.assert_array_equal(lo, [0.1, 1e-20, 1.0, np.nan, np.nan, -0.5])
+    np.testing.assert_array_equal(hi, [0.2, 1.0, 1e16, np.nan, np.nan, -0.25])
+    above = ThresholdCondition(left=BinaryOp(left=a, right=b, op="min"), op=">", right=a)
+    assert not _cond_val(above, df, externals=ext).any()
+
+
+def test_binary_op_min_latches_like_subtraction(ohlcv):
+    # the derived latch is the op table's, whatever the op: a warming operand keeps min warming,
+    # a later hole on either side leaves it initialized and NaN
+    df = ohlcv.copy()
+    feed = np.arange(len(df), dtype=float)
+    feed[:7] = np.nan
+    feed[40:45] = np.nan
+    df["_ext_f"] = feed
+    md = _md(df, externals=("f",))
+    close, f = Field(column="close"), External(name="f")
+    lo_value, lo_init = vz.build_series(BinaryOp(left=close, right=f, op="min"), md)
+    _, sub_init = vz.build_series(BinaryOp(left=close, right=f, op="-"), md)
+    pd.testing.assert_frame_equal(lo_init, sub_init)
+    assert np.isnan(lo_value["t"].to_numpy()[np.isnan(feed)]).all()
 
 
 def test_unary_abs_of_change_parity(ohlcv):
@@ -3253,6 +3295,7 @@ def test_native_parity_with_native_clock_reference(ohlcv):
         ZScore(input=eps, window=12, mean_type="ema"),
         Percentile(input=Shift(input=eps, periods=2), window=6),
         UnaryOp(input=Drawdown(input=eps, window=7), op="abs"),
+        BinaryOp(left=eps, op="min", right=RollingAgg(input=eps, window=5, agg="mean")),
     ]
     for expr in exprs:
         got = vz.build_series(Native(name="eps", expr=expr), md)[0]["t"].to_numpy()

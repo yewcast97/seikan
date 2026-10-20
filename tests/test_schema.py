@@ -205,6 +205,27 @@ def test_binary_op_parses_and_roundtrips():
     assert Thesis.model_validate_json(t.model_dump_json()) == t
 
 
+@pytest.mark.parametrize("op", ["min", "max"])
+def test_binary_op_min_max_parse_and_roundtrip(op):
+    close = {"type": "field", "column": "close"}
+    t = Thesis.model_validate(
+        _thesis_with_entry_left({"type": "binary_op", "op": op, "left": close, "right": close})
+    )
+    assert isinstance(t.entry.left, BinaryOp)
+    assert t.entry.left.op == op
+    assert Thesis.model_validate_json(t.model_dump_json()) == t
+
+
+def test_binary_op_unknown_op_refuses():
+    close = {"type": "field", "column": "close"}
+    with pytest.raises(ValidationError, match="binary_op"):
+        Thesis.model_validate(
+            _thesis_with_entry_left(
+                {"type": "binary_op", "op": "pow", "left": close, "right": close}
+            )
+        )
+
+
 def test_nesting_depth_capped_at_five():
     field = {"type": "field", "column": "close"}
     ema6 = field

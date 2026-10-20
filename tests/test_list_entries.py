@@ -332,6 +332,8 @@ def test_render_series_rule_table():
         render_series(BinaryOp(left=close, right=EMA(input=close, window=20), op="/"))
         == "(close/ema(close,20))"
     )
+    assert render_series(BinaryOp(left=close, right=iv30, op="min")) == "min(close,iv30)"
+    assert render_series(BinaryOp(left=close, right=iv30, op="max")) == "max(close,iv30)"
     assert (
         render_series(UnaryOp(input=ZScore(input=close, window=50), op="abs"))
         == "abs(zscore(close,50))"
