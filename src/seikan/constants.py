@@ -31,6 +31,12 @@ TRADE_COLUMNS: tuple[str, ...] = (
     "is_open",
 )
 
+#: A firing bar ``t`` fills at the NEXT bar's open, ``t + NEXT_OPEN_OFFSET`` — the only tradable
+#: anchor: a same-bar ``close[t] → close[t+h]`` measurement would read from a price the decision
+#: itself consumed. Every forward window, its censoring, the sufficiency floor and CSCV's purge
+#: count from it.
+NEXT_OPEN_OFFSET = 1
+
 #: The four price columns that make a file OHLCV-shaped — ``dataio``'s shape detection and OHLC
 #: invariants, and the loader's target frames.
 OHLC_COLUMNS: tuple[str, ...] = ("open", "high", "low", "close")

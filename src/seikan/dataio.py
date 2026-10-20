@@ -37,7 +37,7 @@ from typing import Literal, Unpack
 import numpy as np
 import pandas as pd
 
-from seikan.constants import OHLC_COLUMNS, PAST_NANOSECOND_FRACTION
+from seikan.constants import NEXT_OPEN_OFFSET, OHLC_COLUMNS, PAST_NANOSECOND_FRACTION
 from seikan.types import (
     BarSpacing,
     DataIssue,
@@ -848,17 +848,19 @@ def bar_spacing(index: pd.DatetimeIndex) -> BarSpacing:
 
 
 def sufficiency_check(
-    n_common: int, horizons: int | list[int], *, off: int = 1
+    n_common: int, horizons: int | list[int]
 ) -> tuple[list[DataIssue], list[DataIssue]]:
     """Structural sufficiency of the joined index vs the thesis horizon → ``(errors, warnings)``.
 
-    A closed observation at the longest horizon ``h`` needs ``h + off + 1`` bars; below that no
+    A closed observation at the longest horizon ``h`` needs ``h + NEXT_OPEN_OFFSET + 1`` bars
+    (the firing bar, the next-open fill, ``h`` bars to the exit print); below that no
     observation can ever close and the run is refused up front rather than producing an empty,
     trivially-uninformative summary. A barely-sufficient index only warns.
     """
     hs = horizons if isinstance(horizons, (list, tuple)) else [horizons]
     h_max = max(int(h) for h in hs)
-    need = h_max + off + 1
+    need = h_max + NEXT_OPEN_OFFSET + 1
+    anchorable = n_common - (h_max + NEXT_OPEN_OFFSET)
     errors: list[DataIssue] = []
     warnings: list[DataIssue] = []
     if n_common < need:
@@ -867,16 +869,17 @@ def sufficiency_check(
                 "code": "insufficient_common_index",
                 "message": (
                     f"joined common index has {n_common} bars; the longest horizon ({h_max}) "
-                    f"needs at least {need} (horizon + {off} + 1) for a single closed observation"
+                    f"needs at least {need} (horizon + {NEXT_OPEN_OFFSET} + 1) for a single "
+                    "closed observation"
                 ),
             }
         )
-    elif n_common - (h_max + off) < _MIN_COMFORT_ANCHORS:
+    elif anchorable < _MIN_COMFORT_ANCHORS:
         warnings.append(
             {
                 "code": "barely_sufficient",
                 "message": (
-                    f"only {n_common - (h_max + off)} bars can anchor a closed observation at the "
+                    f"only {anchorable} bars can anchor a closed observation at the "
                     f"longest horizon ({h_max}) — statistics will be extremely thin"
                 ),
             }

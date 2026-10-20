@@ -21,6 +21,7 @@ from seikan.analysis._pools import (
     exact_mean,
     integer_terms,
 )
+from seikan.constants import NEXT_OPEN_OFFSET
 from seikan.types import (
     CellKey,
     DegradationSlopeReason,
@@ -76,14 +77,14 @@ class _Score(NamedTuple):
     value: float
 
 
-def _kept_rows(cell: ReliabilityCell, edges: np.ndarray, off: int) -> tuple[np.ndarray, np.ndarray]:
+def _kept_rows(cell: ReliabilityCell, edges: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """``(t, b)``: a cell's fired rows with a finite forward return whose window closes inside
     their own block (block-local windows are pre-purged), and each one's block."""
     mask = np.asarray(cell["mask_col"]) > 0
     fwd = np.asarray(cell["fwd_col"], dtype=float)
     t = np.flatnonzero(mask & np.isfinite(fwd))
     b = np.clip(np.searchsorted(edges, t, side="right") - 1, 0, edges.shape[0] - 2)
-    keep = (t + off + int(cell["h"])) < edges[b + 1]
+    keep = (t + NEXT_OPEN_OFFSET + int(cell["h"])) < edges[b + 1]
     return t[keep], b[keep]
 
 
@@ -244,7 +245,6 @@ def cscv_pbo(
     length: int,
     targets: list[str],
     *,
-    off: int = 1,
     mode: TargetMode = "conjunction",
     n_combos_declared: int,
     bar_numerators: Mapping[CellKey, BarNumerators] | None = None,
@@ -412,7 +412,7 @@ def cscv_pbo(
         rows_by_combo: dict[CellKey, list[tuple[np.ndarray, np.ndarray, np.ndarray]]] = {}
         for cell in kept_cells:
             key = tuple(cell["key"])
-            t, b = _kept_rows(cell, edges, off)
+            t, b = _kept_rows(cell, edges)
             r = np.asarray(cell["fwd_col"], dtype=float)[t]
             numerators = numerators_by_combo.get(key[:-1])
             parts = r[:, None] if numerators is None else numerators.at(t, member[key[-1]])

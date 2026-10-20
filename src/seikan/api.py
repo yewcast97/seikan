@@ -196,7 +196,7 @@ def list_entries(thesis: Thesis, md: MarketData) -> EntryListReport:
     answers why a bar did or did not fire. ``entry_flags`` holds the 0/1 column per (combo ×
     target), and ``seikan run --entry-flags-out`` writes it. That the mask gets an output of its
     own is exactly the last-bar seam noted above: the runner drops a firing it cannot fill
-    (``fire + off <= n_bars - 1``), so a final-bar firing produces no trades row and no
+    (``fire + 1 <= n_bars - 1``), so a final-bar firing produces no trades row and no
     ``outcome_coverage`` count, and nothing in observation shape can report it. Flags and
     ``timestamps`` are read off the SAME ``vectorize.signal`` mask, so they agree bit for bit —
     with each other and with the backtest. What stays library-only is the raw ``entries`` ROWS: the

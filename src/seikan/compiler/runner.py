@@ -85,7 +85,7 @@ from seikan.compiler.paths import (
     shift_rows,
 )
 from seikan.compiler.sources import source_availability, source_coverage
-from seikan.constants import DEFAULT_FEATURE_NAMES, TRADE_COLUMNS
+from seikan.constants import DEFAULT_FEATURE_NAMES, NEXT_OPEN_OFFSET, TRADE_COLUMNS
 from seikan.dataio import bar_spacing
 from seikan.dsl.schema import (
     Change,
@@ -212,7 +212,6 @@ def _baseline_panel(
     frames_by_h: dict[int, _HorizonFrames],
     horizon_values: list[int],
     n_bars: int,
-    off: int,
     targets: list[str],
     bench_mode: str | None,
     custom_outcome: bool,
@@ -226,7 +225,7 @@ def _baseline_panel(
     for h in horizon_values:
         fwd_h = frames_by_h[h].fwd
         tf_h = frames_by_h[h].tgt_finite
-        past_end = anchors + off + h > n_bars - 1
+        past_end = anchors + NEXT_OPEN_OFFSET + h > n_bars - 1
         by_target_base: dict[str, BaselinePool] = {}
         pooled_rets: list[np.ndarray] = []
         pooled_excl: dict[ExclusionReason, int] = dict.fromkeys(EXCLUSION_REASONS, 0)
@@ -281,13 +280,12 @@ def _baseline_panel(
 
 class _RunConfig(NamedTuple):
     """Everything ``run_backtest`` resolves from (thesis, md) before any measurement: the
-    directional sign, the declared mode, the anchor offset, the outcome read, the measured base
+    directional sign, the declared mode, the outcome read, the measured base
     frame and its geometry, the feature snapshots, the horizon axis, the sweep levels, and the
     benchmark column."""
 
     sign: float
     basket: bool
-    off: int
     outcome_series: str
     outcome_kind: Literal["pct", "log", "diff"]
     custom_outcome: bool
@@ -309,9 +307,6 @@ def _resolve_run_config(thesis: Thesis, md: MarketData) -> _RunConfig:
     # The declared target semantics (dsl.schema.Thesis.target_mode). Basket ADDS the pooled
     # cross-target reads without changing any per-target number; conjunction emits none of them.
     basket = thesis.target_mode == "basket"
-    # A firing bar t fills at the NEXT bar's open — the only tradable anchor (a same-bar
-    # close[t]→close[t+h] measurement would read from a price the decision itself consumed).
-    off = 1
     # The measured frame (params.outcome). Default = the target's open frame (for a series target
     # the synthesized open IS the value column), measured as a pct return. An outcome feed measures
     # that feed's asof values at the same next-bar anchor; `kind` picks the measurement algebra
@@ -382,7 +377,6 @@ def _resolve_run_config(thesis: Thesis, md: MarketData) -> _RunConfig:
     return _RunConfig(
         sign=sign,
         basket=basket,
-        off=off,
         outcome_series=outcome_series,
         outcome_kind=outcome_kind,
         custom_outcome=custom_outcome,
@@ -512,7 +506,6 @@ def _run_summary(
             rel_cells,
             cfg.n_bars,
             cfg.targets,
-            off=cfg.off,
             mode=thesis.target_mode,
             n_combos_declared=len(cells),
             bar_numerators=pooled_bar_numerators,
@@ -542,7 +535,6 @@ def _run_summary(
             frames_by_h,
             cfg.horizon_values,
             cfg.n_bars,
-            cfg.off,
             cfg.targets,
             cfg.bench_mode,
             cfg.custom_outcome,
@@ -1015,7 +1007,6 @@ def _measure_grid(
     horizon_values = cfg.horizon_values
     index = cfg.index
     n_bars = cfg.n_bars
-    off = cfg.off
     param_levels = cfg.param_levels
     sign = cfg.sign
     sweep_levels = cfg.sweep_levels
@@ -1140,14 +1131,14 @@ def _measure_grid(
                             "h": h,
                         }
                     )
-                fire = fire_all[fire_all + off <= n_bars - 1]  # must be able to fill the entry
+                fire = fire_all[fire_all + NEXT_OPEN_OFFSET <= n_bars - 1]  # can fill the entry
                 if fire.size == 0:
                     continue
                 ret = fwd[fire, g]
                 closed = np.isfinite(ret)
                 if closed_mask is not None:
                     closed_mask[fire[closed], g] = True
-                fe = fire + off
+                fe = fire + NEXT_OPEN_OFFSET
                 exit_full = fe + h
                 exit_capped = np.minimum(exit_full, n_bars - 1)
                 exit_idx = np.where(closed, exit_capped, n_bars - 1)
@@ -1209,7 +1200,7 @@ def _measure_grid(
                 # is a data hole that DELETED an outcome and refuses. Under a market benchmark an
                 # in-bounds NaN target leg is the latter, so labelling it "open" would hide the
                 # adverse results the hole removed.
-                past_end = (fire + off + h) > (n_bars - 1)
+                past_end = (fire + NEXT_OPEN_OFFSET + h) > (n_bars - 1)
                 leg = np.where(past_end, "open", "no_outcome")
                 if bench_mode or custom_outcome:
                     # Outcome leg measurable but the adjusted return NaN ⇒ the benchmark (or the
@@ -1264,7 +1255,7 @@ def _measure_grid(
 def run_backtest(thesis: Thesis, md: MarketData) -> EventStudyResult:
     cfg = _resolve_run_config(thesis, md)
     # Unpacked once: the names the remaining spine (and the _measure/_forward closures) reads.
-    sign, basket, off = cfg.sign, cfg.basket, cfg.off
+    sign, basket = cfg.sign, cfg.basket
     outcome_kind = cfg.outcome_kind
     custom_outcome, base_np, n_bars = cfg.custom_outcome, cfg.base_np, cfg.n_bars
     feature_names = cfg.feature_names
@@ -1305,7 +1296,7 @@ def run_backtest(thesis: Thesis, md: MarketData) -> EventStudyResult:
         return r
 
     # Forward-return frame per horizon, anchored at the FIRING bar t (so it lines up with the firing
-    # mask for the rotation null): fwd[t] = sign·measure(base[t+off+h], base[t+off]), NaN past the
+    # mask for the rotation null): fwd[t] = sign·measure(base[t+1+h], base[t+1]), NaN past the
     # edge. Returns (fwd, tgt_finite, raw, bench): tgt_finite marks where the OUTCOME leg alone is
     # measurable, so a benchmark-caused NaN can be labelled "no_benchmark" instead of "open" in the
     # trades frame; raw is the pre-subtraction signed leg and bench the direction-signed benchmark
@@ -1315,8 +1306,8 @@ def run_backtest(thesis: Thesis, md: MarketData) -> EventStudyResult:
     # a benchmark is declared (unbenchmarked, `raw` aliases `fwd` — no copy; the branches below
     # rebind, they never mutate in place) plus a (rows × 1) bench column.
     def _forward(h: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray | None]:
-        den = shift_rows(base_np, off)
-        num = shift_rows(base_np, off + h)
+        den = shift_rows(base_np, NEXT_OPEN_OFFSET)
+        num = shift_rows(base_np, NEXT_OPEN_OFFSET + h)
         fwd = sign * _measure(num, den)
         fwd = np.where(np.isfinite(fwd), fwd, np.nan)
         tgt_finite = np.isfinite(fwd)
@@ -1325,8 +1316,8 @@ def run_backtest(thesis: Thesis, md: MarketData) -> EventStudyResult:
         # A benchmark column is loaded for `params.benchmark == "market"` and for nothing else,
         # so its presence IS that mode.
         if bench_col is not None:
-            bden = shift_rows(bench_col, off)
-            bnum = shift_rows(bench_col, off + h)
+            bden = shift_rows(bench_col, NEXT_OPEN_OFFSET)
+            bnum = shift_rows(bench_col, NEXT_OPEN_OFFSET + h)
             # The benchmark leg is measured in the SAME algebra as the outcome: subtracting a
             # PERCENT benchmark return from a LOG outcome would mix units silently.
             # With matching algebra a log outcome yields the true log-excess
@@ -1371,15 +1362,15 @@ def run_backtest(thesis: Thesis, md: MarketData) -> EventStudyResult:
         return fwd, tgt_finite, raw, bench
 
     # Pre-entry drift frame per horizon, anchored at the FIRING bar t like ``fwd`` so it aligns with
-    # the firing mask: bwd[t] = sign·measure(base[t+off], base[t+off-h]) — the RAW move INTO the
+    # the firing mask: bwd[t] = sign·measure(base[t+1], base[t+1-h]) — the RAW move INTO the
     # entry over the same h-bar window as the forward measurement (never benchmark-adjusted: it is a
     # descriptive read of the measured path, not an outcome). Sign-aligned with ``fwd`` so NEGATIVE
     # means the series moved AGAINST the eventual position before entry (moved-against-position)
     # and POSITIVE means momentum continuation. Firing bars whose pre-window precedes the
     # data start are NaN (excluded), mirroring the forward-window censoring.
     def _backward(h: int) -> np.ndarray:
-        num = shift_rows(base_np, off)  # base[t+off]
-        den = shift_down(base_np, h - off)  # base[t+off-h]
+        num = shift_rows(base_np, NEXT_OPEN_OFFSET)  # base[t+1]
+        den = shift_down(base_np, h - NEXT_OPEN_OFFSET)  # base[t+1-h]
         bwd = sign * _measure(num, den)
         return np.where(np.isfinite(bwd), bwd, np.nan)
 
