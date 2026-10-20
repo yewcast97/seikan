@@ -25,12 +25,10 @@ from seikan.analysis.stats import (
     BUCKET_MIN_N,
     EPISODE_LIST_MAX,
     STATISTICS_VERSION,
-    BarNumerators,
     baseline_summary,
     benchmark_regression,
     cell_conditional_buckets,
     concentration,
-    conditional_buckets,
     cross_mean_bar_numerators,
     cross_mean_pooled_hac,
     cross_mean_pooled_mean,
@@ -361,22 +359,6 @@ def test_baseline_summary_is_pool_agnostic_under_concatenation():
 # ---- conditional buckets + monotonicity ------------------------------------
 
 
-def test_conditional_buckets_monotone():
-    # ret increases with feature → bucket mean_ret should be increasing
-    feat = np.linspace(0, 1, 100)
-    rets = feat * 0.1
-    ep = _episodes(list(rets), feature=list(feat))
-    table = conditional_buckets(ep, "feat", q=4)
-    assert len(table) == 4
-    assert table["mean_ret"].is_monotonic_increasing
-    assert table["n"].sum() == 100
-
-
-def test_conditional_buckets_missing_feature_raises():
-    with pytest.raises(KeyError):
-        conditional_buckets(_episodes([0.01, 0.02]), "nope")
-
-
 def _recs(means: list[float], n: int = 10) -> list[dict]:
     return [{"bucket": str(i), "n": n, "mean_ret": m, "hit_rate": 0.5} for i, m in enumerate(means)]
 
@@ -510,9 +492,9 @@ def test_cell_conditional_buckets_per_target_edges_defeat_simpsons_inversion():
             "ret": np.concatenate([0.10 - 0.08 * feat_a, 0.30 - 0.08 * (feat_b - 100.0)]),
         }
     )
-    # the CONTRAST: the frozen pooled kernel reads the cross-member level artifact as a lift
-    pooled_means = list(conditional_buckets(frame, "feat")["mean_ret"])
-    assert pooled_means[-1] > pooled_means[0]
+    # the CONTRAST: one cut over both members' levels reads the level artifact as a lift
+    pooled = frame.groupby(pd.qcut(frame["feat"], q=4), observed=True)["ret"].mean().to_list()
+    assert pooled[-1] > pooled[0]
     # the panel's per-target edges read the true falling edge, member by member
     out = cell_conditional_buckets(frame, ["feat"])
     block = out["conditional_buckets"]["feat"]
@@ -646,9 +628,9 @@ def test_cell_conditional_buckets_withhold_means_across_incommensurable_targets(
     for p, h in pairs:
         assert math.isnan(h["mean_ret"]) and (h["n"], h["hit_rate"]) == (p["n"], p["hit_rate"])
     assert plain["bucket_monotonicity"] and held["bucket_monotonicity"] == {}
-    one = frame[frame["target"] == "A"]
-    assert cell_conditional_buckets(one, ["feat"], min_n=10, commensurable=False) == (
-        cell_conditional_buckets(one, ["feat"], min_n=10)
+    one = pd.concat([frame[frame["target"] == "A"]] * 2, ignore_index=True)  # BUCKET_MIN_N rows
+    assert cell_conditional_buckets(one, ["feat"], commensurable=False) == (
+        cell_conditional_buckets(one, ["feat"])
     )
 
 
@@ -790,20 +772,18 @@ def test_single_target_buckets_pandas_cannot_label_keep_their_bins(feat, true_n)
     ]
     if len(true_n) >= 3:
         assert out["bucket_monotonicity"]["feat"] == {"rho": pytest.approx(1.0), "sign": 1}
-    table = conditional_buckets(pd.DataFrame({"feat": feat, "ret": ret}), "feat")
-    assert list(table.index.astype(str)) == [f"q{i + 1}" for i in range(len(true_n))]
 
 
 def test_single_target_buckets_pandas_can_label_keep_its_intervals():
-    # The ordinary twin: wherever pandas prints the edges, the kernel's table IS pandas' qcut
-    # grouping — the interval categorical as the index, byte for byte.
+    # The ordinary twin: wherever pandas prints the edges, the single-target buckets ARE pandas'
+    # qcut grouping — its interval labels, byte for byte.
     feat = np.r_[np.full(10, 1e-300), np.linspace(1e305, 1.7e305, 30)]
     frame = pd.DataFrame({"feat": feat, "ret": np.linspace(-1.0, 1.0, feat.size)})
-    table = conditional_buckets(frame, "feat")
+    buckets = cell_conditional_buckets(frame, ["feat"])["conditional_buckets"]["feat"]["buckets"]
     expected = frame.groupby(pd.qcut(frame["feat"], q=4, duplicates="drop"), observed=True)["ret"]
-    assert table.index.equals(expected.size().index)
-    assert list(table["n"]) == list(expected.size()) == [10, 10, 10, 10]
-    assert str(table.index[-1]).endswith(", 1.7e+305]")  # an edge just short of the ceiling
+    assert [b["bucket"] for b in buckets] == [str(i) for i in expected.size().index]
+    assert [b["n"] for b in buckets] == list(expected.size()) == [10, 10, 10, 10]
+    assert buckets[-1]["bucket"].endswith(", 1.7e+305]")  # an edge just short of the ceiling
 
 
 @pytest.mark.parametrize("n_targets", [1, 2], ids=["one_target", "two_targets"])
@@ -926,11 +906,9 @@ def test_cell_buckets_bars_split_across_ordinals_are_byte_identical():
     out = cell_conditional_buckets(frame, ["feat"], rets_pool=_bar_pool(frame, raw), pool_scale=3)
     assert out == cell_conditional_buckets(frame, ["feat"])
     assert out["conditional_buckets"]["feat"]["reason"] is None
-    # the rows' own returns as the pool values ARE the plain read; a misaligned pool is refused
+    # the rows' own returns as the pool values ARE the plain read
     plain = cell_conditional_buckets(frame, ["feat"])
     assert cell_conditional_buckets(frame, ["feat"], rets_pool=frame["ret"].to_numpy()) == plain
-    with pytest.raises(ValueError, match="row-aligned"):
-        cell_conditional_buckets(frame, ["feat"], rets_pool=np.zeros(3))
 
 
 def test_cell_buckets_read_every_bar_held_whole_at_its_exact_sum():
@@ -2252,11 +2230,6 @@ def test_cscv_pbo_default_mode_is_conjunction():
     )
 
 
-def test_cscv_pbo_unknown_mode_refuses():
-    with pytest.raises(ValueError):
-        cscv_pbo([], 400, ["t"], mode="both", n_combos_declared=0)
-
-
 def test_cscv_pbo_basket_score_is_the_pooled_per_observation_sharpe():
     # HAND-CHECK by construction: members fire on DISJOINT bars, so a basket combo's pooled
     # (bar × member) pool IS the union pool of one synthetic target. Basket scoring of the
@@ -2541,10 +2514,6 @@ def test_episode_stats_empty_guards():
     assert empty["n"] == 0 and empty["n_clusters"] == 0
     assert np.isnan(empty["max_cluster_share_abs"])
     assert np.isnan(empty["mass_hhi"]) and np.isnan(empty["effective_n_clusters"])
-    missing = episode_stats(
-        pd.DataFrame({"ret": [0.01], "exit_time": [pd.Timestamp("2021-01-06")]})
-    )
-    assert missing["n"] == 0
 
 
 def test_episode_stats_mass_hhi_hand_computed():
@@ -3069,11 +3038,9 @@ def test_episode_means_sum_the_pool_values_while_shares_keep_ret():
     perm = [2, 0, 3, 1]  # labels left non-positional on purpose
     assert episode_ledger(frame.iloc[perm], rets_pool=pool[perm]) == led
     assert episode_profile(frame.iloc[perm], rets_pool=pool[perm]) == prof
-    # omitting it IS `rets_pool=ret`, byte for byte; a misaligned pool is refused
+    # omitting it IS `rets_pool=ret`, byte for byte
     assert episode_ledger(frame, rets_pool=frame["ret"].to_numpy()) == plain_led
     assert episode_profile(frame, rets_pool=frame["ret"].to_numpy()) == plain_prof
-    with pytest.raises(ValueError, match="row-aligned"):
-        episode_profile(frame, rets_pool=pool[:3])
 
 
 def test_episode_profile_dead_cell_is_the_explicit_zero_block():
@@ -3337,7 +3304,6 @@ def test_cross_mean_pooled_hac_t_is_the_exact_mean_over_its_se():
     one = np.zeros_like(closed)
     one[5, 2] = True
     assert all(np.isnan(_pooled_hac(excess, raw, one, mean, 1)))
-    assert all(np.isnan(_pooled_hac(excess, raw, closed, mean, 0)))
 
 
 def test_benchmark_regression_recovers_a_planted_beta_and_alpha():
@@ -3809,14 +3775,9 @@ def test_constant_parts_pool_bootstrap_past_the_range_is_not_representable():
     assert ci["reason"] is None
 
 
-def test_ddof1_std_of_a_non_finite_pool_is_nan_never_a_degenerate_zero():
-    # No caller reaches it today (the moment reads filter, the bootstrap nulls its non-finite
-    # draws first), so it is pinned here: `inf == inf` would pass the all-equal test, and an
-    # infinite pool is no zero-dispersion one.
+def test_ddof1_std_of_an_all_equal_pool_is_exactly_zero():
     from seikan.analysis._pools import _ddof1_std
 
-    for v in ([np.inf, np.inf], [-np.inf, -np.inf], [np.inf, 1.0], [np.nan, 1.0]):
-        assert np.isnan(_ddof1_std(np.array(v))), v
     assert _ddof1_std(np.array([0.1, 0.1, 0.1])) == 0.0
 
 
@@ -3967,8 +3928,6 @@ def test_bootstrap_sums_the_pool_values_on_the_draw_stream_rets_alone_gives():
         perm = rng.permutation(18)
         got = episode_bootstrap_ci(tied[perm], six_bars[perm], 5, rets_pool=spread[perm])
         assert got == want
-    with pytest.raises(ValueError, match="row-aligned"):
-        episode_bootstrap_ci(rets, bars, 5, rets_pool=pool[:-1])
 
 
 def test_bootstrap_over_full_bar_zeros_is_exactly_zero():
@@ -4795,9 +4754,9 @@ def test_cscv_pbo_basket_candidates_holding_the_same_block_returns_tie_however_m
         assert out["pbo"] == out["lambda_mean"] == out["prob_oos_loss"] == 0.0, order
 
 
-def test_cscv_pbo_bar_numerators_reach_no_other_read():
-    # Conjunction never reads the bar numerators, and a basket candidate they do not key sums
-    # its own rows: an empty mapping is the plain read, byte for byte.
+def test_cscv_pbo_basket_candidates_without_bar_numerators_sum_their_own_rows():
+    # A basket candidate the bar numerators do not key sums its own rows: an empty mapping is
+    # the plain read, byte for byte.
     cells, length = _one_member_edge_cells()
     basket = cscv_pbo(cells, length, ["A", "B"], mode="basket", n_combos_declared=8)
     assert basket["reason"] is None
@@ -4805,10 +4764,3 @@ def test_cscv_pbo_bar_numerators_reach_no_other_read():
         cscv_pbo(cells, length, ["A", "B"], mode="basket", n_combos_declared=8, bar_numerators={})
         == basket
     )
-    zeros = {
-        (k,): BarNumerators(np.zeros((length, 1)), np.zeros(length, dtype=np.int64))
-        for k in range(8)
-    }
-    conj = cscv_pbo(cells, length, ["A", "B"], n_combos_declared=8)
-    assert conj["reason"] is None
-    assert cscv_pbo(cells, length, ["A", "B"], n_combos_declared=8, bar_numerators=zeros) == conj

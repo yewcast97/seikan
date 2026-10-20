@@ -79,24 +79,20 @@ def _episode_view(trades: pd.DataFrame, rets_pool: np.ndarray | None = None) -> 
     structural and ``n_episodes == n_clusters`` stays checkable. ``None`` for the empty case;
     each caller keeps its own explicit empty block.
 
-    The sort is STABLE with a ``target`` tie-break where the frame carries one: same-``entry_time``
-    rows (basket members on one bar) otherwise land in whatever order the caller's frame held —
-    and the default unstable quicksort could reorder even that — moving the fp summation order,
-    and with it the last bit of the mean/share reads, between equivalent inputs.
-    ``(entry_time, target)`` is unique within a cell, so the order is total.
+    The sort is STABLE with a ``target`` tie-break where the frame carries one, so same-
+    ``entry_time`` rows (basket members on one bar) land in one order whatever order the caller's
+    frame held them in: ``(entry_time, target)`` is unique within a cell, so the order is total.
+    Every read over the rows is exact, so no value depends on that order.
 
     ``rets_pool`` (row-aligned with ``trades``, finite wherever ``ret`` is) follows the rows
     through the dropna and the sort by POSITION — never as a frame column, which a caller's
     feature snapshot of the same name would collide with.
     """
-    if trades is None or trades.empty or "entry_time" not in trades.columns:
+    if trades.empty:
         return None
-    if rets_pool is not None and len(rets_pool) != len(trades):
-        raise ValueError(
-            f"rets_pool must be row-aligned with trades: {len(rets_pool)} != {len(trades)} rows"
-        )
     # Positional labels, so the surviving rows' labels ARE their positions in `trades`.
-    df = trades.reset_index(drop=True).dropna(subset=["entry_time", "exit_time", "ret"])
+    df = trades.reset_index(drop=True).dropna(subset=["entry_time", "exit_time"])
+    df = df[np.isfinite(df["ret"].to_numpy(dtype=float))]
     if df.empty:
         return None
     keys = ["entry_time", "target"] if "target" in df.columns else ["entry_time"]

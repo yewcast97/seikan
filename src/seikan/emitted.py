@@ -1,4 +1,4 @@
-"""Runtime validation of the EMITTED documents — the contract in ``types.py``, with teeth.
+"""Runtime validation of the EMITTED documents — the contract in ``seikan.types``, with teeth.
 
 The pipeline's dict shapes are declared once as ``TypedDict``s and, until this module, enforced
 only statically: a builder writing a key no TypedDict declares, or a TypedDict promising a key no
@@ -67,7 +67,7 @@ from seikan.types import (
 
 
 class ReportContractError(RuntimeError):
-    """An emitted document violated the contract ``types.py`` declares — a seikan bug.
+    """An emitted document violated the contract ``seikan.types`` declares — a seikan bug.
 
     Deliberately a ``RuntimeError`` so it rides the CLI's catch-all to the exit-4 ``internal``
     envelope; re-raising the pydantic ``ValidationError`` would be mis-caught as the exit-3

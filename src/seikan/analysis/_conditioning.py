@@ -22,6 +22,9 @@ from seikan.types import (
 
 _NAN = float("nan")
 
+#: The quantile count of every bucket panel's cut.
+BUCKET_Q = 4
+
 
 def _record(
     rets: np.ndarray, sums: np.ndarray, scale: int, commensurable: bool
@@ -95,7 +98,7 @@ def _bucket_monotonicity(records: list[BucketRecord]) -> BucketMonotonicity | No
     return {"rho": float(rho), "sign": int(np.sign(rho))}
 
 
-def _qcut_index(values: pd.Series, q: int) -> tuple[np.ndarray, np.ndarray | None]:
+def _qcut_index(values: pd.Series) -> tuple[np.ndarray, np.ndarray | None]:
     """Each row's qcut bin INDEX (float; NaN where no bin holds the row) over one pool's feature
     values, beside pandas' own bin edges — ``None`` where they overflowed and the bins were read
     off the halved pool.
@@ -109,21 +112,17 @@ def _qcut_index(values: pd.Series, q: int) -> tuple[np.ndarray, np.ndarray | Non
     ``a`` and ``b`` lie past 2**970 (~1e292) in magnitude, and so does every value of the pool,
     none lying between them — where the halving, the halves' interpolation (no term nears the
     subnormal range) and every comparison are exact, the bins unbounded-exponent arithmetic
-    reads. Those edges print as no interval label (the pool's extreme edge is past ~9e307). A
-    non-finite feature is pandas' read, as ever — no proof above holds for it, and none reaches
-    here but a hand-built frame's (the loader refuses inf; every kernel is finite-or-NaN)."""
-    if not np.isfinite(values.to_numpy(dtype=float)).all():
-        codes, edges = pd.qcut(values, q=q, labels=False, retbins=True, duplicates="drop")
-        return np.asarray(codes, dtype=float), edges
+    reads. Those edges print as no interval label (the pool's extreme edge is past ~9e307). The
+    values are finite: the loader refuses inf and every kernel is finite-or-NaN."""
     with np.errstate(over="ignore", invalid="ignore"):  # an overflowed quantile: judged below
-        codes, edges = pd.qcut(values, q=q, labels=False, retbins=True, duplicates="drop")
+        codes, edges = pd.qcut(values, q=BUCKET_Q, labels=False, retbins=True, duplicates="drop")
     if np.isfinite(edges).all():
         return np.asarray(codes, dtype=float), edges
-    halved = pd.qcut(values * 0.5, q=q, labels=False, duplicates="drop")  # exact: see above
+    halved = pd.qcut(values * 0.5, q=BUCKET_Q, labels=False, duplicates="drop")  # exact: see above
     return np.asarray(halved, dtype=float), None
 
 
-def _qcut_buckets(values: pd.Series, q: int) -> pd.Categorical:
+def _qcut_buckets(values: pd.Series) -> pd.Categorical:
     """The kernel's bucket key over one pool's feature values: pandas' interval categorical
     wherever its labels print the bins faithfully, else each populated bin's ordinal ``q1..qk``.
 
@@ -136,16 +135,13 @@ def _qcut_buckets(values: pd.Series, q: int) -> pd.Categorical:
     indices, and the labels rendered beside pandas' own edges are kept where they are distinct
     and finite, every ordinary feature (the categorical itself, byte-identical); otherwise —
     and always beside a halved pool's bins — each populated bin takes its ordinal, the multi-
-    target arm's label for an interval no string can print. A non-finite feature is pandas'
-    read, as ever."""
+    target arm's label for an interval no string can print."""
     arr = values.to_numpy(dtype=float)
-    if not np.isfinite(arr).all():
-        return pd.qcut(arr, q=q, duplicates="drop")
-    index, edges = _qcut_index(values, q)
+    index, edges = _qcut_index(values)
     if edges is not None:
         try:
             with np.errstate(over="ignore", invalid="ignore"):  # the rendering, judged below
-                buckets = pd.qcut(arr, q=q, duplicates="drop")
+                buckets = pd.qcut(arr, q=BUCKET_Q, duplicates="drop")
             cats = buckets.categories
             breaks = np.append(cats.left.to_numpy()[:1], cats.right.to_numpy())
             if len(cats) == len(edges) - 1 and np.isfinite(breaks).all():
@@ -158,35 +154,11 @@ def _qcut_buckets(values: pd.Series, q: int) -> pd.Categorical:
     return pd.Categorical.from_codes(ordinal, categories=names, ordered=True)
 
 
-def _bucket_keys(values: pd.Series, q: int) -> tuple[list[object], np.ndarray]:
+def _bucket_keys(values: pd.Series) -> tuple[list[object], np.ndarray]:
     """One pool's bucket KEYS (:func:`_qcut_buckets`): the categories, ascending, and each row's
     category index (−1 where no bin holds the row)."""
-    buckets = _qcut_buckets(values, q)
+    buckets = _qcut_buckets(values)
     return list(buckets.categories), np.asarray(buckets.codes, dtype=np.int64)
-
-
-def conditional_buckets(trades: pd.DataFrame, feature: str, q: int = 4) -> pd.DataFrame:
-    """Group trade returns into quantile buckets of an entry-time feature — ONE pool's qcut.
-
-    Tests whether the signal's edge is conditional on the feature (monotonicity across buckets).
-    Per-target edges are the caller's job (:func:`cell_conditional_buckets`); this kernel cuts
-    exactly the frame it is handed. The index is the qcut interval, or the populated bucket's
-    ordinal ``q1..qk`` where pandas cannot print an edge (:func:`_qcut_buckets`). ``mean_ret`` is
-    the bucket's exactly rounded mean (``_pools.exact_mean``): buckets holding the same returns
-    read the same mean in any row order, NaN where the sum leaves the double range.
-    """
-    if feature not in trades.columns:
-        raise KeyError(f"feature {feature!r} not in trades columns")
-    valid = trades[trades[feature].notna() & trades["ret"].notna()]
-    if valid.empty:
-        return pd.DataFrame(columns=["n", "mean_ret", "hit_rate"])
-    categories, codes = _bucket_keys(valid[feature], q)
-    rets = valid["ret"].to_numpy(dtype=float)
-    records = _records(categories, codes, rets, rets, 1, True)
-    populated = [c for i, c in enumerate(categories) if (codes == i).any()]  # the records' keys
-    index = pd.CategoricalIndex(populated, categories=categories, ordered=True, name=feature)
-    columns = ["bucket", "n", "mean_ret", "hit_rate"]
-    return pd.DataFrame(records, index=index, columns=columns).drop(columns="bucket")
 
 
 #: Minimum valid (feature, ret) rows for a cell's bucket panel to attempt a qcut at all. Below it
@@ -248,7 +220,6 @@ def _bucket_sums(
 def _aggregate_bucket_ordinals(
     groups: list[pd.DataFrame],
     name: str,
-    q: int,
     pool: _BarPool | None,
     *,
     commensurable: bool = True,
@@ -256,8 +227,8 @@ def _aggregate_bucket_ordinals(
     """Per-target qcut codes aggregated by bucket ORDINAL — the multi-target arm of
     :func:`cell_conditional_buckets`.
 
-    Each participating target's rows are cut on their OWN quantile edges (the kernel's
-    ``qcut(q, duplicates="drop")`` rule), codes compressed to populated-bucket ordinals, and
+    Each participating target's rows are cut on their OWN quantile edges
+    (``qcut(BUCKET_Q, duplicates="drop")``), codes compressed to populated-bucket ordinals, and
     ordinal ``i``'s record pools the union rows (:func:`_records`: ``n`` summed, ``hit_rate``
     over the pooled returns, ``mean_ret`` their exactly rounded mean). Returns ``[]`` — the
     caller's ``insufficient_distinct_values`` refusal — when any participating target forms
@@ -290,7 +261,7 @@ def _aggregate_bucket_ordinals(
             # categorical's codes merged the buckets those colliding labels named, and under
             # ~1e-306 in magnitude, where a NaN break made the qcut raise (the panel refused).
             # A feature spanning more than the double range reads the bins of its halved pool.
-            cut, _edges = _qcut_index(group[name], q)
+            cut, _edges = _qcut_index(group[name])
         except ValueError:
             return []
         # A row no bin holds (a constant feature's single edge) is NaN here, -1 as a code.
@@ -324,8 +295,6 @@ def _aggregate_bucket_ordinals(
 def cell_conditional_buckets(
     trades: pd.DataFrame,
     feature_names: list[str],
-    q: int = 4,
-    min_n: int = BUCKET_MIN_N,
     *,
     rets_pool: np.ndarray | None = None,
     pool_scale: int = 1,
@@ -345,21 +314,21 @@ def cell_conditional_buckets(
     target: one qcut over raw feature levels pooled across members conflates level differences
     BETWEEN members with variation over time — the top pooled bucket can simply BE the
     high-level member, a Simpson's inversion wearing a conditioning read's clothes. Each
-    target's valid (feature, ret) rows are cut on their own ascending quantile edges
-    (``duplicates="drop"``, mirroring the frozen :func:`conditional_buckets` kernel) and the
-    records aggregate by bucket ORDINAL (:func:`_aggregate_bucket_ordinals`, labels ``q1..qk``).
-    With ONE participating target — every single-target cell, and any hand-built pool without a
-    ``target`` column — the kernel's records pass through verbatim, interval labels included
-    (``q1..qk`` there too where pandas cannot print an edge — :func:`_qcut_buckets`).
+    target's valid (feature, ret) rows are cut on their own ascending ``BUCKET_Q``-quantile edges
+    (``duplicates="drop"``) and the records aggregate by bucket ORDINAL
+    (:func:`_aggregate_bucket_ordinals`, labels ``q1..qk``). With ONE participating target —
+    every single-target cell, and any hand-built pool without a ``target`` column — the records
+    carry pandas' interval labels (``q1..qk`` there too where pandas cannot print an edge —
+    :func:`_qcut_buckets`).
 
     Refusal reasons, mutually exclusive and checked in order: ``no_closed_observations`` — no
     row carries both the feature snapshot and a closed ``ret`` (a dead cell, or a feature column
-    entirely NaN/absent over these rows); ``insufficient_observations`` — fewer than ``min_n``
-    valid rows POOLED (the ONE support floor — no per-target floor is added: a member too thin
-    to match the common bucket count refuses below, and a second sealed constant would be a
-    second exam in a frozen layer); ``insufficient_distinct_values`` — a target forms fewer
-    than 2 populated buckets, fails the qcut, or forms a different populated-bucket count than
-    a sibling (the no-silent-partial-pools contract). Aggregated across the cell's TARGETS,
+    entirely NaN/absent over these rows); ``insufficient_observations`` — fewer than
+    ``BUCKET_MIN_N`` valid rows POOLED (the ONE support floor — no per-target floor is added: a
+    member too thin to match the common bucket count refuses below, and a second sealed constant
+    would be a second exam in a frozen layer); ``insufficient_distinct_values`` — a target forms
+    fewer than 2 populated buckets, fails the qcut, or forms a different populated-bucket count
+    than a sibling (the no-silent-partial-pools contract). Aggregated across the cell's TARGETS,
     never across cells. Evidence-only; overlap-inflated like every trades-pool statistic, and
     "associated in this sample" is the entire claim a bucket pattern supports.
 
@@ -398,13 +367,9 @@ def cell_conditional_buckets(
     bar_k: np.ndarray | None = None
     if rets_pool is not None and not trades.empty:
         pool_all = np.asarray(rets_pool, dtype=float)
-        if pool_all.shape[0] != len(trades):
-            raise ValueError(
-                f"rets_pool must be row-aligned with trades: {pool_all.shape} != ({len(trades)},)"
-            )
         bar_k = np.bincount(trades["entry_bar"].to_numpy(dtype=np.int64))
     for name in feature_names:
-        if trades.empty or name not in trades.columns or "ret" not in trades.columns:
+        if trades.empty or name not in trades.columns:
             n_valid = 0
         else:
             is_valid = (trades[name].notna() & trades["ret"].notna()).to_numpy()
@@ -416,7 +381,7 @@ def cell_conditional_buckets(
         if n_valid == 0:
             buckets_out[name] = {"buckets": [], "reason": "no_closed_observations"}
             continue
-        if n_valid < min_n:
+        if n_valid < BUCKET_MIN_N:
             buckets_out[name] = {"buckets": [], "reason": "insufficient_observations"}
             continue
         pool = (
@@ -432,11 +397,10 @@ def cell_conditional_buckets(
             else [valid]
         )
         if len(groups) == 1:
-            # One participating target: the frozen kernel's cut, interval labels included —
-            # bit-identical to the pre-v3 pooled path on every single-target cell whose edges
-            # pandas can print — over the same record arithmetic as the multi-target arm.
+            # One participating target: its own cut, interval labels included, over the same
+            # record arithmetic as the multi-target arm.
             try:
-                categories, codes = _bucket_keys(valid[name], q)
+                categories, codes = _bucket_keys(valid[name])
             except ValueError:
                 records = []  # qcut could not form real bins — same refusal as < 2 buckets
             else:
@@ -444,7 +408,7 @@ def cell_conditional_buckets(
                 sums, scale = _bucket_sums(rets, codes, pool)
                 records = _records(categories, codes, rets, sums, scale, True)
         else:
-            records = _aggregate_bucket_ordinals(groups, name, q, pool, commensurable=commensurable)
+            records = _aggregate_bucket_ordinals(groups, name, pool, commensurable=commensurable)
         if len(records) < 2:
             buckets_out[name] = {"buckets": [], "reason": "insufficient_distinct_values"}
             continue
@@ -460,9 +424,7 @@ def cell_conditional_buckets(
 ASSOC_MIN_N = 10
 
 
-def feature_outcome_association(
-    vals: np.ndarray, rets: np.ndarray, min_n: int = ASSOC_MIN_N
-) -> FeatureAssociation:
+def feature_outcome_association(vals: np.ndarray, rets: np.ndarray) -> FeatureAssociation:
     """Spearman rank correlation between ONE (cell × feature × target) pool's entry-time feature
     snapshots and its realized CLOSED returns — ``{"rho", "n", "reason"}``.
 
@@ -472,10 +434,10 @@ def feature_outcome_association(
     over time, an attribution artifact wearing an association's clothes.
 
     Pairs drop where either side is non-finite (``n`` counts the pairs actually ranked).
-    Refusals are explicit: ``insufficient_observations`` below ``min_n``; ``no_rank_variation``
-    when either side is constant — Spearman is undefined without ranks to correlate, and the
-    reason is reported rather than ``rho = 0``, which would claim a MEASURED absence of
-    association.
+    Refusals are explicit: ``insufficient_observations`` below ``ASSOC_MIN_N``;
+    ``no_rank_variation`` when either side is constant — Spearman is undefined without ranks to
+    correlate, and the reason is reported rather than ``rho = 0``, which would claim a MEASURED
+    absence of association.
 
     Deliberately NO p-value: on overlapping forward-return pools a Spearman p is
     overlap-inflated — exactly the over-trustable number the doctrine forbids — and unlike
@@ -488,7 +450,7 @@ def feature_outcome_association(
     keep = np.isfinite(v) & np.isfinite(r)
     v, r = v[keep], r[keep]
     n = int(v.size)
-    if n < min_n or n == 0:
+    if n < ASSOC_MIN_N:
         return {"rho": None, "n": n, "reason": "insufficient_observations"}
     if float(np.min(v)) == float(np.max(v)) or float(np.min(r)) == float(np.max(r)):
         return {"rho": None, "n": n, "reason": "no_rank_variation"}

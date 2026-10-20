@@ -37,7 +37,6 @@ from seikan.types.cells import (
     CellPooledPanel,
     CellSignalCoverage,
     CellTargetPanel,
-    DeclaredCell,
     SummaryCell,
 )
 from seikan.types.data_report import (
@@ -182,7 +181,6 @@ __all__ = [
     "DataIssueCode",
     "DataIssueExtras",
     "DataReport",
-    "DeclaredCell",
     "DegradationSlopeReason",
     "DescribeResult",
     "Direction",

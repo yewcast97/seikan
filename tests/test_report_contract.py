@@ -1,10 +1,11 @@
 """The emitted-document contract has runtime teeth — ``seikan.emitted`` through the CLI seam.
 
 Every OTHER test in this suite already exercises the happy path for free: ``cli._dumps``
-validates each success document against the ``types.py`` TypedDicts before writing, so a builder
-key no TypedDict declares — or a nullability the schema missed — fails loudly everywhere. What
-this file pins is the machinery itself: that violations actually REFUSE (deep extra key, missing
-section, wrong type, numeric-string coercion), that the refusal reaches the caller as the exit-4
+validates each success document against the ``seikan.types`` TypedDicts before writing, so a
+builder key no TypedDict declares — or a nullability the schema missed — fails loudly
+everywhere. What this file pins is the machinery itself: that violations actually REFUSE (deep
+extra key, missing section, wrong type, numeric-string coercion), that the refusal reaches the
+caller as the exit-4
 ``internal`` envelope and never as a mis-classed ``dsl_invalid``, that a parsed-back document
 still validates (the bytes written are the bytes that validated), and that the document roots
 stay a subset of the assembly shape the builders write against.
@@ -504,7 +505,7 @@ def test_document_roots_are_subsets_of_the_assembly_shape():
 
 
 def test_report_fields_documents_every_declared_panel_field():
-    # types.py DECLARES the emitted shapes (machine-checked at emission); contract.py's
+    # seikan.types DECLARES the emitted shapes (machine-checked at emission); contract.py's
     # REPORT_FIELDS DOCUMENTS them (emitted by `seikan schema`); nothing else ties the two, so a
     # field added to a TypedDict but never documented would drift silently. Weak-but-real pin:
     # every declared field name of the load-bearing panels must appear somewhere in the

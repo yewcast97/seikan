@@ -34,8 +34,8 @@ from seikan.analysis._bootstrap import episode_bootstrap_ci
 from seikan.analysis._conditioning import (
     ASSOC_MIN_N,
     BUCKET_MIN_N,
+    BUCKET_Q,
     cell_conditional_buckets,
-    conditional_buckets,
     feature_outcome_association,
 )
 from seikan.analysis._cscv import cscv_pbo
@@ -78,6 +78,7 @@ STATISTICS_VERSION = 5
 __all__ = [
     "ASSOC_MIN_N",
     "BUCKET_MIN_N",
+    "BUCKET_Q",
     "EPISODE_LIST_MAX",
     "STATISTICS_VERSION",
     "BarNumerators",
@@ -85,7 +86,6 @@ __all__ = [
     "benchmark_regression",
     "cell_conditional_buckets",
     "concentration",
-    "conditional_buckets",
     "cross_mean_bar_numerators",
     "cross_mean_pooled_hac",
     "cross_mean_pooled_mean",

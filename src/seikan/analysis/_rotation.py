@@ -160,16 +160,16 @@ def _reliability_read(
     exactly, reads ``rot_p == 1`` at any scale, not the coin flips of its rounding residue.
     """
     h = int(members[0]["h"])  # shared across the group: a swept horizon rides the key prefix
-    spectra = [_ffts_for(np.asarray(cell["fwd_col"], dtype=float), fft_memo) for cell in members]
+    fwds = [np.asarray(cell["fwd_col"], dtype=float) for cell in members]
+    spectra = [_ffts_for(fwd, fft_memo) for fwd in fwds]
     frame = max((e for _, _, f_norm, e in spectra if f_norm > 0.0), default=0)
     num_sum = np.zeros(length)
     den_sum = np.zeros(length)
     tol_num = 0.0
     bars_parts: list[np.ndarray] = []
     rets_parts: list[np.ndarray] = []
-    for cell, (f_fft, valid_fft, f_norm, e) in zip(members, spectra, strict=True):
+    for cell, fwd, (f_fft, valid_fft, f_norm, e) in zip(members, fwds, spectra, strict=True):
         mask = np.asarray(cell["mask_col"])
-        fwd = np.asarray(cell["fwd_col"], dtype=float)
         num, den = _rotation_num_den(mask, f_fft, valid_fft, length)
         num_sum += np.ldexp(num, e - frame)
         den_sum += den
@@ -182,14 +182,10 @@ def _reliability_read(
     with np.errstate(divide="ignore", invalid="ignore"):
         means = np.where(defined, num_sum / den_sum, _NAN)
         tol = np.where(defined, tol_num / den_sum, _NAN)
-    # Every DEFINED shift's mean is finite in the frame; the check stands as an invariant — a
-    # defined shift without a known mean voids the null (no p), never drops out of it, since the
-    # p formed over the survivors can lose the very shift that beat the observed.
-    observed = float(means[0]) if np.isfinite(means[defined]).all() else _NAN
-    rot_p, _n_finite = _tail_p(observed, means[shifts], float(tol[0]), tol[shifts])
-    # The count is the mask's geometry: every DEFINED shift (its exact, rounded `den`), the
-    # null's size in exact arithmetic — equal to the finite count `_tail_p` formed the p over.
-    rot_n_null = int(np.count_nonzero(defined[shifts]))
+    # Every DEFINED shift's mean is finite in the frame (each member's column is bounded by 1
+    # there, and a defined `den` is at least 1), so the null's size is the count of defined
+    # shifts — the mask's geometry, off the exact, rounded `den`.
+    rot_p, rot_n_null = _tail_p(float(means[0]), means[shifts], float(tol[0]), tol[shifts])
     bars = np.concatenate(bars_parts)
     rets = np.concatenate(rets_parts)
     n_nonoverlap = nonoverlap_count(bars, h)
@@ -241,9 +237,9 @@ def reliability_summary(cells: list[ReliabilityCell], length: int) -> Reliabilit
     Returns ``{"per_cell": {full_key: {rot_p, rot_n_null, t_hac, hac_se, n_nonoverlap}},
     "n_shifts": int}``. A cell that never fired has no entry — the runner tracks the DECLARED
     grid separately, so a missing key here reads as "no firings", never as "dropped". Memory:
-    one ``(length,)`` float64 null array is live at a time (each cell's shifts collapse to a
-    tail probability immediately), so
-    the pass is O(length) in space regardless of grid size.
+    the FFT memo holds one pair of spectra per distinct forward column (per horizon × target),
+    and one ``(length,)`` null array is live at a time (each cell's shifts collapse to a tail
+    probability immediately).
     """
     empty: ReliabilitySummary = {"per_cell": {}, "n_shifts": 0}
     if not cells or length < 3:

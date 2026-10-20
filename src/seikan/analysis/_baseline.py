@@ -68,9 +68,9 @@ def baseline_summary(rets: np.ndarray) -> BaselineStats:
 
 
 def subperiod_edges(length: int, k: int = 3) -> np.ndarray:
-    """Contiguous equal-bar-count segment bounds over a ``length``-bar index — the same
-    ``np.linspace`` edge rule as :func:`cscv_pbo`'s blocks. Computed ONCE per run from the shared
-    joined index, so every cell reads the same eras."""
+    """``k`` contiguous equal-bar-count segments' bounds over a ``length``-bar index — the
+    subperiod eras (computed ONCE per run from the shared joined index, so every cell reads the
+    same eras) and :func:`cscv_pbo`'s blocks alike."""
     return np.linspace(0, int(length), int(k) + 1).astype(int)
 
 
@@ -99,10 +99,6 @@ def subperiod_means(
     rets = np.asarray(rets, dtype=float)
     bars = np.asarray(entry_bars, dtype=np.int64)
     pool = rets if rets_pool is None else np.asarray(rets_pool, dtype=float)
-    if pool.shape[0] != rets.shape[0]:
-        raise ValueError(
-            f"rets_pool must be row-aligned with rets: shape {pool.shape} != {rets.shape}"
-        )
     keep = np.isfinite(rets)
     bars, pool = bars[keep], pool[keep]
     out: list[SubperiodCounts] = []

@@ -22,7 +22,6 @@ from seikan.types.pools import (
     TimingBlock,
 )
 from seikan.types.scalars import (
-    ComboKey,
     ExitReason,
     ParamValue,
 )
@@ -154,20 +153,3 @@ class SummaryCell(TypedDict):
     conditional_buckets: dict[str, FeatureBucketPanel]
     bucket_monotonicity: dict[str, BucketMonotonicity]
     feature_association: dict[str, dict[str, FeatureAssociation]]
-
-
-class DeclaredCell(TypedDict):
-    """The runner's INTERNAL record of one declared cell, appended in the measurement loop before
-    anything about firing is known — ``compiler.runner``'s ``declared_cells``, read only by the
-    per-cell panel loop in the same module.
-
-    ``combo_key`` carries the swept axes in ``param_levels`` order (the horizon included when it
-    was swept) and indexes the trades partition; ``combo_tuple`` carries the ENTRY-TREE axes only
-    and indexes the undefined-decision masks, which are keyed by combo because the horizon has no
-    say in decidability.
-    """
-
-    params: dict[str, ParamValue]
-    combo_key: ComboKey
-    combo_tuple: ComboKey
-    h: int

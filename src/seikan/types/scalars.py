@@ -1,6 +1,5 @@
-"""Emitted-shape declarations: scalar vocabularies (repackaged verbatim from the former
-monolithic ``types.py`` — the package ``__init__`` re-exports everything, so
-``from seikan.types import X`` keeps working; see its reading rules).
+"""Emitted-shape declarations: scalar vocabularies (re-exported by the package ``__init__`` —
+``from seikan.types import X`` — see its reading rules).
 """
 
 from __future__ import annotations

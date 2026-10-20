@@ -86,9 +86,8 @@ def _ddof1_std(v: np.ndarray) -> float:
     computed mean of a constant DECIMAL pool is not the constant, and ``np.std`` would read its
     rounding residue (~1e-17) as dispersion. 0.0 is reserved for that pool: a VARYING pool whose
     variance is not a normal double (:func:`_normal` — deviations below ~1.5e-154 or past
-    ~1.3e154) has no representable dispersion, and neither has a pool holding a non-finite value
-    (the bootstrap's draws, whose means can overflow — ``inf == inf`` is no degenerate
-    distribution): NaN, never a zero or an infinite dispersion.
+    ~1.3e154) has no representable dispersion: NaN, never a zero or an infinite dispersion. The
+    pool is finite (the moment reads filter it, the bootstrap nulls its non-finite draws first).
 
     The variance is the two-pass form about the pool's OWN offset, its range midpoint
     (:func:`~seikan.numeric.midrange` — the kernels' cross-section rule): ``np.var`` of ``v − c``,
@@ -96,11 +95,6 @@ def _ddof1_std(v: np.ndarray) -> float:
     rounded raw mean instead, a spread at the level's ulp lost its bits: ``[2**52, 2**52 + 1]``
     read a std of 1.0 for 0.707 (and a bootstrap's draws, a baseline pool, the same)."""
     lo, hi = float(np.min(v)), float(np.max(v))
-    # Every caller hands in a finite pool today (the moment reads filter, the bootstrap nulls
-    # its non-finite draws first); the rule stays HERE, where `inf == inf` would pass for the
-    # all-equal test below, rather than in each caller's filtering.
-    if not (math.isfinite(lo) and math.isfinite(hi)):
-        return _NAN
     if hi == lo:
         return 0.0
     # Deviations past ~1.3e154 overflow the variance (a sum past the range, its mean first):
@@ -331,7 +325,7 @@ def concentration(rets: np.ndarray) -> ConcentrationBlock:
     95 zeros read 1.0000000000000002) and never falls below ``n_top / n``, the floor
     ``cell_evidence`` holds it to."""
     rets = np.asarray(rets, dtype=float)
-    rets = rets[~np.isnan(rets)]
+    rets = rets[np.isfinite(rets)]
     n = rets.shape[0]
     if n == 0:
         return {"top_share_abs": _NAN, "n_top": 0, "top_frac": TOP_SHARE_FRAC}

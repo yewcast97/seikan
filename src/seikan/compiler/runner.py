@@ -111,7 +111,6 @@ from seikan.types import (
     CellTargetPanel,
     ComboKey,
     CrossBreadthEntry,
-    DeclaredCell,
     ExclusionReason,
     FeatureAssociation,
     OutcomeKind,
@@ -567,6 +566,22 @@ def _run_summary(
     }
 
 
+class _DeclaredCell(TypedDict):
+    """One declared cell, recorded in the measurement loop before anything about firing is known
+    and read by the per-cell panel loop.
+
+    ``combo_key`` carries the swept axes in ``param_levels`` order (the horizon included when it
+    was swept) and indexes the trades partition; ``combo_tuple`` carries the ENTRY-TREE axes only
+    and indexes the undefined-decision masks, which are keyed by combo because the horizon has no
+    say in decidability.
+    """
+
+    params: dict[str, ParamValue]
+    combo_key: ComboKey
+    combo_tuple: ComboKey
+    h: int
+
+
 class _CellIdentity(TypedDict):
     """The head of a :class:`SummaryCell` as the panel loop opens it — identity, the per-target
     panel, and the mode-gated ``pooled`` block — so the cell literal below can be completed in
@@ -711,7 +726,7 @@ def _pool_panel(
 
 def _cells_panel(
     cfg: _RunConfig,
-    declared_cells: list[DeclaredCell],
+    declared_cells: list[_DeclaredCell],
     trades: pd.DataFrame,
     frame_blocks: list[tuple[int, int, int]],
     per_cell: dict[CellKey, ReliabilityRead],
@@ -996,7 +1011,7 @@ class _GridResult(NamedTuple):
     frame_cells: list[tuple[int, int]]
     rel_cells: list[ReliabilityCell]
     pooled_cells: list[ReliabilityCell]
-    declared_cells: list[DeclaredCell]
+    declared_cells: list[_DeclaredCell]
     n_combos_attempted: int
     undef_by_combo: dict[ComboKey, np.ndarray]
     cross_breadth: list[CrossBreadthEntry]
@@ -1051,7 +1066,7 @@ def _measure_grid(
     # because its absence is what makes a surviving cell look inevitable. The panel is built off
     # this list instead, which is why `len(summary["cells"]) == n_hypotheses_attempted` holds by
     # construction rather than by luck.
-    declared_cells: list[DeclaredCell] = []
+    declared_cells: list[_DeclaredCell] = []
 
     n_combos_attempted = 0
     # Post-warmup undefined decision bars per attempted combo — the raw material of

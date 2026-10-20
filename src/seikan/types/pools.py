@@ -149,8 +149,9 @@ class EpisodeBootstrapCI(TypedDict):
     ``not_representable``, when an episode sum or a draw left the double range — a percentile
     over such draws is never half an interval — and ``boot_se`` alone is, with the same reason,
     when the draws' variance is not a normal double. A constant pool's degenerate interval is
-    its arithmetic mean — the value itself where that mean's sum overflowed, never an
-    overflowed mean's null — with ``ci_lo == ci_hi`` and ``boot_se`` 0.0.
+    its exact mean, with ``ci_lo == ci_hi`` and ``boot_se`` 0.0 — for a pool of equal returns
+    the value itself, however far past the double range their sum is; a ``cross_mean`` pool of
+    equal parts rows whose exact sum has no double is ``not_representable``.
     """
 
     method: Literal["episode_percentile"]
@@ -313,9 +314,9 @@ class BucketRecord(TypedDict):
     """One quantile bucket of a per-cell conditional panel, over the ascending-feature qcut.
 
     ``bucket`` is the rendered interval label when ONE target's rows formed the panel
-    (``analysis.stats._bucket_records``), or the ordinal ``q1..qk`` when per-target edges
-    aggregated across targets (``_aggregate_bucket_ordinals`` — interval strings are
-    target-relative there and unprintable as one label) and on one target wherever pandas
+    (``analysis._conditioning.cell_conditional_buckets``), or the ordinal ``q1..qk`` when
+    per-target edges aggregated across targets (``_aggregate_bucket_ordinals`` — interval strings
+    are target-relative there and unprintable as one label) and on one target wherever pandas
     cannot print an edge (past ~1.8e305 or under ~1e-306 in magnitude, its rendering leaves the
     double range — ``_qcut_buckets``; a feature spanning more than the double range, whose bins
     are read exactly off its halved values, is one — ``_qcut_index``). ``mean_ret`` is NaN →
@@ -362,7 +363,7 @@ class FeatureBucketPanel(TypedDict):
 
 class BucketMonotonicity(TypedDict):
     """Spearman rank correlation between bucket ORDER and bucket ``mean_ret`` —
-    ``analysis.stats._bucket_monotonicity``, mounted under ``bucket_monotonicity``.
+    ``analysis._conditioning._bucket_monotonicity``, mounted under ``bucket_monotonicity``.
 
     Carried only for features that bucketed AND showed a rank signal (fewer than 3 populated
     buckets, constant means, or a populated bucket whose mean overflowed yields no entry at

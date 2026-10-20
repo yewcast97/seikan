@@ -11,6 +11,7 @@ from typing import NamedTuple
 
 import numpy as np
 
+from seikan.analysis._baseline import subperiod_edges
 from seikan.analysis._pools import (
     _EPS,
     _NEAR_CONSTANT_ULPS,
@@ -26,6 +27,7 @@ from seikan.types import (
     ParamValue,
     PboBlock,
     ReliabilityCell,
+    TargetMode,
 )
 
 _NAN = float("nan")
@@ -36,9 +38,9 @@ _NAN = float("nan")
 #: (it can flip on one split); below the floor the result is ``insufficient_data``.
 _PBO_MIN_SPLITS = 6
 
-#: The coarser partitions ``cscv_pbo`` falls back through when too few splits score at the
-#: caller's S (sparse block-local pools typical of rare episodic firings).
-_PBO_BLOCK_FALLBACKS = (6, 4)
+#: The block counts S ``cscv_pbo`` tries, in order: 8, then the coarser partitions it falls back
+#: through when too few splits score (sparse block-local pools typical of rare episodic firings).
+_PBO_BLOCKS = (8, 6, 4)
 
 
 class _Column(NamedTuple):
@@ -242,15 +244,14 @@ def cscv_pbo(
     length: int,
     targets: list[str],
     *,
-    n_blocks: int = 8,
     off: int = 1,
-    mode: str = "conjunction",
+    mode: TargetMode = "conjunction",
     n_combos_declared: int,
     bar_numerators: Mapping[CellKey, BarNumerators] | None = None,
 ) -> PboBlock:
     """CSCV over the runner's per-cell (mask, fwd) arrays → ``pbo`` + degradation diagnostics.
 
-    Tries ``n_blocks`` then falls back through 6 → 4 when too few splits score (sparse
+    Tries S = 8 blocks, then falls back through 6 → 4 when too few splits score (sparse
     block-local pools typical of rare episodic firings); a partition scoring fewer than
     ``_PBO_MIN_SPLITS`` valid splits is never reported as a PBO. Reports the S that worked in
     ``blocks``. Returns ONE dict — the runner mounts it nested at ``summary["pbo"]`` — carrying
@@ -318,9 +319,6 @@ def cscv_pbo(
     any target declaration order. Every other grid — conjunction, a market or unbenchmarked
     basket — scores without it.
     """
-    if mode not in ("conjunction", "basket"):
-        raise ValueError(f"unknown target_mode {mode!r}")
-
     targets = list(targets)  # one local copy; iterated many times below
 
     # Combo admissibility mirrors the mode's evidence rule: conjunction demands every regime
@@ -385,7 +383,7 @@ def cscv_pbo(
         "n_combos": n_distinct,
         "n_combos_scoreable": n_combos_scoreable,
         "n_combos_declared": int(n_combos_declared),
-        "blocks": int(n_blocks),
+        "blocks": _PBO_BLOCKS[0],
         "lambda_mean": _NAN,
         "oos_degradation_slope": _NAN,
         "oos_degradation_slope_reason": None,
@@ -396,21 +394,14 @@ def cscv_pbo(
     if n_distinct < 2:
         return {**empty, "reason": "single_combo"}
 
-    # Adaptive block counts: prefer the caller's S, then the coarser fallback partitions for
-    # sparse pools; dict.fromkeys dedupes while keeping the preference order.
-    block_candidates = [
-        s
-        for s in dict.fromkeys((n_blocks, *_PBO_BLOCK_FALLBACKS))
-        if s >= 2 and s % 2 == 0 and length >= 2 * s
-    ]
-    # The bar-closed sums a `cross_mean` grid's split means read (basket only); every other
-    # grid builds no pool tensor.
-    numerators_by_combo = bar_numerators if mode == "basket" and bar_numerators is not None else {}
+    block_candidates = [s for s in _PBO_BLOCKS if length >= 2 * s]
+    # The bar-closed sums a `cross_mean` grid's split means read; every other grid has none.
+    numerators_by_combo = bar_numerators or {}
     member: dict[ParamValue | str, int] = {tg: g for g, tg in enumerate(targets)}
 
     last_empty = empty
     for s in block_candidates:
-        edges = np.linspace(0, length, s + 1).astype(int)
+        edges = subperiod_edges(length, s)
         # Each candidate's kept rows per member — blocks, returns and the rows' exact parts:
         # each row's own return or, on a `cross_mean` grid, its bar numerator (each bar's exact
         # parts on its first closed member, zeros on the others; the purge keeps or drops a bar's

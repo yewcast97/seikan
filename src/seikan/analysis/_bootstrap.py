@@ -53,9 +53,6 @@ def episode_bootstrap_ci(
     *,
     rets_pool: np.ndarray | None = None,
     pool_scale: int = 1,
-    n_boot: int = BOOT_N,
-    ci: float = BOOT_CI,
-    min_episodes: int = BOOT_MIN_EPISODES,
 ) -> EpisodeBootstrapCI:
     """Percentile CI for the pool mean under an episode (cluster) bootstrap.
 
@@ -74,7 +71,7 @@ def episode_bootstrap_ci(
     every episode's exact mean 0.1's double, every draw's too — read a zero-width interval at
     0.09999999999999999 beside a ``mean_ret`` of 0.1. Same keys always: ``{method, ci_level,
     n_boot, n_episodes, ci_lo, ci_hi, boot_se, reason}`` — an empty pool reports
-    ``reason="no_observations"``, fewer than ``min_episodes`` episodes reports the honest
+    ``reason="no_observations"``, fewer than ``BOOT_MIN_EPISODES`` episodes reports the honest
     ``n_episodes`` with ``reason="insufficient_episodes"`` (a dense every-bar pool transitively
     chains into ONE episode: there is no resampling distribution over one exchangeable unit,
     and the null fields say so rather than minting a degenerate interval). A degenerate bootstrap
@@ -101,15 +98,11 @@ def episode_bootstrap_ci(
     rets = np.asarray(rets, dtype=float)
     bars = np.asarray(entry_bars, dtype=np.int64)
     pool = rets if rets_pool is None else np.asarray(rets_pool, dtype=float)
-    if pool.shape[0] != rets.shape[0]:
-        raise ValueError(
-            f"rets_pool must be row-aligned with rets: shape {pool.shape} != {rets.shape}"
-        )
     keep = np.isfinite(rets)
     rets, bars, pool = rets[keep], bars[keep], pool[keep]
     out: EpisodeBootstrapCI = {
         "method": "episode_percentile",
-        "ci_level": float(ci),
+        "ci_level": BOOT_CI,
         "n_boot": 0,
         "n_episodes": 0,
         "ci_lo": None,
@@ -130,10 +123,10 @@ def episode_bootstrap_ci(
     clusters = overlap_clusters(bars, bars + int(h))
     n_ep = len(clusters)
     out["n_episodes"] = int(n_ep)
-    if n_ep < min_episodes:
+    if n_ep < BOOT_MIN_EPISODES:
         out["reason"] = "insufficient_episodes"
         return out
-    out["n_boot"] = int(n_boot)
+    out["n_boot"] = BOOT_N
     if (pool == pool[0]).all():
         # Every row adds the same value, so every draw's mean is that value — the exact mean
         # `_pools.exact_mean` reads (`mean_ret`), where a computed mean read an ulp off it (0.3
@@ -176,11 +169,11 @@ def episode_bootstrap_ci(
     digest = hashlib.sha256(np.int64(h).tobytes() + bars.tobytes() + rets.tobytes()).digest()
     rng = np.random.default_rng([_BOOT_SEED, *np.frombuffer(digest, dtype="<u4").tolist()])
 
-    stats_arr = np.empty(n_boot, dtype=float)
+    stats_arr = np.empty(BOOT_N, dtype=float)
     rows_per_chunk = max(1, _BOOT_CHUNK // n_ep)
     done = 0
-    while done < n_boot:
-        rows = min(rows_per_chunk, n_boot - done)
+    while done < BOOT_N:
+        rows = min(rows_per_chunk, BOOT_N - done)
         idx = rng.integers(0, n_ep, size=(rows, n_ep))
         sums = sum(
             limb[idx].sum(axis=1).astype(object) << k for limb, k in zip(limbs, shifts, strict=True)
@@ -192,7 +185,7 @@ def episode_bootstrap_ci(
         done += rows
     if not np.isfinite(stats_arr).all():
         return _not_representable(out)
-    alpha = (1.0 - ci) / 2.0
+    alpha = (1.0 - BOOT_CI) / 2.0
     lo, hi = np.percentile(stats_arr, [100.0 * alpha, 100.0 * (1.0 - alpha)])
     out["ci_lo"] = float(lo)
     out["ci_hi"] = float(hi)

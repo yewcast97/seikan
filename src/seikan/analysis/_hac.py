@@ -73,7 +73,7 @@ def newey_west_mean(rets: np.ndarray, entry_bars: np.ndarray, h: int) -> tuple[f
     keep = np.isfinite(rets)
     rets, bars = rets[keep], bars[keep]
     n = rets.shape[0]
-    if n < 2 or h < 1:
+    if n < 2:
         return (_NAN, _NAN)
     mean = exact_mean(rets)
     if not math.isfinite(mean):
@@ -191,7 +191,7 @@ def cross_mean_pooled_hac(
     c = np.asarray(closed, dtype=bool)
     rows = np.asarray(excess, dtype=float)[c]
     n = int(rows.size)
-    if n < 2 or h < 1 or not math.isfinite(mean):
+    if n < 2 or not math.isfinite(mean):
         return (_NAN, _NAN)
     with np.errstate(over="ignore", invalid="ignore"):
         if _near_constant(rows, mean):

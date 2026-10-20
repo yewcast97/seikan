@@ -14,8 +14,8 @@ from seikan.types import (
 #: The gate-policy version stamped into every report. Bumped whenever a check's SEMANTICS change
 #: (new check, changed branch logic, changed default meaning) or the section's emitted shape
 #: moves, so two results are comparable only when their policy versions match. It names the
-#: CHECKLIST semantics — ``seikan_version`` names the package and ``analysis.STATISTICS_VERSION``
-#: the estimators the checklist reads.
+#: CHECKLIST semantics — ``seikan_version`` names the package and
+#: ``analysis.stats.STATISTICS_VERSION`` the estimators the checklist reads.
 POLICY_VERSION = 4
 
 
