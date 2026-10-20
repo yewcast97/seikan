@@ -1,16 +1,17 @@
 """JSON-safe serialization of engine results + the CLI's caller-nominated CSV writers.
 
-``compile_thesis`` returns pandas/numpy-typed objects; these helpers coerce them into plain JSON
-values for the CLI's report document. ``serialize_result`` returns the summary dict VERBATIM — the
-complete parameter × horizon grid (the ``cells`` panel with one entry per DECLARED combo × horizon,
-each with its per-target reliability reads and every evidence panel) is never filtered here or
-anywhere downstream; the checklist renders its per-cell results in
-a separate section of the report. Every output is a caller-nominated FILE — the report itself
-(``--report-out``), the per-observation trades via ``write_trades_csv`` (``--trades-out``), the
-per-bar root-series value matrix via ``write_root_series_csv`` (``--root-series-out``), and the
-per-bar 0/1 entry-flag matrix via ``write_entry_flags_csv`` (``--entry-flags-out``); nothing
-rides stdout. The writers write the path they are handed; the CLI hands them the temporaries of
-``staged_outputs``, which publishes a run's files together once the last of them is written.
+``compile_thesis`` returns pandas/numpy-typed objects; ``json_safe`` coerces them into plain JSON
+values, once per CLI document at serialization. ``serialize_result`` is the library's JSON-safe
+view of a result, the summary dict VERBATIM — the complete parameter × horizon grid (the
+``cells`` panel with one entry per DECLARED combo × horizon, each with its per-target
+reliability reads and every evidence panel) is never filtered here or anywhere downstream; the
+checklist renders its per-cell results in a separate section of the report. Every output is a
+caller-nominated FILE — the report itself (``--report-out``), the per-observation trades via
+``write_trades_csv`` (``--trades-out``), and
+the per-bar root-series value and 0/1 entry-flag matrices via ``write_indexed_csv``
+(``--root-series-out``, ``--entry-flags-out``); nothing rides stdout. The writers write the
+path they are handed; the CLI hands them the temporaries of ``staged_outputs``, which publishes a
+run's files together once the last of them is written.
 """
 
 from __future__ import annotations
@@ -141,55 +142,10 @@ def write_trades_csv(result: EventStudyResult, path: str) -> int:
     return len(result.trades)
 
 
-def write_root_series_csv(frame: pd.DataFrame, path: str) -> int:
-    """Write the root-series VALUE matrix (``EntryListReport.root_series``) as CSV for
-    ``--root-series-out``. No entry flags ride it — a fired bar reaches the caller as a row of the
-    trades CSV instead, except a FINAL-bar firing, which anchors no observation and so has no trades
-    row; that one rides ``write_entry_flags_csv`` (``--entry-flags-out``), the only CLI output that
-    reports firings as such.
-
-    ISO-8601 index labelled ``datetime``, warmup NaN as empty cells, always overwriting; returns
-    the row count. The file re-reads through ``dataio.read_strict_csv`` as a series-shaped CSV in
-    the ordinary case, but two shapes it can legitimately take do not: a value column that is
-    entirely NaN (a transform window longer than the data), and a thesis whose every threshold
-    operand is a bare constant, which has no root series at all and writes a datetime-only file with
-    zero value columns. The writer gates on neither — the listing is the caller's data, and
-    refusing to write it would hide exactly the degenerate thesis shape worth seeing.
-    """
-    return _write_indexed_csv(frame, path)
-
-
-def write_entry_flags_csv(frame: pd.DataFrame, path: str) -> int:
-    """Write the per-bar 0/1 entry-flag matrix (``EntryListReport.entry_flags``) as CSV for
-    ``--entry-flags-out``. One integer column per (param combo × target) — named ``entry`` /
-    ``entry[axis=value,...]``, carrying the ``@<target>`` suffix only when several targets run —
-    beside the ISO-8601 index labelled ``datetime``. Those names are canonical, one per declared
-    combo × target, and unique save in case — the strict reader compares headers
-    case-insensitively, so of targets ``A`` and ``a`` the second takes a ``#N`` suffix, as a
-    colliding root-series label does. The mask is bit-identical to the backtest's: both come from
-    ``vectorize.signal`` over the same compiled entry tree. It lines up BAR FOR BAR against the
-    root-series CSV, which carries the identical index — but NOT against the trades rows: those are
-    one per (firing bar × target × DECLARED HORIZON), and their ``entry_time`` is the next-open
-    ANCHOR bar ``t+1`` while this file is indexed by the FIRING bar ``t``. Join the two on
-    ``entry_bar``, the trades column that equals this file's row POSITION; a timestamp join is off
-    by one bar.
-
-    This is the ONE CLI output that carries a FINAL-bar firing. That firing anchors no observation —
-    there is no ``open[t+1]`` to measure from — so the runner records no observation for it and the
-    trades CSV, which is shaped per OBSERVATION, structurally cannot represent it; no coverage
-    ledger counts it either (only the rotation nulls, which rotate a member's complete mask, still
-    see it). A caller asking "is this thesis firing NOW?" reads it here.
-
-    ISO-8601 index labelled ``datetime``, always overwriting; returns the row count. The file
-    ALWAYS re-reads through ``dataio.read_strict_csv`` as a series-shaped CSV — int dtype, no NaN
-    (an undecidable bar is a 0, not a hole), and at least one value column, since a thesis declares
-    at least one combo and at least one target. Neither degenerate shape ``write_root_series_csv``
-    tolerates — an all-NaN column, or a value-column-free file — can arise here.
-    """
-    return _write_indexed_csv(frame, path)
-
-
-def _write_indexed_csv(frame: pd.DataFrame, path: str) -> int:
-    """The one datetime-indexed CSV write both per-bar listings share."""
+def write_indexed_csv(frame: pd.DataFrame, path: str) -> int:
+    """Write a per-bar listing (``EntryListReport.root_series`` for ``--root-series-out``,
+    ``EntryListReport.entry_flags`` for ``--entry-flags-out``) as CSV: the ISO-8601 bar index
+    labelled ``datetime``, warmup NaN as empty cells, always overwriting; returns the row count.
+    The files' contracts are ``contract.ROOT_SERIES_CSV`` and ``contract.ENTRY_FLAGS_CSV``."""
     frame.to_csv(path, index_label="datetime")
     return len(frame)

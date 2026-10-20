@@ -5,10 +5,8 @@ validates each success document against the ``seikan.types`` TypedDicts before w
 builder key no TypedDict declares — or a nullability the schema missed — fails loudly
 everywhere. What this file pins is the machinery itself: that violations actually REFUSE (deep
 extra key, missing section, wrong type, numeric-string coercion), that the refusal reaches the
-caller as the exit-4
-``internal`` envelope and never as a mis-classed ``dsl_invalid``, that a parsed-back document
-still validates (the bytes written are the bytes that validated), and that the document roots
-stay a subset of the assembly shape the builders write against.
+caller as the exit-4 ``internal`` envelope and never as a mis-classed ``dsl_invalid``, and that a
+parsed-back document still validates (the bytes written are the bytes that validated).
 """
 
 from __future__ import annotations
@@ -25,15 +23,10 @@ import seikan.cli as cli_module
 import seikan.compiler.runner as runner_module
 from seikan.cli import main
 from seikan.emitted import (
-    CheckDataDocument,
-    DescribeDocument,
-    HashDocument,
     ReportContractError,
-    RunReportDocument,
     validate_emitted,
     validate_summary,
 )
-from seikan.types import EmittedDocument
 
 # ---- fixtures: one tiny real run, documents parsed back off the wire ------------------------
 
@@ -165,98 +158,12 @@ def test_null_is_legal_exactly_where_the_schema_says(run_doc):
         validate_emitted("run", doc)
 
 
-def test_an_unknown_document_kind_refuses(run_doc):
-    with pytest.raises(ReportContractError, match="no emitted-document contract"):
-        validate_emitted("schema", run_doc)
-
-
-def test_a_drifted_metric_roles_blob_refuses(run_doc):
-    # The verbatim blobs are equality-checked against their contract.py source — stronger than
-    # deep validation for a constant.
-    doc = copy.deepcopy(run_doc)
-    doc["metric_roles"]["claim"] = "tampered"
-    with pytest.raises(ReportContractError, match="metric_roles"):
-        validate_emitted("run", doc)
-
-
 @pytest.fixture
 def describe_doc(tmp_path, capsys) -> dict:
     px = tmp_path / "px.csv"
     _write_ohlcv(px)
     assert main(["describe", str(px), "--windows", "1,5"]) == 0
     return json.loads(capsys.readouterr().out)
-
-
-@pytest.mark.parametrize(
-    ("block", "read", "reason"),
-    [
-        (("series", "close", "changes", "1"), ("pct",), "not_representable"),
-        (("series", "close", "dispersion", "5"), ("log",), "non_positive_endpoint"),
-        (("series", "close", "range_position", "5"), ("from_low", "pct"), "not_representable"),
-        (("series", "close", "full_sample"), ("runup_pct",), "not_representable"),
-        (("volume", "windows", "5"), ("last_to_mean",), "non_positive_endpoint"),
-    ],
-)
-def test_a_null_ratio_read_without_its_reason_refuses(describe_doc, block, read, reason):
-    # Refusals are explicit, never omitted — a cross-field rule no TypedDict can state, so the
-    # seam's AfterValidator does: a ratio read nulled on a block that did not refuse whole must
-    # carry its ratio_reason (a pct past the double range used to ride out as a reasonless null).
-    doc = copy.deepcopy(describe_doc)
-    node = doc["profiles"][0]
-    for key in block:
-        node = node[key]
-    assert node["reason"] is None and node["ratio_reason"] is None
-    target = node
-    for key in read[:-1]:
-        target = target[key]
-    target[read[-1]] = None
-    with pytest.raises(ReportContractError, match="ratio_reason"):
-        validate_emitted("describe", doc)
-    node["ratio_reason"] = reason  # the same null, now saying why
-    validate_emitted("describe", doc)
-
-
-@pytest.mark.parametrize("kind", ["changes", "dispersion"])
-def test_a_null_log_under_not_representable_refuses(describe_doc, kind):
-    # `not_representable` names a pct read only: the log is scale-safe (finite for every positive
-    # pair), so a null log beside it is a builder bug the reason must not excuse.
-    doc = copy.deepcopy(describe_doc)
-    block = doc["profiles"][0]["series"]["close"][kind]["5"]
-    block["pct"], block["ratio_reason"] = None, "not_representable"
-    validate_emitted("describe", doc)
-    block["log"] = None
-    with pytest.raises(ReportContractError, match="null log"):
-        validate_emitted("describe", doc)
-    block["ratio_reason"] = "non_positive_endpoint"  # off the positive domain both refuse
-    validate_emitted("describe", doc)
-
-
-@pytest.mark.parametrize(
-    ("block", "read"),
-    [
-        (("series", "close", "changes", "1"), ("diff",)),
-        (("series", "close", "dispersion", "5"), ("diff",)),
-        (("series", "close", "range_position", "5"), ("from_low",)),
-        (("series", "close", "full_sample"), ("drawdown_diff",)),
-    ],
-)
-def test_a_null_diff_on_a_block_that_did_not_refuse_whole_refuses(describe_doc, block, read):
-    # `diff` rides every block that did not refuse whole — no ratio_reason can excuse it — so a
-    # null diff there is a builder bug (a level distance past the double range used to ride out
-    # as one, or crash on a range distance's non-nullable diff); refused whole by name, it is
-    # the contract's own shape.
-    doc = copy.deepcopy(describe_doc)
-    node = doc["profiles"][0]
-    for key in block:
-        node = node[key]
-    assert node["reason"] is None
-    node[read[0]] = None
-    node["ratio_reason"] = "non_positive_endpoint"
-    with pytest.raises(ReportContractError, match="null diff"):
-        validate_emitted("describe", doc)
-    kept = ("high", "low") if block[-1] == "full_sample" else ()  # its extremes are facts
-    node.update({key: None for key in node if key not in kept}, reason="not_representable")
-    validate_emitted("describe", doc)
 
 
 def test_ratio_reason_is_a_closed_vocabulary_and_whole_refusals_need_none(describe_doc):
@@ -276,14 +183,12 @@ def test_ratio_reason_is_a_closed_vocabulary_and_whole_refusals_need_none(descri
         validate_emitted("describe", doc)
 
 
-# ---- the library seam validates the engine's own output ---------------------------------------
+# ---- validate_summary: the engine summary's own contract ----------------------------------------
 
 
-def test_compile_thesis_validates_the_summary_it_returns(run_doc):
-    # `api.compile_thesis` runs the RunSummary adapter over its own output before handing it
-    # back, so the library path is checked exactly like the CLI document is — the report the
-    # fixture wrote proves the in-memory summary passed. Directly: the emitted summary validates,
-    # a deep extra key refuses, and a retired key (the schema-v4 breakdown) refuses too.
+def test_validate_summary_holds_a_summary_to_the_run_root(run_doc):
+    # A library caller's check of an engine summary, without a document: the emitted summary
+    # validates, a deep extra key refuses, and a retired key (the schema-v4 breakdown) too.
     validate_summary(run_doc["summary"])
     drifted = copy.deepcopy(run_doc["summary"])
     drifted["cells"][0]["by_target"]["target"]["stray"] = 1.0
@@ -441,17 +346,17 @@ def test_a_scored_pbo_at_equality_on_every_link_validates(run_doc):
 
 
 def test_contract_violation_exits_4_with_the_internal_envelope(tmp_path, capsys, monkeypatch):
-    # Drift the blob the CLI embeds away from the source emitted.py compares against: the seam
-    # must refuse, and the refusal must ride the catch-all to the exit-4 `internal` envelope —
-    # NOT the exit-3 `dsl_invalid` branch, which would blame the caller's thesis for the
-    # verifier's own bug. (A raw pydantic ValidationError escaping would do exactly that, which
-    # is why ReportContractError is a RuntimeError.)
+    # Drift an identity stamp off its declared type (`environment` versions are strings): the
+    # seam must refuse, and the refusal must ride the catch-all to the exit-4 `internal`
+    # envelope — NOT the exit-3 `dsl_invalid` branch, which would blame the caller's thesis for
+    # the verifier's own bug. (A raw pydantic ValidationError escaping would do exactly that,
+    # which is why ReportContractError is a RuntimeError.)
     px = tmp_path / "px.csv"
     thesis = tmp_path / "t.json"
     report = tmp_path / "report.json"
     _write_ohlcv(px)
     _thesis(thesis)
-    monkeypatch.setattr(cli_module, "METRIC_ROLES", {"claim": "drifted"})
+    monkeypatch.setattr(cli_module, "_environment", lambda: {"python": 3.13})
     code = main(
         [
             "run",
@@ -465,7 +370,7 @@ def test_contract_violation_exits_4_with_the_internal_envelope(tmp_path, capsys,
     assert code == 4
     envelope = json.loads(capsys.readouterr().out)
     assert envelope["error"]["type"] == "internal"
-    assert "metric_roles" in envelope["error"]["message"]
+    assert "environment" in envelope["error"]["message"]
     assert not report.exists()  # no out-of-contract artifact lands on disk
 
 
@@ -493,15 +398,7 @@ def test_an_impossible_pbo_ledger_from_the_engine_exits_4(tmp_path, capsys, monk
     assert not report.exists()
 
 
-# ---- the roots stay anchored to the assembly shape ------------------------------------------
-
-
-def test_document_roots_are_subsets_of_the_assembly_shape():
-    # EmittedDocument is the all-NotRequired shape the builders write against; each command root
-    # restates its sections as REQUIRED but may never invent a key the assembly shape lacks.
-    assembly = set(typing.get_type_hints(EmittedDocument))
-    for root in (RunReportDocument, HashDocument, CheckDataDocument, DescribeDocument):
-        assert set(typing.get_type_hints(root)) <= assembly, root.__name__
+# ---- the declared shapes stay documented ---------------------------------------------------
 
 
 def test_report_fields_documents_every_declared_panel_field():
@@ -511,7 +408,6 @@ def test_report_fields_documents_every_declared_panel_field():
     # every declared field name of the load-bearing panels must appear somewhere in the
     # REPORT_FIELDS text (its keys are prose-compound, so set equality is not expressible).
     import json
-    import typing
 
     from seikan import types as t
     from seikan.contract import DESCRIBE_REPORT, REPORT_FIELDS

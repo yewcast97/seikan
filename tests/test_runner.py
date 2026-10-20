@@ -2104,7 +2104,7 @@ def test_sub_bar_external_feed_never_leaks_into_its_own_bar(tmp_path):
     feed = pd.DataFrame({"x": vals}, index=pd.DatetimeIndex(stamps, name="datetime"))
     feed.to_csv(tmp_path / "feed.csv")
 
-    df, rep = read_strict_csv(str(tmp_path / "feed.csv"), role="external")
+    df, rep = read_strict_csv(str(tmp_path / "feed.csv"))
     assert rep.ok and df is not None
     anchored = anchor_feed(_prepare_feed(df, str(tmp_path / "feed.csv"), "feed"), bars)
     assert np.isnan(anchored.iloc[0])  # nothing published at-or-before day 0's stamp

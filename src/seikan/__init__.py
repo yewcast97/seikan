@@ -10,16 +10,10 @@ persistence, no network, no hidden state.
 from importlib.metadata import PackageNotFoundError, version
 
 from seikan.analysis.result import EntryListReport, EventStudyResult
-from seikan.api import (
-    DataFiles,
-    MarketData,
-    canonical_dsl_hash,
-    compile_thesis,
-    list_entries,
-    load_market_data,
-    resolve_data_files,
-)
+from seikan.api import compile_thesis, list_entries
+from seikan.compiler.data import DataFiles, MarketData, load_market_data, resolve_data_files
 from seikan.dsl.schema import Thesis
+from seikan.gate import canonical_dsl_hash
 from seikan.serialize import serialize_result
 
 try:

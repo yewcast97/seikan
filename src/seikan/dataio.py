@@ -202,22 +202,17 @@ def header_key(name: str) -> str:
     return name.strip().lower()
 
 
-def _examples(
-    mask: pd.Series, lines: list[int], raw: pd.Series | None = None
-) -> list[IssueExample]:
-    """First offending rows as ``{csv_line, value?}`` records, each row's csv line the physical
-    line its record starts on (``lines``, :func:`_record_shape`)."""
-    out: list[IssueExample] = []
-    for pos in np.flatnonzero(mask.to_numpy())[:MAX_EXAMPLES]:
-        rec: IssueExample = {"csv_line": lines[int(pos)]}
-        if raw is not None:
-            rec["value"] = str(raw.iloc[int(pos)])
-        out.append(rec)
-    return out
+def _examples(mask: pd.Series, lines: list[int], raw: pd.Series) -> list[IssueExample]:
+    """First offending rows as ``{csv_line, value}`` records: each row's csv line, the physical
+    line its record starts on (``lines``, :func:`_record_shape`), and its raw cell."""
+    return [
+        {"csv_line": lines[int(pos)], "value": str(raw.iloc[int(pos)])}
+        for pos in np.flatnonzero(mask.to_numpy())[:MAX_EXAMPLES]
+    ]
 
 
 def read_strict_csv(
-    path: str, *, role: str = "file", expected_shape: str | None = None
+    path: str, *, expected_shape: str | None = None
 ) -> tuple[pd.DataFrame | None, FileReport]:
     """Read one CSV under the strict contract → ``(canonical frame | None, FileReport)``.
 
@@ -266,7 +261,7 @@ def read_strict_csv(
     it is NOT thread-safe: a thread using ``csv`` while a read is inside those stages reads under
     the pin, and a limit it sets meanwhile is overwritten by the restore.
     """
-    return StrictCsvReader().read(path, role=role, expected_shape=expected_shape)
+    return StrictCsvReader().read(path, expected_shape=expected_shape)
 
 
 @dataclass(frozen=True)

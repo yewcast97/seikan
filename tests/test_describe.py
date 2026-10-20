@@ -76,8 +76,87 @@ def _write_flat_ohlcv(path, closes, volumes=None):
 
 def _run(capsys, argv):
     code = main(argv)
-    out = capsys.readouterr().out
-    return code, json.loads(out)
+    doc = json.loads(capsys.readouterr().out)
+    if doc["command"] == "describe" and "profiles" in doc:
+        _assert_refusals_explicit(doc["profiles"])
+    return code, doc
+
+
+def _assert_refusals_explicit(profiles):
+    """Refusals are explicit, never omitted — the cross-field rule no TypedDict states, held over
+    every describe document this suite produces (:func:`_run`): on a block that did not refuse
+    whole (``reason`` null) a ``diff`` read is never null — a diff with no double to be refuses
+    its block by name (``not_representable``) — and a null ratio read (``pct``/``log``, a range
+    distance's ``pct``, ``drawdown_pct``/``runup_pct``, ``last_to_mean``) carries the
+    ``ratio_reason`` saying why — for ``log`` only ``non_positive_endpoint``, the scale-safe log
+    never refusing as ``not_representable``."""
+    for profile in profiles:
+        if "series" not in profile:  # a refused file's stub carries no blocks
+            continue
+        admitted = profile
+        # (where, reason, ratio_reason, diff reads, ratio reads) per block
+        reads = []
+        for column, sp in admitted["series"].items():
+            for kind, panel in (("changes", sp["changes"]), ("dispersion", sp["dispersion"])):
+                for w, ch in panel.items():
+                    if (
+                        ch["reason"] is None
+                        and ch["log"] is None
+                        and (ch["ratio_reason"] == "not_representable")
+                    ):
+                        raise AssertionError(
+                            f"{admitted['path']}: {column}.{kind}[{w}] carries a null log under "
+                            "ratio_reason not_representable — log is scale-safe and refuses only "
+                            "off the positive domain"
+                        )
+                    reads.append(
+                        (
+                            f"{column}.{kind}[{w}]",
+                            ch["reason"],
+                            ch["ratio_reason"],
+                            (ch["diff"],),
+                            (ch["pct"], ch["log"]),
+                        )
+                    )
+            for w, rp in sp["range_position"].items():
+                legs = (rp["from_high"], rp["from_low"])
+                reads.append(
+                    (
+                        f"{column}.range_position[{w}]",
+                        rp["reason"],
+                        rp["ratio_reason"],
+                        tuple(None if d is None else d["diff"] for d in legs),
+                        tuple(None if d is None else d["pct"] for d in legs),
+                    )
+                )
+            fs = sp["full_sample"]
+            reads.append(
+                (
+                    f"{column}.full_sample",
+                    fs["reason"],
+                    fs["ratio_reason"],
+                    (fs["drawdown_diff"], fs["runup_diff"]),
+                    (fs["drawdown_pct"], fs["runup_pct"]),
+                )
+            )
+        if admitted["volume"] is not None:
+            for w, vw in admitted["volume"]["windows"].items():
+                reads.append(
+                    (f"volume[{w}]", vw["reason"], vw["ratio_reason"], (), (vw["last_to_mean"],))
+                )
+        for where, reason, ratio_reason, diffs, ratios in reads:
+            if reason is not None:  # refused whole: its nulls stand under the structural reason
+                continue
+            if any(v is None for v in diffs):
+                raise AssertionError(
+                    f"{admitted['path']}: {where} carries a null diff on a block that did not "
+                    "refuse whole — a diff with no double to be refuses its block by reason"
+                )
+            if ratio_reason is None and any(v is None for v in ratios):
+                raise AssertionError(
+                    f"{admitted['path']}: {where} carries a null ratio read with no "
+                    "ratio_reason — a refusal must be explicit, never omitted"
+                )
 
 
 def _series_profile(doc, i: int = 0, column: str | None = None):

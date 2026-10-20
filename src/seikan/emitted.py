@@ -1,44 +1,22 @@
 """Runtime validation of the EMITTED documents — the contract in ``seikan.types``, with teeth.
 
-The pipeline's dict shapes are declared once as ``TypedDict``s and, until this module, enforced
-only statically: a builder writing a key no TypedDict declares, or a TypedDict promising a key no
-builder writes, emitted fine and drifted silently. This module makes those declarations the
-runtime schema of everything the CLI writes: one pydantic ``TypeAdapter`` per emitted document
-kind, applied by ``cli._dumps`` to the exact ``json_safe``'d payload about to be serialized — the
-bytes on disk are the bytes that validated.
+One root per document the CLI writes. The four success roots are validated by ``cli._dumps``
+against the exact ``json_safe``'d payload about to be serialized — the bytes on disk are the
+bytes that validated — and ``@with_config(extra="forbid")`` on a root propagates to every nested
+config-less TypedDict, so an undeclared key ANYWHERE in the tree refuses: that is the drift
+detector. Validation is ``strict``: numeric strings and bools do not coerce into numbers (lax
+coercion is exactly how drift hides), while an ``int`` into a ``float`` field remains valid. The
+builders write each root as one literal, so the type checker holds a builder to its root too.
 
-The roots below restate each command's document with its sections REQUIRED
-(``types.EmittedDocument`` stays the all-``NotRequired`` assembly shape the builders write
-against; a test pins each root's keys to a subset of its annotations).
-``@with_config(extra="forbid")`` on a root propagates to every nested config-less TypedDict, so
-an undeclared key ANYWHERE in the tree refuses — that is the drift detector. Validation is
-``strict``: numeric strings and bools do not coerce into numbers (lax coercion is exactly how
-drift hides), while an ``int`` into a ``float`` field remains valid.
+Shape is not the whole contract: the CSCV ``summary.pbo`` block's verdict pairing and ledgers
+(:func:`_check_pbo`), which no ``TypedDict`` can state, ride the run root's summary as an
+``AfterValidator`` and refuse through the same ``ValidationError`` path.
 
-Shape is not the whole contract: the seam also checks the cross-field invariants no
-``TypedDict`` can state, each an ``AfterValidator`` on the annotation that carries them, so it
-runs after the strict shape pass and refuses through the same ``ValidationError`` path — the
-CSCV ``summary.pbo`` block's verdict pairing and ledgers (:func:`_check_pbo`), on both roots
-that carry a summary, and the ``describe`` profiles' explicit refusals
-(:func:`_check_refusal_reasons`).
-
-What is deliberately NOT validated:
-
-- ``schema`` documents — static contract prose (``dict[str, JsonValue]`` blobs); validating
-  "JSON is JSON" asserts nothing.
-- Error envelopes — a validation raise inside an error handler would destroy the envelope, the
-  exit code and the diagnosis at once, which is the exact failure ``json_safe``'s totality
-  doctrine exists to prevent.
-- ``api.compile_thesis`` returns the raw IN-MEMORY summary (NaN floats, never nulls), but it
-  does not return it UNCHECKED: :func:`validate_summary` runs the same strict ``RunSummary``
-  adapter, CSCV-block check included, over the ``json_safe``'d copy at that seam, so the
-  engine's output is verified against its declared contract on the library path exactly as the
-  CLI verifies the whole document at emission — the copy is discarded and the caller gets the
-  in-memory dict.
-
-The static blobs a document embeds verbatim (``metric_roles``, ``describe_roles``) are checked by
-EQUALITY against their ``contract.py`` source instead of deep-validated — for a constant, byte
-identity is the stronger drift guard.
+Not validated: the ``schema`` document (static contract prose — validating "JSON is JSON"
+asserts nothing) and the error envelopes (a validation raise inside an error handler would
+destroy the envelope, the exit code and the diagnosis at once — the failure ``json_safe``'s
+totality doctrine exists to prevent). Their roots type the builders. A library caller validates
+an engine summary with :func:`validate_summary`, the run root's own ``summary`` contract.
 
 A refusal raises :class:`ReportContractError` (a ``RuntimeError``, never the pydantic
 ``ValidationError`` itself): the CLI's exception ladder catches ``ValidationError`` as an exit-3
@@ -48,14 +26,14 @@ own contract is a seikan bug and must fall through to the exit-4 ``internal`` en
 
 from __future__ import annotations
 
-from typing import Annotated, Literal, TypedDict, cast
+from typing import Annotated, Literal, NotRequired, TypedDict
 
 from pydantic import AfterValidator, ConfigDict, TypeAdapter, ValidationError, with_config
 
-from seikan.contract import DESCRIBE_ROLES, METRIC_ROLES
 from seikan.serialize import json_safe
 from seikan.types import (
     DataReport,
+    ErrorEnvelope,
     FileProfile,
     GateSection,
     JsonValue,
@@ -63,6 +41,7 @@ from seikan.types import (
     RefusalStub,
     ReportIdentity,
     RunSummary,
+    ThresholdDoc,
 )
 
 
@@ -85,10 +64,10 @@ def _check_pbo(summary: RunSummary) -> RunSummary:
     n_splits_attempted``, ``0 <= n_candidates_min <= n_combos``.
 
     Runs AFTER the strict shape validation (every count is an ``int`` by then; none is nullable)
-    on both roots that carry a summary, the ``run`` document and the library seam's
-    :class:`_SummaryRoot`, and holds on EVERY path ``cscv_pbo`` returns — scored (``pbo`` a
-    fraction over at least six scored splits: never NaN, so never a reasonless null) or
-    declined, a declined block carrying the population it established before declining. A
+    on both roots that carry a summary, the ``run`` document and :class:`_SummaryRoot`, and
+    holds on EVERY path ``cscv_pbo`` returns — scored (``pbo`` a fraction over at least six
+    scored splits: never NaN, so never a reasonless null) or declined, a declined block
+    carrying the population it established before declining. A
     violation raises ``ValueError``, which pydantic folds into the ``ValidationError`` the seam
     re-raises as :class:`ReportContractError`: an internally impossible block is a seikan bug
     (exit 4), never a statement about the caller's thesis.
@@ -162,106 +141,69 @@ class CheckDataDocument(TypedDict):
     data_report: DataReport
 
 
-def _check_refusal_reasons(
-    profiles: list[FileProfile | RefusalStub],
-) -> list[FileProfile | RefusalStub]:
-    """Refusals are explicit, never omitted: on a block that did not refuse whole (``reason``
-    null) a ``diff`` read is never null — ``diff`` rides every such block, and one with no double
-    to be refuses the block by name (``not_representable``) — and a ratio read (``pct``/``log``,
-    a range distance's ``pct``, ``drawdown_pct``/``runup_pct``, ``last_to_mean``) that is null
-    must carry the ``ratio_reason`` saying why — for ``log`` only ``non_positive_endpoint``, the
-    scale-safe log never refusing as ``not_representable``. A reasonless null reads as "nothing
-    to report" — exactly how a ``pct`` or a ``diff`` past the double range used to ride out —
-    and the per-field TypedDicts cannot state a cross-field rule, so the seam does. A violation is a
-    builder bug in ``describe.py``: the ``ValueError`` here surfaces as the pydantic
-    ``ValidationError`` :func:`validate_emitted` re-raises as :class:`ReportContractError`."""
-    for profile in profiles:
-        if "series" not in profile:  # a refused file's stub carries no blocks
-            continue
-        admitted = cast("FileProfile", profile)
-        # (where, reason, ratio_reason, diff reads, ratio reads) per block
-        reads: list[
-            tuple[str, str | None, str | None, tuple[float | None, ...], tuple[float | None, ...]]
-        ] = []
-        for column, sp in admitted["series"].items():
-            for kind, panel in (("changes", sp["changes"]), ("dispersion", sp["dispersion"])):
-                for w, ch in panel.items():
-                    if (
-                        ch["reason"] is None
-                        and ch["log"] is None
-                        and (ch["ratio_reason"] == "not_representable")
-                    ):
-                        raise ValueError(
-                            f"{admitted['path']}: {column}.{kind}[{w}] carries a null log under "
-                            "ratio_reason not_representable — log is scale-safe and refuses only "
-                            "off the positive domain"
-                        )
-                    reads.append(
-                        (
-                            f"{column}.{kind}[{w}]",
-                            ch["reason"],
-                            ch["ratio_reason"],
-                            (ch["diff"],),
-                            (ch["pct"], ch["log"]),
-                        )
-                    )
-            for w, rp in sp["range_position"].items():
-                legs = (rp["from_high"], rp["from_low"])
-                reads.append(
-                    (
-                        f"{column}.range_position[{w}]",
-                        rp["reason"],
-                        rp["ratio_reason"],
-                        tuple(None if d is None else d["diff"] for d in legs),
-                        tuple(None if d is None else d["pct"] for d in legs),
-                    )
-                )
-            fs = sp["full_sample"]
-            reads.append(
-                (
-                    f"{column}.full_sample",
-                    fs["reason"],
-                    fs["ratio_reason"],
-                    (fs["drawdown_diff"], fs["runup_diff"]),
-                    (fs["drawdown_pct"], fs["runup_pct"]),
-                )
-            )
-        if admitted["volume"] is not None:
-            for w, vw in admitted["volume"]["windows"].items():
-                reads.append(
-                    (f"volume[{w}]", vw["reason"], vw["ratio_reason"], (), (vw["last_to_mean"],))
-                )
-        for where, reason, ratio_reason, diffs, ratios in reads:
-            if reason is not None:  # refused whole: its nulls stand under the structural reason
-                continue
-            if any(v is None for v in diffs):
-                raise ValueError(
-                    f"{admitted['path']}: {where} carries a null diff on a block that did not "
-                    "refuse whole — a diff with no double to be refuses its block by reason"
-                )
-            if ratio_reason is None and any(v is None for v in ratios):
-                raise ValueError(
-                    f"{admitted['path']}: {where} carries a null ratio read with no "
-                    "ratio_reason — a refusal must be explicit, never omitted"
-                )
-    return profiles
-
-
 @with_config(ConfigDict(extra="forbid"))
 class DescribeDocument(TypedDict):
-    """The ``seikan describe`` stdout document — like ``check-data``, emitted at both exit tiers;
-    its ``profiles`` additionally pass :func:`_check_refusal_reasons`."""
+    """The ``seikan describe`` stdout document — like ``check-data``, emitted at both exit
+    tiers."""
 
     seikan_version: str
     report_schema_version: int
     command: Literal["describe"]
     data_report: DataReport
-    profiles: Annotated[list[FileProfile | RefusalStub], AfterValidator(_check_refusal_reasons)]
+    profiles: list[FileProfile | RefusalStub]
     describe_roles: dict[str, JsonValue]
 
 
+@with_config(ConfigDict(extra="forbid"))
+class SchemaDocument(TypedDict):
+    """The ``seikan schema`` stdout document: the static contract sections, in emitted order —
+    the DSL's JSON Schema, the threshold knobs, the checklist contract, the output field
+    dictionaries and the CSV contracts, the exit codes, and the compact role maps the run and
+    describe documents stamp."""
+
+    seikan_version: str
+    report_schema_version: int
+    command: Literal["schema"]
+    dsl_json_schema: dict[str, JsonValue]
+    thresholds: list[ThresholdDoc]
+    gate_contract: dict[str, JsonValue]
+    report_fields: dict[str, JsonValue]
+    describe_report: dict[str, JsonValue]
+    csv_format: dict[str, JsonValue]
+    trades_csv: dict[str, JsonValue]
+    root_series_csv: dict[str, JsonValue]
+    entry_flags_csv: dict[str, JsonValue]
+    exit_codes: dict[str, JsonValue]
+    metric_roles: dict[str, JsonValue]
+    describe_roles: dict[str, JsonValue]
+
+
+@with_config(ConfigDict(extra="forbid"))
+class ErrorDocument(TypedDict):
+    """Every failing command's stdout document: the header, the ``error`` envelope and — on the
+    exit-2 data class — the ``data_report`` that diagnoses it. ``command`` is None for a usage
+    error raised before a subcommand resolved (bare ``seikan``, an unknown subcommand)."""
+
+    seikan_version: str
+    report_schema_version: int
+    command: str | None
+    error: ErrorEnvelope
+    data_report: NotRequired[DataReport]
+
+
+#: Every document the CLI writes.
+type Document = (
+    RunReportDocument
+    | HashDocument
+    | CheckDataDocument
+    | DescribeDocument
+    | SchemaDocument
+    | ErrorDocument
+)
+
+
 # One adapter per document kind, built once at import — validation cost is a few milliseconds
-# against an O(grid × length) run. Keyed by the ``command`` header value ``cli._base_doc`` stamps.
+# against an O(grid × length) run. Keyed by the document's ``command``.
 _ADAPTERS: dict[str, TypeAdapter[object]] = {
     "run": TypeAdapter(RunReportDocument),
     "hash": TypeAdapter(HashDocument),
@@ -273,9 +215,9 @@ _ADAPTERS: dict[str, TypeAdapter[object]] = {
 @with_config(ConfigDict(extra="forbid"))
 class _SummaryRoot(TypedDict):
     """The engine summary's own contract root — the ``run`` document's ``summary`` section
-    wrapped so ``extra="forbid"`` propagates into every nested TypedDict, validated on its own at
-    the library seam (``api.compile_thesis``) where no document exists yet — under the same
-    CSCV-block check (:func:`_check_pbo`) as the document's own ``summary``."""
+    wrapped so ``extra="forbid"`` propagates into every nested TypedDict, validated on its own by
+    :func:`validate_summary` where no document exists — under the same CSCV-block check
+    (:func:`_check_pbo`) as the document's own ``summary``."""
 
     summary: Annotated[RunSummary, AfterValidator(_check_pbo)]
 
@@ -303,15 +245,6 @@ def validate_summary(summary: RunSummary) -> None:
         ) from exc
 
 
-#: The verbatim-embedded static blobs, checked by equality: (command, document key, the
-#: ``contract.py`` source constant). Normalized through ``json_safe`` so a tuple-vs-list spelling
-#: difference in the constant cannot read as drift.
-_VERBATIM_BLOBS: dict[str, tuple[str, dict[str, JsonValue]]] = {
-    "run": ("metric_roles", METRIC_ROLES),
-    "describe": ("describe_roles", DESCRIBE_ROLES),
-}
-
-
 def validate_emitted(command: str, safe_doc: object) -> None:
     """Refuse an emitted document that violates its declared contract; return nothing.
 
@@ -321,25 +254,10 @@ def validate_emitted(command: str, safe_doc: object) -> None:
     field by constructing a new float, and writing the validator's copy back would silently
     rewrite emitted bytes (``20`` → ``20.0``). The original document is what gets written.
     """
-    adapter = _ADAPTERS.get(command)
-    if adapter is None:
-        raise ReportContractError(
-            f"no emitted-document contract is declared for command {command!r} — "
-            "validate_emitted was called on a document kind it does not know"
-        )
     try:
-        adapter.validate_python(safe_doc, strict=True)
+        _ADAPTERS[command].validate_python(safe_doc, strict=True)
     except ValidationError as exc:
         raise ReportContractError(
             f"the {command!r} document violates the emitted contract declared in "
             f"seikan.types/seikan.emitted — this is a seikan bug, not an input problem: {exc}"
         ) from exc
-    blob = _VERBATIM_BLOBS.get(command)
-    if blob is not None:
-        key, source = blob
-        emitted = safe_doc.get(key) if isinstance(safe_doc, dict) else None
-        if emitted != json_safe(source):
-            raise ReportContractError(
-                f"the {command!r} document's {key!r} blob does not equal its contract.py "
-                "source — the verbatim-embedded constant drifted between assembly and emission"
-            )

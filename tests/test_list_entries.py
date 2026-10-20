@@ -1,5 +1,5 @@
-"""The entry-listing path: ``list_entries`` (+ its two per-bar frames and their CSV writers,
-``write_root_series_csv`` / ``write_entry_flags_csv``). It shares the validation DSL + compiler but
+"""The entry-listing path: ``list_entries`` (+ its two per-bar frames and their CSV writer,
+``write_indexed_csv``). It shares the validation DSL + compiler but
 evaluates only the entry firing mask, reporting every firing bar's timestamp in ascending order and
 assembling the per-bar evidence — no forward returns, no statistics, no claim that the provided
 series is current. Also covers ``render_series``, the deterministic expression labels the value
@@ -46,7 +46,7 @@ from seikan.dsl.schema import (
     ZScore,
     render_series,
 )
-from seikan.serialize import write_entry_flags_csv, write_root_series_csv
+from seikan.serialize import write_indexed_csv
 from tests._helpers import bars as _bars
 from tests._helpers import lt as _lt
 
@@ -577,12 +577,9 @@ def test_listing_csvs_reread_when_names_differ_only_in_case(tmp_path):
     ]
     assert (report.root_series["iv@A#3"] == 2.0).all()  # the suffix keeps each series its own
     assert list(report.entry_flags.columns) == ["entry@A", "entry@a#2"]
-    for frame, write in (
-        (report.root_series, write_root_series_csv),
-        (report.entry_flags, write_entry_flags_csv),
-    ):
+    for frame in (report.root_series, report.entry_flags):
         out = tmp_path / "listing.csv"
-        write(frame, str(out))
+        write_indexed_csv(frame, str(out))
         back, rep = dataio.read_strict_csv(str(out))
         assert rep.ok, rep
         # the reader hands headers back lower-cased: still one per column, in order
@@ -600,11 +597,11 @@ def test_write_root_series_csv_roundtrip_strict(tmp_path):
     }
     report = _list(path, entry)
     out = tmp_path / "root_series.csv"
-    rows = write_root_series_csv(report.root_series, str(out))
+    rows = write_indexed_csv(report.root_series, str(out))
     assert rows == len(report.root_series) == len(closes)
     frame, rep = dataio.read_strict_csv(str(out))
     assert rep.ok and rep.shape == "series"
-    # Value columns only — the entry flag rides its OWN CSV (write_entry_flags_csv), never this one.
+    # Value columns only — the entry flag rides its OWN CSV (--entry-flags-out), never this one.
     assert list(frame.columns) == ["percentile(close,14)"]  # comma-bearing header survives
     values = report.root_series["percentile(close,14)"]
     assert frame["percentile(close,14)"].isna().tolist() == values.isna().tolist()
@@ -613,7 +610,7 @@ def test_write_root_series_csv_roundtrip_strict(tmp_path):
     )
     # always overwrites: a second write leaves one identical file, not an appended one
     first = out.read_bytes()
-    write_root_series_csv(report.root_series, str(out))
+    write_indexed_csv(report.root_series, str(out))
     assert out.read_bytes() == first
 
 
@@ -631,7 +628,7 @@ def test_write_root_series_csv_constant_only_thesis_writes_datetime_only(tmp_pat
     }
     report = _list(path, entry)
     out = tmp_path / "empty_root_series.csv"
-    assert write_root_series_csv(report.root_series, str(out)) == 3
+    assert write_indexed_csv(report.root_series, str(out)) == 3
     lines = out.read_text(encoding="utf-8").splitlines()
     assert lines[0] == "datetime"
     assert len(lines) == 4  # header + one row per bar, no value columns
@@ -640,7 +637,7 @@ def test_write_root_series_csv_constant_only_thesis_writes_datetime_only(tmp_pat
 def test_write_entry_flags_csv_roundtrip_strict(tmp_path):
     """The DECISION-side twin of the root-series roundtrip — and a STRICTLY STRONGER promise.
 
-    ``write_root_series_csv`` only re-reads 'in the ordinary case': an all-NaN value column (a
+    ``write_indexed_csv`` only re-reads 'in the ordinary case': an all-NaN value column (a
     window longer than the data) or a constant-only thesis (a datetime-only file) leaves bytes the
     strict reader refuses, which is why the two tests above have to carve the degenerate shape out.
     Neither shape can arise here. The flag frame is int 0/1 on EVERY bar — warmup and undecidable
@@ -667,7 +664,7 @@ def test_write_entry_flags_csv_roundtrip_strict(tmp_path):
     assert all(pd.api.types.is_integer_dtype(flags[c]) for c in flags.columns)
 
     out = tmp_path / "entry_flags.csv"
-    rows = write_entry_flags_csv(flags, str(out))
+    rows = write_indexed_csv(flags, str(out))
     assert rows == len(flags) == len(closes)
 
     frame, rep = dataio.read_strict_csv(str(out))
@@ -685,11 +682,11 @@ def test_write_entry_flags_csv_roundtrip_strict(tmp_path):
 
     # always overwrites: a second write leaves one identical file, not an appended one ...
     first = out.read_bytes()
-    assert write_entry_flags_csv(flags, str(out)) == rows
+    assert write_indexed_csv(flags, str(out)) == rows
     assert out.read_bytes() == first
     # ... and a pre-existing file is REPLACED whole — never merged into, never grown
     out.write_text("stale,junk\n" * 500, encoding="utf-8")
-    assert write_entry_flags_csv(flags, str(out)) == rows
+    assert write_indexed_csv(flags, str(out)) == rows
     assert out.read_bytes() == first
 
 

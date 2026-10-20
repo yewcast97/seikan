@@ -67,7 +67,6 @@ from seikan.types.describe import (
 )
 from seikan.types.documents import (
     DataDigest,
-    EmittedDocument,
     ErrorEnvelope,
     OutputEntry,
     ReportIdentity,
@@ -185,7 +184,6 @@ __all__ = [
     "DescribeResult",
     "Direction",
     "DslDocument",
-    "EmittedDocument",
     "EntryRow",
     "EpisodeBootstrapCI",
     "EpisodeLedgerBlock",

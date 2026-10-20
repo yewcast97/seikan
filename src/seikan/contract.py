@@ -8,7 +8,7 @@ imports nothing from the package, and only ``cli.py`` imports it.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 if TYPE_CHECKING:  # annotations only — nothing here is imported at runtime, leaf module intact
     from seikan.types import JsonValue
@@ -1734,26 +1734,33 @@ GATE_CONTRACT_DOC: dict[str, JsonValue] = {
     "metric_roles_rationale": METRIC_ROLES_DOC,
 }
 
-#: What each exit code MEANS. They describe how far the RUN got — never how the evidence looked:
-#: a completed run is exit 0 whatever its cells report, and 2/3/4 mean the run could not produce a
-#: report at all.
+#: The codes describe how far the RUN got, never how the evidence looked: a completed run is exit
+#: 0 whatever its cells report, and 2/3/4 mean the run could not produce a report at all.
+#: ``EXIT_REQUEST`` (3) is "invalid request": an argparse usage error, an invalid thesis DSL or
+#: gate-threshold set, or an unusable nominated output path.
+EXIT_OK: Final = 0
+EXIT_DATA: Final = 2
+EXIT_REQUEST: Final = 3
+EXIT_INTERNAL: Final = 4
+
+#: What each exit code MEANS, keyed by the code.
 EXIT_CODES: dict[str, JsonValue] = {
-    "0": (
+    str(EXIT_OK): (
         "the command completed. For `run`: every nominated output was written and stdout stayed "
         "empty (the report, when one was nominated, is complete; per-cell results are inside "
         "gate.cells; the exit code is NOT a verdict and says nothing about any cell). The silence "
         "belongs to `run`, whose outputs are files — `hash`, `check-data`, `describe` and "
         "`schema` emit their own document on stdout at this same code"
     ),
-    "2": "input data failed strict validation (see data_report)",
-    "3": (
+    str(EXIT_DATA): "input data failed strict validation (see data_report)",
+    str(EXIT_REQUEST): (
         "invalid request — an argparse usage error (including a run that nominates no output), an "
         "unreadable or invalid thesis (a path naming no readable file, bytes that are not strict "
         "UTF-8 JSON, an invalid DSL) or gate-threshold set, or an unusable nominated output path: "
         "one that is empty, unwritable, named by two flags at once, or names one of the thesis's "
         "own input CSVs (usage / dsl_invalid / thresholds_invalid envelope)"
     ),
-    "4": "internal error",
+    str(EXIT_INTERNAL): "internal error",
 }
 
 #: The ``--trades-out`` CSV contract, column by column (nothing on stdout on success — the file

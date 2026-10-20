@@ -17,10 +17,10 @@ from seikan.types.run import (
 # bytes contain and refuses explicitly rather than repairing: ``reason`` names the refusal of the
 # WHOLE block (``insufficient_bars`` / ``endpoint_missing`` / ``not_representable``) and
 # ``ratio_reason`` the refusal of the RATIO algebras alone (``non_positive_endpoint`` /
-# ``not_representable``), both present-never-omitted — on a block that did not refuse whole the
-# emission seam refuses a null ``diff`` read, and a null ratio read whose ``ratio_reason`` does not
-# say why (``emitted._check_refusal_reasons``); the block's other reads (an extremum,
-# ``percentile_rank``, a volume ``mean``) are finite by construction, never checked there.
+# ``not_representable``), both present-never-omitted — on a block that did not refuse whole no
+# ``diff`` read is null, and a null ratio read's ``ratio_reason`` says why (the describe tests
+# hold every document to it); the block's other reads (an extremum, ``percentile_rank``, a volume
+# ``mean``) are finite by construction.
 
 #: Why a block refused WHOLE: too few bars for the window, a hole where an endpoint or an
 #: extremum must be read, or a ``diff`` read — the algebra that rides every block that did not

@@ -23,7 +23,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from seikan.api import DataFiles, MarketData, load_market_data, resolve_data_files
+from seikan.compiler.data import DataFiles, MarketData, load_market_data, resolve_data_files
 from seikan.dsl.schema import Thesis
 from seikan.gate import CellReport, GateReport
 

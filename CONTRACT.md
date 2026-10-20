@@ -1238,14 +1238,14 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   are taken about, and `MIN_NORMAL`, the smallest normal double — the one edge of
   the normal range the kernels' variance tests, the pool statistics and `describe`'s std read.
 - `types/` — the emitted-shape declarations (TypedDicts), one module per report section behind
-  the package facade; `emitted.py` validates every success document against them at emission,
-  so the bytes written are the bytes that type-checked, and also checks the cross-field
-  invariants no TypedDict can state (the `summary.pbo` verdict pairing and ledgers; `describe`'s
-  explicit refusals — no null `diff` on a block that did not refuse, a reason beside every null
-  ratio read).
+  the package facade; `emitted.py` holds one root per document and validates every success
+  document against its root at emission, so the bytes written are the bytes that type-checked,
+  and also checks the cross-field invariants of the `summary.pbo` block (the verdict pairing and
+  ledgers), which no TypedDict can state.
 - `gate/` — a package behind one facade (`from seikan.gate import …` — the policy doctrine
-  rides its `__init__` docstring): `_hash` holds `canonical_dsl_hash` (re-exported by `api.py`,
-  the supported import site; the `seikan hash` subcommand is the same identity without Python),
+  rides its `__init__` docstring): `_hash` holds `canonical_dsl_hash` (re-exported by the
+  package root, the supported import site; the `seikan hash` subcommand is the same identity
+  without Python),
   `_model` the policy version + result dataclasses, `_read` the strict readers over drifted
   input, `_checks_run`/`_checks_cell` the checks, `_evaluate` `evaluate_gate`: the per-cell
   checklist (3 run-level + 5
@@ -1280,11 +1280,10 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   machine-readable `FileReport`s — each carrying the file's raw-byte `sha256`, the report's data
   identity), `check_frame` integrity invariants, `sufficiency_check` (an index too short to close
   one observation refuses up front), `DataError` → exit 2.
-- `api.py` — the caller binds the thesis's declared keys to the files it has
-  (`resolve_data_files(thesis, {key: path}, {key: column})` → a `DataFiles`), loads ONCE via
-  `load_market_data(thesis.data, files)` (both re-exported here — this module is the public API's
-  one home and the loader its front door; `canonical_dsl_hash` is re-exported here too, so a host
-  computing a thesis's identity imports it from the public home, never from `gate`) and hands the
+- `api.py` — the two compute entry points. The caller (importing from the package root,
+  `seikan`, the public surface — the loader and `canonical_dsl_hash` included) binds the thesis's
+  declared keys to the files it has (`resolve_data_files(thesis, {key: path}, {key: column})` →
+  a `DataFiles`), loads ONCE via `load_market_data(thesis.data, files)` and hands the
   materialized `MarketData` — a load of the thesis's own data declaration: the loader refuses
   (`ValueError`, before a file is read) bindings that do not answer the declaration it loads —
   every declared target and feed bound, one path per target for a per-target feed, nothing else
@@ -1310,9 +1309,8 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   index stops).
 - `serialize.py` — JSON-safe views (`serialize_result` returns the summary verbatim, never trades)
   + the caller-nominated CSV writers (`write_trades_csv` for `--trades-out`,
-  `write_root_series_csv` for `--root-series-out`, `write_entry_flags_csv` for
-  `--entry-flags-out`) + `staged_outputs`, the stage-then-publish every `run` output goes
-  through; nothing it produces rides stdout.
+  `write_indexed_csv` for `--root-series-out` and `--entry-flags-out`) + `staged_outputs`, the
+  stage-then-publish every `run` output goes through; nothing it produces rides stdout.
 - `dsl/` — the thesis DSL (pydantic, `extra="forbid"`, strict, frozen; a `DataSpec` NAMES
   series and locates none of them, and `BacktestParams` carries no sampling knob of any kind, so
   the DSL can express neither where its data lives nor a partition of it that some cells see and

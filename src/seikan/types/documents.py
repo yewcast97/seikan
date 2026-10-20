@@ -4,16 +4,6 @@ from __future__ import annotations
 
 from typing import Literal, NotRequired, TypedDict
 
-from seikan.types.data_report import (
-    DataReport,
-)
-from seikan.types.describe import (
-    FileProfile,
-    RefusalStub,
-)
-from seikan.types.gate_section import (
-    GateSection,
-)
 from seikan.types.run import (
     RunSummary,
 )
@@ -120,7 +110,7 @@ class ValidationRecord(TypedDict):
 
 class ErrorEnvelope(TypedDict):
     """The machine-readable error a failing command emits on stdout — the ``error`` section of
-    :class:`EmittedDocument`.
+    ``emitted.ErrorDocument``.
 
     ``type`` names the class the exit code reflects (``usage`` / ``dsl_invalid`` /
     ``thresholds_invalid`` / ``data_invalid`` / ``internal``); ``errors`` rides only the two
@@ -130,51 +120,3 @@ class ErrorEnvelope(TypedDict):
     type: Literal["usage", "data_invalid", "dsl_invalid", "thresholds_invalid", "internal"]
     message: str
     errors: NotRequired[list[ValidationRecord]]
-
-
-class EmittedDocument(TypedDict):
-    """Every JSON document the CLI emits — one shape, a fixed header, and the sections the
-    invoked command adds to it.
-
-    The header is universal: ``seikan_version``/``report_schema_version``/``command`` open the run
-    report, the ``check-data`` and ``describe`` documents, the ``schema`` dump and every error
-    envelope alike (``command`` is None for a usage error raised before a subcommand resolved).
-    Every other key is ``NotRequired`` because it belongs to ONE command's document, not because
-    a command may omit its own sections:
-
-    - ``run`` (``--report-out``) writes ``identity`` → ``data_report`` → ``outputs`` →
-      ``summary`` → ``gate`` → ``metric_roles``, in that fixed order;
-    - ``hash`` writes ``name`` → ``dsl_hash`` → ``data_keys`` (the canonical identity plus the
-      exact key set a ``run``'s ``--data`` must answer);
-    - ``check-data`` writes ``data_report``;
-    - ``describe`` writes ``data_report`` → ``profiles`` → ``describe_roles``;
-    - ``schema`` writes the static contract payloads (``dsl_json_schema`` through
-      ``describe_roles``);
-    - any failure writes ``error`` (and ``data_report`` too, on the exit-2 class).
-    """
-
-    seikan_version: str
-    report_schema_version: int
-    command: str | None
-    identity: NotRequired[ReportIdentity]
-    name: NotRequired[str]
-    dsl_hash: NotRequired[str]
-    data_keys: NotRequired[list[str]]
-    data_report: NotRequired[DataReport]
-    outputs: NotRequired[dict[str, OutputEntry]]
-    summary: NotRequired[RunSummary]
-    gate: NotRequired[GateSection]
-    profiles: NotRequired[list[FileProfile | RefusalStub]]
-    dsl_json_schema: NotRequired[dict[str, JsonValue]]
-    thresholds: NotRequired[list[ThresholdDoc]]
-    gate_contract: NotRequired[dict[str, JsonValue]]
-    report_fields: NotRequired[dict[str, JsonValue]]
-    describe_report: NotRequired[dict[str, JsonValue]]
-    csv_format: NotRequired[dict[str, JsonValue]]
-    trades_csv: NotRequired[dict[str, JsonValue]]
-    root_series_csv: NotRequired[dict[str, JsonValue]]
-    entry_flags_csv: NotRequired[dict[str, JsonValue]]
-    exit_codes: NotRequired[dict[str, JsonValue]]
-    metric_roles: NotRequired[dict[str, JsonValue]]
-    describe_roles: NotRequired[dict[str, JsonValue]]
-    error: NotRequired[ErrorEnvelope]

@@ -86,26 +86,24 @@ import traceback
 from collections.abc import Callable
 from importlib.resources import files
 from pathlib import Path
-from typing import Final, NamedTuple, NoReturn, cast
+from typing import NamedTuple, NoReturn, TypedDict, cast
 
 from pydantic import ValidationError
 
 import seikan
 from seikan.analysis.result import EventStudyResult
-from seikan.api import (
-    DataFiles,
-    MarketData,
-    compile_thesis,
-    list_entries,
-    load_market_data,
-    resolve_data_files,
-)
+from seikan.api import compile_thesis, list_entries
+from seikan.compiler.data import DataFiles, MarketData, load_market_data, resolve_data_files
 from seikan.contract import (
     CSV_FORMAT,
     DESCRIBE_REPORT,
     DESCRIBE_ROLES,
     ENTRY_FLAGS_CSV,
     EXIT_CODES,
+    EXIT_DATA,
+    EXIT_INTERNAL,
+    EXIT_OK,
+    EXIT_REQUEST,
     GATE_CONTRACT_DOC,
     METRIC_ROLES,
     REPORT_FIELDS,
@@ -115,35 +113,33 @@ from seikan.contract import (
 from seikan.dataio import DataError, build_data_report, header_key, read_strict_csv
 from seikan.describe import DEFAULT_WINDOWS, describe_files
 from seikan.dsl.schema import Thesis
-from seikan.emitted import validate_emitted
+from seikan.emitted import (
+    CheckDataDocument,
+    DescribeDocument,
+    Document,
+    ErrorDocument,
+    HashDocument,
+    RunReportDocument,
+    SchemaDocument,
+    validate_emitted,
+)
 from seikan.gate import canonical_dsl_hash, evaluate_gate
 from seikan.serialize import (
     json_safe,
-    serialize_result,
     staged_outputs,
-    write_entry_flags_csv,
-    write_root_series_csv,
+    write_indexed_csv,
     write_trades_csv,
 )
 from seikan.settings import ENV_PREFIX, GateThresholds, env_var, env_var_is_set
 from seikan.types import (
     DataReport,
     DslDocument,
-    EmittedDocument,
     ErrorEnvelope,
     OutputEntry,
+    ReportIdentity,
     ThresholdProvenance,
     ValidationRecord,
 )
-
-#: The codes describe how far the RUN got, never how the evidence looked: a completed run is exit
-#: 0 whatever its cells report, and 2/3/4 mean the run could not produce a report at all.
-#: ``EXIT_REQUEST`` (3) is "invalid request": an argparse usage error, an invalid thesis DSL or
-#: gate-threshold set, or an unusable nominated output path.
-EXIT_OK: Final = 0
-EXIT_DATA: Final = 2
-EXIT_REQUEST: Final = 3
-EXIT_INTERNAL: Final = 4
 
 #: The report-envelope shape version, orthogonal to ``statistics_version`` (estimators) and
 #: ``gate.policy_version`` (checklist semantics). It stamps the SHAPE every emitted document
@@ -187,7 +183,7 @@ _THRESHOLD_FLAGS: dict[str, _ThresholdFlag] = {
 }
 
 
-def _dumps(doc: EmittedDocument, pretty: bool = False, validate_as: str | None = None) -> str:
+def _dumps(doc: Document, pretty: bool = False, validate_as: str | None = None) -> str:
     # The ONE serializer for every JSON document seikan produces — the report FILE and the stdout
     # error envelopes alike. allow_nan=False is a hard backstop: json_safe already maps every
     # non-finite float to null, so this never fires in practice — but if it ever regressed, raising
@@ -218,21 +214,21 @@ def _dumps(doc: EmittedDocument, pretty: bool = False, validate_as: str | None =
     )
 
 
-def _emit(doc: EmittedDocument, pretty: bool = False, validate_as: str | None = None) -> None:
+def _emit(doc: Document, pretty: bool = False, validate_as: str | None = None) -> None:
     sys.stdout.write(_dumps(doc, pretty, validate_as))
 
 
-def _base_doc(command: str | None) -> EmittedDocument:
-    # The uniform header every JSON document opens with, stamped with the CURRENT
-    # ``REPORT_SCHEMA_VERSION`` (see its definition above): the
-    # run report, check-data, describe, schema and every error envelope alike, so a caller reads
-    # the version and command the same way whatever the outcome. ``command`` is None for a usage
-    # error raised before a subcommand was resolved (bare ``seikan``, an unknown subcommand).
-    return {
-        "seikan_version": seikan.__version__,
-        "report_schema_version": REPORT_SCHEMA_VERSION,
-        "command": command,
-    }
+class _Header(TypedDict):
+    seikan_version: str
+    report_schema_version: int
+
+
+def _header() -> _Header:
+    # What every JSON document opens with, before its ``command``: the run report, check-data,
+    # describe, schema and every error envelope alike, stamped with the CURRENT
+    # ``REPORT_SCHEMA_VERSION`` (see its definition above), so a caller reads the version the
+    # same way whatever the outcome.
+    return {"seikan_version": seikan.__version__, "report_schema_version": REPORT_SCHEMA_VERSION}
 
 
 class _UsageError(Exception):
@@ -283,7 +279,7 @@ def _thresholds_invalid(exc: ValidationError) -> _ThresholdsInvalidError:
 def _thresholds(args: argparse.Namespace) -> GateThresholds:
     overrides = {}
     for flag, spec in _THRESHOLD_FLAGS.items():
-        value = getattr(args, flag, None)
+        value = getattr(args, flag)
         if value is not None:
             overrides[spec.field] = value
     try:
@@ -300,7 +296,7 @@ def _thresholds_provenance(args: argparse.Namespace) -> dict[str, ThresholdProve
     function of the ambient ``SEIKAN_*`` environment too."""
     prov: dict[str, ThresholdProvenance] = {}
     for flag, spec in _THRESHOLD_FLAGS.items():
-        if getattr(args, flag, None) is not None:
+        if getattr(args, flag) is not None:
             prov[spec.field] = "cli"
         elif env_var_is_set(spec.field):
             prov[spec.field] = "env"
@@ -413,84 +409,53 @@ def _declared_input_paths(thesis_path: str, resolution: dict[str, str]) -> dict[
     accident — ``--report-out`` one character away from the thesis argument on the same command
     line.
     """
-    found: dict[Path, str] = {}
-
-    def note(raw: str | None, field: str) -> None:
+    found: dict[Path, str] = {Path(thesis_path).resolve(): "the thesis file"}
+    for key, path in resolution.items():
         # setdefault: one file may answer two keys (a target that is also the benchmark); the
         # FIRST key is the one a refusal message quotes, and either is equally true.
-        if raw:
-            found.setdefault(Path(raw).resolve(), field)
-
-    note(thesis_path, "the thesis file")
-    for key, path in resolution.items():
-        note(path, f"--data {key}")
+        found.setdefault(Path(path).resolve(), f"--data {key}")
     return found
-
-
-def _check_nominated_outputs(
-    nominated: list[tuple[str, str]], thesis_path: str, resolution: dict[str, str]
-) -> None:
-    """Refuse a set of output nominations that cannot ALL be honored — before any compute.
-
-    Three ways a nomination is unusable:
-
-    - an EMPTY path. argparse did receive the flag, so treating it as "not nominated" would exit 0
-      having silently skipped an output the caller asked for — the one thing exit 0 promises it
-      never does.
-    - TWO flags naming one file. The writes are sequential overwrites, so the later output
-      destroys the earlier one and the report would still enumerate both, ``rows_written`` and
-      all — a document vouching for content that is not on disk.
-    - an output naming one of the run's own INPUTS: the thesis file, or any CSV the invocation
-      pointed a data key at. The run would delete the evidence it is measuring and stamp an
-      identity for it. This
-      engine refuses rather than mutates everywhere else — the loader will not even clamp an OHLC
-      violation — so it does not get to be the one writer that overwrites its own input.
-
-    All three are ``usage`` refusals, up front, for the same reason the no-output case is: nothing
-    about the data can make such a request answerable.
-    """
-    seen: dict[Path, str] = {}
-    inputs = _declared_input_paths(thesis_path, resolution)
-    for flag, raw in nominated:
-        if not raw.strip():
-            raise _UsageError(f"{flag} needs a file path, got an empty string", "run")
-        resolved = Path(raw).resolve()
-        if resolved in seen:
-            raise _UsageError(
-                f"{flag} and {seen[resolved]} both name {raw!r} — each output needs its own path, "
-                "or the later write silently destroys the earlier one",
-                "run",
-            )
-        seen[resolved] = flag
-        if resolved in inputs:
-            raise _UsageError(
-                f"{flag} would overwrite {inputs[resolved]} ({raw!r}) — a run never writes over "
-                "its own input",
-                "run",
-            )
 
 
 def _preflight_outputs(
     nominated: list[tuple[str, str]], thesis_path: str, resolution: dict[str, str]
 ) -> None:
-    """Refuse an unwritable nominated output path BEFORE the expensive run (exit 3, an
-    invalid-request usage refusal), and a nomination the FILESYSTEM resolves to the same file as
-    another nomination or as one of the run's inputs.
+    """Refuse a set of output nominations that cannot ALL be honored — before any compute, each
+    an exit-3 ``usage`` refusal, since nothing about the data can make such a request
+    answerable:
 
-    :func:`_check_nominated_outputs` decides every collision a path's spelling shows (one path
-    named twice, ``..`` and symlinks resolved); what only the filesystem knows it is asked here.
-    A case-insensitive volume — the default on macOS and Windows — opens ``OUT.json`` as
-    ``out.json``, and an input named ``prices.csv`` as ``PRICES.csv``; a hard link, or a name the
-    volume normalizes (Unicode forms), is the same file under another spelling. So every
-    nomination is opened for APPEND in flag order (an existing file is left untouched), and two
-    paths are one file when the filesystem reports one (device, inode) for both
-    (``os.path.samestat``) — no spelling heuristic, the volume's own answer.
+    - an EMPTY path. argparse did receive the flag, so treating it as "not nominated" would exit
+      0 having silently skipped an output the caller asked for — the one thing exit 0 promises it
+      never does.
+    - an unwritable path (a missing directory, no permission, a directory itself).
+    - TWO flags naming one file. The writes are sequential overwrites, so the later output
+      destroys the earlier one and the report would still enumerate both, ``rows_written`` and
+      all — a document vouching for content that is not on disk.
+    - an output naming one of the run's own INPUTS: the thesis file, or any CSV the invocation
+      pointed a data key at. The run would delete the evidence it is measuring and stamp an
+      identity for it, and this engine refuses rather than mutates everywhere else.
+
+    "One file" is the FILESYSTEM's answer, never a spelling's: a case-insensitive volume — the
+    default on macOS and Windows — opens ``OUT.json`` as ``out.json``, and a hard link, a
+    symlink or a name the volume normalizes (Unicode forms) is the same file under another
+    spelling. So every nomination is opened for APPEND in flag order (an existing file is left
+    untouched), and two paths are one file when the filesystem reports one (device, inode) for
+    both (``os.path.samestat``).
 
     Non-destructive: every file the probe had to create is removed again, on every exit — for a
     dangling symlink that is the file created at its target, the link itself left in place. A
     MID-run write failure still surfaces as exit 4, every nominated file as it was
     (``serialize.staged_outputs``) — this only preflights the obvious cases (missing directory,
     unwritable path, a path that is itself a directory)."""
+    for flag, raw in nominated:
+        if not raw.strip():
+            raise _UsageError(f"{flag} needs a file path, got an empty string", "run")
+    inputs: list[tuple[Path, str, os.stat_result]] = []
+    for path, field in _declared_input_paths(thesis_path, resolution).items():
+        try:
+            inputs.append((path, field, path.stat()))
+        except OSError:
+            continue  # a missing input is the loader's refusal, not an output collision
     created: list[Path] = []
     try:
         probed: list[tuple[str, str, os.stat_result]] = []
@@ -507,25 +472,30 @@ def _preflight_outputs(
                 created.append(p.resolve())  # a dangling link's TARGET, never the link itself
             for other_flag, other_raw, other_st in probed:
                 if os.path.samestat(st, other_st):
+                    named = (
+                        f"both name {raw!r}"
+                        if p.resolve() == Path(other_raw).resolve()
+                        else f"name one file ({raw!r} and {other_raw!r}: the filesystem resolves "
+                        "both spellings to the same file)"
+                    )
                     raise _UsageError(
-                        f"{flag} and {other_flag} name one file ({raw!r} and {other_raw!r}: the "
-                        "filesystem resolves both spellings to the same file) — each output "
-                        "needs its own path, or the later write silently destroys the earlier one",
+                        f"{flag} and {other_flag} {named} — each output needs its own path, or "
+                        "the later write silently destroys the earlier one",
+                        "run",
+                    )
+            for path, field, ist in inputs:
+                if os.path.samestat(st, ist):
+                    named = (
+                        repr(raw)
+                        if p.resolve() == path
+                        else f"{raw!r}: the filesystem resolves both spellings to the same file"
+                    )
+                    raise _UsageError(
+                        f"{flag} would overwrite {field} ({named}) — a run never writes over its "
+                        "own input",
                         "run",
                     )
             probed.append((flag, raw, st))
-        for path, field in _declared_input_paths(thesis_path, resolution).items():
-            try:
-                ist = path.stat()
-            except OSError:
-                continue  # a missing input is the loader's refusal, not an output collision
-            for flag, raw, st in probed:
-                if os.path.samestat(st, ist):
-                    raise _UsageError(
-                        f"{flag} would overwrite {field} ({raw!r}: the filesystem resolves both "
-                        "spellings to the same file) — a run never writes over its own input",
-                        "run",
-                    )
     finally:
         for p in created:
             p.unlink(missing_ok=True)
@@ -623,7 +593,7 @@ def _nominated_outputs(args: argparse.Namespace) -> list[tuple[str, str]]:
     and the zero-output request refused before the thesis file is even read."""
     # Nomination is tested on PRESENCE, not truthiness: argparse hands back None for a flag that
     # was never passed and "" for one passed empty, and those are different requests — the second
-    # asked for an output and named it unusably (refused in _check_nominated_outputs below), while
+    # asked for an output and named it unusably (refused in _preflight_outputs), while
     # collapsing them would let `--report-out ""` exit 0 having written no report at all.
     nominated = [
         (flag, path)
@@ -677,7 +647,6 @@ def _validate_request(
     # The set is checked as a SET first by spelling (empty, colliding, or aiming at the run's own
     # input), then on the filesystem: each path for writability, and every pair the volume
     # resolves to one file whatever their spellings.
-    _check_nominated_outputs(nominated, args.thesis, mapping)
     _preflight_outputs(nominated, args.thesis, mapping)
 
     return files, thresholds
@@ -722,16 +691,12 @@ def _write_lazy_outputs(
         if args.root_series_out is not None:
             outputs["root_series"] = {
                 "path": args.root_series_out,
-                "rows_written": write_root_series_csv(
-                    listing.root_series, stage(args.root_series_out)
-                ),
+                "rows_written": write_indexed_csv(listing.root_series, stage(args.root_series_out)),
             }
         if args.entry_flags_out is not None:
             outputs["entry_flags"] = {
                 "path": args.entry_flags_out,
-                "rows_written": write_entry_flags_csv(
-                    listing.entry_flags, stage(args.entry_flags_out)
-                ),
+                "rows_written": write_indexed_csv(listing.entry_flags, stage(args.entry_flags_out)),
             }
 
     return result, outputs
@@ -754,9 +719,6 @@ def _report_text(
     # its identity should be.
     if result is None or result.data_report is None:
         raise RuntimeError("--report-out nominated but the event study did not run")
-    dsl_hash = canonical_dsl_hash(raw)
-    payload = serialize_result(result)
-    doc = _base_doc("run")
     # The identity layer: everything needed to know WHICH exam ran on WHICH inputs — a changed
     # rule set (dsl_hash), data byte (data_digests), exam knob (thresholds) or knob PROVENANCE
     # is a visibly distinct exam. thresholds_canonical lives here (an identity fact), not in the
@@ -773,10 +735,10 @@ def _report_text(
     # file correctly share one digest while keeping their own column — the loader reads each
     # distinct path once (`dataio.StrictCsvReader`), so every key bound to it measured the
     # bytes that digest names.
-    digest_by_path = {f["path"]: f["sha256"] for f in result.data_report.get("files", [])}
-    doc["identity"] = {
-        "name": payload["name"],
-        "dsl_hash": dsl_hash,
+    digest_by_path = {f["path"]: f["sha256"] for f in result.data_report["files"]}
+    identity: ReportIdentity = {
+        "name": result.thesis.name,
+        "dsl_hash": canonical_dsl_hash(raw),
         "data_digests": {
             key: {
                 "path": path,
@@ -794,16 +756,21 @@ def _report_text(
         # the top-level header of every document.
         "environment": _environment(),
     }
-    doc["data_report"] = result.data_report
-    doc["outputs"] = outputs
-    # HONESTY INVARIANT: the engine summary is embedded VERBATIM before the checklist runs — the
-    # checklist renders a per-cell result ABOUT it and can never filter a parameter × horizon
-    # cell out of it, non-firing and failing cells included. It cannot change the exit code
-    # either: `_cmd_run` returns EXIT_OK unconditionally, so the only thing a checklist result
-    # moves is the content of `gate`. Reporting and grading stay strictly separable.
-    doc["summary"] = payload["summary"]
-    doc["gate"] = evaluate_gate(result.summary, thresholds).to_dict()
-    doc["metric_roles"] = METRIC_ROLES
+    doc: RunReportDocument = {
+        **_header(),
+        "command": "run",
+        "identity": identity,
+        "data_report": result.data_report,
+        "outputs": outputs,
+        # HONESTY INVARIANT: the engine summary is embedded VERBATIM before the checklist runs —
+        # the checklist renders a per-cell result ABOUT it and can never filter a parameter ×
+        # horizon cell out of it, non-firing and failing cells included. It cannot change the
+        # exit code either: `_cmd_run` returns EXIT_OK unconditionally, so the only thing a
+        # checklist result moves is the content of `gate`. Reporting and grading stay separable.
+        "summary": result.summary,
+        "gate": evaluate_gate(result.summary, thresholds).to_dict(),
+        "metric_roles": METRIC_ROLES,
+    }
     return _dumps(doc, args.pretty, validate_as="run")
 
 
@@ -860,22 +827,21 @@ def _cmd_hash(args: argparse.Namespace) -> int:
         raw, thesis = _parse_thesis(sys.stdin.buffer.read())
     else:
         raw, thesis = _load_thesis(args.thesis)
-    doc = _base_doc("hash")
-    doc["name"] = thesis.name
-    doc["dsl_hash"] = canonical_dsl_hash(raw)
-    doc["data_keys"] = thesis.data_keys()
+    doc: HashDocument = {
+        **_header(),
+        "command": "hash",
+        "name": thesis.name,
+        "dsl_hash": canonical_dsl_hash(raw),
+        "data_keys": thesis.data_keys(),
+    }
     _emit(doc, args.pretty, validate_as="hash")
     return EXIT_OK
 
 
 def _cmd_check_data(args: argparse.Namespace) -> int:
-    doc = _base_doc("check-data")
-    reports = []
-    for path in args.files:
-        _df, rep = read_strict_csv(path, expected_shape=args.shape)
-        reports.append(rep)
+    reports = [read_strict_csv(path, expected_shape=args.shape)[1] for path in args.files]
     data_report = build_data_report(reports)
-    doc["data_report"] = data_report
+    doc: CheckDataDocument = {**_header(), "command": "check-data", "data_report": data_report}
     # Validated at BOTH exit tiers: the exit-2 emission is still this command's own document.
     _emit(doc, args.pretty, validate_as="check-data")
     return EXIT_OK if data_report["ok"] else EXIT_DATA
@@ -923,13 +889,16 @@ def _cmd_describe(args: argparse.Namespace) -> int:
     # the same meaning — 0 all admitted, 2 any refused, document emitted EITHER WAY. Files are
     # profiled in argument order, never sorted: the argv is the caller's declaration.
     body = describe_files(args.files, shape=args.shape, windows=args.windows)
-    doc = _base_doc("describe")
-    doc["data_report"] = body["data_report"]
-    doc["profiles"] = body["profiles"]
-    # The compact role map rides WITH the document — the honest one-liners travel with the
-    # numbers they qualify, exactly as metric_roles rides the run report. The field dictionary
-    # (DESCRIBE_REPORT) stays schema-side, like REPORT_FIELDS.
-    doc["describe_roles"] = DESCRIBE_ROLES
+    doc: DescribeDocument = {
+        **_header(),
+        "command": "describe",
+        "data_report": body["data_report"],
+        "profiles": body["profiles"],
+        # The compact role map rides WITH the document — the honest one-liners travel with the
+        # numbers they qualify, exactly as metric_roles rides the run report. The field
+        # dictionary (DESCRIBE_REPORT) stays schema-side, like REPORT_FIELDS.
+        "describe_roles": DESCRIBE_ROLES,
+    }
     _emit(doc, args.pretty, validate_as="describe")
     return EXIT_OK if body["data_report"]["ok"] else EXIT_DATA
 
@@ -942,37 +911,38 @@ def _cmd_schema(args: argparse.Namespace) -> int:
         ref = files("seikan") / "reference" / "dsl-schema.md"
         sys.stdout.write(ref.read_text(encoding="utf-8"))
         return EXIT_OK
-    doc = _base_doc("schema")
-    doc["dsl_json_schema"] = Thesis.model_json_schema()
     # Class defaults straight from model_fields — never a live instance, which would read (and
     # crash on, or silently reflect) the ambient SEIKAN_* environment as if it were the default.
     fields = GateThresholds.model_fields
-    doc["thresholds"] = [
-        {
-            "field": spec.field,
-            "default": fields[spec.field].default,
-            "env_var": env_var(spec.field),
-            "cli_flag": f"--{flag.replace('_', '-')}",
-        }
-        for flag, spec in _THRESHOLD_FLAGS.items()
-    ]
-    # The static sections, in emitted order (insertion order IS the document's key order):
-    # gate_contract before report_fields (the OUTPUT-side field dictionary, right after the
-    # contract that grades those fields), the describe dictionary beside it, the output CSVs in
-    # nomination order, and metric_roles/describe_roles — the IDENTICAL compact maps the
-    # run/describe documents stamp (prose rationale under gate_contract.metric_roles_rationale).
-    # Literal assignments on purpose: the document is a TypedDict, and a table-driven mount would
-    # cast away exactly the key-typo protection the type declares.
-    doc["gate_contract"] = GATE_CONTRACT_DOC
-    doc["report_fields"] = REPORT_FIELDS
-    doc["describe_report"] = DESCRIBE_REPORT
-    doc["csv_format"] = CSV_FORMAT
-    doc["trades_csv"] = TRADES_CSV
-    doc["root_series_csv"] = ROOT_SERIES_CSV
-    doc["entry_flags_csv"] = ENTRY_FLAGS_CSV
-    doc["exit_codes"] = EXIT_CODES
-    doc["metric_roles"] = METRIC_ROLES
-    doc["describe_roles"] = DESCRIBE_ROLES
+    # The sections in emitted order (insertion order IS the document's key order): gate_contract
+    # before report_fields (the OUTPUT-side field dictionary, right after the contract that
+    # grades those fields), the describe dictionary beside it, the output CSVs in nomination
+    # order, and metric_roles/describe_roles — the IDENTICAL compact maps the run/describe
+    # documents stamp (prose rationale under gate_contract.metric_roles_rationale).
+    doc: SchemaDocument = {
+        **_header(),
+        "command": "schema",
+        "dsl_json_schema": Thesis.model_json_schema(),
+        "thresholds": [
+            {
+                "field": spec.field,
+                "default": fields[spec.field].default,
+                "env_var": env_var(spec.field),
+                "cli_flag": f"--{flag.replace('_', '-')}",
+            }
+            for flag, spec in _THRESHOLD_FLAGS.items()
+        ],
+        "gate_contract": GATE_CONTRACT_DOC,
+        "report_fields": REPORT_FIELDS,
+        "describe_report": DESCRIBE_REPORT,
+        "csv_format": CSV_FORMAT,
+        "trades_csv": TRADES_CSV,
+        "root_series_csv": ROOT_SERIES_CSV,
+        "entry_flags_csv": ENTRY_FLAGS_CSV,
+        "exit_codes": EXIT_CODES,
+        "metric_roles": METRIC_ROLES,
+        "describe_roles": DESCRIBE_ROLES,
+    }
     _emit(doc, args.pretty)
     return EXIT_OK
 
@@ -1131,8 +1101,13 @@ def _fail(
     """Emit one error envelope (stdout JSON + one stderr line) and return its exit code — the
     single body behind every arm of ``main``'s exception ladder. ``data_report`` rides only the
     exit-2 arm; the ``errors`` key, when a type carries one, arrives inside ``error``."""
-    doc = _base_doc(command)
-    doc["error"] = error
+    # The header written out: mypy places no NotRequired key (``data_report``) beside a ``**``.
+    doc: ErrorDocument = {
+        "seikan_version": seikan.__version__,
+        "report_schema_version": REPORT_SCHEMA_VERSION,
+        "command": command,
+        "error": error,
+    }
     if data_report is not None:
         doc["data_report"] = data_report
     _emit(doc, pretty)
@@ -1166,7 +1141,7 @@ def main(argv: list[str] | None = None) -> int:
             {"type": "data_invalid", "message": str(exc)},
             EXIT_DATA,
             f"seikan: input data failed strict validation ({exc})\n",
-            pretty=getattr(args, "pretty", False),
+            pretty=args.pretty,
             data_report=exc.report,
         )
     except _UsageError as exc:  # an output-path preflight refusal from inside a command
@@ -1175,7 +1150,7 @@ def main(argv: list[str] | None = None) -> int:
             {"type": "usage", "message": str(exc)},
             EXIT_REQUEST,
             f"seikan: {exc}\n",
-            pretty=getattr(args, "pretty", False),
+            pretty=args.pretty,
         )
     except _ThresholdsInvalidError as exc:
         return _fail(
@@ -1183,7 +1158,7 @@ def main(argv: list[str] | None = None) -> int:
             {"type": "thresholds_invalid", "message": str(exc), "errors": exc.records},
             EXIT_REQUEST,
             f"seikan: invalid gate thresholds ({exc})\n",
-            pretty=getattr(args, "pretty", False),
+            pretty=args.pretty,
         )
     except (ValidationError, _ThesisUnreadableError) as exc:
         error: ErrorEnvelope
@@ -1202,18 +1177,14 @@ def main(argv: list[str] | None = None) -> int:
             error,
             EXIT_REQUEST,
             f"seikan: invalid thesis DSL ({str(exc).splitlines()[0]})\n",
-            pretty=getattr(args, "pretty", False),
+            pretty=args.pretty,
         )
-    except Exception as exc:  # pragma: no cover - the catch-all for genuine bugs
+    except Exception as exc:  # the catch-all for genuine bugs
         traceback.print_exc(file=sys.stderr)
         return _fail(
             command,
             {"type": "internal", "message": str(exc)},
             EXIT_INTERNAL,
             "",
-            pretty=getattr(args, "pretty", False),
+            pretty=args.pretty,
         )
-
-
-if __name__ == "__main__":  # pragma: no cover
-    raise SystemExit(main())

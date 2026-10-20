@@ -1,10 +1,8 @@
-"""The public library API — the one home a host imports from.
-
-Load once with :func:`load_market_data` (after :func:`resolve_data_files` has bound the
-thesis's declared data keys to files), then hand the materialized :class:`MarketData` to
-:func:`compile_thesis` (the full-grid event study) and/or :func:`list_entries` (the firing
-listing); neither loads. :func:`canonical_dsl_hash` is the thesis identity the CLI's ``hash``
-subcommand emits. Everything here is stateless: no database, no network, no home directory.
+"""The library's two compute entry points over a loaded :class:`MarketData`:
+:func:`compile_thesis` (the full-grid event study) and :func:`list_entries` (the firing listing);
+neither loads. A host imports them, the loader (:func:`resolve_data_files`, then
+:func:`load_market_data`) and :func:`canonical_dsl_hash` from the package root, ``seikan``.
+Everything here is stateless: no database, no network, no home directory.
 """
 
 from __future__ import annotations
@@ -16,7 +14,7 @@ import pandas as pd
 from seikan import dataio
 from seikan.analysis.result import EntryListReport, EventStudyResult
 from seikan.compiler import vectorize
-from seikan.compiler.data import DataFiles, MarketData, load_market_data, resolve_data_files
+from seikan.compiler.data import MarketData
 from seikan.compiler.runner import run_backtest
 from seikan.dsl.schema import (
     Constant,
@@ -27,27 +25,9 @@ from seikan.dsl.schema import (
     render_series,
     series_source_leaves,
 )
-from seikan.emitted import validate_summary
-from seikan.gate import canonical_dsl_hash
 from seikan.types import DataIssue, DataReport, EntryRow, ParamValue
 
-#: ``MarketData`` / ``load_market_data`` — and the ``DataFiles`` / ``resolve_data_files`` pair that
-#: locates what the DSL only names — are re-exported deliberately: this module is the public API's
-#: one home, and the loader is its front door. A caller resolves the thesis's data keys against the
-#: files it has, loads ONCE with ``load_market_data(thesis.data, files)``, and hands the
-#: materialized ``MarketData`` to ``compile_thesis`` and/or ``list_entries``, which never load.
-#: ``canonical_dsl_hash`` (from ``gate.py``) is re-exported for the same reason: a caller computing
-#: a thesis's identity imports it from the public home, never from an internal module — and the
-#: ``seikan hash`` subcommand is the same identity without writing Python at all.
-__all__ = [
-    "DataFiles",
-    "MarketData",
-    "canonical_dsl_hash",
-    "compile_thesis",
-    "list_entries",
-    "load_market_data",
-    "resolve_data_files",
-]
+__all__ = ["compile_thesis", "list_entries"]
 
 
 def _refuse(md: MarketData, issues: list[DataIssue], message: str) -> NoReturn:
@@ -56,13 +36,10 @@ def _refuse(md: MarketData, issues: list[DataIssue], message: str) -> NoReturn:
     report at all (the loader always attaches one), in which case the payload carries the
     top-level errors alone — a partial report, honestly partial."""
     report = md.report
-    prior = report.get("errors") if report is not None else None
     refused: dict[str, object] = dict(report) if report is not None else {}
-    refused["errors"] = [*(prior or []), *issues]
+    refused["errors"] = [*(report["errors"] if report is not None else []), *issues]
     refused["ok"] = False
-    # ONE documented cast (previously two, one per guard): the no-report branch is a partial
-    # DataReport by design, and widening DataError for one defensive branch would cost more
-    # than it says.
+    # The no-report branch is a partial DataReport by design; the cast says so.
     raise dataio.DataError(cast("DataReport", refused), message)
 
 
@@ -149,20 +126,11 @@ def compile_thesis(thesis: Thesis, md: MarketData) -> EventStudyResult:
     non-firing combos included — with overlap-honest per-cell statistics. Nothing is selected,
     ranked, or crowned; the whole grid is measured on the whole sample. The result carries the
     ``data_report`` describing everything that was read and checked.
-
-    The summary handed back is validated against its declared contract
-    (:func:`seikan.emitted.validate_summary`) — a few milliseconds against an O(grid × length)
-    run.
     """
     _ensure_loaded_for(md, thesis)
     data_report = _sufficient_report(md, thesis)
     _ensure_volume_available(md, thesis, include_features=True)
     result = run_backtest(thesis, md)
-    # The engine verifies its own output at the public seam: the summary is validated against
-    # the RunSummary contract here, on the library path, exactly as the CLI validates the whole
-    # document at emission — a shape the engine does not declare is a seikan bug, never a
-    # result to hand a caller.
-    validate_summary(result.summary)
     result.data_report = data_report
     return result
 
