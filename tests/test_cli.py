@@ -3325,10 +3325,11 @@ def test_schema_metric_roles_is_the_compact_map_prose_rides_gate_contract(tmp_pa
     thesis = _write_thesis(tmp_path / "t.json")
     _c, run_doc = _run_report(capsys, tmp_path, ["run", str(thesis), *_target(px)])
     assert roles == run_doc["metric_roles"]
-    # the prose rationale (lists of sentences) lives under gate_contract, keyed distinctly
+    # the checklist is stated once, in gate_contract; the rationale under it carries only the
+    # long prose behind the compact map's metric classes and caveats
+    assert "no significance claim" in schema_doc["gate_contract"]["claim"].lower()
     rationale = schema_doc["gate_contract"]["metric_roles_rationale"]
-    assert "no significance claim" in rationale["claim"].lower()
-    assert any("anti-conservative" in e for e in rationale["evidence_only"])
+    assert set(rationale) == {"metric_classes", "caveats"}
     # the long caveat mechanics stay schema-side; the compact one-liners ride every report
     assert set(rationale["caveats"]) == set(roles["caveats"])
     assert "sqrt(2/3)" in rationale["caveats"]["t_hac"]

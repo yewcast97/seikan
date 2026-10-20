@@ -240,9 +240,10 @@ ret_quantiles, mae_quantiles, mfe_quantiles, edge_ratio, profit_factor, baseline
 conditional_buckets, feature_association, pooled, member_share, win_loss_ratio,
 std_ret, skewness, tail_ratio, cvar_5, benchmark_regression, episode_profile, timing —
 travelling WITH the
-report so the caveat rides beside the number it qualifies; the prose rationale lives in
-`seikan schema` under `gate_contract.metric_roles_rationale`, and `metric_roles` itself is the SAME
-compact object in the report and in `seikan schema`). `data_digests` is keyed by the LOGICAL key
+report so the caveat rides beside the number it qualifies; the long prose behind the classes and
+caveats lives in `seikan schema` under `gate_contract.metric_roles_rationale`, beside the
+checklist's own rule prose, and `metric_roles` itself is the SAME compact object in the report and
+in `seikan schema`). `data_digests` is keyed by the LOGICAL key
 and never by path: the key is what the thesis DECLARES and what two runs can be compared on, while
 the path is only where this particular invocation found the bytes — so "the series this thesis
 calls NVDA was that file, read out of that column, and it hashed to this" survives a re-pull as a

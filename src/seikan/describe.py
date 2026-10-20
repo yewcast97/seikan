@@ -246,7 +246,7 @@ def _full_sample_block(x: np.ndarray, index: pd.DatetimeIndex) -> FullSampleBloc
     """Whole-file extremes (over the OBSERVED finite levels, most-recent tie rule) plus
     drawdown/runup off them, against the ACTUAL last level.
 
-    ``drawdown_pct = last/high - 1`` is a property of the file's EXTENT — extend or trim the
+    ``drawdown_pct = (last − high)/high`` is a property of the file's EXTENT — extend or trim the
     file and it moves. A NaN last level refuses the distance reads as ``endpoint_missing``
     (the previous finite value is never substituted), a distance past the double range as
     ``not_representable``; the extremes themselves are observed facts and stay, with the
@@ -430,7 +430,7 @@ def profile_file(df: pd.DataFrame, report: FileReport, windows: Sequence[int]) -
 
     An OHLCV file profiles ``close`` — the full bar rides ``last_bar``; a series-shaped file
     profiles every value column in file order. Selecting any other column is the caller's act
-    (there is deliberately no ``--target-column``).
+    (``describe`` takes no column flag).
     """
     columns = ["close"] if report.shape == "ohlcv" else list(df.columns)
     profile: FileProfile = {
