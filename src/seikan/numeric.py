@@ -36,8 +36,10 @@ would censor an outcome whose true value is the finite ``921.034…`` — there 
 logs ``ln(hi) − ln(lo)``, which never leaves the range, stands in. Neither the quotient's log nor
 the difference of logs may stand in anywhere else: each reads other bits on almost every ordinary
 pair. Each twin keeps its callers' log implementations (``math.log1p`` and ``math.log`` for the
-scalar reads, ``np.log1p`` and ``np.log`` for the array reads). A test pins the twins to the same
-rule.
+scalar reads, ``np.log1p`` and ``np.log`` for the array reads), which need not agree to the last
+bit: numpy picks its kernel by CPU, and its AVX-512 Linux build reads Intel's SVML ``log1p``, an
+ulp off the C library's on 181 of 4,999 random-walk pairs. Tests pin each twin to the rule in its
+own library, bit for bit, and the twins to within an ulp of each other.
 
 **The percent change.** ``num/den − 1`` rounds the quotient at the ulp of 1 before the exact
 subtraction, so a change under +100% carried an ABSOLUTE rounding of up to 2**-53 however small

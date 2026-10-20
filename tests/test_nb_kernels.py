@@ -250,9 +250,12 @@ def test_change_log_past_the_double_range_is_finite():
 
 def test_log_ratio_is_log1p_of_the_excess_bit_for_bit_on_ordinary_levels():
     # Neither ln of the quotient nor the difference of logs is the rule: each rounds differently
-    # from it on almost every ordinary pair, so on a random walk both twins — and the change
-    # kernel reading through them — equal log1p of the larger level's relative excess over the
-    # smaller, negated where the level fell, bit for bit.
+    # from it on almost every ordinary pair, so on a random walk each twin — and the change
+    # kernel reading through the array one — equals log1p of the larger level's relative excess
+    # over the smaller, negated where the level fell, bit for bit in its own library. The two
+    # libraries' log1p need not agree to the last bit (numpy's AVX-512 Linux build reads Intel's
+    # SVML kernel, not libm: 181 of these 4,999 pairs an ulp apart on a CI runner), so between
+    # the twins only an ulp is allowed.
     rng = np.random.RandomState(7)
     walk = 100.0 * np.exp(np.cumsum(rng.normal(0.0, 0.02, 5000)))
     num, den = walk[1:], walk[:-1]
@@ -261,9 +264,14 @@ def test_log_ratio_is_log1p_of_the_excess_bit_for_bit_on_ordinary_levels():
     assert (want != quotient).mean() > 0.5  # the quotient's rounding at 1's ulp moves bits
     assert (want != np.log(num) - np.log(den)).mean() > 0.5  # the fallback WOULD move bits
     np.testing.assert_array_equal(log_ratio_array(num, den), want)
-    scalar = [log_ratio(float(b), float(a)) for b, a in zip(num, den, strict=True)]
-    np.testing.assert_array_equal(scalar, want)
     np.testing.assert_array_equal(change_1d(walk, 1, "log")[1:], want)
+    scalar = [log_ratio(float(b), float(a)) for b, a in zip(num, den, strict=True)]
+    scalar_want = [
+        math.log1p((b - a) / a) if b >= a else -math.log1p((a - b) / b)
+        for b, a in zip(num.tolist(), den.tolist(), strict=True)
+    ]
+    np.testing.assert_array_equal(scalar, scalar_want)
+    np.testing.assert_array_max_ulp(np.array(scalar), want, maxulp=1)
     # ...so a move's reverse reads its exact negation: read in its own direction each quotient
     # rounded on its own, and ln(fl(110/100)) + ln(fl(100/110)) was 4.2e-17
     np.testing.assert_array_equal(log_ratio_array(den, num), -want)
