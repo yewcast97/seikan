@@ -16,7 +16,7 @@ from typing import NamedTuple
 import numpy as np
 import pandas as pd
 
-from seikan.compiler.data import MarketData, _anchor_feed
+from seikan.compiler.data import MarketData, anchor_feed
 from seikan.dsl.schema import Thesis, iter_source_leaves
 from seikan.types import SourceAvailability, SourceCoverage
 
@@ -34,9 +34,9 @@ class LeafMasks(NamedTuple):
 
 def _arrived(counts: np.ndarray, prints: pd.Series, index: pd.DatetimeIndex) -> np.ndarray:
     """(rows,) a per-print running count, read on the bars with the ONE asof expression the
-    anchoring uses (``data._anchor_feed``): the count of prints arrived at or before each bar."""
+    anchoring uses (``data.anchor_feed``): the count of prints arrived at or before each bar."""
     running = pd.Series(counts.astype(float), index=prints.index)
-    arrived: np.ndarray = _anchor_feed(running, index).fillna(0.0).to_numpy(dtype=float)
+    arrived: np.ndarray = anchor_feed(running, index).fillna(0.0).to_numpy(dtype=float)
     return arrived
 
 

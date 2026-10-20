@@ -284,7 +284,7 @@ def _prepare_feed(
     """Normalize an external feed to its NATIVE (post-lag availability) stamps.
 
     Returns the feed on its own timestamps — lag-shifted — ready either to asof-anchor onto the
-    bars (``_anchor_feed``) or to derive the per-bar feed age (``_feed_age_days``, the
+    bars (``anchor_feed``) or to derive the per-bar feed age (``_feed_age_days``, the
     ``days_since`` primitive), both off the one asof read (``_asof``). The strict reader already
     guarantees naive, unique, sorted timestamps.
 
@@ -350,7 +350,7 @@ class _Asof(NamedTuple):
 
 
 def _asof(stamps: pd.DatetimeIndex, bars: pd.DatetimeIndex) -> _Asof:
-    """The ONE asof read, which :func:`_anchor_feed` and :func:`_feed_age_days` share: both
+    """The ONE asof read, which :func:`anchor_feed` and :func:`_feed_age_days` share: both
     clocks as Python integers in the finer of their two resolutions, each bar's latest stamp at or
     before it found by bisection, and the tick difference kept exact. pandas formed both in int64
     nanoseconds, which do not hold the range: a coarser feed clock promoted to nanoseconds
@@ -367,7 +367,7 @@ def _asof(stamps: pd.DatetimeIndex, bars: pd.DatetimeIndex) -> _Asof:
     return _Asof(position, behind, per_second)
 
 
-def _anchor_feed(native: pd.Series, index: pd.DatetimeIndex) -> pd.Series:
+def anchor_feed(native: pd.Series, index: pd.DatetimeIndex) -> pd.Series:
     """Anchor a prepared feed on the bar index: the latest value at-or-before each bar (backward
     asof, :func:`_asof`), NaN before the first stamp. The ONE anchoring expression — the only
     collapse step for feeds finer than the bars: a sub-bar print from inside bar D is never
@@ -379,7 +379,7 @@ def _anchor_feed(native: pd.Series, index: pd.DatetimeIndex) -> pd.Series:
 
 
 def _match_feed(native: pd.Series, index: pd.DatetimeIndex) -> pd.Series:
-    """The exact-match twin of :func:`_anchor_feed`, off the same :func:`_asof` read: each bar
+    """The exact-match twin of :func:`anchor_feed`, off the same :func:`_asof` read: each bar
     reads the value stamped at exactly its instant (0 ticks behind it), NaN where none is — a
     reindex WITHOUT fill. pandas' ``reindex`` promoted a coarser clock to int64 nanoseconds and
     refused the load (``OutOfBoundsDatetime``) on a stamp past 2262 that no bar reads."""
@@ -748,7 +748,7 @@ def load_market_data(spec: DataSpec, files: DataFiles) -> MarketData:
                     lag,
                     files.columns.get(fname),
                 )
-                externals[fname] = _anchor_feed(native, common)
+                externals[fname] = anchor_feed(native, common)
                 externals_age[fname] = _feed_age_days(native, common)
                 externals_native[fname] = _frozen_series(native)
             else:
@@ -768,7 +768,7 @@ def load_market_data(spec: DataSpec, files: DataFiles) -> MarketData:
                     for name in names
                 }
                 externals[fname] = pd.DataFrame(
-                    {name: _anchor_feed(natives[name], common) for name in names},
+                    {name: anchor_feed(natives[name], common) for name in names},
                     columns=names,
                 )
                 externals_age[fname] = pd.DataFrame(

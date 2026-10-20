@@ -57,8 +57,8 @@ import pandas as pd
 
 from seikan.compiler import nb
 from seikan.compiler import transforms as xf
-from seikan.compiler.data import MarketData, _anchor_feed
-from seikan.dsl.nodes import CalendarField, _NumericParam
+from seikan.compiler.data import MarketData, anchor_feed
+from seikan.dsl.nodes import CalendarField, NumericParam
 from seikan.dsl.schema import (
     EMA,
     AndCondition,
@@ -293,7 +293,7 @@ def _make_resolver(combo: dict[str, ParamValue]) -> _ParamResolver:
     """
     counts: dict[str, int] = {}
 
-    def resolve(kind: str, param: str, value: _NumericParam, name: str | None = None) -> ParamValue:
+    def resolve(kind: str, param: str, value: NumericParam, name: str | None = None) -> ParamValue:
         if isinstance(value, AxisRef):
             return combo[value.axis]
         if isinstance(value, list):
@@ -641,7 +641,7 @@ def _native_column(
     out = np.where(np.isfinite(out), out, np.nan)
 
     def anchor(a: np.ndarray) -> npt.NDArray[np.float64]:
-        anchored: npt.NDArray[np.float64] = _anchor_feed(
+        anchored: npt.NDArray[np.float64] = anchor_feed(
             pd.Series(a, index=native.index), index
         ).to_numpy(dtype=float)
         return anchored

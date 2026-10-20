@@ -1,13 +1,15 @@
-"""Per-pool descriptive blocks: the pool's moment/shape reads, concentration, the
-order-statistic quantile blocks, the excursion blocks, profit factor, edge ratio, the legs' OLS
-attribution and the timing medians.
+"""The pool layer, in two halves: the exact-arithmetic core every pool read stands on (exact
+sums, means and masses, the integer terms, the zero-dispersion and normal-range gates), and the
+per-pool descriptive blocks — the moment/shape reads, concentration, the order-statistic quantile
+blocks, the excursion blocks, profit factor, edge ratio, the legs' OLS attribution and the
+timing medians.
 
 Every function here describes ONE observation pool from the arrays it is handed and nothing
 else — per cell × target, or per basket-pooled cell — so nothing in this module can compare,
 rank or aggregate across cells.
 
 Finite returns can sum, square or interpolate past the double range, and every read here
-decides such an operand by finiteness — :func:`_normal`, :func:`_finite_ratio`, or the NaN →
+decides such an operand by finiteness — :func:`is_normal`, :func:`_finite_ratio`, or the NaN →
 null emission of a statistic that is not finite — so the reads run under
 ``errstate(over, invalid)``: an overflow is an expected input, never a warning (which ``-W
 error`` turns into an exception out of the run).
@@ -40,15 +42,15 @@ from seikan.types import (
 _NAN = float("nan")
 
 
-_EPS = float(np.finfo(np.float64).eps)
+EPS = float(np.finfo(np.float64).eps)
 
 #: The zero-dispersion gate's scale: a pool whose largest deviation from its mean is below this
-#: many ulps of the mean's magnitude has no usable dispersion (:func:`_near_constant`). CSCV's
+#: many ulps of the mean's magnitude has no usable dispersion (:func:`near_constant`). CSCV's
 #: split scores read the same gate off their per-block extrema.
-_NEAR_CONSTANT_ULPS = 10.0
+NEAR_CONSTANT_ULPS = 10.0
 
 
-def _near_constant(rets: np.ndarray, mean: float) -> bool:
+def near_constant(rets: np.ndarray, mean: float) -> bool:
     """Scale-relative zero-dispersion detector for the moment statistics.
 
     A pool whose spread around its mean is below ~10 ulps of the mean's magnitude has no usable
@@ -60,13 +62,13 @@ def _near_constant(rets: np.ndarray, mean: float) -> bool:
     variation around a near-zero mean is correctly NOT degenerate. The gate is about the
     NUMERICAL reliability of the two moment estimators, not a policy on thin pools: ``std_ret``
     and the order-statistic reads stay as computed (a near-constant pool's dispersion IS tiny) —
-    save the exactly constant pool, whose ``std_ret`` is exactly 0.0 (:func:`_ddof1_std`). The
+    save the exactly constant pool, whose ``std_ret`` is exactly 0.0 (:func:`ddof1_std`). The
     event-time HAC and the benchmark regression's bench-leg test read it too."""
     spread = float(np.max(np.abs(rets - mean))) if rets.size else 0.0
-    return spread == 0.0 or bool(spread < _NEAR_CONSTANT_ULPS * _EPS * abs(mean))
+    return spread == 0.0 or bool(spread < NEAR_CONSTANT_ULPS * EPS * abs(mean))
 
 
-def _normal(x: float) -> bool:
+def is_normal(x: float) -> bool:
     """``x`` is a positive NORMAL double — a variance (or a power or product of variances) that
     carries its full precision. Past the range it is ``inf``, and every quotient by it a FINITE
     0.0; below it the squared deviations it sums (deviations under ~1.5e-154) rounded to
@@ -81,11 +83,11 @@ def _normal(x: float) -> bool:
     return MIN_NORMAL <= x < math.inf
 
 
-def _ddof1_std(v: np.ndarray) -> float:
+def ddof1_std(v: np.ndarray) -> float:
     """The ddof=1 std of a pool of n ≥ 2, exactly 0.0 when every observation is equal — the
     computed mean of a constant DECIMAL pool is not the constant, and ``np.std`` would read its
     rounding residue (~1e-17) as dispersion. 0.0 is reserved for that pool: a VARYING pool whose
-    variance is not a normal double (:func:`_normal` — deviations below ~1.5e-154 or past
+    variance is not a normal double (:func:`is_normal` — deviations below ~1.5e-154 or past
     ~1.3e154) has no representable dispersion: NaN, never a zero or an infinite dispersion. The
     pool is finite (the moment reads filter it, the bootstrap nulls its non-finite draws first).
 
@@ -98,19 +100,23 @@ def _ddof1_std(v: np.ndarray) -> float:
     if hi == lo:
         return 0.0
     # Deviations past ~1.3e154 overflow the variance (a sum past the range, its mean first):
-    # `_normal` decides that read, so the overflow is an expected input here, never a warning.
+    # `is_normal` decides that read, so the overflow is an expected input here, never a warning.
     with np.errstate(over="ignore", invalid="ignore"):
         var = float(np.var(v - midrange(lo, hi), ddof=1))
-    return math.sqrt(var) if _normal(var) else _NAN
+    return math.sqrt(var) if is_normal(var) else _NAN
 
 
-def _fsum(values: list[float]) -> float:
-    """The EXACTLY ROUNDED sum of ``values`` — ``math.fsum``, one double whatever order they come
-    in. ``fsum`` accumulates in doubles and raises where a running partial leaves the range even
-    when the exact sum has a double (``[1e308, 1e308, −1e308, −1e308]`` raised, and read NaN,
-    where the other order read 0.0): there the sum is retaken as exact rationals and rounded
-    once. NaN where the exact sum itself leaves the double range, or meets a non-finite term
-    (``inf − inf``) — a sum with no value, which every caller's finiteness test decides."""
+def exact_sum(values: np.ndarray | list[float]) -> float:
+    """The EXACTLY ROUNDED sum of ``values`` (every entry of an array; over a pool of parts rows,
+    :func:`exact_mean`'s, the exact sum of the rows' values times ``scale``) — ``math.fsum``, one
+    double whatever order they come in. ``fsum`` accumulates in doubles and raises where a
+    running partial leaves the range even when the exact sum has a double (``[1e308, 1e308,
+    −1e308, −1e308]`` raised, and read NaN, where the other order read 0.0): there the sum is
+    retaken as exact rationals and rounded once. NaN where the exact sum itself leaves the double
+    range, or meets a non-finite term (``inf − inf``) — a sum with no value, which every caller's
+    finiteness test decides."""
+    if isinstance(values, np.ndarray):
+        values = values.ravel().tolist()
     try:
         return math.fsum(values)
     except OverflowError:
@@ -122,19 +128,13 @@ def _fsum(values: list[float]) -> float:
         return _NAN
 
 
-def exact_sum(v: np.ndarray) -> float:
-    """``v``'s EXACTLY ROUNDED sum over every entry (:func:`_fsum`); over a pool of parts rows
-    (:func:`exact_mean`) the exact sum of the rows' values times ``scale``."""
-    return _fsum(v.ravel().tolist())
-
-
 def _exact_quotient(terms: list[float], count: int) -> float:
     """``Σterms / count`` correctly rounded — the EXACT sum (its exact parts,
     :func:`_exact_parts`, as rationals) over the integer ``count``, rounded ONCE. The exactly
     rounded sum over the count rounds twice, which is no rounding of the mean: ``[x − ulp, x, x,
     x, x]`` at ``x = 0.9757632206350922`` read an ulp above its maximum, where the mean rounds
     to ``x`` itself. Rounded once, a mean never leaves its pool's range. NaN where the sum has no
-    double (:func:`_fsum`'s rule)."""
+    double (:func:`exact_sum`'s rule)."""
     parts = _exact_parts(terms)
     if parts is None:
         return _NAN
@@ -153,7 +153,7 @@ def exact_mean(v: np.ndarray, scale: int = 1) -> float:
     floor's ``mean_ret > 0`` graded. The exact sum rounded once over ``n`` has the exact sum's
     sign, is ``0.0`` exactly where it is 0 and never leaves the pool's range; an all-equal pool's
     mean is its value. NaN on an empty pool, on a non-finite value, and where the exact sum
-    leaves the double range (:func:`_fsum`) — an overflowed mean is no evidence, as everywhere
+    leaves the double range (:func:`exact_sum`) — an overflowed mean is no evidence, as everywhere
     in this module.
 
     ``v`` may instead be ``n`` ROWS of exact parts (n × J), each row's value its parts' exact
@@ -187,7 +187,7 @@ def integer_terms(values: list[float]) -> tuple[list[int], int]:
 
 #: The least mass no double holds — the largest double plus half its ulp, where an exact sum rounds
 #: to inf. A pool whose |return| mass reaches it has no shares (:func:`mass_share`).
-_PAST_DOUBLE = Fraction(sys.float_info.max) + Fraction(math.ulp(sys.float_info.max)) / 2
+PAST_DOUBLE = Fraction(sys.float_info.max) + Fraction(math.ulp(sys.float_info.max)) / 2
 
 
 def exact_mass(v: np.ndarray) -> Fraction:
@@ -206,10 +206,10 @@ def mass_share(part: Fraction, whole: Fraction) -> float:
     masses are, and the largest of ``k`` shares is at least the correctly rounded ``1/k`` — which
     the quotient of two separately rounded masses was not: three clusters of ``1 + 2**-53 −
     2**-60`` and twice ``1 + 2**-54 + 2**-60`` read 0.33333333333333326 for a share no smaller
-    than a third. NaN where ``whole`` is 0 or no double holds it (:data:`_PAST_DOUBLE`): a zero
+    than a third. NaN where ``whole`` is 0 or no double holds it (:data:`PAST_DOUBLE`): a zero
     mass has no shares, and an overflowed one read ``x / inf = 0.0`` — a perfectly spread pool
     the ceiling passes."""
-    if whole <= 0 or whole >= _PAST_DOUBLE:
+    if whole <= 0 or whole >= PAST_DOUBLE:
         return _NAN
     return float(part / whole)
 
@@ -234,17 +234,17 @@ def pool_moments(rets: np.ndarray) -> PoolMoments:
 
     Non-finite entries are dropped (``n`` counts what was described); an empty pool is ``n = 0``
     with every statistic NaN → null. ``std_ret`` is ddof=1 (NaN below two observations, and
-    off a variance out of the normal double range — :func:`_ddof1_std`, :func:`_normal`);
+    off a variance out of the normal double range — :func:`ddof1_std`, :func:`is_normal`);
     ``hit_rate`` is the share of returns strictly above zero (a zero return is not a hit);
     ``win_loss_ratio`` is the average win over the average |loss| with zero returns on neither
     side, NaN when either side is empty — the payoff-asymmetry partner of ``hit_rate``'s
     frequency; ``skewness``/``kurtosis`` are scipy's population (``bias=True``) moments,
     kurtosis PEARSON (normal = 3, not excess) — not pandas' unbiased G1/G2 — taken about the
-    pool's offset (the :func:`_ddof1_std` rule: the moments are shift-invariant, and deviations
+    pool's offset (the :func:`ddof1_std` rule: the moments are shift-invariant, and deviations
     at the level's ulp keep their bits — about scipy's own rounded mean the symmetric
     ``1 + k·eps``, k = 0..21, read skewness 0.666 for 0), nulled on a near-constant pool
-    (:func:`_near_constant`) and where the variance power they divide by leaves the normal
-    range (:func:`_normal`); ``tail_ratio`` is ``|p95/p05|`` of the same
+    (:func:`near_constant`) and where the variance power they divide by leaves the normal
+    range (:func:`is_normal`); ``tail_ratio`` is ``|p95/p05|`` of the same
     linear-interpolated percentiles :func:`pool_quantiles` reports (NaN when ``p05`` is zero,
     and a spread ratio rather than a tail read when both tails share a sign); ``cvar_5`` is the
     mean of the worst ``⌈n/20⌉`` observations (:func:`exact_mean`), the realized 5% expected
@@ -279,10 +279,10 @@ def pool_moments(rets: np.ndarray) -> PoolMoments:
     if n == 0:
         return out
     mean_ret = exact_mean(v)
-    degenerate = _near_constant(v, mean_ret)
+    degenerate = near_constant(v, mean_ret)
     wins, losses = v[v > 0], v[v < 0]
     out["mean_ret"] = mean_ret
-    out["std_ret"] = _ddof1_std(v) if n > 1 else _NAN
+    out["std_ret"] = ddof1_std(v) if n > 1 else _NAN
     out["hit_rate"] = float(np.mean(v > 0))
     out["win_loss_ratio"] = (
         _finite_ratio(float(np.mean(wins)), abs(float(np.mean(losses))))
@@ -297,9 +297,9 @@ def pool_moments(rets: np.ndarray) -> PoolMoments:
     if n > 2 and not degenerate:
         d = v - midrange(float(np.min(v)), float(np.max(v)))
         m2 = np.var(d)
-        if _normal(float(m2**1.5)):
+        if is_normal(float(m2**1.5)):
             skew = float(sps.skew(d))
-        if n > 3 and _normal(float(m2 * m2)):
+        if n > 3 and is_normal(float(m2 * m2)):
             kurt = float(sps.kurtosis(d, fisher=False))
     # ...and the moment itself can overflow under a normal power (one deviation past ~5.6e102
     # cubes to inf beside a variance its many small rows keep in range): ±inf, never a value.
@@ -531,7 +531,7 @@ def _exact_parts(terms: list[float]) -> list[float] | None:
     total correctly rounded. ``None`` where a term is not finite or the sum leaves the double
     range."""
     parts: list[float] = []
-    while part := _fsum([*terms, *(-p for p in parts)]):
+    while part := exact_sum([*terms, *(-p for p in parts)]):
         if not math.isfinite(part):  # a non-finite term; the exact sum past the range
             return None
         parts.append(part)
@@ -632,7 +632,7 @@ def benchmark_regression(raw: np.ndarray, bench: np.ndarray) -> BenchmarkRegress
     is all-NaN there — and every empty pool; the run-level ``benchmark`` stamp stays the
     authoritative "was there a benchmark"), ``insufficient_observations`` below n=3 (two points
     fit a line exactly — r² ≡ 1 vacuously), ``no_benchmark_variation`` on a (near-)constant bench
-    leg (:func:`_near_constant` — a constant DECIMAL leg's spread is the rounding of its level,
+    leg (:func:`near_constant` — a constant DECIMAL leg's spread is the rounding of its level,
     and dividing by it minted an arbitrary beta), ``not_representable`` when beta or alpha
     leaves the double range. ``r2`` alone is NaN → null when the raw leg is constant — nothing
     to explain, while beta = 0 (exactly: the leg co-varies with nothing) and alpha = mean(raw)
@@ -658,7 +658,7 @@ def benchmark_regression(raw: np.ndarray, bench: np.ndarray) -> BenchmarkRegress
     if n < 3:
         return _declined("insufficient_observations")
     mean_b = exact_mean(b)
-    if _near_constant(b, mean_b):
+    if near_constant(b, mean_b):
         return _declined("no_benchmark_variation")
     # Each moment is n·Σxy − Σx·Σy over the legs' integers: n·(n − 1)·den² times the ddof=1
     # (co)variance, a scale both quotients cancel. Past the gate the bench leg varies, so

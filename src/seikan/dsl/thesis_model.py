@@ -22,18 +22,18 @@ from seikan.constants import (
     TRADE_COLUMNS,
 )
 from seikan.dsl.conditions import Condition
-from seikan.dsl.nodes import AxisValues, HorizonParam, Series, _Strict
+from seikan.dsl.nodes import AxisValues, HorizonParam, Series, StrictModel
 from seikan.dsl.traverse import (
-    _iter_sweep_sites,
-    _series_depth,
-    _series_external_names,
-    _series_has_sweep,
     declared_grid_size,
     iter_condition_series,
     iter_external_names,
     iter_series_depth_roots,
     iter_sweep_axis_names,
+    iter_sweep_sites,
     series_cross_nodes,
+    series_depth,
+    series_external_names,
+    series_has_sweep,
 )
 
 #: The data key naming the excess-return source ``params.benchmark = "market"`` measures against.
@@ -137,7 +137,7 @@ def _string_lag_ns(lag: str) -> int:
     return int(total)
 
 
-class ExternalFeed(_Strict):
+class ExternalFeed(StrictModel):
     # Structured external-feed entry. A feed is a logical KEY, never a file: the CSV behind it is
     # named at invocation (``seikan run --data <feed>=<path>``), and so is the COLUMN read out of
     # that CSV (``seikan run --column <feed>=<col>``, or ``--column <feed>@<target>=<col>`` for one
@@ -174,7 +174,7 @@ class ExternalFeed(_Strict):
         return pd.Timedelta(_string_lag_ns(self.lag), unit="ns")
 
 
-class DataSpec(_Strict):
+class DataSpec(StrictModel):
     # WHICH series this thesis measures, NAMED but not located. ``targets`` lists the logical keys
     # to backtest together (each becomes a column); the CSV behind every key — and WHICH column of
     # that CSV answers it — is supplied at invocation (``seikan run --data <key>=<path> --column
@@ -251,6 +251,7 @@ class DataSpec(_Strict):
         # guessing, ever. Handing them to pandas label slicing verbatim would silently INTERPRET
         # an ambiguous "01/02/2024", and an unparseable bound would escape as an uncaught
         # exception (exit 4) instead of a DSL refusal (exit 3).
+        bounds: dict[str, pd.Timestamp] = {}
         for field in ("start", "end"):
             raw = getattr(self, field)
             if raw is None:
@@ -280,12 +281,8 @@ class DataSpec(_Strict):
                     f"another instant ({ts.isoformat()}); round it (zeros past the ninth digit "
                     "are admitted)"
                 )
-        if (
-            self.start is not None
-            and self.end is not None
-            and pd.to_datetime(self.start, format="ISO8601")
-            >= pd.to_datetime(self.end, format="ISO8601")
-        ):
+            bounds[field] = ts
+        if len(bounds) == 2 and bounds["start"] >= bounds["end"]:
             raise ValueError(
                 f"data.start ({self.start!r}) must be strictly before data.end ({self.end!r})"
             )
@@ -302,7 +299,7 @@ class DataSpec(_Strict):
         }
 
 
-class Outcome(_Strict):
+class Outcome(StrictModel):
     # WHAT a firing measures (the observation's outcome). The default (``params.outcome`` omitted,
     # or spelled ``{}`` — both canonicalize to the same filled object, one identity)
     # is the target's forward PERCENT return on the next-open anchor. ``series`` picks the measured
@@ -320,7 +317,7 @@ class Outcome(_Strict):
     kind: Literal["pct", "log", "diff"] = "pct"
 
 
-class BacktestParams(_Strict):
+class BacktestParams(StrictModel):
     # Observer-native forward-return event study: every bar where ``entry`` fires opens an
     # independent, OVERLAPPING forward-return observation measured over ``horizon`` bars. There is
     # no exit condition and no one-position-at-a-time state machine. Returns are raw measurements
@@ -370,7 +367,7 @@ class BacktestParams(_Strict):
     @model_validator(mode="after")
     def _check_features_scalar(self) -> BacktestParams:
         for name, node in (self.features or {}).items():
-            if _series_has_sweep(node):
+            if series_has_sweep(node):
                 # Inside an embedded event condition included — a swept rolling.window /
                 # first_true.cooldown / lag.periods there is a sweep like any other, and so is
                 # a shared-axis reference.
@@ -409,7 +406,7 @@ class BacktestParams(_Strict):
         return self
 
 
-class Thesis(_Strict):
+class Thesis(StrictModel):
     # An observer-native event-study thesis: ``entry`` is the firing condition (the belief that a
     # signal precedes a forward return); there is no exit condition. Every firing bar opens an
     # overlapping forward-return observation over ``params.horizon`` bars (see BacktestParams).
@@ -436,7 +433,7 @@ class Thesis(_Strict):
     def _check_external_feeds_declared(self) -> Thesis:
         used = set(iter_external_names(self.entry))
         for node in (self.params.features or {}).values():
-            used |= set(_series_external_names(node))
+            used |= set(series_external_names(node))
         missing = sorted(used - self.data.external.keys())
         if missing:
             raise ValueError(
@@ -578,7 +575,7 @@ class Thesis(_Strict):
                 )
         # Every reference must name a declared axis (the scan refuses otherwise, naming the
         # site and the declared set).
-        sites = _iter_sweep_sites(self.entry, axes)
+        sites = iter_sweep_sites(self.entry, axes)
         referenced = {site.level for site in sites if site.shared}
         unreferenced = sorted((axes or {}).keys() - referenced)
         if unreferenced:
@@ -677,7 +674,7 @@ class Thesis(_Strict):
     def _check_series_nesting_depth(self) -> Thesis:
         # Operators may nest at most ``MAX_SERIES_NESTING`` (5) levels deep; deeper is rejected.
         # binary_op/unary_op/shift/mask are transparent (do not count as a level) — see
-        # _series_depth. A Condition embedded in an event node is a decision, not a level: it adds
+        # series_depth. A Condition embedded in an event node is a decision, not a level: it adds
         # nothing to the embedding node's depth and its operands are checked as roots of their own
         # (``iter_condition_series`` yields them on the entry side; ``iter_series_depth_roots`` on
         # the feature side).
@@ -687,14 +684,14 @@ class Thesis(_Strict):
             "checked as its own root). Flatten or split the expression."
         )
         for series in iter_condition_series(self.entry):
-            depth = _series_depth(series)
+            depth = series_depth(series)
             if depth > MAX_SERIES_NESTING:
                 raise ValueError(
                     f"series {series.type!r} nests {depth} operator levels deep; {tail}"
                 )
         for name, node in (self.params.features or {}).items():
             for root in iter_series_depth_roots(node):
-                depth = _series_depth(root)
+                depth = series_depth(root)
                 if depth > MAX_SERIES_NESTING:
                     raise ValueError(
                         f"feature {name!r} series {root.type!r} nests {depth} operator levels "

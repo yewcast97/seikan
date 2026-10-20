@@ -13,13 +13,13 @@ import numpy as np
 
 from seikan.analysis._baseline import subperiod_edges
 from seikan.analysis._pools import (
-    _EPS,
-    _NEAR_CONSTANT_ULPS,
+    EPS,
+    NEAR_CONSTANT_ULPS,
     BarNumerators,
-    _near_constant,
-    _normal,
     exact_mean,
     integer_terms,
+    is_normal,
+    near_constant,
 )
 from seikan.constants import NEXT_OPEN_OFFSET
 from seikan.types import (
@@ -126,8 +126,8 @@ def _column(b: np.ndarray, r: np.ndarray, parts: np.ndarray, scale: int, s: int)
 def _disperses(lo: float, hi: float, mean: float) -> bool:
     """A pool with extrema ``(lo, hi)`` and mean ``mean`` has usable dispersion: it is not exactly
     constant (``hi > lo``) and its largest deviation from the mean exceeds
-    ``_NEAR_CONSTANT_ULPS`` ulps of the mean's magnitude."""
-    return hi > lo and not max(hi - mean, mean - lo) < _NEAR_CONSTANT_ULPS * _EPS * abs(mean)
+    ``NEAR_CONSTANT_ULPS`` ulps of the mean's magnitude."""
+    return hi > lo and not max(hi - mean, mean - lo) < NEAR_CONSTANT_ULPS * EPS * abs(mean)
 
 
 def _split_score(col: _Column, blocks: Sequence[int]) -> _Score | None:
@@ -170,11 +170,11 @@ def _split_score(col: _Column, blocks: Sequence[int]) -> _Score | None:
 
     A split pool with no usable dispersion scores None: one whose chosen blocks' min equals their
     max is EXACTLY constant, and one whose largest deviation from its mean is within
-    ``_NEAR_CONSTANT_ULPS`` ulps of the mean is constant to rounding — the gate the HAC applies to
-    a cell's pool (``_pools._near_constant``), read here off the extrema, so it does not depend on
+    ``NEAR_CONSTANT_ULPS`` ulps of the mean is constant to rounding — the gate the HAC applies to
+    a cell's pool (``_pools.near_constant``), read here off the extrema, so it does not depend on
     what the column's OTHER blocks hold. A split of fewer than two rows scores None, and so does
     one whose mean leaves the double range (or meets a bar whose sum does) or whose variance is
-    not a normal double (``_pools._normal``): ``mean / inf`` is a FINITE 0.0 Sharpe, an infinite
+    not a normal double (``_pools.is_normal``): ``mean / inf`` is a FINITE 0.0 Sharpe, an infinite
     mean would win every ranking, and a subnormal variance (returns under ~1e-154) holds fewer
     bits than the Sharpe divides by.
     """
@@ -196,7 +196,7 @@ def _split_score(col: _Column, blocks: Sequence[int]) -> _Score | None:
         var = ss / (col.den * col.den * n * (n - 1))
     except OverflowError:  # past the double range
         return None
-    if not (_disperses(lo, hi, mean) and _normal(var)):
+    if not (_disperses(lo, hi, mean) and is_normal(var)):
         return None
     sign = (m > 0) - (m < 0)
     key = Fraction(sign * m * m * (n - 1), col.scale * col.scale * n * ss)
@@ -222,19 +222,19 @@ def _degradation_slope(
     ``(None, "degenerate_train_scores")`` when the train scores carry no usable spread.
 
     The degeneracy test is SCALE-RELATIVE — the pools' zero-dispersion gate
-    (``_pools._near_constant``: a spread within 10 ulps of the scores' exactly rounded mean) —
+    (``_pools.near_constant``: a spread within 10 ulps of the scores' exactly rounded mean) —
     not exact-zero: a grid of near-clones passes an exact-zero test into a rank-deficient fit
     whose min-norm slope is an arbitrary number (numpy's polyfit additionally warned "poorly
     conditioned" — ~0.5 on one probe). Nor absolute: floored at a magnitude of 1, it read train
     scores spread from 0 to 3.5e-16 as degenerate and nulled an exact slope of −1. Their centered
-    sum of squares must be a normal double too (``_pools._normal``): below it the fit divides by
+    sum of squares must be a normal double too (``_pools.is_normal``): below it the fit divides by
     bits it has lost. The slope of an undefined regression is null with its reason said out
     loud, never a number. The well-conditioned path is the plain centered OLS identity
     cov(tr, te)/var(tr) — no Vandermonde, no RankWarning channel at all."""
     mean = exact_mean(tr_a)
     tr_c = tr_a - mean
     ss = float(tr_c @ tr_c)
-    if _near_constant(tr_a, mean) or not _normal(ss):
+    if near_constant(tr_a, mean) or not is_normal(ss):
         return None, "degenerate_train_scores"
     te_c = te_a - te_a.mean()
     return float(tr_c @ te_c) / ss, None

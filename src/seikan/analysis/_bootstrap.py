@@ -12,7 +12,7 @@ from itertools import pairwise
 import numpy as np
 
 from seikan.analysis._episodes import overlap_clusters
-from seikan.analysis._pools import _PAST_DOUBLE, _ddof1_std, exact_mean, integer_terms
+from seikan.analysis._pools import PAST_DOUBLE, ddof1_std, exact_mean, integer_terms
 from seikan.types import (
     EpisodeBootstrapCI,
 )
@@ -153,7 +153,7 @@ def episode_bootstrap_ci(
     ep_counts = np.diff(np.append(starts, rets.size))
     bounds = pairwise([*starts.tolist(), rets.size])
     ep_sums = [sum(nums[a * width : b * width]) for a, b in bounds]
-    past = int(_PAST_DOUBLE) * den  # a sum (over `den`) this large has no double
+    past = int(PAST_DOUBLE) * den  # a sum (over `den`) this large has no double
     if any(abs(s) >= past for s in ep_sums):
         return _not_representable(out)
     # The episode sums as (limbs × episodes) int64 (`_LIMB_BITS`), so a draw's exact sum is its
@@ -192,7 +192,7 @@ def episode_bootstrap_ci(
     # Exactly 0.0 on bit-identical draws (a degenerate distribution); NaN when the draws'
     # variance is not a normal double — never a 0.0 read off an overflow or an underflow — and
     # then the block names it, as it does the interval's.
-    boot_se = _ddof1_std(stats_arr)
+    boot_se = ddof1_std(stats_arr)
     out["boot_se"] = boot_se
     if math.isnan(boot_se):
         out["reason"] = "not_representable"

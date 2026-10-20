@@ -2093,7 +2093,7 @@ def test_sub_bar_external_feed_never_leaks_into_its_own_bar(tmp_path):
     # Regression for a look-ahead: an intraday feed print from INSIDE day D must not be visible to
     # the day-D bar (stamped D 00:00) — a sub-bar resample into left-labeled bins would leak it.
     # A value becomes usable at the first bar stamped at-or-after its timestamp.
-    from seikan.compiler.data import _anchor_feed, _prepare_feed
+    from seikan.compiler.data import _prepare_feed, anchor_feed
     from seikan.dataio import read_strict_csv
 
     bars = pd.date_range("2021-01-01", periods=10, freq="1D")
@@ -2106,7 +2106,7 @@ def test_sub_bar_external_feed_never_leaks_into_its_own_bar(tmp_path):
 
     df, rep = read_strict_csv(str(tmp_path / "feed.csv"), role="external")
     assert rep.ok and df is not None
-    anchored = _anchor_feed(_prepare_feed(df, str(tmp_path / "feed.csv"), "feed"), bars)
+    anchored = anchor_feed(_prepare_feed(df, str(tmp_path / "feed.csv"), "feed"), bars)
     assert np.isnan(anchored.iloc[0])  # nothing published at-or-before day 0's stamp
     for i in range(1, 10):  # bar D sees day D-1's last print — never day D's own prints
         assert anchored.iloc[i] == pytest.approx((i - 1) + 0.5)
@@ -6477,7 +6477,7 @@ def _native_run(tmp_path, stamps, values, entry, *, n=10, start="2024-01-01", la
     return thesis, md
 
 
-_EPS = {"type": "external", "name": "eps"}
+EPS = {"type": "external", "name": "eps"}
 
 
 def _gt0(left):
@@ -6498,9 +6498,9 @@ def test_native_sue_style_two_release_mean_vs_bar_mean(tmp_path):
     native = {
         "type": "native",
         "name": "eps",
-        "expr": {"type": "rolling_agg", "input": _EPS, "window": 2, "agg": "mean"},
+        "expr": {"type": "rolling_agg", "input": EPS, "window": 2, "agg": "mean"},
     }
-    bar = {"type": "rolling_agg", "input": _EPS, "window": 2, "agg": "mean"}
+    bar = {"type": "rolling_agg", "input": EPS, "window": 2, "agg": "mean"}
     entry = {"type": "and", "conditions": [_gt0(native), _gt0(bar)]}
     thesis, md = _native_run(tmp_path, ["2024-01-02", "2024-01-04"], [10.0, 20.0], entry)
     roots = list_entries(thesis, md).root_series
@@ -6526,9 +6526,9 @@ def test_native_sees_every_print_between_two_bars(tmp_path):
     native = {
         "type": "native",
         "name": "eps",
-        "expr": {"type": "rolling_agg", "input": _EPS, "window": 3, "agg": "mean"},
+        "expr": {"type": "rolling_agg", "input": EPS, "window": 3, "agg": "mean"},
     }
-    entry = {"type": "and", "conditions": [_gt0(native), _gt0(_EPS)]}
+    entry = {"type": "and", "conditions": [_gt0(native), _gt0(EPS)]}
     means = {}
     bars = {}
     for tag, values in (("a", [10.0, 20.0, 30.0]), ("b", [99.0, 20.0, 30.0])):
@@ -6554,7 +6554,7 @@ def test_native_feed_end_to_end_with_lag_and_freshness_guard(tmp_path):
                 "left": {
                     "type": "native",
                     "name": "eps",
-                    "expr": {"type": "change", "input": _EPS, "periods": 1, "kind": "diff"},
+                    "expr": {"type": "change", "input": EPS, "periods": 1, "kind": "diff"},
                 },
                 "op": ">",
                 "right": {"type": "constant", "value": 0.0},
@@ -6610,7 +6610,7 @@ def _holed_values(stamps, nan_at=("2024-01-05T06:00",)):
 _NATIVE_EMA = {
     "type": "native",
     "name": "eps",
-    "expr": {"type": "ema", "input": _EPS, "window": 2},
+    "expr": {"type": "ema", "input": EPS, "window": 2},
 }
 
 
@@ -6732,7 +6732,7 @@ def test_bar_clock_hole_keeps_the_interval_remedy(tmp_path):
     # A bar-clock leaf's hole sits on the bars the interval slices, so its refusal still offers
     # both data.start and data.end — the native remedy is for `native:<feed>` labels only.
     values = np.r_[np.ones(4), np.nan, np.ones(5)]
-    thesis, md = _native_run(tmp_path, _DAILY, values, _gt0(_EPS))
+    thesis, md = _native_run(tmp_path, _DAILY, values, _gt0(EPS))
     summary = run_backtest(thesis, md).summary
     assert summary["sources"]["target"]["by_source"]["external:eps"]["n_missing"] == 1
     check = _source_check(summary)

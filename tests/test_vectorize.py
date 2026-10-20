@@ -1178,11 +1178,11 @@ def _nodes_by_path(node, path=()):
 
 
 def _assert_every_site_reads_its_own_level(entry, axes=None):
-    from seikan.dsl.traverse import _iter_sweep_sites
+    from seikan.dsl.traverse import iter_sweep_sites
 
     entry = type(entry).model_validate(entry.model_dump())  # no node object at two paths
     sweeps = iter_sweep_axes(entry, axes)
-    sites = _iter_sweep_sites(entry, axes)
+    sites = iter_sweep_sites(entry, axes)
     path_of = {id(node): path for path, node in _nodes_by_path(entry)}
     combos = list(vz.iter_param_assignments(entry, axes))
     assert len(combos) == math.prod(len(values) for _, values in sweeps)

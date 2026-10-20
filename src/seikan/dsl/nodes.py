@@ -58,11 +58,11 @@ def _distinct_sweep[T](values: list[T]) -> list[T]:
 _Sweep = (PField(min_length=1, max_length=MAX_DECLARED_GRID), AfterValidator(_distinct_sweep))
 
 
-class _Strict(BaseModel):
+class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
 
 
-class AxisRef(_Strict):
+class AxisRef(StrictModel):
     """``{"axis": "N"}`` in any sweepable ENTRY param: read this param's values from the
     top-level ``Thesis.axes["N"]`` list, so several params sweep TOGETHER as ONE hypothesis axis.
 
@@ -147,15 +147,15 @@ AxisValues = Annotated[list[int], *_Sweep] | Annotated[list[FiniteFloat], *_Swee
 #: (a ``window``/``periods``/``cooldown`` is int-valued, a ``constant.value`` float-valued), or
 #: a shared-axis reference. It carries no constraint metadata and is never a field annotation;
 #: the models declare the constrained aliases.
-_NumericParam = int | float | list[int] | list[float] | AxisRef
+NumericParam = int | float | list[int] | list[float] | AxisRef
 
 
-class Field(_Strict):
+class Field(StrictModel):
     type: Literal["field"] = "field"
     column: Literal["open", "high", "low", "close", "volume"] = "close"
 
 
-class Constant(_Strict):
+class Constant(StrictModel):
     type: Literal["constant"] = "constant"
     value: FloatParam
     # A list ``value`` sweeps the threshold as its own result axis (like a transform-window sweep);
@@ -180,7 +180,7 @@ class Constant(_Strict):
         return self
 
 
-class External(_Strict):
+class External(StrictModel):
     type: Literal["external"] = "external"
     name: str
 
@@ -191,7 +191,7 @@ CalendarField = Literal[
 ]
 
 
-class Calendar(_Strict):
+class Calendar(StrictModel):
     # Calendar attribute of each bar's timestamp, broadcast to every target — the seasonality
     # primitive (turn-of-month, day-of-week, sell-in-May). CALENDAR-DAY arithmetic only: ``month``
     # (1-12), ``day_of_week`` (0=Monday .. 6=Sunday), ``day_of_month`` (1-31), ``days_to_month_end``
@@ -203,7 +203,7 @@ class Calendar(_Strict):
     field: CalendarField
 
 
-class DaysSince(_Strict):
+class DaysSince(StrictModel):
     # Calendar days since the named external feed's most recent NATIVE observation at or before the
     # bar (post-``lag`` availability stamps, NOT the forward-filled values) — the event-distance
     # primitive (PEAD windows: ``days_since(earnings) <= 3``; staleness guards). NaN before the
@@ -216,7 +216,7 @@ class DaysSince(_Strict):
     name: str
 
 
-class EMA(_Strict):
+class EMA(StrictModel):
     # Exponentially weighted mean of ``input``, seeded at the first finite value; below decay 1, no
     # value from a hole in its input on (``vectorize._transform``).
     # EXACTLY ONE of ``window`` / ``alpha``: ``window`` sets ``alpha = 2/(window+1)`` with a
@@ -250,7 +250,7 @@ def _require_window_xor_alpha(kind: str, window: object, alpha: object) -> None:
         )
 
 
-class ZScore(_Strict):
+class ZScore(StrictModel):
     # ``(x − mean) / std`` over a trailing window (``sma``: two-pass population moments over the
     # last ``window`` bars) or an EW recurrence (``ema``: the West recurrence; ``window`` sets
     # ``alpha = 2/(window+1)`` or ``alpha`` states it directly — the EMA's own two forms; ``alpha``
@@ -281,7 +281,7 @@ class ZScore(_Strict):
         return self
 
 
-class Percentile(_Strict):
+class Percentile(StrictModel):
     # Fraction of the trailing window strictly below the current value:
     # count(value < current) / window, in [0, (window-1)/window].
     type: Literal["percentile"] = "percentile"
@@ -289,7 +289,7 @@ class Percentile(_Strict):
     window: Ge2IntParam
 
 
-class RollingAgg(_Strict):
+class RollingAgg(StrictModel):
     # A window aggregate of the input series — ``max`` / ``min`` / ``mean`` / ``std`` (population,
     # ddof=0). With ``window`` set: trailing-window (NaN until the window is full AND every bar in
     # it is finite — the same gate as ``percentile``). With ``window`` omitted/null:
@@ -323,7 +323,7 @@ class RollingAgg(_Strict):
         return self
 
 
-class Drawdown(_Strict):
+class Drawdown(StrictModel):
     # Fractional depth below a peak: ``(input − peak) / peak`` (≤ 0). ``window`` set → trailing
     # N-bar peak; omitted → expanding (all-time) peak. ``input`` defaults to the target's close.
     # Counts as one operator level, recovering nesting budget vs composing
@@ -336,7 +336,7 @@ class Drawdown(_Strict):
     window: PosIntParam | None = None
 
 
-class Runup(_Strict):
+class Runup(StrictModel):
     # Fractional height above a trough: ``(input − trough) / trough`` (≥ 0) — the exact mirror of
     # ``drawdown``. ``window`` set → trailing N-bar trough; omitted → expanding (all-time) trough.
     # ``input`` defaults to the target's close. Reads both ways: ``runup >= 0.05`` as a recovery/
@@ -347,7 +347,7 @@ class Runup(_Strict):
     window: PosIntParam | None = None
 
 
-class BarsSinceExtremum(_Strict):
+class BarsSinceExtremum(StrictModel):
     # Bar count since the most recent bar attaining the trailing/expanding ``max``|``min`` of
     # ``input``. ``extremum="max"`` + expanding = bars since the all-time high (drawdown duration);
     # ``extremum="min"`` = bars since the trough ("no new low in K bars" = stabilization). Ties
@@ -361,7 +361,7 @@ class BarsSinceExtremum(_Strict):
     window: PosIntParam | None = None
 
 
-class Change(_Strict):
+class Change(StrictModel):
     # k-period change of ``input``, mirroring ``Outcome.kind``: ``pct`` = (cur − prev)/prev,
     # ``log`` = ln(cur/prev), ``diff`` = cur − prev (level change — the honest form for
     # rates/spreads/multiples where a percent is dimensionally wrong). ``periods`` may be a list
@@ -375,7 +375,7 @@ class Change(_Strict):
     kind: Literal["pct", "log", "diff"] = "pct"
 
 
-class Shift(_Strict):
+class Shift(StrictModel):
     # The input series ``periods`` bars ago (out[t] = in[t - periods]); the leading ``periods`` bars
     # are NaN. Backward-only (periods >= 1), so it can never read the future. Prefer ``change`` for
     # k-period pct/log/diff; ``shift`` remains for level comparisons (``close > shift(high, 1)``).
@@ -386,7 +386,7 @@ class Shift(_Strict):
     periods: PosIntParam = 1
 
 
-class RollingCorr(_Strict):
+class RollingCorr(StrictModel):
     # Trailing-window Pearson correlation of two Series — a per-target TIME-axis transform (each
     # target's own history only; ranking across the targets at a bar is ``cross_rank``, basket
     # mode). ``window`` >= 3 (corr of 2 points
@@ -405,7 +405,7 @@ class RollingCorr(_Strict):
     window: Ge3IntParam
 
 
-class CrossRank(_Strict):
+class CrossRank(StrictModel):
     # Ascending fraction-rank of the target's value among all targets' finite values at bar t:
     # (avg_rank - 1) / (k - 1), in [0, 1] (average ranks on ties; k = finite targets at t).
     # NaN where the target's own value is NaN or k < min_valid. ``cross_rank(x) >= 0.8`` IS
@@ -442,7 +442,7 @@ class CrossRank(_Strict):
     group: Series | None = None
 
 
-class CrossDemean(_Strict):
+class CrossDemean(StrictModel):
     # The target's value minus the cross-target mean of the finite values at bar t (self
     # included) — its exact deviation, rounded once. NaN where the target's own value is NaN or
     # fewer than min_valid targets are finite. ``scale="std"`` makes it the cross-sectional
@@ -460,7 +460,7 @@ class CrossDemean(_Strict):
     group: Series | None = None
 
 
-class CrossAgg(_Strict):
+class CrossAgg(StrictModel):
     # A cross-target AGGREGATE at each bar, broadcast back to every target column — the breadth /
     # dispersion primitive ("70% of the group above its 200d SMA" via ``frac_positive`` of
     # ``binary_op(close - rolling_agg(close, 200, "mean"))``; a cross-sectional-vol regime via
@@ -482,7 +482,7 @@ class CrossAgg(_Strict):
     group: Series | None = None
 
 
-class BinaryOp(_Strict):
+class BinaryOp(StrictModel):
     # ``min`` / ``max`` return one operand exactly (NaN where either side is); the four arithmetic
     # ops are rounded once.
     type: Literal["binary_op"] = "binary_op"
@@ -491,7 +491,7 @@ class BinaryOp(_Strict):
     op: Literal["+", "-", "*", "/", "min", "max"]
 
 
-class UnaryOp(_Strict):
+class UnaryOp(StrictModel):
     # Element-wise unary arithmetic, *transparent* for the nesting-depth cap like ``BinaryOp``.
     # Out-of-domain inputs (``log`` of a non-positive, ``sqrt`` of a negative) map to NaN — the
     # NaN-gating contract (never fires). ``abs`` unlocks the magnitude classics (Amihud
@@ -524,7 +524,7 @@ class UnaryOp(_Strict):
 # they also appear in ``--root-series-out``). Sweeps inside it register once, in engine order.
 
 
-class Mask(_Strict):
+class Mask(StrictModel):
     # The Condition as a Series: 1.0 / 0.0 where it was decided True / False with every
     # condition under it past warmup, NaN otherwise — an ``or`` deciding True on a live branch
     # while another warms included: its Trues alone would be a value-selected series for every
@@ -542,7 +542,7 @@ class Mask(_Strict):
     condition: Condition
 
 
-class BarsSinceEvent(_Strict):
+class BarsSinceEvent(StrictModel):
     # ``t − s(t)``: bars since the latest event (0 on the event bar). Streak length is
     # ``bars_since_event(not(C))``; a session clock on intraday bars is
     # ``bars_since_event(session_open)``. Counts ONE level (it has no Series child).
@@ -550,7 +550,7 @@ class BarsSinceEvent(_Strict):
     event: Condition
 
 
-class EventValue(_Strict):
+class EventValue(StrictModel):
     # ``input[s(t)]``: the input's value AT the latest event — a recorded level, held until the
     # next event (later holes in the input are irrelevant; a NaN input AT the event bar reads NaN
     # until the next event — the anchor exists but the snapshot does not). The breakout-retest
@@ -561,7 +561,7 @@ class EventValue(_Strict):
     input: Series
 
 
-class EventAgg(_Strict):
+class EventAgg(StrictModel):
     # ``agg(input[s(t) .. t])``: the input aggregated over the bars since the latest event, the
     # event bar included — a resettable running aggregate. STRICT finite gate like ``rolling_agg``:
     # one NaN input bar inside ``[s, t]`` poisons the aggregate until the next event; an overflow
@@ -575,7 +575,7 @@ class EventAgg(_Strict):
     agg: Literal["sum", "max", "min", "mean"]
 
 
-class Native(_Strict):
+class Native(StrictModel):
     # A transform evaluated on an external feed's OWN clock — over its native prints, in print
     # order — and only then anchored onto the bars with the same backward-asof rule a raw feed
     # uses. ``rolling_agg(external(eps), 8, std)`` counts eight BARS of the forward-filled feed

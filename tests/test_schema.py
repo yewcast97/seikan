@@ -2478,7 +2478,7 @@ def test_mask_is_depth_transparent():
     from pydantic import TypeAdapter
 
     from seikan.dsl.schema import Series
-    from seikan.dsl.traverse import _series_depth
+    from seikan.dsl.traverse import series_depth
 
     mask_of_deep = {
         "type": "mask",
@@ -2489,10 +2489,10 @@ def test_mask_is_depth_transparent():
             "right": {"type": "constant", "value": 0.0},
         },
     }
-    assert _series_depth(TypeAdapter(Series).validate_python(mask_of_deep)) == 0
+    assert series_depth(TypeAdapter(Series).validate_python(mask_of_deep)) == 0
     # a mask inside a chain costs nothing: ema(mask(...)) is depth 1
     assert (
-        _series_depth(
+        series_depth(
             TypeAdapter(Series).validate_python({"type": "ema", "window": 3, "input": mask_of_deep})
         )
         == 1
@@ -2504,9 +2504,9 @@ def test_event_nodes_count_one_level_over_input():
     from pydantic import TypeAdapter
 
     from seikan.dsl.schema import Series
-    from seikan.dsl.traverse import _series_depth
+    from seikan.dsl.traverse import series_depth
 
-    depth = lambda d: _series_depth(TypeAdapter(Series).validate_python(d))  # noqa: E731
+    depth = lambda d: series_depth(TypeAdapter(Series).validate_python(d))  # noqa: E731
     assert depth({"type": "bars_since_event", "event": _BREAK}) == 1
     # L = event_value(S, shift(rolling_agg(high))) — one over the depth-1 input
     L = {"type": "event_value", "event": _BREAK, "input": _LEVEL}
@@ -2627,14 +2627,14 @@ def test_event_node_requires_a_condition_and_a_series_in_the_right_slots():
 
 # ---- native-clock transforms ---------------------------------------------------------------
 
-_EPS = {"type": "external", "name": "eps"}
+EPS = {"type": "external", "name": "eps"}
 _SUE = {
     "type": "binary_op",
-    "left": {"type": "change", "input": _EPS, "periods": 4, "kind": "diff"},
+    "left": {"type": "change", "input": EPS, "periods": 4, "kind": "diff"},
     "op": "/",
     "right": {
         "type": "rolling_agg",
-        "input": {"type": "change", "input": _EPS, "periods": 4, "kind": "diff"},
+        "input": {"type": "change", "input": EPS, "periods": 4, "kind": "diff"},
         "window": 8,
         "agg": "std",
     },
@@ -2651,19 +2651,19 @@ def _native_doc(expr: dict, feed: str = "eps", external: dict | None = None) -> 
     "expr",
     [
         _SUE,
-        {"type": "ema", "input": _EPS, "window": 10},
+        {"type": "ema", "input": EPS, "window": 10},
         {
             "type": "rolling_corr",
-            "left": {"type": "change", "input": _EPS, "kind": "diff"},
-            "right": {"type": "ema", "input": _EPS, "window": 3},
+            "left": {"type": "change", "input": EPS, "kind": "diff"},
+            "right": {"type": "ema", "input": EPS, "window": 3},
             "window": 5,
         },
         {
             "type": "unary_op",
             "op": "abs",
-            "input": {"type": "drawdown", "input": _EPS, "window": 4},
+            "input": {"type": "drawdown", "input": EPS, "window": 4},
         },
-        {"type": "binary_op", "left": _EPS, "op": "-", "right": {"type": "constant", "value": 1.0}},
+        {"type": "binary_op", "left": EPS, "op": "-", "right": {"type": "constant", "value": 1.0}},
     ],
 )
 def test_native_allowed_exprs_parse_and_roundtrip(expr):
@@ -2686,7 +2686,7 @@ def test_native_allowed_exprs_parse_and_roundtrip(expr):
         (
             {
                 "type": "binary_op",
-                "left": _EPS,
+                "left": EPS,
                 "op": "*",
                 "right": {"type": "calendar", "field": "month"},
             },
@@ -2695,14 +2695,14 @@ def test_native_allowed_exprs_parse_and_roundtrip(expr):
         (
             {
                 "type": "binary_op",
-                "left": _EPS,
+                "left": EPS,
                 "op": "*",
                 "right": {"type": "days_since", "name": "eps"},
             },
             "contains 'days_since': properties of the bar index",
         ),
         (
-            {"type": "cross_rank", "input": _EPS},
+            {"type": "cross_rank", "input": EPS},
             "contains 'cross_rank': ranks across the targets at a bar",
         ),
         (
@@ -2710,7 +2710,7 @@ def test_native_allowed_exprs_parse_and_roundtrip(expr):
                 "type": "mask",
                 "condition": {
                     "type": "threshold",
-                    "left": _EPS,
+                    "left": EPS,
                     "op": ">",
                     "right": {"type": "constant", "value": 0.0},
                 },
@@ -2722,16 +2722,16 @@ def test_native_allowed_exprs_parse_and_roundtrip(expr):
                 "type": "event_value",
                 "event": {
                     "type": "threshold",
-                    "left": _EPS,
+                    "left": EPS,
                     "op": ">",
                     "right": {"type": "constant", "value": 0.0},
                 },
-                "input": _EPS,
+                "input": EPS,
             },
             "contains 'event_value': embeds a Condition",
         ),
         (
-            {"type": "native", "name": "eps", "expr": {"type": "ema", "input": _EPS, "window": 3}},
+            {"type": "native", "name": "eps", "expr": {"type": "ema", "input": EPS, "window": 3}},
             "contains 'native': does not nest",
         ),
         ({"type": "constant", "value": 1.0}, "native\\('eps'\\) expr never reads the feed"),
@@ -2746,10 +2746,10 @@ def test_native_counts_one_level_over_expr():
     from pydantic import TypeAdapter
 
     from seikan.dsl.schema import Series
-    from seikan.dsl.traverse import _series_depth
+    from seikan.dsl.traverse import series_depth
 
     assert (
-        _series_depth(
+        series_depth(
             TypeAdapter(Series).validate_python({"type": "native", "name": "eps", "expr": _SUE})
         )
         == 3
@@ -2766,7 +2766,7 @@ def test_native_counts_one_level_over_expr():
                 "input": {
                     "type": "percentile",
                     "window": 3,
-                    "input": {"type": "ema", "window": 5, "input": _EPS},
+                    "input": {"type": "ema", "window": 5, "input": EPS},
                 },
             },
         },
@@ -2880,9 +2880,9 @@ def test_where_operands_are_depth_checked_as_roots_and_group_counts_as_a_second_
     from pydantic import TypeAdapter
 
     from seikan.dsl.schema import Series
-    from seikan.dsl.traverse import _series_depth
+    from seikan.dsl.traverse import series_depth
 
-    depth = lambda d: _series_depth(TypeAdapter(Series).validate_python(d))  # noqa: E731
+    depth = lambda d: series_depth(TypeAdapter(Series).validate_python(d))  # noqa: E731
     deep_where = {
         "type": "threshold",
         "left": _D5,

@@ -834,7 +834,7 @@ def test_the_normal_range_edge_has_one_definition():
     assert seikan.numeric.MIN_NORMAL == sys.float_info.min == 2.0**-1022
     for module in (nb, _pools, seikan.describe):
         assert module.MIN_NORMAL is seikan.numeric.MIN_NORMAL, module.__name__
-    assert _cscv._normal is _pools._normal  # CSCV reads the pools' rule
+    assert _cscv.is_normal is _pools.is_normal  # CSCV reads the pools' rule
     src = Path(seikan.numeric.__file__).parent
     defining = sorted(
         str(p.relative_to(src))

@@ -54,6 +54,7 @@ from seikan.dsl.nodes import (
     Field,
     Mask,
     Native,
+    NumericParam,
     Percentile,
     RollingAgg,
     RollingCorr,
@@ -62,7 +63,6 @@ from seikan.dsl.nodes import (
     Shift,
     UnaryOp,
     ZScore,
-    _NumericParam,
 )
 
 _SERIES_INPUT_NODES = (
@@ -181,7 +181,7 @@ def iter_series_depth_roots(node: Series) -> Iterator[Series]:
 # ---- discovery ----------------------------------------------------------------------------
 
 
-def _series_external_names(node: Series) -> Iterator[str]:
+def series_external_names(node: Series) -> Iterator[str]:
     for s in _iter_series_tree(node):
         if isinstance(s, (External, DaysSince, Native)):
             yield s.name
@@ -225,7 +225,7 @@ def series_source_leaves(node: Series) -> Iterator[tuple[SourceKind, str]]:
 # tree order and occurrence counter (a parity test pins that every site reads its own level).
 
 
-class _SweepSite(NamedTuple):
+class SweepSite(NamedTuple):
     """One occurrence of a swept param: the level (axis) it sweeps under, the values, whether it
     reads a SHARED axis, and where it sits (``kind.param`` on ``node``)."""
 
@@ -248,14 +248,14 @@ class _SweepScan:
         self.axes = axes
         self.strict = strict  # refuse a reference to an undeclared axis (else record it raw)
         self.counts: dict[str, int] = {}
-        self.sites: list[_SweepSite] = []
+        self.sites: list[SweepSite] = []
 
     def visit(
         self,
         node: Series | Condition,
         kind: str,
         param: str,
-        value: _NumericParam | None,
+        value: NumericParam | None,
         name: str | None = None,
     ) -> None:
         if isinstance(value, AxisRef):
@@ -265,10 +265,10 @@ class _SweepScan:
                         f"{kind}.{param} references shared axis {value.axis!r}, which is not "
                         f"declared under 'axes' (declared: {sorted(self.axes or {})})"
                     )
-                self.sites.append(_SweepSite(value.axis, [], True, kind, param, node))
+                self.sites.append(SweepSite(value.axis, [], True, kind, param, node))
                 return
             values = self.axes[value.axis]
-            self.sites.append(_SweepSite(value.axis, list(values), True, kind, param, node))
+            self.sites.append(SweepSite(value.axis, list(values), True, kind, param, node))
         elif isinstance(value, list):
             if name is not None:
                 level = name
@@ -276,7 +276,7 @@ class _SweepScan:
                 base = f"{kind}_{param}"
                 self.counts[base] = self.counts.get(base, 0) + 1
                 level = base if self.counts[base] == 1 else f"{base}_{self.counts[base]}"
-            self.sites.append(_SweepSite(level, list(value), False, kind, param, node))
+            self.sites.append(SweepSite(level, list(value), False, kind, param, node))
 
 
 def _series_axis_names(node: Series, scan: _SweepScan) -> None:
@@ -399,13 +399,13 @@ _CONDITION_TYPES = (
 )
 
 
-def _iter_sweep_sites(
+def iter_sweep_sites(
     root: Condition | Series, axes: Axes | None = None, *, strict: bool = True
-) -> list[_SweepSite]:
+) -> list[SweepSite]:
     """EVERY swept-param occurrence under ``root`` (a Condition tree or a Series), raw and in
     engine order — a shared axis referenced three times yields three sites (the type-fit check
     needs each). ``strict`` refuses a reference to an undeclared axis; off, the site is recorded
-    with no values (what ``_series_has_sweep`` needs of a feature)."""
+    with no values (what ``series_has_sweep`` needs of a feature)."""
     scan = _SweepScan(axes, strict=strict)
     if isinstance(root, _CONDITION_TYPES):
         _condition_axis_names(root, scan)
@@ -414,7 +414,7 @@ def _iter_sweep_sites(
     return scan.sites
 
 
-def _fold_sites(sites: list[_SweepSite]) -> list[tuple[str, list[int] | list[float]]]:
+def _fold_sites(sites: list[SweepSite]) -> list[tuple[str, list[int] | list[float]]]:
     """The dedupe rule: fold left to right; a shared site whose level was already recorded as
     shared is dropped; every other site is appended. A level then appearing twice is a duplicate
     (list↔list, list↔axis and constant-name↔axis alike) — ``Thesis`` refuses it at parse; the
@@ -437,7 +437,7 @@ def iter_sweep_axes(
     param under its auto/explicit name, a shared axis ONCE under its declared name at its first
     reference: the grid ``vectorize.iter_param_assignments`` expands. Raises ``ValueError`` on a
     reference to an axis ``axes`` does not declare."""
-    return _fold_sites(_iter_sweep_sites(entry, axes))
+    return _fold_sites(iter_sweep_sites(entry, axes))
 
 
 def iter_sweep_axis_names(entry: Condition, axes: Axes | None = None) -> list[str]:
@@ -446,11 +446,11 @@ def iter_sweep_axis_names(entry: Condition, axes: Axes | None = None) -> list[st
     return [lvl for lvl, _ in iter_sweep_axes(entry, axes)]
 
 
-def _series_has_sweep(node: Series) -> bool:
+def series_has_sweep(node: Series) -> bool:
     """True if any param anywhere under a Series node sweeps — a list, or a shared-axis
     reference — inside an embedded Condition included, so a feature carrying a swept
     ``rolling.window`` in its event node is refused like one carrying a swept transform window."""
-    return bool(_iter_sweep_sites(node, None, strict=False))
+    return bool(iter_sweep_sites(node, None, strict=False))
 
 
 def declared_grid_size(entry: Condition, horizon: int | list[int], axes: Axes | None = None) -> int:
@@ -469,7 +469,7 @@ def declared_grid_size(entry: Condition, horizon: int | list[int], axes: Axes | 
 # ---- depth --------------------------------------------------------------------------------
 
 
-def _series_depth(node: Series) -> int:
+def series_depth(node: Series) -> int:
     """Operator-nesting depth. Leaves are 0; ``BinaryOp``/``UnaryOp``/``Shift``/``Mask`` are
     transparent (arithmetic/plumbing — they pass through the max child depth); every other
     operator adds one level over its Series children (``bars_since_event`` has none, so it is
@@ -479,7 +479,7 @@ def _series_depth(node: Series) -> int:
     Condition is invisible here by construction — it is a decision, not a transform level — and
     its operands are depth-checked as roots of their own (:func:`iter_condition_series`,
     :func:`iter_series_depth_roots`)."""
-    child_max = max((_series_depth(c) for c in iter_child_series(node)), default=0)
+    child_max = max((series_depth(c) for c in iter_child_series(node)), default=0)
     if isinstance(node, (Field, Constant, External, Calendar, DaysSince)):
         return 0
     if isinstance(node, (BinaryOp, UnaryOp, Shift, Mask)):
@@ -494,7 +494,7 @@ def iter_external_names(node: Condition) -> Iterator[str]:
     """Yield every external feed name referenced anywhere under a condition tree (embedded
     conditions included; a name may repeat)."""
     for series in _iter_threshold_operands(node):
-        yield from _series_external_names(series)
+        yield from series_external_names(series)
 
 
 def iter_source_leaves(node: Condition) -> Iterator[tuple[SourceKind, str]]:

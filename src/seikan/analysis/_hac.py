@@ -8,12 +8,11 @@ import numpy as np
 
 from seikan.analysis._pools import (
     BarNumerators,
-    _fsum,
-    _near_constant,
-    _normal,
     exact_mean,
     exact_sum,
     integer_terms,
+    is_normal,
+    near_constant,
 )
 
 _NAN = float("nan")
@@ -47,12 +46,12 @@ def newey_west_mean(rets: np.ndarray, entry_bars: np.ndarray, h: int) -> tuple[f
     and its translate read the same sums; ``t`` is the reported mean — the pool's exactly rounded
     ``mean_ret`` (``_pools.exact_mean``) — over the SE.
 
-    A (near-)constant pool (:func:`_near_constant`) is ``(NaN, NaN)``, like any other pool
+    A (near-)constant pool (:func:`near_constant`) is ``(NaN, NaN)``, like any other pool
     without a positive long-run variance: its dispersion is rounding residue — the computed mean
     of a constant DECIMAL pool is not the constant — and dividing by it minted ``|t| ≈ 1e16``.
     So is a pool whose BARS all sit exactly at its mean, however its rows vary — every row on one
     bar above all (:func:`_hac_from_bar_sums`); a pool whose mean's variance ``s/n`` is not a
-    normal double (``_pools._normal``): past the range (returns past ~1e154) ``mean / inf`` read
+    normal double (``_pools.is_normal``): past the range (returns past ~1e154) ``mean / inf`` read
     a finite ``t = 0.0`` beside an infinite SE; below it (returns under ~1e-154) the squared
     deviations had lost their bits — a t off by 0.7 — or underflowed to an SE of 0.0, and
     ``mean / 0.0`` raised ZeroDivisionError out of the run; and a pool with a deviation sum past
@@ -81,7 +80,7 @@ def newey_west_mean(rets: np.ndarray, entry_bars: np.ndarray, h: int) -> tuple[f
     # A deviation from the mean may leave the double range (rows of opposite sign near ±1.7e308):
     # the zero-dispersion gate reads it as ±inf — an expected input, never a warning.
     with np.errstate(over="ignore", invalid="ignore"):
-        if _near_constant(rets, mean):
+        if near_constant(rets, mean):
             return (_NAN, _NAN)
     try:
         u, d_bar = _bar_deviation_sums(rets, bars)
@@ -140,7 +139,7 @@ def _hac_from_bar_sums(
     ``(NaN, NaN)`` — no estimate — wherever the pool has no positive long-run variance to read:
     every bar exactly at the mean (one bar above all, whose sum ``Σr − n·μ`` is 0 whatever its
     rows), a quadratic form past the double range (NaN — :func:`exact_sum`), or a variance
-    ``s/n`` that is not a normal double (:func:`_normal`): past the range ``mean / inf`` is a
+    ``s/n`` that is not a normal double (:func:`is_normal`): past the range ``mean / inf`` is a
     FINITE t of 0.0 — an overflow must read as no estimate, never as "no edge" — and below
     ~1e-154 the products underflow, into lost bits or an SE of exactly 0.0.
     """
@@ -155,9 +154,9 @@ def _hac_from_bar_sums(
                 # gaps at bar lag k are nondecreasing in k (sorted bars): no later pair overlaps
                 break
             lags.append(2.0 * exact_sum(w[m] * d_bar[k:][m] * d_bar[:-k][m]))
-        s = _fsum(lags)
+        s = exact_sum(lags)
     v = s / (n - 1.0) / n
-    if not _normal(v):
+    if not is_normal(v):
         return (_NAN, _NAN)
     se = math.sqrt(v)
     return (mean / se, se)
@@ -194,7 +193,7 @@ def cross_mean_pooled_hac(
     if n < 2 or not math.isfinite(mean):
         return (_NAN, _NAN)
     with np.errstate(over="ignore", invalid="ignore"):
-        if _near_constant(rows, mean):
+        if near_constant(rows, mean):
             return (_NAN, _NAN)
     held = np.flatnonzero(c.any(axis=1))
     parts = numerators.parts[held]

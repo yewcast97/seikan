@@ -32,6 +32,7 @@ from seikan.dsl.nodes import (
     Field,
     Mask,
     Native,
+    NumericParam,
     Percentile,
     RollingAgg,
     RollingCorr,
@@ -40,18 +41,17 @@ from seikan.dsl.nodes import (
     Shift,
     UnaryOp,
     ZScore,
-    _NumericParam,
 )
 
 
-def fmt_num(value: _NumericParam) -> str:
+def fmt_num(value: NumericParam) -> str:
     """Compact deterministic numeric literal: integral floats render as ints (100.0 → '100')."""
     if isinstance(value, float) and value.is_integer():
         return str(int(value))
     return str(value)
 
 
-def _decay(window: _NumericParam | None, alpha: _NumericParam | None) -> str:
+def _decay(window: NumericParam | None, alpha: NumericParam | None) -> str:
     """The EW decay token: the window as before (``20``), or the alpha form as ``a=0.06``."""
     if window is not None:
         return str(window)

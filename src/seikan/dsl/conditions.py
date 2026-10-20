@@ -9,32 +9,32 @@ from typing import Annotated, Literal, get_args
 from pydantic import Field as PField
 from pydantic import model_validator
 
-from seikan.dsl.nodes import AxisRef, NonNegIntParam, PosInt, PosIntParam, Series, _Strict
+from seikan.dsl.nodes import AxisRef, NonNegIntParam, PosInt, PosIntParam, Series, StrictModel
 
 
-class ThresholdCondition(_Strict):
+class ThresholdCondition(StrictModel):
     type: Literal["threshold"] = "threshold"
     left: Series
     op: Literal["<", "<=", ">", ">=", "==", "!="]
     right: Series
 
 
-class AndCondition(_Strict):
+class AndCondition(StrictModel):
     type: Literal["and"] = "and"
     conditions: list[Condition] = PField(min_length=2)
 
 
-class OrCondition(_Strict):
+class OrCondition(StrictModel):
     type: Literal["or"] = "or"
     conditions: list[Condition] = PField(min_length=2)
 
 
-class NotCondition(_Strict):
+class NotCondition(StrictModel):
     type: Literal["not"] = "not"
     condition: Condition
 
 
-class RollingCondition(_Strict):
+class RollingCondition(StrictModel):
     type: Literal["rolling"] = "rolling"
     # A list ``window`` sweeps the trailing-window length as its own ``rolling_window`` result axis
     # (like a transform-window sweep), taking part in the same Cartesian product. Auto-named, so —
@@ -71,7 +71,7 @@ class RollingCondition(_Strict):
         return self
 
 
-class FirstTrueCondition(_Strict):
+class FirstTrueCondition(StrictModel):
     # Episode entry: fires only on a false→true transition of the child's TRADABLE signal
     # (``value & init``). The first True bar after warmup does NOT count as a transition (must have
     # seen an initialized False first), so a regime that is already true when the child warms up
@@ -88,7 +88,7 @@ class FirstTrueCondition(_Strict):
     cooldown: NonNegIntParam = 0
 
 
-class LagCondition(_Strict):
+class LagCondition(StrictModel):
     # The child's decision ``periods`` bars ago, all three channels shifted back together: value,
     # init AND defined read ``[t − k]`` (a hole moves with the decision it affects), and the
     # leading ``k`` bars are warmup (value False, init False, defined True). Backward-only

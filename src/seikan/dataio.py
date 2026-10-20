@@ -195,6 +195,13 @@ def check_frame(df: pd.DataFrame, *, shape: str) -> list[str]:
     return v
 
 
+def header_key(name: str) -> str:
+    """A column name as the strict read compares headers — stripped and lower-cased: two names
+    equal under it are ONE header (``duplicate_column``), and a column binding matches the header
+    it equals under it."""
+    return name.strip().lower()
+
+
 def _examples(
     mask: pd.Series, lines: list[int], raw: pd.Series | None = None
 ) -> list[IssueExample]:
@@ -477,7 +484,7 @@ def _header_columns(path: str, blob: bytes, rep: FileReport) -> tuple[int, list[
             f"{path}: file is empty" if bare else f"{path}: file holds only blank lines, no header",
         )
         return None
-    line, cols = first[0], [str(c).strip().lower() for c in first[1]]
+    line, cols = first[0], [header_key(str(c)) for c in first[1]]
     ts_at = cols.index("datetime") if "datetime" in cols else 0
     unnamed = [i + 1 for i, c in enumerate(cols) if not c and i != ts_at]
     if unnamed:
@@ -564,7 +571,7 @@ def _parse_frame(
     except Exception as exc:
         rep.error("unreadable", f"{path}: could not be parsed as CSV ({exc})")
         return None
-    read = [str(c).strip().lower() for c in raw.columns]
+    read = [header_key(str(c)) for c in raw.columns]
     if len(read) != len(cols) or any(c and r != c for r, c in zip(read, cols, strict=True)):
         rep.error(
             "unreadable",

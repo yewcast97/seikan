@@ -112,7 +112,7 @@ from seikan.contract import (
     ROOT_SERIES_CSV,
     TRADES_CSV,
 )
-from seikan.dataio import DataError, build_data_report, read_strict_csv
+from seikan.dataio import DataError, build_data_report, header_key, read_strict_csv
 from seikan.describe import DEFAULT_WINDOWS, describe_files
 from seikan.dsl.schema import Thesis
 from seikan.emitted import validate_emitted
@@ -336,7 +336,7 @@ def _parse_pairs(
         if not sep:
             raise _UsageError(f"{flag} {item!r} {msg_not_pair}", "run")
         key = key.strip()
-        value = value.strip().lower() if lower_value else value.strip()
+        value = header_key(value) if lower_value else value.strip()
         if not key or not value:
             raise _UsageError(
                 f"{flag} {item!r} needs both a key and a {value_word}, got "

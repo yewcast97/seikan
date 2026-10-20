@@ -11,7 +11,7 @@ from itertools import pairwise
 
 import numpy as np
 
-from seikan.analysis._pools import _ddof1_std, exact_mean, pool_quantiles
+from seikan.analysis._pools import ddof1_std, exact_mean, pool_quantiles
 from seikan.types import (
     BaselineStats,
     SubperiodCounts,
@@ -60,7 +60,7 @@ def baseline_summary(rets: np.ndarray) -> BaselineStats:
     if n == 0:
         return out
     out["mean_ret"] = exact_mean(v)
-    out["std_ret"] = _ddof1_std(v) if n > 1 else _NAN
+    out["std_ret"] = ddof1_std(v) if n > 1 else _NAN
     out["hit_rate"] = float(np.mean(v > 0))
     out["worst_ret"] = float(np.min(v))
     out["best_ret"] = float(np.max(v))

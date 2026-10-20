@@ -18,7 +18,7 @@ from scipy import stats as sps
 from seikan.analysis._conditioning import _bucket_monotonicity
 from seikan.analysis._cscv import _column, _degradation_slope, _split_scores
 from seikan.analysis._hac import _bar_deviation_sums
-from seikan.analysis._pools import _near_constant
+from seikan.analysis._pools import near_constant
 from seikan.analysis._rotation import _fwd_ffts, _rotation_num_den, _tail_p
 from seikan.analysis.stats import (
     ASSOC_MIN_N,
@@ -3646,7 +3646,7 @@ def test_pool_moments_shape_is_taken_about_the_pools_own_offset():
     # -W error, which this suite runs): about the offset they read their exact-rational moments
     for ulps in ([0, 17, 16], [0, 0, 3, 15]):
         rets = 1.0 + np.array(ulps) * eps
-        assert not _near_constant(rets, exact_mean(rets))  # the premise
+        assert not near_constant(rets, exact_mean(rets))  # the premise
         f = [Fraction(x) for x in rets]
         m = sum(f) / len(f)
         m2, m3 = (sum((x - m) ** p for x in f) / len(f) for p in (2, 3))
@@ -3659,14 +3659,14 @@ def test_pool_std_is_taken_about_the_pools_own_offset():
     # The review's case: about the rounded raw mean, [2**52, 2**52 + 1]'s deviations read [0, 1]
     # — the mean rounds onto a member — and std_ret read 1.0 for the exact sqrt(0.5). About the
     # pool's range midpoint the deviations are exact. The baseline and the bootstrap's SE take the
-    # same read (`_ddof1_std`).
-    from seikan.analysis._pools import _ddof1_std
+    # same read (`ddof1_std`).
+    from seikan.analysis._pools import ddof1_std
 
     assert pool_moments(np.array([2.0**52, 2.0**52 + 1.0]))["std_ret"] == math.sqrt(0.5)
     b = 2.0**50
     clustered = np.array([b, b + 0.25, b + 0.25])
     assert float(np.std(clustered, ddof=1)) == 0.25
-    assert _ddof1_std(clustered) == pytest.approx(math.sqrt(1.0 / 48.0), rel=1e-15)
+    assert ddof1_std(clustered) == pytest.approx(math.sqrt(1.0 / 48.0), rel=1e-15)
 
 
 def test_benchmark_regression_clustered_legs_read_their_exact_line():
@@ -3776,9 +3776,9 @@ def test_constant_parts_pool_bootstrap_past_the_range_is_not_representable():
 
 
 def test_ddof1_std_of_an_all_equal_pool_is_exactly_zero():
-    from seikan.analysis._pools import _ddof1_std
+    from seikan.analysis._pools import ddof1_std
 
-    assert _ddof1_std(np.array([0.1, 0.1, 0.1])) == 0.0
+    assert ddof1_std(np.array([0.1, 0.1, 0.1])) == 0.0
 
 
 def test_varying_pool_whose_variance_leaves_the_range_has_null_dispersion_never_zero():
@@ -4202,7 +4202,7 @@ def test_cscv_split_score_of_an_overflowed_sd_is_nan_never_zero():
 def test_cscv_pbo_over_returns_whose_variance_overflows_declines_silently(scale):
     # Returns of ~1e155 and past have a variance past the double range: every split's exact
     # variance overflows (inf) and scores NaN, so no split ranks and the block declines — the
-    # overflow an expected input there (`_pools._normal` decides it), never a warning.
+    # overflow an expected input there (`_pools.is_normal` decides it), never a warning.
     rng = np.random.RandomState(5)
     cells = _pbo_cells(rng, 800, 12)
     for c in cells:
