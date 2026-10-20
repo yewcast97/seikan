@@ -12,6 +12,7 @@ we get here.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import cast
 
 import numpy as np
@@ -41,31 +42,17 @@ def _2d(values: np.ndarray) -> np.ndarray:
     return arr.reshape(-1, 1) if arr.ndim == 1 else arr
 
 
-def _scalar(param: int | list[int] | AxisRef) -> int:
-    """The scalar value a window/period param already holds by the time dispatch sees it.
+def scalar[T](param: T | Sequence[T] | AxisRef) -> T:
+    """The scalar a sweepable param holds by the time evaluation reads it.
 
-    Transform params are DECLARED ``int | list[int] | AxisRef`` because the DSL lets any window
-    or period SWEEP (as a list, or by reading a shared axis), but
-    ``vectorize.iter_param_assignments`` expands that grid and scalarizes every node before a
-    kernel is ever reached — the precondition this module's docstring opens with. The kernels
-    take the scalar; this states that the expansion has already happened, which the declared
-    type cannot.
+    Params are DECLARED ``scalar | list | AxisRef`` because the DSL lets any of them SWEEP (as a
+    list, or by reading a shared axis), but ``vectorize.iter_param_assignments`` expands that
+    grid and scalarizes every node before a kernel is ever reached — the precondition this
+    module's docstring opens with. This states that the expansion has happened, which the
+    declared type cannot. An optional param keeps its ``None``: an omitted ``window`` selects the
+    kernel's EXPANDING form (or, on the EW nodes, the ``alpha`` form), not a missing one.
     """
-    return cast("int", param)
-
-
-def _scalar_or_none(param: int | list[int] | AxisRef | None) -> int | None:
-    """:func:`_scalar` for the windows that are legitimately optional, where ``None`` is a real
-    value rather than an unexpanded sweep: an omitted ``window`` selects the kernel's EXPANDING
-    form — the extremum taken from the first bar — not a missing one (or, on the EW nodes, the
-    ``alpha`` form)."""
-    return cast("int | None", param)
-
-
-def _scalar_float_or_none(param: float | list[float] | AxisRef | None) -> float | None:
-    """The float twin of :func:`_scalar_or_none`, for the EW ``alpha`` (``None`` = the window
-    form is in use)."""
-    return cast("float | None", param)
+    return cast("T", param)
 
 
 def transform_values(
@@ -80,42 +67,38 @@ def transform_values(
     """
     raw = np.asarray(feed, dtype=float)
     x = _2d(raw)
-    if labels is not None and not isinstance(node, (CrossRank, CrossDemean, CrossAgg)):
-        raise ValueError(f"group labels are only meaningful for a cross node, not {node.type!r}")
     match node:
         case EMA(window=w, alpha=a):
-            out = nb.ema_apply_nb(x, *nb.ema_params(_scalar_or_none(w), _scalar_float_or_none(a)))
+            out = nb.ema_apply_nb(x, *nb.ema_params(scalar(w), scalar(a)))
         case ZScore(window=w, alpha=a, mean_type=mt):
             if mt == "sma":  # the SMA form always carries a window (``ZScore``'s validator)
                 out = nb.zscore_sma_apply_nb(x, cast("int", w))
             else:
-                out = nb.zscore_ema_apply_nb(
-                    x, *nb.ema_params(_scalar_or_none(w), _scalar_float_or_none(a))
-                )
+                out = nb.zscore_ema_apply_nb(x, *nb.ema_params(scalar(w), scalar(a)))
         case Percentile(window=w):
-            out = nb.percentile_apply_nb(x, _scalar(w))
+            out = nb.percentile_apply_nb(x, scalar(w))
         case RollingAgg(window=w, agg=agg):
             out = (
                 nb.expanding_agg_apply_nb(x, agg)
                 if w is None
-                else nb.rolling_agg_apply_nb(x, _scalar(w), agg)
+                else nb.rolling_agg_apply_nb(x, scalar(w), agg)
             )
         case Drawdown(window=w):
-            out = nb.drawdown_apply_nb(x, _scalar_or_none(w))
+            out = nb.drawdown_apply_nb(x, scalar(w))
         case Runup(window=w):
-            out = nb.runup_apply_nb(x, _scalar_or_none(w))
+            out = nb.runup_apply_nb(x, scalar(w))
         case BarsSinceExtremum(window=w, extremum=ext):
-            out = nb.bars_since_extremum_apply_nb(x, extremum=ext, window=_scalar_or_none(w))
+            out = nb.bars_since_extremum_apply_nb(x, extremum=ext, window=scalar(w))
         case Change(periods=p, kind=k):
-            out = nb.change_apply_nb(x, _scalar(p), k)
+            out = nb.change_apply_nb(x, scalar(p), k)
         case Shift(periods=p):
-            out = nb.shift_apply_nb(x, _scalar(p))
+            out = nb.shift_apply_nb(x, scalar(p))
         case UnaryOp(op=op):
             out = nb.unary_op_apply_nb(x, op)
         case CrossRank(min_valid=mv) | CrossDemean(min_valid=mv) | CrossAgg(min_valid=mv):
             # Cross-sectional: ranks/demeans/aggregates ACROSS the target columns at each bar, so a
-            # single-column input has no cross-section (the Thesis validator already requires
-            # basket mode with >= 2 targets; this guards direct callers and 1-D feed inputs).
+            # single-column input has no cross-section (the Thesis validator requires basket mode
+            # with >= 2 targets; a hand-built MarketData can still carry one).
             if x.shape[1] < 2:
                 raise ValueError(
                     f"cross-sectional transform {node.type!r} requires >= 2 targets; "

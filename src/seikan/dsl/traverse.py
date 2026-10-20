@@ -19,7 +19,7 @@ its embedding threshold), so nothing is yielded twice.
 from __future__ import annotations
 
 from collections.abc import Iterator
-from typing import NamedTuple
+from typing import Literal, NamedTuple
 
 from seikan.constants import (
     MAX_DECLARED_GRID,
@@ -195,7 +195,11 @@ def series_cross_nodes(node: Series) -> Iterator[CrossRank | CrossDemean | Cross
             yield s
 
 
-def series_source_leaves(node: Series) -> Iterator[tuple[str, str]]:
+#: The kinds of raw data leaf a series reads (:func:`series_source_leaves`).
+SourceKind = Literal["field", "external", "days_since", "native"]
+
+
+def series_source_leaves(node: Series) -> Iterator[tuple[SourceKind, str]]:
     """Yield ``(kind, name)`` for every RAW DATA leaf under a Series node, embedded conditions
     included. The three bar-clock kinds (``field``/``external``/``days_since``) are the raw
     leaves; an event node reads its input and its event condition's operands, never a source of
@@ -226,7 +230,7 @@ class _SweepSite(NamedTuple):
     reads a SHARED axis, and where it sits (``kind.param`` on ``node``)."""
 
     level: str
-    values: list[int] | list[float] | None  # None only for an unresolved ref (axes unknown)
+    values: list[int] | list[float]  # empty only for an unresolved ref (a non-strict scan)
     shared: bool
     kind: str
     param: str
@@ -261,7 +265,7 @@ class _SweepScan:
                         f"{kind}.{param} references shared axis {value.axis!r}, which is not "
                         f"declared under 'axes' (declared: {sorted(self.axes or {})})"
                     )
-                self.sites.append(_SweepSite(value.axis, None, True, kind, param, node))
+                self.sites.append(_SweepSite(value.axis, [], True, kind, param, node))
                 return
             values = self.axes[value.axis]
             self.sites.append(_SweepSite(value.axis, list(values), True, kind, param, node))
@@ -353,11 +357,7 @@ def _series_axis_names(node: Series, scan: _SweepScan) -> None:
         case Native(expr=e):
             _series_axis_names(e, scan)
         case _:
-            # The arms above happen to cover the whole ``Series`` union today, so a checker reads
-            # this arm as dead — but the arm is what makes the traversal TOTAL, and staying total
-            # is exactly the property a new node type would take away. Silenced narrowly, never
-            # deleted: without it an unhandled node raises here instead of contributing no axis.
-            return  # type: ignore[unreachable]
+            raise TypeError(f"unknown series node: {node!r}")
 
 
 def _condition_axis_names(node: Condition, scan: _SweepScan) -> None:
@@ -381,6 +381,8 @@ def _condition_axis_names(node: Condition, scan: _SweepScan) -> None:
         case LagCondition(condition=inner, periods=p):
             _condition_axis_names(inner, scan)
             scan.visit(node, "lag", "periods", p)
+        case _:
+            raise TypeError(f"unknown condition node: {node!r}")
 
 
 #: The shared axes a thesis declares (``Thesis.axes``): name → values.
@@ -403,7 +405,7 @@ def _iter_sweep_sites(
     """EVERY swept-param occurrence under ``root`` (a Condition tree or a Series), raw and in
     engine order — a shared axis referenced three times yields three sites (the type-fit check
     needs each). ``strict`` refuses a reference to an undeclared axis; off, the site is recorded
-    with unknown values (what ``_series_has_sweep`` needs of a feature)."""
+    with no values (what ``_series_has_sweep`` needs of a feature)."""
     scan = _SweepScan(axes, strict=strict)
     if isinstance(root, _CONDITION_TYPES):
         _condition_axis_names(root, scan)
@@ -424,8 +426,7 @@ def _fold_sites(sites: list[_SweepSite]) -> list[tuple[str, list[int] | list[flo
             if site.level in shared_seen:
                 continue
             shared_seen.add(site.level)
-        # A strict scan resolved every ref, so ``values`` is never None here.
-        out.append((site.level, site.values if site.values is not None else []))
+        out.append((site.level, site.values))
     return out
 
 
@@ -496,7 +497,7 @@ def iter_external_names(node: Condition) -> Iterator[str]:
         yield from _series_external_names(series)
 
 
-def iter_source_leaves(node: Condition) -> Iterator[tuple[str, str]]:
+def iter_source_leaves(node: Condition) -> Iterator[tuple[SourceKind, str]]:
     """Deduplicated ``(kind, name)`` raw decision inputs a condition tree reads.
 
     These are the leaves whose AVAILABILITY the engine must account for: the
@@ -509,7 +510,7 @@ def iter_source_leaves(node: Condition) -> Iterator[tuple[str, str]]:
 
     ``Constant`` and ``Calendar`` are excluded — both are total by construction (a constant is
     finite by validation, a calendar attribute is a property of the index itself)."""
-    seen: set[tuple[str, str]] = set()
+    seen: set[tuple[SourceKind, str]] = set()
     for series in _iter_threshold_operands(node):
         for leaf in series_source_leaves(series):
             if leaf not in seen:

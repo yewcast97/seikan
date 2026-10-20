@@ -35,7 +35,6 @@ for charting and for the coverage ledgers.
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from fractions import Fraction
 from itertools import pairwise
 from typing import Literal, NamedTuple, NotRequired, TypedDict
@@ -78,6 +77,7 @@ from seikan.analysis.stats import (
 from seikan.compiler import nb, vectorize
 from seikan.compiler.data import MarketData
 from seikan.compiler.paths import (
+    MeasureFn,
     bars_to_positive_full,
     bars_to_trough_full,
     excursion_extremum,
@@ -154,10 +154,6 @@ if tuple(_FEATURE_NODES) != DEFAULT_FEATURE_NAMES:  # pragma: no cover - import-
         f"_FEATURE_NODES keys {tuple(_FEATURE_NODES)} drifted from "
         f"constants.DEFAULT_FEATURE_NAMES {DEFAULT_FEATURE_NAMES}"
     )
-#: The columns this module writes into the trades frame. Declared in :mod:`seikan.constants` so
-#: ``dsl.schema`` can reject a colliding ``params.features`` key at VALIDATION time — long
-#: before a runner exists to be corrupted by it.
-_TRADE_COLUMNS = list(TRADE_COLUMNS)
 
 
 def _finite_column(df: pd.DataFrame, name: str) -> np.ndarray:
@@ -168,8 +164,6 @@ def _finite_column(df: pd.DataFrame, name: str) -> np.ndarray:
     non-finite entries must be dropped before any order statistic is taken — not counted, not
     zero-filled.
     """
-    if df.empty:
-        return np.empty(0)
     col: np.ndarray = df[name].to_numpy(dtype=float)
     finite: np.ndarray = col[np.isfinite(col)]
     return finite
@@ -206,13 +200,10 @@ _MISSING_RELIABILITY: ReliabilityRead = {
 
 
 def _aligned_column(df: pd.DataFrame, name: str) -> np.ndarray:
-    """One column ROW-ALIGNED and unfiltered (empty when the frame is empty or lacks it) — the
-    defensive read for the PAIRED consumers (``edge_ratio``, ``benchmark_regression``), which
-    filter pairs themselves: feeding them :func:`_finite_column`'s per-leg finite subsets would
-    silently mis-pair rows under asymmetric window holes. Both legs of a pair convert through
-    this together, so the empty-frame arm can never mis-align one leg against the other."""
-    if name not in df.columns or df.empty:
-        return np.empty(0)
+    """One column ROW-ALIGNED and unfiltered — the read for the PAIRED consumers
+    (``edge_ratio``, ``benchmark_regression``), which filter pairs themselves: feeding them
+    :func:`_finite_column`'s per-leg finite subsets would silently mis-pair rows under asymmetric
+    window holes."""
     col: np.ndarray = df[name].to_numpy(dtype=float)
     return col
 
@@ -435,10 +426,7 @@ def _run_summary(
     # formed over: the pooled pass rotates every fired member's mask, closed rows or not, so a
     # basket whose members fired only where no observation closes (the final bar) has no
     # per-target null at all while its pooled nulls rotated every shift.
-    n_shifts = max(
-        int(rel.get("n_shifts", 0)),
-        int(pooled_rel.get("n_shifts", 0)) if pooled_rel is not None else 0,
-    )
+    n_shifts = max(rel["n_shifts"], pooled_rel["n_shifts"] if pooled_rel is not None else 0)
     # Per-SOURCE availability, computed UNCONDITIONALLY. Every raw decision leaf
     # the entry tree reads (`Field`/`External`/`DaysSince`, and `native:<feed>` — the prints a
     # native node reads), counted over the WHOLE evaluated interval from its own first_available
@@ -782,7 +770,6 @@ def _cells_panel(
         for a, b in pairwise(sub_edges)
     ]
 
-    undef_union: np.ndarray | None = None
     cells_panel: list[SummaryCell] = []
     for ci, dc in enumerate(declared_cells):
         combo_key = dc["combo_key"]
@@ -816,20 +803,9 @@ def _cells_panel(
             )
             pool_scale = len(targets)
 
-        # The combo's undefined-decision mask. The lookup is by construction a hit (the declared
-        # cell recorded the very combo tuple the mask was stored under); if it ever missed,
-        # reporting zero would fail OPEN — a silent all-clear on a decision-side hole. The
-        # fallback is the union over every attempted combo, which is strictly conservative: it
-        # can only ever RAISE the count, never hide a hole.
-        undef = undef_by_combo.get(dc["combo_tuple"])
-        if undef is None:
-            if undef_union is None:
-                undef_union = (
-                    np.logical_or.reduce(list(undef_by_combo.values()))
-                    if undef_by_combo
-                    else np.zeros((n_bars, len(targets)), dtype=bool)
-                )
-            undef = undef_union
+        # The combo's undefined-decision mask, stored under the combo tuple the declared cell
+        # recorded in the same measurement-loop iteration.
+        undef = undef_by_combo[dc["combo_tuple"]]
 
         by_tgt: dict[str, CellTargetPanel] = {}
         cov: dict[str, CellOutcomeCoverage] = {}
@@ -1025,7 +1001,7 @@ def _measure_grid(
     md: MarketData,
     cfg: _RunConfig,
     frames_by_h: dict[int, _HorizonFrames],
-    measure: Callable[[np.ndarray, np.ndarray], np.ndarray],
+    measure: MeasureFn,
 ) -> _GridResult:
     """ONE pass over the declared grid: per combo, build the firing mask and its undefined
     ledger; per (combo × horizon × target), record every observation (the section comments
@@ -1465,7 +1441,7 @@ def run_backtest(thesis: Thesis, md: MarketData) -> EventStudyResult:
     # The trades frame's leading columns are a row's CELL identity — the swept entry axes, then
     # the horizon (always), then the target — ahead of the engine's own columns and the
     # feature snapshots.
-    columns = [*cfg.sweep_levels, "horizon", "target", *_TRADE_COLUMNS, *feature_names]
+    columns = [*cfg.sweep_levels, "horizon", "target", *TRADE_COLUMNS, *feature_names]
     trades = (
         pd.concat(frames, ignore_index=True)[columns] if frames else pd.DataFrame(columns=columns)
     )

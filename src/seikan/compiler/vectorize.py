@@ -47,7 +47,7 @@ Two responsibilities:
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from itertools import product
 from typing import Protocol, cast
 
@@ -58,6 +58,7 @@ import pandas as pd
 from seikan.compiler import nb
 from seikan.compiler import transforms as xf
 from seikan.compiler.data import MarketData, _anchor_feed
+from seikan.dsl.nodes import CalendarField, _NumericParam
 from seikan.dsl.schema import (
     EMA,
     AndCondition,
@@ -98,6 +99,7 @@ from seikan.dsl.schema import (
     iter_child_series,
     iter_sweep_axes,
 )
+from seikan.dsl.traverse import Axes
 from seikan.types import ParamValue
 
 _OPS = {
@@ -119,15 +121,6 @@ _ARITH = {
 
 
 # ---- parameter grid --------------------------------------------------------
-
-#: A transform param as the DSL writes it: the scalar every kernel takes, the list that declares
-#: it a sweep axis (``PosIntParam`` / ``FloatParam`` in ``dsl.schema`` — an int axis and a float
-#: axis, never a mixed list), or a reference to a shared axis. The tree walks below hand exactly
-#: this to their resolver.
-type _SweptParam = ParamValue | list[int] | list[float] | AxisRef
-
-#: The shared axes a thesis declares (``Thesis.axes``): name → values.
-type Axes = dict[str, list[int] | list[float]]
 
 
 class _ParamResolver(Protocol):
@@ -300,7 +293,7 @@ def _make_resolver(combo: dict[str, ParamValue]) -> _ParamResolver:
     """
     counts: dict[str, int] = {}
 
-    def resolve(kind: str, param: str, value: _SweptParam, name: str | None = None) -> ParamValue:
+    def resolve(kind: str, param: str, value: _NumericParam, name: str | None = None) -> ParamValue:
         if isinstance(value, AxisRef):
             return combo[value.axis]
         if isinstance(value, list):
@@ -335,7 +328,7 @@ def iter_param_assignments(
     sweeps = iter_sweep_axes(entry, axes)
     levels = [lvl for lvl, _ in sweeps]
     grids = [vals for _, vals in sweeps]
-    for point in product(*grids) if grids else [()]:
+    for point in product(*grids):
         # One level per axis by construction: ``levels`` and ``grids`` are the two halves of the
         # same ``sweeps`` list, and ``product`` yields one value per grid.
         combo: dict[str, ParamValue] = dict(zip(levels, point, strict=True))
@@ -392,13 +385,6 @@ def _rolling_full_window(frame: pd.DataFrame, window: int) -> np.ndarray:
     counts = frame.astype(int).rolling(window, min_periods=window).sum()
     result: np.ndarray = (counts == window).fillna(False).to_numpy().astype(bool)
     return result
-
-
-def _scalarized(param: object) -> int:
-    """States (and types) the precondition ``iter_param_assignments`` already established: every
-    sweepable parameter reaching evaluation is a RESOLVED scalar — the same contract the Constant
-    note in ``_build_series`` documents for values."""
-    return int(cast("int", param))
 
 
 def _latch(values: np.ndarray) -> npt.NDArray[np.bool_]:
@@ -460,14 +446,9 @@ def _event_anchor_known(
     memoized channels."""
     cv, ci, cd_ = condition_arrays(event, md)
     out: tuple[npt.NDArray[np.int64], npt.NDArray[np.bool_]] = nb.event_anchor_apply_nb(
-        cv & ci & cd_, ci, cd_
+        cv & ci & cd_, cd_
     )
     return out
-
-
-def _event_anchor(event: Condition, md: MarketData) -> npt.NDArray[np.int64]:
-    """The anchor bar ``s(t)`` of an event condition (:func:`_event_anchor_known`)."""
-    return _event_anchor_known(event, md)[0]
 
 
 def _derived_latch_at(
@@ -504,15 +485,15 @@ def _derived_latch_at(
     return _latch_mask(np.isfinite(arr) & init_s) | _latch_mask(pending_s | (unknown & i))
 
 
-def _init_at_lag(init: npt.NDArray[np.bool_], periods: int) -> npt.NDArray[np.bool_]:
-    """An input's init read ``periods`` bars back — for a transform whose value at ``t`` reads the
-    input at ``t − periods`` (``shift``, ``change``): it is initialized only once THAT bar was.
-    Gating on the current bar alone would latch on a still-warming input's value read through the
-    lag and turn the input's next warmup bar into a ledgered hole."""
-    lagged = np.zeros(init.shape, dtype=bool)
-    if periods < init.shape[0]:
-        lagged[periods:] = init[: init.shape[0] - periods]
-    return lagged
+def _lagged(mask: npt.NDArray[np.bool_], periods: int, fill: bool = False) -> npt.NDArray[np.bool_]:
+    """``mask`` read ``periods`` bars back, ``fill`` on the leading bars that have no such bar.
+    An input's init read through a lag (``shift``, ``change``) is initialized only once the bar
+    it reads was: gating on the current bar alone would latch on a still-warming input's value
+    and turn the input's next warmup bar into a ledgered hole."""
+    out = np.full(mask.shape, fill, dtype=bool)
+    if periods < mask.shape[0]:
+        out[periods:] = mask[: mask.shape[0] - periods]
+    return out
 
 
 def _carries_state(node: Series) -> bool:
@@ -523,7 +504,7 @@ def _carries_state(node: Series) -> bool:
     is its input itself (``nb.ema_1d``), hole for hole."""
     match node:
         case EMA(window=w, alpha=a):
-            return nb.ema_params(cast("int | None", w), cast("float | None", a))[0] < 1.0
+            return nb.ema_params(xf.scalar(w), xf.scalar(a))[0] < 1.0
         case ZScore(mean_type=mean_type):
             return mean_type == "ema"
         case (
@@ -545,7 +526,7 @@ def _transform(
 
     A trailing window only reads bars at or after the one it latches on (:func:`_derived_latch`);
     a LAGGED read (``shift``, ``change``) reaches back past it, so it is initialized once the bar
-    it reads was (:func:`_init_at_lag`). A transform that carries state (:func:`_carries_state`)
+    it reads was (:func:`_lagged`). A transform that carries state (:func:`_carries_state`)
     has no value from its input's first post-init hole on. Its kernel skips a NaN bar — that is
     its warmup rule — and carried across a hole its state (a peak the hidden bar may have
     exceeded, a mean it would have moved) read as decided on every later bar, while a domain NaN
@@ -560,8 +541,8 @@ def _transform(
     longer reduces over (``cross_breadth``'s ``k`` records it)."""
     arr = xf.transform_values(node, value)
     if isinstance(node, (Shift, Change)):
-        lag = _scalarized(node.periods)
-        return arr, _derived_latch(arr, (nb.shift_apply_nb(value, lag), _init_at_lag(init, lag)))
+        lag = xf.scalar(node.periods)
+        return arr, _derived_latch(arr, (nb.shift_apply_nb(value, lag), _lagged(init, lag)))
     if not _carries_state(node):
         return arr, _derived_latch(arr, (value, init))
     dead = _latch_mask(init & ~np.isfinite(value))
@@ -585,7 +566,7 @@ def _vacuous(defined: npt.NDArray[np.bool_], init: npt.NDArray[np.bool_]) -> npt
     return defined | ~init
 
 
-def _calendar_values(md: MarketData, field: str) -> npt.NDArray[np.float64]:
+def _calendar_values(md: MarketData, field: CalendarField) -> npt.NDArray[np.float64]:
     """Calendar attribute of each bar's timestamp as a float (rows × targets) array. Calendar-day
     arithmetic only — every field is knowable at the bar itself (no session look-ahead)."""
     idx = md.index
@@ -599,10 +580,8 @@ def _calendar_values(md: MarketData, field: str) -> npt.NDArray[np.float64]:
         col = idx.days_in_month - idx.day  # calendar days remaining; 0 = last calendar day
     elif field == "hour":
         col = idx.hour  # the stamp as given — not interpreted as a bar's open or close
-    elif field == "minute":
-        col = idx.minute
     else:
-        raise ValueError(f"unknown calendar field: {field!r}")
+        col = idx.minute
     return np.repeat(np.asarray(col, dtype=float).reshape(-1, 1), len(md.targets), axis=1)
 
 
@@ -620,7 +599,7 @@ def _eval_native(
             return prints, _latch(prints)
         case Constant(value=val):
             n = prints.shape[0]
-            return np.full(n, float(cast("float", val))), np.ones(n, dtype=bool)
+            return np.full(n, float(xf.scalar(val))), np.ones(n, dtype=bool)
         case (
             EMA()
             | ZScore()
@@ -637,7 +616,7 @@ def _eval_native(
         case RollingCorr(left=lhs, right=rhs, window=w):
             a, ai = _eval_native(lhs, prints)
             b, bi = _eval_native(rhs, prints)
-            corr = nb.rolling_corr_apply_nb(a[:, None], b[:, None], cast("int", w))[:, 0]
+            corr = nb.rolling_corr_apply_nb(a[:, None], b[:, None], xf.scalar(w))[:, 0]
             return corr, _derived_latch(corr, (a, ai), (b, bi))
         case BinaryOp(left=lhs, right=rhs, op=op):
             a, ai = _eval_native(lhs, prints)
@@ -747,13 +726,16 @@ def build_series(node: Series, md: MarketData) -> tuple[pd.DataFrame, pd.DataFra
     frames — and the arrays derived from them via ``to_numpy`` — are treated as immutable by
     callers, which is what makes sharing them safe.
     """
+    return _memoized(md.series_memo, node, lambda: _build_series(node, md))
+
+
+def _memoized[R](memo: dict[str, R], node: Series | Condition, build: Callable[[], R]) -> R:
+    """``memo``'s entry for ``node``, keyed by its canonical JSON — built once by ``build``."""
     key = node.model_dump_json()
-    hit = md.series_memo.get(key)
-    if hit is not None:
-        return hit
-    out = _build_series(node, md)
-    md.series_memo[key] = out
-    return out
+    hit = memo.get(key)
+    if hit is None:
+        hit = memo[key] = build()
+    return hit
 
 
 def _build_series(node: Series, md: MarketData) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -770,7 +752,7 @@ def _build_series(node: Series, md: MarketData) -> tuple[pd.DataFrame, pd.DataFr
             # swept list into one level before this tree was built, so the list form the DSL also
             # admits never reaches a kernel. The three casts in this file's evaluation half say
             # exactly that and nothing else.
-            arr = np.full((len(md.index), len(md.targets)), float(cast("float", val)))
+            arr = np.full((len(md.index), len(md.targets)), float(xf.scalar(val)))
             return _df(arr, md), _df(_all_true(md), md)  # always finite
         case External(name=name):
             arr = md.external_values(name)
@@ -840,7 +822,7 @@ def _build_series(node: Series, md: MarketData) -> tuple[pd.DataFrame, pd.DataFr
             av, ai = build_series(lhs, md)
             bv, bi = build_series(rhs, md)
             a, b = av.to_numpy(dtype=float), bv.to_numpy(dtype=float)
-            arr = nb.rolling_corr_apply_nb(a, b, cast("int", w))  # scalarized — see Constant above
+            arr = nb.rolling_corr_apply_nb(a, b, xf.scalar(w))  # scalarized — see Constant above
             return _df(arr, md), _df(_derived_latch(arr, (av, ai), (bv, bi)), md)
         case BinaryOp(left=lhs, right=rhs, op=op):
             av, ai = build_series(lhs, md)
@@ -864,7 +846,7 @@ def _build_series(node: Series, md: MarketData) -> tuple[pd.DataFrame, pd.DataFr
         # event_agg:         as above; x[t] on the event bar | agg over [s, t] after; any NaN in
         #                    the window poisons until the next event; overflow → NaN
         case Mask(condition=c):
-            cv, ci, cd_ = condition_arrays(c, md)
+            cv, _ci, cd_ = condition_arrays(c, md)
             # init AND values are gated by C's FULLY-initialized mask, the gate ``not`` reads:
             # 0.0 claims a decided False, which an ``or`` that is False only because a branch
             # still warms is not (``mask(C) == 0`` is ``not(C)`` spelled as a number). Its True
@@ -878,7 +860,7 @@ def _build_series(node: Series, md: MarketData) -> tuple[pd.DataFrame, pd.DataFr
             # ledgered rather than absorbed as warmup, by every series computed from the mask
             # too (``_derived_latch``).
             full = fully_initialized(c, md)
-            arr = nb.mask_apply_nb(cv, ci, cd_, full)
+            arr = nb.mask_apply_nb(cv, cd_, full)
             return _df(arr, md), _df(full, md)
         case BarsSinceEvent() | EventValue() | EventAgg():
             ev = node.event
@@ -927,13 +909,7 @@ def build_condition(
 
     Memoized through ``md.condition_memo``, the Condition twin of :func:`build_series`'s memo.
     """
-    key = node.model_dump_json()
-    hit = md.condition_memo.get(key)
-    if hit is not None:
-        return hit
-    out = _build_condition(node, md)
-    md.condition_memo[key] = out
-    return out
+    return _memoized(md.condition_memo, node, lambda: _build_condition(node, md))
 
 
 def _build_condition(
@@ -969,7 +945,7 @@ def _build_condition(
             # doctrinal no-signal of A's warmup into a firing (see the module docstring).
             return _channels(~cv, fully_initialized(c, md), cd_, md)
         case RollingCondition(window=w, agg=a, min_count=mc, condition=inner):
-            wi = _scalarized(w)  # resolved per combo — see the Constant note in `_build_series`
+            wi = xf.scalar(w)  # resolved per combo — see the Constant note in `_build_series`
             cv, ci, cd_ = build_condition(inner, md)
             counts = cv.astype(int).rolling(wi, min_periods=wi).sum()
             if a == "all":
@@ -998,23 +974,16 @@ def _build_condition(
                 cv.to_numpy(dtype=bool),
                 ci.to_numpy(dtype=bool),
                 cd_.to_numpy(dtype=bool),
-                _scalarized(cd),
+                xf.scalar(cd),
             )
             return _channels(value, ci.to_numpy(), defined, md)
         case LagCondition(condition=inner, periods=p):
-            k = _scalarized(p)
+            k = xf.scalar(p)
             cv, ci, cd_ = build_condition(inner, md)
             v0, i0, d0 = cv.to_numpy(dtype=bool), ci.to_numpy(dtype=bool), cd_.to_numpy(dtype=bool)
             # All three channels shift back together: the leading k bars are warmup (value False,
             # init False, defined True — vacuous), and a hole moves with the decision it affects.
-            value = np.zeros_like(v0)
-            init = np.zeros_like(i0)
-            defined = np.ones_like(d0)
-            if k < v0.shape[0]:
-                value[k:] = v0[:-k]
-                init[k:] = i0[:-k]
-                defined[k:] = d0[:-k]
-            return _channels(value, init, defined, md)
+            return _channels(_lagged(v0, k), _lagged(i0, k), _lagged(d0, k, fill=True), md)
         case _:
             raise TypeError(f"unknown condition node: {node!r}")
 
@@ -1030,14 +999,12 @@ def condition_arrays(
     re-ran ``.to_numpy()`` three times on the very frames the memo had already built. Arrays are
     immutable by the same contract as the cached frames (see :func:`build_series`).
     """
-    key = node.model_dump_json()
-    hit = md.array_memo.get(key)
-    if hit is not None:
-        return hit
-    value, init, defined = build_condition(node, md)
-    out = (value.to_numpy(), init.to_numpy(), defined.to_numpy())
-    md.array_memo[key] = out
-    return out
+
+    def arrays() -> tuple[npt.NDArray[np.bool_], npt.NDArray[np.bool_], npt.NDArray[np.bool_]]:
+        value, init, defined = build_condition(node, md)
+        return value.to_numpy(), init.to_numpy(), defined.to_numpy()
+
+    return _memoized(md.array_memo, node, arrays)
 
 
 def fully_initialized(node: Condition, md: MarketData) -> npt.NDArray[np.bool_]:
@@ -1053,13 +1020,7 @@ def fully_initialized(node: Condition, md: MarketData) -> npt.NDArray[np.bool_]:
     ``lag`` shifts exactly as each node carries its own init. Monotone (a latch) and a subset of
     ``init`` by construction. Memoized through ``md.full_memo``; immutable like the others.
     """
-    key = node.model_dump_json()
-    hit = md.full_memo.get(key)
-    if hit is not None:
-        return hit
-    out = _fully_initialized(node, md)
-    md.full_memo[key] = out
-    return out
+    return _memoized(md.full_memo, node, lambda: _fully_initialized(node, md))
 
 
 def _fully_initialized(node: Condition, md: MarketData) -> npt.NDArray[np.bool_]:
@@ -1077,14 +1038,9 @@ def _fully_initialized(node: Condition, md: MarketData) -> npt.NDArray[np.bool_]
         case NotCondition(condition=c) | FirstTrueCondition(condition=c):
             return fully_initialized(c, md)
         case RollingCondition(window=w, condition=c):
-            return _rolling_full_window(_df(fully_initialized(c, md), md), _scalarized(w))
+            return _rolling_full_window(_df(fully_initialized(c, md), md), xf.scalar(w))
         case LagCondition(condition=c, periods=p):
-            k = _scalarized(p)
-            child = fully_initialized(c, md)
-            shifted = np.zeros_like(child)
-            if k < child.shape[0]:
-                shifted[k:] = child[: child.shape[0] - k]
-            return shifted
+            return _lagged(fully_initialized(c, md), xf.scalar(p))
         case _:
             raise TypeError(f"unknown condition node: {node!r}")
 
@@ -1094,7 +1050,7 @@ def _operand_full(node: Series, md: MarketData) -> npt.NDArray[np.bool_]:
     OPERAND READS IT AT (rows × targets) — the operand half of :func:`fully_initialized`.
 
     It follows the bars each node reads exactly as its own ``init`` does: ``shift`` and
-    ``change`` read their input ``periods`` bars back (:func:`_init_at_lag`), so what is embedded
+    ``change`` read their input ``periods`` bars back (:func:`_lagged`), so what is embedded
     in that input must be full THERE; ``event_value`` / ``event_agg`` read their input from the
     event bar ``s(t)`` on (:func:`_derived_latch_at`), so its embedded conditions are read at
     ``s(t)`` — and the event condition itself, whose history up to ``t`` places the anchor, at
@@ -1107,14 +1063,9 @@ def _operand_full(node: Series, md: MarketData) -> npt.NDArray[np.bool_]:
     undefined, and it must stay ledgered, never become warmup."""
     match node:
         case Shift(input=inp, periods=p) | Change(input=inp, periods=p):
-            k = _scalarized(p)
-            read = _operand_full(inp, md)
-            lagged = np.zeros_like(read)
-            if k < read.shape[0]:
-                lagged[k:] = read[: read.shape[0] - k]
-            return lagged
+            return _lagged(_operand_full(inp, md), xf.scalar(p))
         case EventValue(event=e, input=inp) | EventAgg(event=e, input=inp):
-            s_idx = _event_anchor(e, md)
+            s_idx, _known = _event_anchor_known(e, md)
             inner = _operand_full(inp, md)
             at_s = np.take_along_axis(inner, np.maximum(s_idx, 0), axis=0)
             event_full: npt.NDArray[np.bool_] = fully_initialized(e, md) & np.where(

@@ -109,12 +109,8 @@ def source_availability(thesis: Thesis, md: MarketData) -> dict[str, LeafMasks]:
             arr = md.field(name).to_numpy(dtype=float)
         elif kind == "external":
             arr = md.external_values(name)
-        elif kind == "days_since":
-            arr = md.days_since_values(name)
         else:
-            # ``series_source_leaves`` yields exactly four kinds; a fifth is a seikan bug, not a
-            # leaf to silently misread as a feed age.
-            raise ValueError(f"unknown source kind: {kind!r}")
+            arr = md.days_since_values(name)
         finite = np.isfinite(arr)
         out[f"{kind}:{name}"] = LeafMasks(finite, finite)
     return out

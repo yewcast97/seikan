@@ -2736,7 +2736,7 @@ def test_a_series_reader_ledgers_a_snapshot_initialized_with_no_value_since_its_
 
 
 def test_a_lagged_read_of_a_broadcast_waits_for_the_bar_it_reads():
-    # `_init_at_lag`: T3's own `x` starts at bar 6 and T3 is decided ineligible at bar 5, so the
+    # `_lagged`: T3's own `x` starts at bar 6 and T3 is decided ineligible at bar 5, so the
     # breadth broadcast into T3 is 2.0 on bars 0..4 and NaN on bar 5 — all before T3's init. A
     # 2-bar shift / change initialized on the CURRENT bar's init latches at bar 6 (reading bar 4)
     # and then reads bar 5's gap at bar 7 as a ledgered hole: T3 refused on its own warmup.

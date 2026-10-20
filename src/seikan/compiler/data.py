@@ -38,6 +38,7 @@ from typing import NamedTuple, NoReturn
 import numpy as np
 import pandas as pd
 
+from seikan.constants import OHLC_COLUMNS
 from seikan.dataio import (
     MAX_EXAMPLES,
     DataError,
@@ -48,8 +49,6 @@ from seikan.dataio import (
 )
 from seikan.dsl.schema import BENCHMARK_KEY, DataSpec, Thesis
 from seikan.types import DataIssue, DataIssueCode, DataReport, JoinInfo, TargetShape
-
-_REQUIRED = ("open", "high", "low", "close")
 
 #: An external feed covering less than this fraction of the joined bars draws a coverage warning.
 _FEED_COVERAGE_WARN = 0.9
@@ -248,7 +247,7 @@ def _prepare_target(
     might have bound under several keys. The frame arrives pre-validated by the strict reader —
     nothing here mutates values (no clamping)."""
     df = _slice(df, start, end)
-    if all(c in df.columns for c in _REQUIRED):
+    if all(c in df.columns for c in OHLC_COLUMNS):
         if column is not None:
             raise ValueError(
                 f"{path}: --column {key}={column} is bound but the file is OHLCV-shaped; "
@@ -434,10 +433,8 @@ def _frozen(v: pd.Series | pd.DataFrame) -> pd.Series | pd.DataFrame:
 def _coverage(values: pd.Series | pd.DataFrame) -> float:
     """Fraction of joined bars carrying a value (min across columns for per-target frames)."""
     if isinstance(values, pd.DataFrame):
-        if values.shape[1] == 0 or len(values) == 0:
-            return 0.0
         return float(values.notna().mean().min())
-    return float(values.notna().mean()) if len(values) else 0.0
+    return float(values.notna().mean())
 
 
 @dataclass(frozen=True)
@@ -616,16 +613,18 @@ def load_market_data(spec: DataSpec, files: DataFiles) -> MarketData:
     bindings: list[tuple[_Answers, str, str, str | None]] = [
         ((None, name), path, f"target:{name}", None) for name, path in targets.items()
     ]
+    shared_paths: dict[str, str] = {}  # a shared feed's one path
+    member_paths: dict[str, dict[str, str]] = {}  # a per-target feed's {target: path}
     for fname, feed in feed_specs.items():
         if feed.per_target:
-            member_paths = _per_target_feed_paths(feed_paths[fname], fname, spec.targets)
+            member_paths[fname] = _per_target_feed_paths(feed_paths[fname], fname, spec.targets)
             bindings += [
-                ((fname, name), member_paths[name], f"external:{fname}:{name}", None)
+                ((fname, name), member_paths[fname][name], f"external:{fname}:{name}", None)
                 for name in targets
             ]
         else:
-            path = _shared_feed_path(feed_paths[fname], fname)
-            bindings.append(((fname, None), path, f"external:{fname}", None))
+            shared_paths[fname] = _shared_feed_path(feed_paths[fname], fname)
+            bindings.append(((fname, None), shared_paths[fname], f"external:{fname}", None))
     if files.benchmark:
         bindings.append(((None, None), files.benchmark, "benchmark", "ohlcv"))
     # Read EVERY binding first, so one DataError carries the complete diagnosis — each distinct
@@ -739,13 +738,12 @@ def load_market_data(spec: DataSpec, files: DataFiles) -> MarketData:
     externals_native: dict[str, pd.Series | dict[str, pd.Series]] = {}
     for fname, feed in feed_specs.items():
         lag = feed.lag_timedelta
-        paths = feed_paths[fname]
         try:
             if not feed.per_target:
                 # A shared feed answers to its own name, so that is the key its column is bound to.
                 native = _prepare_feed(
                     raw_feeds[fname][None],
-                    _shared_feed_path(paths, fname),
+                    shared_paths[fname],
                     fname,
                     lag,
                     files.columns.get(fname),
@@ -759,11 +757,10 @@ def load_market_data(spec: DataSpec, files: DataFiles) -> MarketData:
                 # the per-member ``--data <feed>@<target>=PATH`` that already exists: whoever may
                 # point two members at two files may also point them at two column headers. The
                 # single DSL ``column`` could only say one name for the whole family.
-                member_paths = _per_target_feed_paths(paths, fname, names)
                 natives = {
                     name: _prepare_feed(
                         raw_feeds[fname][name],
-                        member_paths[name],
+                        member_paths[fname][name],
                         f"{fname}@{name}",
                         lag,
                         files.columns.get(f"{fname}@{name}"),

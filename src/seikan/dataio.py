@@ -37,7 +37,7 @@ from typing import Literal, Unpack
 import numpy as np
 import pandas as pd
 
-from seikan.constants import PAST_NANOSECOND_FRACTION
+from seikan.constants import OHLC_COLUMNS, PAST_NANOSECOND_FRACTION
 from seikan.types import (
     BarSpacing,
     DataIssue,
@@ -48,8 +48,6 @@ from seikan.types import (
     IssueExample,
     JoinInfo,
 )
-
-_OHLC = ("open", "high", "low", "close")
 
 #: |1-bar close return| beyond this warns of a possible unadjusted split (never refuses).
 _LARGE_MOVE = 0.5
@@ -169,7 +167,7 @@ def check_frame(df: pd.DataFrame, *, shape: str) -> list[str]:
         # OHLC invariant below is skipped, so a file whose high sits under its low would load
         # clean — and a full OHLCV file demanded as a series would dodge the same checks. A lone
         # OHLC-named column (a bare `close`) is an ordinary series file.
-        present = [c for c in _OHLC if c in df.columns]
+        present = [c for c in OHLC_COLUMNS if c in df.columns]
         if len(present) >= 2:
             v.append(
                 f"series-shaped read of a frame carrying {len(present)} of the four OHLC "
@@ -179,7 +177,7 @@ def check_frame(df: pd.DataFrame, *, shape: str) -> list[str]:
 
     # --- OHLCV invariants -----------------------------------------------------------------
     if shape == "ohlcv":
-        missing = [c for c in _OHLC if c not in df.columns]
+        missing = [c for c in OHLC_COLUMNS if c not in df.columns]
         if missing:
             v.append(f"ohlcv frame missing columns {missing}")
         else:
@@ -190,7 +188,7 @@ def check_frame(df: pd.DataFrame, *, shape: str) -> list[str]:
                 v.append("ohlcv has bars where high < open/close")
             if (lo > o).any() or (lo > c).any():
                 v.append("ohlcv has bars where low > open/close")
-            if (df[list(_OHLC)] <= 0).to_numpy().any():
+            if (df[list(OHLC_COLUMNS)] <= 0).to_numpy().any():
                 v.append("ohlcv has non-positive prices")
             if "volume" in df.columns and (df["volume"] < 0).any():
                 v.append("ohlcv has negative volume")
@@ -734,7 +732,7 @@ def _shape_and_integrity(
     """Stage 8: shape detection/mismatch + the :func:`check_frame` integrity invariants.
     Returns the DETECTED shape (also stamped on the report), whatever was expected."""
     detected: Literal["ohlcv", "series"] = (
-        "ohlcv" if all(c in df.columns for c in _OHLC) else "series"
+        "ohlcv" if all(c in df.columns for c in OHLC_COLUMNS) else "series"
     )
     if expected_shape is not None and detected != expected_shape:
         rep.error(

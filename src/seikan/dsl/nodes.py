@@ -31,22 +31,11 @@ if TYPE_CHECKING:
 def _distinct_sweep[T](values: list[T]) -> list[T]:
     """Reject a repeated value inside one sweep axis.
 
-    A sweep axis enumerates DISTINCT hypotheses. Repeating a value declares the same hypothesis
-    twice, which adds no information but is not merely redundant — it corrupts the per-cell
-    counting. The measurement loop runs the duplicate combo once per occurrence and appends its
-    observations to the trades frame each time, while the per-cell panel groups that frame by
-    parameter VALUE: all d copies of the axis point therefore read one d-fold-duplicated group
-    and every count derived from it (``by_target.n``, the outcome ledger's
-    ``n_attempted``/``n_closed``, ``episode_stats.n``) reports d times the real evidence. The
-    overlap-honest ``n_nonoverlap`` is computed from the firing bars and stays truthful, so the
-    inflation cannot even be caught by the gate's ``n_nonoverlap <= n`` reconciliation — it makes
-    that
-    bound strictly easier to satisfy. The result is fail-OPEN: ``[21, 21]`` doubles a cell's
-    apparent support and can flip the ``support`` floor from unmet to met.
-
-    Refusing here — at validation, before a byte of data is read — is the same discipline
-    ``Thesis`` applies to duplicate axis NAMES, and for the same stated reason: a collision that
-    miscounts silently must never reach the engine.
+    A sweep axis enumerates DISTINCT hypotheses. A repeated value declares the same hypothesis
+    twice: two cells naming the same ``params``, which a cell's identity cannot tell apart (the
+    checklist refuses such a panel as drifted input), and one more hypothesis counted against the
+    search cap with none added. Refusing here — at validation, before a byte of data is read — is
+    the discipline ``Thesis`` applies to duplicate axis NAMES.
     """
     seen: list[T] = []
     dupes: list[T] = []
@@ -196,6 +185,12 @@ class External(_Strict):
     name: str
 
 
+#: The bar-timestamp attributes a ``calendar`` node reads.
+CalendarField = Literal[
+    "month", "day_of_week", "day_of_month", "days_to_month_end", "hour", "minute"
+]
+
+
 class Calendar(_Strict):
     # Calendar attribute of each bar's timestamp, broadcast to every target — the seasonality
     # primitive (turn-of-month, day-of-week, sell-in-May). CALENDAR-DAY arithmetic only: ``month``
@@ -205,7 +200,7 @@ class Calendar(_Strict):
     # is deliberately absent (look-ahead). ``hour`` (0-23) and ``minute`` (0-59) read the stamp AS
     # THE CSV GIVES IT — the engine does not interpret whether a stamp is a bar's open or close.
     type: Literal["calendar"] = "calendar"
-    field: Literal["month", "day_of_week", "day_of_month", "days_to_month_end", "hour", "minute"]
+    field: CalendarField
 
 
 class DaysSince(_Strict):

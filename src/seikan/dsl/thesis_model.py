@@ -6,10 +6,11 @@ from __future__ import annotations
 
 import re
 from fractions import Fraction
-from typing import TYPE_CHECKING, Literal
+from typing import Literal
 
+import pandas as pd
 from pydantic import Field as PField
-from pydantic import model_validator
+from pydantic import ValidationError, model_validator
 
 from seikan.constants import (
     DEFAULT_FEATURE_NAMES,
@@ -20,11 +21,6 @@ from seikan.constants import (
     RESERVED_SWEEP_LEVELS,
     TRADE_COLUMNS,
 )
-
-if TYPE_CHECKING:
-    import pandas as pd
-from pydantic import ValidationError
-
 from seikan.dsl.conditions import Condition
 from seikan.dsl.nodes import AxisValues, HorizonParam, Series, _Strict
 from seikan.dsl.traverse import (
@@ -171,8 +167,6 @@ class ExternalFeed(_Strict):
 
     @property
     def lag_timedelta(self) -> pd.Timedelta:
-        import pandas as pd  # local: keep the DSL module import-light
-
         if isinstance(self.lag, int):
             if self.lag < 0:
                 raise ValueError(f"external feed lag must be >= 0, got {self.lag!r}")
@@ -257,8 +251,6 @@ class DataSpec(_Strict):
         # guessing, ever. Handing them to pandas label slicing verbatim would silently INTERPRET
         # an ambiguous "01/02/2024", and an unparseable bound would escape as an uncaught
         # exception (exit 4) instead of a DSL refusal (exit 3).
-        import pandas as pd  # local: keep the DSL module import-light
-
         for field in ("start", "end"):
             raw = getattr(self, field)
             if raw is None:
@@ -603,7 +595,7 @@ class Thesis(_Strict):
         # while reusing the child instances by identity. Cost O(ref sites × axis length),
         # bounded by the 64-cell cap.
         for site in sites:
-            if not site.shared or site.values is None:
+            if not site.shared:
                 continue
             for value in site.values:
                 try:

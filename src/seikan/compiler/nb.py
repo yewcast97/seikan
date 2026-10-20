@@ -39,6 +39,7 @@ import numpy as np
 import numpy.typing as npt
 from numba import njit
 from numpy.lib.stride_tricks import sliding_window_view
+from scipy.stats import rankdata
 
 from seikan.numeric import MIN_NORMAL, log_ratio_array, pct_change
 
@@ -377,11 +378,10 @@ def percentile_apply_nb(arr: npt.NDArray[np.float64], window: int) -> npt.NDArra
     return out
 
 
-# ``agg``/``kind``/``op`` stay ``str`` rather than the DSL's Literal: each dispatch below ends in an
-# unknown-value ``raise``, and a Literal parameter would make that guard statically unreachable —
-# deleting the one check that catches a caller reaching a kernel around the schema.
 def rolling_agg_apply_nb(
-    arr: npt.NDArray[np.float64], window: int, agg: str
+    arr: npt.NDArray[np.float64],
+    window: int,
+    agg: Literal["max", "min", "mean", "std", "median", "mad"],
 ) -> npt.NDArray[np.float64]:
     # Trailing-window aggregate (max/min/mean/std) along the time axis; the current value sits at
     # the window's LAST bar. NaN unless the whole trailing window is finite (the percentile gate).
@@ -430,7 +430,7 @@ def rolling_agg_apply_nb(
                     lifted_std = np.ldexp(np.sqrt(lifted_var), -_LIFT)
                     v = np.where(lost, np.maximum(lifted_std, 5e-324), v)
                 v = np.where(constant[rows], 0.0, v)
-            elif agg in ("median", "mad"):
+            else:  # median, mad
                 # The sorted window's middle, an even window's pair met at its overflow-safe
                 # midpoint (bit for bit ``np.median`` wherever that is finite): a constant window
                 # reads its value and a MAD of exactly 0.0, at any level.
@@ -448,20 +448,20 @@ def rolling_agg_apply_nb(
                     wide = finite_all & np.isnan(v)
                     if wide.any():
                         v[wide] = 2.0 * _sorted_mad(s[wide] / 2.0, window)
-            else:
-                raise ValueError(f"unknown rolling_agg agg: {agg!r}")
         # `isfinite(v)`: a finite window can still overflow its sum/squared deviations to ±inf.
         out[window - 1 :][rows] = np.where(finite_all & np.isfinite(v), v, np.nan)
     return out
 
 
-def expanding_agg_apply_nb(arr: npt.NDArray[np.float64], agg: str) -> npt.NDArray[np.float64]:
+def expanding_agg_apply_nb(
+    arr: npt.NDArray[np.float64], agg: Literal["max", "min", "mean", "std", "median", "mad"]
+) -> npt.NDArray[np.float64]:
     """Expanding (all-time) max/min along the time axis; NaN-skipping via ``np.fmax``/``fmin``.
 
     Leading NaNs stay NaN until the first finite bar; thereafter NaN inputs hold the running peak
     (``fmax(peak, nan) == peak``) — past the input's init the builder reads such a NaN as a hole
-    the series has no value after (``vectorize._transform``). Only ``max``/``min`` — expanding
-    mean/std are rejected upstream.
+    the series has no value after (``vectorize._transform``). ``agg`` is ``rolling_agg``'s, whose
+    windowless form takes only ``max``/``min`` (``dsl.nodes.RollingAgg``'s validator).
     """
     a = np.asarray(arr, dtype=float)
     if agg == "max":
@@ -523,7 +523,7 @@ def _bars_since_extremum_1d(
 ) -> npt.NDArray[np.float64]:
     """Bar count since the most recent attainment of the trailing/expanding max|min.
 
-    ``window <= 0`` means expanding: NaN bars are skipped, and past the input's init the builder
+    ``window == 0`` means expanding: NaN bars are skipped, and past the input's init the builder
     reads one as a hole the series has no value after (``vectorize._transform``). Ties reset to
     the MOST RECENT attaining bar. Trailing form returns NaN until the window is full AND every
     bar in it is finite.
@@ -635,7 +635,7 @@ def rolling_corr_apply_nb(
 
 
 def change_apply_nb(
-    arr: npt.NDArray[np.float64], periods: int, kind: str = "pct"
+    arr: npt.NDArray[np.float64], periods: int, kind: Literal["pct", "log", "diff"] = "pct"
 ) -> npt.NDArray[np.float64]:
     """k-period change: ``pct`` = (cur − prev)/prev, ``log`` = ln(cur/prev), ``diff`` = cur − prev.
 
@@ -667,11 +667,9 @@ def change_apply_nb(
         elif kind == "log":
             valid = finite & (prev > 0.0) & (cur > 0.0)
             r = log_ratio_array(cur, prev)
-        elif kind == "diff":
+        else:  # diff
             valid = finite
             r = cur - prev
-        else:
-            raise ValueError(f"unknown change kind: {kind!r}")
     # `isfinite(r)`: a pct ratio over a denormal-positive denominator or a level-scale
     # subtraction can overflow (the scale-safe log ratio cannot).
     out[periods:] = np.where(valid & np.isfinite(r), r, np.nan)
@@ -689,7 +687,9 @@ def shift_apply_nb(arr: npt.NDArray[np.float64], periods: int) -> npt.NDArray[np
     return out
 
 
-def unary_op_apply_nb(arr: npt.NDArray[np.float64], op: str) -> npt.NDArray[np.float64]:
+def unary_op_apply_nb(
+    arr: npt.NDArray[np.float64], op: Literal["abs", "log", "sign", "sqrt", "neg"]
+) -> npt.NDArray[np.float64]:
     """Element-wise unary arithmetic; out-of-domain (log of non-positive, sqrt of negative) → NaN,
     preserving the NaN-gating contract."""
     a = np.asarray(arr, dtype=float)
@@ -702,18 +702,25 @@ def unary_op_apply_nb(arr: npt.NDArray[np.float64], op: str) -> npt.NDArray[np.f
     elif op == "log":
         ok = a > 0.0
         out = np.where(ok, np.log(np.where(ok, a, 1.0)), np.nan)
-    elif op == "sqrt":
+    else:  # sqrt
         ok = a >= 0.0
         out = np.where(ok, np.sqrt(np.where(ok, a, 0.0)), np.nan)
-    else:
-        raise ValueError(f"unknown unary op: {op!r}")
     return np.where(np.isfinite(out), out, np.nan)
+
+
+def _row_range(
+    a: npt.NDArray[np.float64], finite: npt.NDArray[np.bool_]
+) -> tuple[np.ndarray, np.ndarray]:
+    """``(lo, hi)``, each (rows, 1): a row's least and greatest finite member (``+inf`` /
+    ``-inf`` on an empty row)."""
+    lo = np.where(finite, a, np.inf).min(axis=1, keepdims=True)
+    hi = np.where(finite, a, -np.inf).max(axis=1, keepdims=True)
+    return lo, hi
 
 
 def _constant_rows(a: npt.NDArray[np.float64], finite: npt.NDArray[np.bool_]) -> np.ndarray:
     """(rows, 1): the bars whose FINITE members all share one value (False on an empty row)."""
-    hi = np.where(finite, a, -np.inf).max(axis=1, keepdims=True)
-    lo = np.where(finite, a, np.inf).min(axis=1, keepdims=True)
+    lo, hi = _row_range(a, finite)
     constant: np.ndarray = hi == lo
     return constant
 
@@ -725,8 +732,7 @@ def _row_offset(a: npt.NDArray[np.float64], finite: npt.NDArray[np.bool_]) -> np
     range still have a representable mean and spread, which an offset AT a member would
     overflow. Differences from it are exact wherever the row lies within a factor of two of it
     (:func:`_window_variance` says why that matters)."""
-    hi = np.where(finite, a, -np.inf).max(axis=1, keepdims=True)
-    lo = np.where(finite, a, np.inf).min(axis=1, keepdims=True)
+    lo, hi = _row_range(a, finite)
     with np.errstate(invalid="ignore"):
         mid = hi / 2.0 + lo / 2.0
     offset: np.ndarray = np.where(finite.any(axis=1, keepdims=True), mid, 0.0)
@@ -761,8 +767,6 @@ def cross_rank_apply_nb(arr: npt.NDArray[np.float64], min_valid: int) -> npt.NDA
     (average ranks on ties). NaN where x_g is NaN or k < min_valid. Inherently 2-D —
     there is no 1-D form (a single column has no cross-section and returns all NaN).
     """
-    from scipy.stats import rankdata
-
     a = np.asarray(arr, dtype=float)
     out = np.full(a.shape, np.nan)
     if a.ndim != 2 or a.shape[1] < 2:
@@ -816,7 +820,9 @@ def _row_var(
 
 
 def cross_agg_apply_nb(
-    arr: npt.NDArray[np.float64], agg: str, min_valid: int
+    arr: npt.NDArray[np.float64],
+    agg: Literal["mean", "median", "std", "frac_positive"],
+    min_valid: int,
 ) -> npt.NDArray[np.float64]:
     """Cross-sectional AGGREGATE across targets at each bar, broadcast to every column (axis=1, no
     time window). Unlike ``cross_rank``/``cross_demean`` the value is a property of the
@@ -862,10 +868,8 @@ def cross_agg_apply_nb(
                 lifted_std = np.ldexp(np.sqrt(_row_var(np.ldexp(a, _LIFT), finite, k)), -_LIFT)
                 v = np.where(lost, np.maximum(lifted_std, 5e-324), v)
             v = np.where(constant, 0.0, v)
-        elif agg == "frac_positive":
+        else:  # frac_positive
             v = (finite & (a > 0.0)).sum(axis=1, keepdims=True) / k
-        else:
-            raise ValueError(f"unknown cross_agg agg: {agg!r}")
     # `isfinite(v)`: the row sums and squared deviations can overflow from finite members.
     ok = (k >= float(min_valid)) & np.isfinite(v)
     # (n, 1) aggregate → all columns
@@ -1294,27 +1298,24 @@ def first_true_1d(
 
 @njit(cache=True)
 def event_anchor_1d(
-    sig: npt.NDArray[np.bool_], init: npt.NDArray[np.bool_], defined: npt.NDArray[np.bool_]
+    sig: npt.NDArray[np.bool_], defined: npt.NDArray[np.bool_]
 ) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.bool_]]:
     """``(s_idx, known)`` per bar: the latest event index (−1 when there is none or it is
     unknowable) and whether the anchor is KNOWN (False only after a post-warmup hole, until the
     next defined event).
 
-    ``sig`` is the condition's tradable signal, ``init``/``defined`` its own channels. A warmup
-    bar resets to "no event yet" (``init`` is monotone, so this is defense in depth); a hole
-    drops the anchor into the unknown state; a defined event bar re-anchors and re-establishes
-    knowledge. A defined non-event bar after a hole stays unknown — whether an event fell inside
-    the hole is exactly what cannot be known."""
+    ``sig`` is the condition's tradable signal, ``defined`` its own channel. Warmup needs no
+    branch of its own: it is a prefix (init is a latch) where the signal is False and every bar
+    defined, so it reads "no event yet", known. A hole drops the anchor into the unknown state; a
+    defined event bar re-anchors and re-establishes knowledge. A defined non-event bar after a
+    hole stays unknown — whether an event fell inside the hole is exactly what cannot be known."""
     n = sig.shape[0]
     s_idx = np.full(n, -1, dtype=np.int64)
     known_out = np.ones(n, dtype=np.bool_)
     s = -1
     known = True
     for t in range(n):
-        if not init[t]:
-            s = -1
-            known = True
-        elif not defined[t]:
+        if not defined[t]:
             known = False
         elif sig[t]:
             s = t
@@ -1326,13 +1327,13 @@ def event_anchor_1d(
 
 @njit(cache=True)
 def event_anchor_apply_nb(
-    sig: npt.NDArray[np.bool_], init: npt.NDArray[np.bool_], defined: npt.NDArray[np.bool_]
+    sig: npt.NDArray[np.bool_], defined: npt.NDArray[np.bool_]
 ) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.bool_]]:
     rows, cols = sig.shape
     s_idx = np.empty((rows, cols), dtype=np.int64)
     known = np.empty((rows, cols), dtype=np.bool_)
     for j in range(cols):
-        s_idx[:, j], known[:, j] = event_anchor_1d(sig[:, j], init[:, j], defined[:, j])
+        s_idx[:, j], known[:, j] = event_anchor_1d(sig[:, j], defined[:, j])
     return s_idx, known
 
 
@@ -2082,12 +2083,10 @@ def event_agg_apply_nb(
     init: npt.NDArray[np.bool_],
     defined: npt.NDArray[np.bool_],
     arr: npt.NDArray[np.float64],
-    agg: str,
+    agg: Literal["sum", "max", "min", "mean"],
 ) -> npt.NDArray[np.float64]:
-    """2-D ``event_agg_1d`` per column; ``agg`` is one of ``sum``/``max``/``min``/``mean``."""
-    mode = _EVENT_AGG_MODES.get(agg)
-    if mode is None:
-        raise ValueError(f"unknown event_agg agg: {agg!r}")
+    """2-D ``event_agg_1d`` per column, one ``_EVENT_AGG_MODES`` mode per ``agg``."""
+    mode = _EVENT_AGG_MODES[agg]
     x = np.asarray(arr, dtype=float)
     if not (x.shape == sig.shape == init.shape == defined.shape):
         raise ValueError(f"event_agg shape mismatch: {x.shape} vs {sig.shape}")
@@ -2101,18 +2100,14 @@ def event_agg_apply_nb(
 
 
 def mask_apply_nb(
-    value: npt.NDArray[np.bool_],
-    init: npt.NDArray[np.bool_],
-    defined: npt.NDArray[np.bool_],
-    full: npt.NDArray[np.bool_],
+    value: npt.NDArray[np.bool_], defined: npt.NDArray[np.bool_], full: npt.NDArray[np.bool_]
 ) -> npt.NDArray[np.float64]:
     """The condition as a number where it was decided with every condition under it past warmup
-    (``full & defined``): 1.0 where its tradable signal holds (``value & init``), 0.0 where it
-    does not. NaN while ANY branch warms — an ``or`` that is False then has decided nothing, and
-    one that is True then would make a series of its Trues alone (a value-selected history for
-    every reader that skips NaN) — or where it is undecidable."""
-    decided = full & init & defined
-    return np.where(decided, np.where(value, 1.0, 0.0), np.nan)
+    (``full & defined`` — ``full`` lies within the condition's init): 1.0 where its value holds,
+    0.0 where it does not. NaN while ANY branch warms — an ``or`` that is False then has decided
+    nothing, and one that is True then would make a series of its Trues alone (a value-selected
+    history for every reader that skips NaN) — or where it is undecidable."""
+    return np.where(full & defined, np.where(value, 1.0, 0.0), np.nan)
 
 
 # =============================================================================

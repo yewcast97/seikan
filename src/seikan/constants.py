@@ -31,6 +31,10 @@ TRADE_COLUMNS: tuple[str, ...] = (
     "is_open",
 )
 
+#: The four price columns that make a file OHLCV-shaped — ``dataio``'s shape detection and OHLC
+#: invariants, and the loader's target frames.
+OHLC_COLUMNS: tuple[str, ...] = ("open", "high", "low", "close")
+
 #: The names the engine writes beside a combo's sweep levels: ``target`` (the regime column) and
 #: ``horizon`` (the measurement axis) in the trades frame and the cell params, and ``timestamps``
 #: (the firing list) in each ``list_entries`` row ``{**combo, target, timestamps}``. A swept

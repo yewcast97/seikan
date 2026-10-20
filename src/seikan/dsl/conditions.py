@@ -4,12 +4,11 @@ the ``Condition`` union — plus the ONE rebuild site for both vocabularies (see
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Literal, get_args
 
 from pydantic import Field as PField
 from pydantic import model_validator
 
-from seikan.dsl import nodes
 from seikan.dsl.nodes import AxisRef, NonNegIntParam, PosInt, PosIntParam, Series, _Strict
 
 
@@ -122,33 +121,6 @@ Condition = Annotated[
 # the namespace handed in here (``_types_namespace`` is explicit rather than frame-depth-relative,
 # so the resolution does not depend on where this module happens to be imported from).
 _NAMESPACE = {"Series": Series, "Condition": Condition}
-for _model in (
-    nodes.EMA,
-    nodes.ZScore,
-    nodes.Percentile,
-    nodes.RollingAgg,
-    nodes.Drawdown,
-    nodes.Runup,
-    nodes.BarsSinceExtremum,
-    nodes.Change,
-    nodes.Shift,
-    nodes.RollingCorr,
-    nodes.CrossRank,
-    nodes.CrossDemean,
-    nodes.CrossAgg,
-    nodes.BinaryOp,
-    nodes.UnaryOp,
-    nodes.Mask,
-    nodes.BarsSinceEvent,
-    nodes.EventValue,
-    nodes.EventAgg,
-    nodes.Native,
-    ThresholdCondition,
-    AndCondition,
-    OrCondition,
-    NotCondition,
-    RollingCondition,
-    FirstTrueCondition,
-    LagCondition,
-):
-    _model.model_rebuild(_types_namespace=_NAMESPACE)
+for _union in (Series, Condition):
+    for _model in get_args(get_args(_union)[0]):  # Annotated[A | B | ..., discriminator]
+        _model.model_rebuild(_types_namespace=_NAMESPACE)

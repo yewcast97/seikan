@@ -219,11 +219,6 @@ def test_change_diff_allows_zero_base():
     assert np.isnan(change_1d(arr, 1, "pct")[1])
 
 
-def test_change_unknown_kind_raises():
-    with pytest.raises(ValueError, match="unknown change kind"):
-        nb.change_apply_nb(np.zeros((5, 1)), 1, "bogus")
-
-
 def test_change_log_past_the_double_range_is_finite():
     # 1e200 → 1e-200 is a quotient of 1e-400 (underflow to 0.0) and the reverse one of 1e400
     # (overflow to inf): ln of either was ∓inf → NaN, an undecidable decision bar over two
@@ -1260,11 +1255,6 @@ def test_unary_op_known_answers():
     # domain: log needs > 0, sqrt needs >= 0 — out-of-domain maps to NaN (never fires)
     _assert(unary_op_1d(arr, "log"), np.array([np.nan, np.nan, np.nan, 0.0, np.log(9.0), np.nan]))
     _assert(unary_op_1d(arr, "sqrt"), np.array([np.nan, np.nan, 0.0, 1.0, 3.0, np.nan]))
-
-
-def test_unary_op_unknown_op_raises():
-    with pytest.raises(ValueError, match="unknown unary op"):
-        nb.unary_op_apply_nb(np.zeros((2, 1)), "exp")
 
 
 # ---- cross-sectional kernels vs pandas reference ---------------------------
@@ -2450,16 +2440,14 @@ def _event_channels(seed: int = 3, n: int = 120) -> tuple[np.ndarray, np.ndarray
     return sig, init, defined
 
 
-def _anchor_1d(sig, init, defined):
-    s, k = nb.event_anchor_apply_nb(
-        _c1(sig).astype(bool), _c1(init).astype(bool), _c1(defined).astype(bool)
-    )
+def _anchor_1d(sig, defined):
+    s, k = nb.event_anchor_apply_nb(_c1(sig).astype(bool), _c1(defined).astype(bool))
     return s.reshape(-1), k.reshape(-1)
 
 
 def test_event_anchor_matches_reference():
     sig, init, defined = _event_channels()
-    s, k = _anchor_1d(sig, init, defined)
+    s, k = _anchor_1d(sig, defined)
     rs, rk = ref.event_anchor(sig, init, defined)
     np.testing.assert_array_equal(s, rs)
     np.testing.assert_array_equal(k, rk)
@@ -2470,14 +2458,15 @@ def test_event_anchor_known_answers():
     sig = _b(0, 0, 1, 0, 1, 0, 0, 0)
     init = _b(0, 1, 1, 1, 1, 1, 1, 1)
     defd = _b(1, 1, 1, 1, 1, 0, 1, 1)
-    s, k = _anchor_1d(sig, init, defd)
+    assert not (sig & ~init).any() and defd[~init].all()  # the channels' own invariants
+    s, k = _anchor_1d(sig, defd)
     # warmup prefix: no anchor, known; an event replaces the previous one; a hole makes the
     # anchor UNKNOWN until the next defined event — a defined False after the hole stays unknown.
     np.testing.assert_array_equal(s, [-1, -1, 2, 2, 4, -1, -1, -1])
     np.testing.assert_array_equal(k, [1, 1, 1, 1, 1, 0, 0, 0])
     # the next defined EVENT re-establishes knowledge
     sig2 = _b(0, 0, 1, 0, 1, 0, 1, 0)
-    s2, k2 = _anchor_1d(sig2, init, defd)
+    s2, k2 = _anchor_1d(sig2, defd)
     np.testing.assert_array_equal(s2, [-1, -1, 2, 2, 4, -1, 6, 6])
     np.testing.assert_array_equal(k2, [1, 1, 1, 1, 1, 0, 1, 1])
 
@@ -2485,9 +2474,8 @@ def test_event_anchor_known_answers():
 def test_event_anchor_apply_nb_is_columnwise():
     cols = [_event_channels(seed) for seed in (1, 2, 3)]
     sig = np.column_stack([c[0] for c in cols])
-    init = np.column_stack([c[1] for c in cols])
     defd = np.column_stack([c[2] for c in cols])
-    s, k = nb.event_anchor_apply_nb(sig, init, defd)
+    s, k = nb.event_anchor_apply_nb(sig, defd)
     for j, (sj, ij, dj) in enumerate(cols):
         rs, rk = ref.event_anchor(sj, ij, dj)
         np.testing.assert_array_equal(s[:, j], rs)
@@ -2555,12 +2543,6 @@ def test_event_agg_apply_nb_is_columnwise():
         _assert(got[:, j], ref.event_agg(sj, ij, dj, x[:, j], "mean"))
 
 
-def test_event_agg_unknown_agg_raises():
-    ones = np.ones((3, 1), dtype=bool)
-    with pytest.raises(ValueError, match="unknown event_agg agg"):
-        nb.event_agg_apply_nb(ones, ones, ones, np.ones((3, 1)), "median")
-
-
 def test_bars_since_event_and_event_value_known_answers():
     s_idx = np.asarray([-1, -1, 2, 2, 4, -1, 6, 6], dtype=np.int64).reshape(-1, 1)
     x = np.asarray([1.0, 2.0, np.nan, 4.0, 5.0, 6.0, 7.0, np.nan]).reshape(-1, 1)
@@ -2581,11 +2563,11 @@ def test_mask_apply_nb_known_answers():
     value = _b(0, 1, 1, 0, 1)
     init = _b(0, 1, 1, 1, 1)
     defd = _b(1, 1, 0, 1, 1)
-    _assert(nb.mask_apply_nb(value, init, defd, init), [np.nan, 1.0, np.nan, 0.0, 1.0])
+    _assert(nb.mask_apply_nb(value, defd, init), [np.nan, 1.0, np.nan, 0.0, 1.0])
     # Only a FULLY-initialized condition is a number: before every branch is live a False is no
     # claim, and the Trues alone would be a value-selected series — both read NaN.
     full = _b(0, 0, 0, 0, 1)
-    _assert(nb.mask_apply_nb(value, init, defd, full), [np.nan, np.nan, np.nan, np.nan, 1.0])
+    _assert(nb.mask_apply_nb(value, defd, full), [np.nan, np.nan, np.nan, np.nan, 1.0])
 
 
 # ---- grouped cross-sectional kernels --------------------------------------------------------
