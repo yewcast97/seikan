@@ -18,10 +18,8 @@ destroy the envelope, the exit code and the diagnosis at once — the failure ``
 totality doctrine exists to prevent). Their roots type the builders. A library caller validates
 an engine summary with :func:`validate_summary`, the run root's own ``summary`` contract.
 
-A refusal raises :class:`ReportContractError` (a ``RuntimeError``, never the pydantic
-``ValidationError`` itself): the CLI's exception ladder catches ``ValidationError`` as an exit-3
-``dsl_invalid`` — a statement about the CALLER's thesis — while an emitted document violating its
-own contract is a seikan bug and must fall through to the exit-4 ``internal`` envelope.
+A refusal raises :class:`ReportContractError` — a seikan bug, the exit-4 ``internal`` envelope,
+never the exit-3 ``dsl_invalid`` a pydantic ``ValidationError`` maps to.
 """
 
 from __future__ import annotations

@@ -885,10 +885,10 @@ def test_cross_demean_matches_row_mean_reference():
 
 
 def test_cross_demean_member_at_the_mean_never_reads_above_it():
-    # The review's signal: five per-target feeds whose every bar is [0, 1, 1, −1 − 2**-52,
-    # −1 + 2**-52] — the cross-section sums to exactly 0, so the member at 0 sits AT its mean.
-    # Demeaned about a rounded centre it read 2.2e-17, and `x == 0 AND cross_demean(x) > 0` fired
-    # on every bar; its exact deviation is 0.0, and the conjunction fires nowhere.
+    # Five per-target feeds whose every bar is [0, 1, 1, −1 − 2**-52, −1 + 2**-52] — the
+    # cross-section sums to exactly 0, so the member at 0 sits AT its mean. Its exact deviation is
+    # 0.0, and `x == 0 AND cross_demean(x) > 0` fires nowhere; demeaned about a rounded centre it
+    # would read 2.2e-17 and fire on every bar.
     e = 2.0**-52
     idx = pd.date_range("2020-01-01", periods=40, freq="1D")
     members = dict(zip("ABCDE", [0.0, 1.0, 1.0, -1.0 - e, -1.0 + e], strict=True))
@@ -1604,7 +1604,7 @@ def test_rolling_corr_sweep_registers_rolling_corr_window():
     assert combos == [{"rolling_corr_window": 10}, {"rolling_corr_window": 20}]
 
 
-# ---- Phase-1 algebra nodes through the builder ------------------------------
+# ---- algebra nodes through the builder ------------------------------------
 
 
 def test_shift_parity(ohlcv):
@@ -1614,7 +1614,8 @@ def test_shift_parity(ohlcv):
 
 
 def test_ema_percentile_change_warmup_gates(ohlcv):
-    # NaN-gated warmup boundary for the surviving/new transform family, checked via the `init` mask.
+    # NaN-gated warmup boundary for the ema / percentile / change transforms, checked via the
+    # `init` mask.
     _ema_val, ema_init = vz.build_series(EMA(input=Field(column="close"), window=10), _md(ohlcv))
     assert not ema_init["t"].iloc[:9].any() and ema_init["t"].iloc[9:].all()
 
@@ -1798,7 +1799,7 @@ def test_first_true_is_undefined_where_the_completions_of_a_hole_disagree():
     _v, _i, defined = _chan(node, _hole_md([-1.0, np.nan, 1.0, 1.0]))
     np.testing.assert_array_equal(defined, [True, False, False, True])
     # A False right after the hole fires in no completion, so it is decided (a fixed "taint the
-    # next bar" rule called it undefined), and the True after it is an edge in every completion.
+    # next bar" rule would call it undefined), and the True after it is an edge in every completion.
     value, _i, defined = _chan(node, _hole_md([-1.0, np.nan, -1.0, 1.0]))
     np.testing.assert_array_equal(defined, [True, False, True, True])
     np.testing.assert_array_equal(value, [False, False, False, True])
@@ -1859,8 +1860,8 @@ def test_signal_is_unchanged_on_fully_finite_inputs(ohlcv_ext):
 )
 def test_binary_op_overflow_is_undefined_never_a_firing(op, feed_value, left, right):
     # A finite feed value whose arithmetic overflows (or a denormal denominator) must land in
-    # the undecidable ledger — the audit's 1e308·2 probe fired [True, True, True] with full
-    # definedness under the old divide-only sanitization.
+    # the undecidable ledger — guards against sanitizing division alone, under which 1e308·2
+    # fires [True, True, True] with full definedness.
     md = _hole_md([1.0, feed_value, 1.0])
     node = ThresholdCondition(
         left=BinaryOp(left=left, op=op, right=right),
@@ -1907,11 +1908,10 @@ _EXPANDING_MAX_OF_MASK = ThresholdCondition(
 
 
 def test_a_domain_hole_under_an_expanding_max_is_undecided_from_there_on():
-    # The review's case: `expanding_max(mask(log(x) > 0)) < 0.5` over x = 1 but on bar 100. A 1
-    # reads mask 0 there and fires on all 160 bars; a 2 lifts the running max to 1 and stops it.
-    # A −1 is log's domain NaN — no raw leaf's hole — and the expanding max carried its 0.0 across
-    # it: 160 firings, nothing undefined, every check met. The completions disagree from bar 100
-    # on, so those bars are undecided, never a firing.
+    # `expanding_max(mask(log(x) > 0)) < 0.5` over x = 1 but on bar 100. A 1 reads mask 0 there
+    # and fires on all 160 bars; a 2 lifts the running max to 1 and stops it. A −1 is log's domain
+    # NaN — no raw leaf's hole — and the completions disagree from bar 100 on, so those bars are
+    # undecided, never a firing (an expanding max carrying its 0.0 across it fires on all 160).
     bars = np.arange(160)
 
     def run(z):
@@ -1964,9 +1964,9 @@ def test_stateful_transforms_parity_with_reference_over_holes(ohlcv):
 
 
 def test_a_hole_in_a_stateful_transforms_warmup_is_ledgered_not_warmup():
-    # `ema(x, 20)` over a hole on bar 5: the kernel skipped it and warmed on to bar 20 — the hole
-    # stretched its warmup unseen, and the value it then emitted carried its state across the
-    # hole. The node is initialized with no value from the hole on: a threshold over it is
+    # `ema(x, 20)` over a hole on bar 5: the NaN-skipping kernel warms on to bar 20, so the hole
+    # would stretch its warmup unseen and the value it then emits would carry its state across
+    # the hole. The node is initialized with no value from the hole on: a threshold over it is
     # undecided there, and so is one over a series computed from it (an input with no value since
     # its init).
     x = np.arange(1.0, 41.0)
@@ -2000,9 +2000,9 @@ def test_a_windowed_or_lagged_transform_is_decided_again_past_a_hole():
 
 def test_an_ema_at_decay_one_is_its_input_hole_for_hole():
     # At alpha 1 (window 1) every EW update is the input itself, so there is no state to carry
-    # across a hole. `ema(log(x), alpha=1)` over x = 2 but a −1 on bar 20 read undefined from bar
-    # 20 on — 80 bars `log(x) > 0` decides. It is `log(x)` bit for bit: undefined on bar 20 alone
-    # and firing on the other 99. Alpha 0.9 carries state, so it has no value from the hole on.
+    # across a hole: `ema(log(x), alpha=1)` over x = 2 but a −1 on bar 20 is `log(x)` bit for bit,
+    # undefined on bar 20 alone and firing on the other 99 — not undefined from bar 20 on, where
+    # `log(x) > 0` decides. Alpha 0.9 carries state, so it has no value from the hole on.
     x = np.full(100, 2.0)
     x[20] = -1.0
     md = _hole_md(x)
@@ -2042,9 +2042,9 @@ _LIVE_FALSE = ThresholdCondition(left=Field(column="close"), op="<", right=Const
 
 
 def test_negated_warming_branch_does_not_fire_through_or():
-    # The review's repro: `or(not(ema(close, 40) > 0), close < 0)` on 70 rising bars. `not` of
-    # the warming threshold reads `~False`, and `or` initializes on its live sibling — 39 firings
-    # (and 39 closed observations) out of decisions never evaluated. Warmup has no truth value.
+    # `or(not(ema(close, 40) > 0), close < 0)` on 70 rising bars. Warmup has no truth value: a
+    # `not` reading the warming threshold as `~False` lets `or` initialize on its live sibling and
+    # fire 39 times out of decisions never evaluated.
     md = _rising_md()
     node = OrCondition(conditions=[NotCondition(condition=_WARM40), _LIVE_FALSE])
     assert not vz.signal(node, md).to_numpy().any()
@@ -2159,10 +2159,10 @@ def _first_true_bar(node, md):
 
 def test_negation_waits_for_the_bars_a_lagged_operand_reads():
     # E = or(a > 0, b > 0) with `a` starting at bar 40 and `b` firing once at bar 0; S =
-    # bars_since_event(E). `not(S > 1000)` waits for `a` (bar 40) and its lag by 20 for bar 60 —
-    # but `not(shift(S, 20) > 1000)` read E's full-init on the CURRENT bar and fired from bar 40,
-    # reading through the shift a bar where `a` still warmed. The gate follows the bars the
-    # operand reads: shift and change wait for bar 60 too.
+    # bars_since_event(E). `not(S > 1000)` waits for `a` (bar 40) and its lag by 20 for bar 60.
+    # The gate follows the bars the operand reads: shift and change wait for bar 60 too (reading
+    # E's full-init on the CURRENT bar, `not(shift(S, 20) > 1000)` would fire from bar 40, through
+    # the shift a bar where `a` still warms).
     df, md = _late_or()
     lagged = LagCondition(
         condition=NotCondition(condition=ThresholdCondition(left=_SINCE_AB, op=">", right=_BIG)),
@@ -2185,10 +2185,10 @@ def test_negation_waits_for_the_bars_a_lagged_operand_reads():
 
 @pytest.mark.parametrize("snapshot", [EventValue, EventAgg])
 def test_negation_waits_for_the_event_bar_a_snapshot_reads(snapshot):
-    # A snapshot of S taken at an event bar where `a` still warmed carries a "no event" claim
-    # that was never decided: `not(event_value(E2, S) > 1000)` read E's full-init on the current
-    # bar and fired from bar 40 off the bar-10 snapshot. Read at the event bar it waits for an
-    # event after bar 40 — here bar 50. (`event_agg` reads the run from the same bar.)
+    # A snapshot of S taken at an event bar where `a` still warms carries a "no event" claim that
+    # is never decided: read on E's full-init at the current bar, `not(event_value(E2, S) > 1000)`
+    # would fire from bar 40 off the bar-10 snapshot. Read at the event bar it waits for an event
+    # after bar 40 — here bar 50. (`event_agg` reads the run from the same bar.)
     kw = {"agg": "max"} if snapshot is EventAgg else {}
     left = snapshot(event=_gt_feed("e2"), input=_SINCE_AB, **kw)
     node = NotCondition(condition=ThresholdCondition(left=left, op=">", right=_BIG))
@@ -2347,7 +2347,8 @@ def test_a_late_members_broadcast_breadth_cannot_fire_through_an_or():
 
 def test_a_series_computed_from_a_broadcast_waits_for_the_members_own_input():
     # The same guard one Series level up: a transform of cross_agg initializes only where the
-    # member's own input has — it used to latch on the broadcast and fire the late member first.
+    # member's own input has — guards against latching on the broadcast and firing the late
+    # member first.
     late = np.r_[np.full(6, np.nan), np.ones(14)]
     md = _mdk(20, x=[1, 1, 1, late])
     smoothed = EMA(input=CrossAgg(input=_X, agg="mean"), window=2)
@@ -2598,10 +2599,10 @@ def test_a_broadcast_of_a_broadcast_waits_for_the_members_own_init():
 def test_an_event_snapshot_of_a_broadcast_initializes_where_its_event_bar_was():
     # Four members, two (T2, T3) whose own input starts at bar 40; the only event is bar 0, where
     # the breadth broadcast into T2/T3 already reads 2.0 — a value carried while their own input
-    # warms. The snapshot's init was read on the CURRENT bar: from bar 40 the warmup-era 2.0
-    # became usable without a new event, and `event_value(E, cross_agg(X, mean)) > 0` fired T2/T3
-    # on 40 bars each. Read at the event bar it never initializes for them — as the same predicate
-    # captured AT the event, `event_value(E, mask(cross_agg(X, mean) > 0)) > 0.5`, never fires.
+    # warms. The snapshot's init is read at the event bar, so it never initializes for them — as
+    # the same predicate captured AT the event never fires:
+    # `event_value(E, mask(cross_agg(X, mean) > 0)) > 0.5`. Read on the CURRENT bar, the
+    # warmup-era 2.0 would turn usable from bar 40 without a new event.
     n = 80
     late = np.r_[np.full(40, np.nan), np.full(40, 3.0)]
     ev = np.r_[1.0, np.zeros(n - 1)]
@@ -2634,11 +2635,10 @@ def test_a_snapshot_whose_anchor_turns_unknown_cannot_fire_a_members_broadcast()
     # The twin above with a domain NaN — log(−1) — in T2/T3's event condition on bar 45, after
     # the only event (bar 0) and after their own input started (bar 40). Their snapshot of the
     # breadth, taken while their input warmed, holds a VALUE through bar 44 and is then, its
-    # anchor unknowable, initialized with no value. The outer cross_agg's latch read the member's
-    # own input as "has had a finite value" and "is initialized" on different bars, so it latched
-    # T2/T3 at 45 and the broadcast fired them on 35 bars each (33 closed observations at h = 1)
-    # where the hole-free run fires them nowhere: a hole minting signals. The member's own input
-    # must have a finite value SINCE its init.
+    # anchor unknowable, initialized with no value. The member's own input must have a finite
+    # value SINCE its init: an outer cross_agg latch reading "has had a finite value" and "is
+    # initialized" on different bars latches T2/T3 at 45, and the broadcast fires them where the
+    # hole-free run fires them nowhere — a hole minting signals.
     n = 80
     late = np.r_[np.full(40, np.nan), np.full(40, 3.0)]
     e = np.r_[2.0, np.ones(n - 1)]  # log(2) > 0.4: the one event, bar 0
@@ -2662,10 +2662,10 @@ def test_a_snapshot_whose_anchor_turns_unknown_cannot_fire_a_members_broadcast()
 def test_an_unknown_anchor_cannot_initialize_a_snapshot_whose_input_has_not_started(snapshot):
     # E = log(e) > 0.4 fires on bar 10, and a domain NaN on bar 5 (log(-1)) leaves its anchor
     # unknowable over 5..9. T2/T3's own input starts at bar 40, so the bar-10 snapshot of the
-    # breadth broadcast into them was taken during their warmup. The unknown-anchor arm
-    # initialized them from bar 5 anyway, and that snapshot fired them on 70 bars each where the
-    # hole-free run never fires them. Under every reading of the hole their input still warmed,
-    # so they stay in warmup; T0/T1, whose input was live, ledger the stretch.
+    # breadth broadcast into them is taken during their warmup. Under every reading of the hole
+    # their input still warms, so they stay in warmup — an unknown-anchor arm initializing them
+    # from bar 5 would fire them where the hole-free run never does; T0/T1, whose input is live,
+    # ledger the stretch.
     n = 80
     bars = np.arange(n)
     late = np.r_[np.full(40, np.nan), np.full(40, 3.0)]
@@ -2704,9 +2704,9 @@ def test_a_series_reader_ledgers_a_snapshot_initialized_with_no_value_since_its_
     # The only event (bar 0) snapshots the breadth broadcast into T2/T3 while their own input
     # warms (it starts at bar 40); a domain NaN in E at bar 45 then leaves the anchor unknowable
     # with their input live, so the snapshot initializes there with no value: 35 holes. A series
-    # computed from it counted the 2.0 carried BEFORE that init as the snapshot having produced a
-    # value, so its pending arm never armed: `snap + 0 > 0` stayed in vacuous warmup and the
-    # 35 holes left the ledger with identical firings.
+    # computed from it ledgers them too; counting the 2.0 carried BEFORE that init as the
+    # snapshot having produced a value would leave its pending arm unarmed, `snap + 0 > 0` in
+    # vacuous warmup and the 35 holes off the ledger with identical firings.
     n = 80
     bars = np.arange(n)
     late = np.r_[np.full(40, np.nan), np.full(40, 3.0)]
@@ -2756,7 +2756,7 @@ def test_a_series_reader_keeps_an_event_nodes_unknown_anchor_ledgered():
     # A domain NaN in E before its first event (log(-1) at bar 5) leaves bars_since_event
     # initialized with no value until the next event (bar 20): a hole its direct readers ledger.
     # A series computed from it must ledger the same stretch rather than absorb it as its own
-    # warmup — there the decided E's firings vanished with no signal_coverage entry.
+    # warmup, where the decided E's firings would vanish with no signal_coverage entry.
     z = np.ones(30)
     z[5], z[20] = -1.0, 2.0
     md = _ev_md(z)
@@ -2913,9 +2913,9 @@ def _random_condition(rng, depth):
 
 @pytest.mark.parametrize("seed", range(4))
 def test_lengthening_a_warmup_never_adds_a_firing(seed):
-    # The class the review's repro belongs to, as a property: on hole-free feeds, NaN-ing a
-    # longer prefix of ONE feed (extending its warmup) may only REMOVE firings. A firing a
-    # longer warmup creates is one manufactured out of warmup.
+    # As a property: on hole-free feeds, NaN-ing a longer prefix of ONE feed (extending its
+    # warmup) may only REMOVE firings. A firing a longer warmup creates is one manufactured out
+    # of warmup.
     rng = np.random.default_rng(1000 + seed)
     fired = 0
     for _ in range(60):
@@ -3126,8 +3126,8 @@ def test_event_agg_poisons_until_next_event():
 
 def test_event_agg_sum_keeps_a_swallowed_term_through_its_cancellation():
     # One event at bar 0 over the feed [2**54, 1, −2**54, 0, …]: from bar 2 on the exact sum is
-    # 1, but `acc += v` lost the 1 inside 2**54 and read 0 — `event_agg(E, X, sum) == 0` fired
-    # on 78 bars where it was false on every one. The running sum is exact now.
+    # 1, so `event_agg(E, X, sum) == 0` is false on every bar. The running sum is exact; a plain
+    # `acc += v` loses the 1 inside 2**54 and reads 0.
     n = 80
     z = np.zeros(n)
     z[0] = 5.0
@@ -3166,9 +3166,9 @@ def test_event_and_input_at_the_same_bar():
 
 
 def test_strict_ordering_recipe():
-    # The review's synthetic case: A and B first turn true TOGETHER at bar 2. `rolling(any, A, N)`
-    # includes the current bar and fires there; `rolling(any, lag(A, 1), N)` needs A on a PRIOR
-    # bar and does not.
+    # A synthetic case: A and B first turn true TOGETHER at bar 2. `rolling(any, A, N)` includes
+    # the current bar and fires there; `rolling(any, lag(A, 1), N)` needs A on a PRIOR bar and
+    # does not.
     md = _ev_md([0, 0, 1, 0, 0, 0, 1], close=[0, 0, 1, 1, 0, 1, 0])
     A = _c_gt(0.5)
     B = _z_gt(0.5)
@@ -3243,7 +3243,7 @@ def test_embedded_condition_sweeps_count_once_in_declared_grid():
     assert declared_grid_size(single, 1) == 4
     # The SAME event condition written into two nodes is two OCCURRENCES of a swept param — two
     # independent axes (`first_true_cooldown`, `first_true_cooldown_2`), exactly as two swept
-    # transform windows are today; a shared axis is what ties them (see the `axes` field).
+    # transform windows are; a shared axis is what ties them (see the `axes` field).
     entry = AndCondition(
         conditions=[
             ThresholdCondition(left=BarsSinceEvent(event=ev), op=">=", right=Constant(value=1.0)),
@@ -3384,9 +3384,10 @@ def test_native_explicit_nan_print_is_a_hole_on_the_native_clock(ohlcv):
 def test_native_init_latches_on_the_print_clock(ohlcv, per_target):
     # Day 0 prints -1, 1 and -1 at 00:00, 01:00 and 02:00: log's one finite print (0.0 at 01:00)
     # is superseded before any bar reads it. Days 1..9 print -1, days 10..19 print 2. Latched on
-    # the ANCHORED values, the node initialized only at bar 10, so the domain NaNs on bars 1..9
-    # read as warmup, unledgered, though the feed's own clock had produced a value. Latched on the
-    # print clock, it is initialized from bar 1 and those bars are holes; the firings are the same.
+    # the ANCHORED values, the node would initialize only at bar 10, and the domain NaNs on bars
+    # 1..9 would read as warmup, unledgered, though the feed's own clock has produced a value.
+    # Latched on the print clock, it is initialized from bar 1 and those bars are holes; the
+    # firings are the same.
     bars = np.arange(len(ohlcv))
     t0 = ohlcv.index[0]
     stamps = [t0, t0 + pd.Timedelta(hours=1), t0 + pd.Timedelta(hours=2), *ohlcv.index[1:20]]
@@ -3402,9 +3403,9 @@ def test_native_init_latches_on_the_print_clock(ohlcv, per_target):
 
 
 def test_native_stateful_transform_has_no_value_past_a_domain_hole(ohlcv):
-    # `ema(log(eps), 3)` on the print clock over one negative print: the kernel skipped log's NaN
-    # and read finite after it. The node has no value from that print on, initialized, so the
-    # bars it anchors to are holes; the bars before it are unchanged.
+    # `ema(log(eps), 3)` on the print clock over one negative print: the kernel skips log's NaN
+    # and reads finite after it, but the node has no value from that print on, initialized, so
+    # the bars it anchors to are holes; the bars before it are unchanged.
     values = np.arange(1.0, 21.0)
     values[10] = -1.0
     md = _md(ohlcv, natives={"eps": _native_prints(ohlcv.index[:20], values)})
@@ -3461,8 +3462,8 @@ def test_cross_membership_without_where_or_group_is_input_finiteness():
 
 
 def test_cross_rank_where_ranks_within_the_eligible_population():
-    # The review's case: values [100, 90, 80, 70], the last two eligible → ranks within {80, 70}
-    # are [nan, nan, 1.0, 0.0], and the kernel saw k = 2.
+    # Values [100, 90, 80, 70], the last two eligible → ranks within {80, 70} are
+    # [nan, nan, 1.0, 0.0], and the kernel sees k = 2.
     md = _md4(x=[100, 90, 80, 70], elig=[0, 0, 1, 1])
     v, i = vz.build_series(CrossRank(input=_X, where=_ELIG), md)
     np.testing.assert_array_equal(v.iloc[-1].to_numpy(), [np.nan, np.nan, 1.0, 0.0])
@@ -3690,9 +3691,9 @@ def _md_abc(n, **feeds) -> MarketData:
 
 
 def test_a_label_carried_before_its_init_labels_nobody_yet():
-    # The review's case: the label is a cross_agg broadcast, which carries the group's value into
-    # C from bar 0 while C's own label feed starts at bar 60. A label C does not have yet must not
-    # rank C: C sat in the population on all 60 warmup bars and fired on 20 of them.
+    # The label is a cross_agg broadcast, which carries the group's value into C from bar 0 while
+    # C's own label feed starts at bar 60. A label C does not have yet must not rank C: C stays
+    # out of the population on its 60 warmup bars and fires on none of them.
     n = 120
     g = np.ones((n, 3))
     g[:60, 2] = np.nan
@@ -3717,10 +3718,10 @@ def test_a_label_carried_before_its_init_labels_nobody_yet():
 
 
 def test_an_input_carried_before_its_init_does_not_enter_the_cross_section():
-    # The review's nested case: C's x starts at bar 60, so the inner cross_agg broadcast + z
-    # carries a finite value into C from bar 0 with no init. The outer rank used to enter it,
-    # ranking A and B over three members (one in warmup) and firing `== 0.5` on all 60 warmup
-    # bars; A and B now rank between themselves, as the inner node's own k says.
+    # A nested case: C's x starts at bar 60, so the inner cross_agg broadcast + z carries a
+    # finite value into C from bar 0 with no init. The outer rank does not enter it: A and B rank
+    # between themselves, as the inner node's own k says, and `== 0.5` fires on none of the 60
+    # warmup bars (entering C would rank them over three members, one in warmup).
     n = 120
     x_c = np.r_[np.full(60, np.nan), np.ones(60)]
     z_a = np.where(np.arange(n) % 2 == 0, 0.0, 1.0)
@@ -3821,9 +3822,9 @@ def test_rolling_median_and_mad_parity(ohlcv, agg):
 
 
 def test_a_median_of_a_level_near_the_ceiling_reads_the_level():
-    # The review's case through the evaluator: a feed held at 1e308 read an even-window median and
-    # MAD of NaN, and a cross-sectional median of NaN, where its mean read 1e308 — a threshold over
-    # them never decided. They read the level and a MAD of exactly 0.0, initialized.
+    # Through the evaluator: a feed held at 1e308 reads the level as its even-window median and
+    # its cross-sectional median, as its mean does, and a MAD of exactly 0.0, initialized — so a
+    # threshold over them is decided (a median or MAD of NaN would leave it undecided).
     md = _mdk(6, x=[1e308] * 4)
     for node, want, warm in (
         (RollingAgg(input=_X, window=2, agg="median"), 1e308, 1),
@@ -3899,8 +3900,8 @@ def _beta_tree(n):
 
 
 def test_sweep_axes_shared_axis_recorded_once_rolling_beta():
-    # The review's case: three [20, 60] lists were three axes and eight cells; one shared N is
-    # one axis, two combos, and every window in each scalarized tree reads combo["N"].
+    # Three [20, 60] lists are three axes and eight cells; one shared N is one axis, two combos,
+    # and every window in each scalarized tree reads combo["N"].
     entry = _beta_tree("N")
     assert iter_sweep_axes(entry, {"N": [20, 60]}) == [("N", [20, 60])]
     combos = list(vz.iter_param_assignments(entry, {"N": [20, 60]}))

@@ -419,9 +419,9 @@ def test_zero_crossing_series_refuses_ratio_algebras_while_diff_lives(tmp_path, 
 def test_quotient_past_the_double_range_reads_the_exact_log_and_names_the_pct_refusal(
     tmp_path, capsys
 ):
-    # The review's probe: 1e200 → 1e-200 is a quotient of 1e-400, which underflows to 0.0, so
-    # math.log(b/a) raised a domain error and the whole command died at exit 4. ln(b/a) itself
-    # is the finite −921.03…; the scale-safe log reads it as ln(b) − ln(a) exactly there.
+    # 1e200 → 1e-200 is a quotient of 1e-400, which underflows to 0.0, so math.log(b/a) raises a
+    # domain error. ln(b/a) itself is the finite −921.03…; the scale-safe log reads it as
+    # ln(b) − ln(a) exactly there.
     down = _write_series(tmp_path / "down.csv", [1e200, 1e-200])
     code, doc = _run(capsys, ["describe", str(down), "--windows", "1"])
     assert code == 0
@@ -433,8 +433,8 @@ def test_quotient_past_the_double_range_reads_the_exact_log_and_names_the_pct_re
     assert ch1["reason"] is None and ch1["ratio_reason"] is None
     assert blocks["full_sample"]["drawdown_pct"] == -1.0
     # Reversed, the quotient 1e400 OVERFLOWS: log still reads exactly, but pct = b/a − 1 has no
-    # double to be — so it is a null that says why (it used to be an inf serialized to a
-    # reasonless null), here and in every block that reads the same ratio.
+    # double to be — so it is a null that says why, never an inf serialized to a reasonless
+    # null, here and in every block that reads the same ratio.
     up = _write_series(tmp_path / "up.csv", [1e-200, 1e200])
     code, doc = _run(capsys, ["describe", str(up), "--windows", "1,2"])
     assert code == 0
@@ -454,8 +454,8 @@ def test_quotient_past_the_double_range_reads_the_exact_log_and_names_the_pct_re
 
 
 def test_subnormal_quotient_reads_the_exact_log_not_its_rounded_one(tmp_path, capsys):
-    # 3e20 → 1e-300 is a quotient of 3.3e-321 — SUBNORMAL, so ln of it was finite and read
-    # without complaint, but rounding to the subnormal grid had already cost it ~5e-4:
+    # 3e20 → 1e-300 is a quotient of 3.3e-321 — SUBNORMAL, so ln of it is finite and reads
+    # without complaint, but rounding to the subnormal grid has already cost it ~5e-4:
     # −737.92536 where ln(b) − ln(a) is −737.92584. Read as the larger level over the smaller the
     # excess (3e20 over 1e-300) overflows, so the rule reads the difference of logs there, the
     # exact value — changes and dispersion.
@@ -477,8 +477,8 @@ def test_subnormal_quotient_reads_the_exact_log_not_its_rounded_one(tmp_path, ca
 
 def test_dispersion_pct_past_the_double_range_refuses_by_name_while_log_lives(tmp_path, capsys):
     # 1e-300 → 1e10 is a 1-bar ratio of 1e310 — a pct CHANGE with no double to be, the one thing
-    # a pct std refuses on: it has none either (it warned and emitted a reasonless null), while
-    # the log changes stay exact and their std finite.
+    # a pct std refuses on: it has none either, while the log changes stay exact and their std
+    # finite.
     y = _write_series(tmp_path / "y.csv", [1e-300, 1e10, 1e10])
     code, doc = _run(capsys, ["describe", str(y), "--windows", "2"])
     assert code == 0
@@ -496,11 +496,9 @@ def test_dispersion_pct_past_the_double_range_refuses_by_name_while_log_lives(tm
 
 def test_dispersion_pct_std_keeps_its_value_where_its_squares_leave_the_range(tmp_path, capsys):
     # Every 1-bar pct here is a double (~1e155, then 0.0), but np.std squares deviations of
-    # ~5e154, which overflow: the pct std read inf and refused as `not_representable` while the
-    # std itself (~7.07e154) is an ordinary double — and while a diff std over the same kind of
-    # overflow was rescaled and computed. One rule for every dispersion std: scaled by a power
-    # of two, every bit of the unscaled std, scaled; in range, np.std's about the range
-    # midpoint, bit for bit.
+    # ~5e154, which overflow: read directly, the pct std is inf where the std itself (~7.07e154)
+    # is an ordinary double. One rule for every dispersion std: scaled by a power of two, every
+    # bit of the unscaled std, scaled; in range, np.std's about the range midpoint, bit for bit.
     from seikan.describe import _dispersion_block
 
     # 1 → 3·2**600 is a 1-bar pct of exactly 3·2**600 (the −1 rounds away under its ulp), whose
@@ -533,9 +531,9 @@ def test_dispersion_pct_std_keeps_its_value_where_its_squares_leave_the_range(tm
 def test_levels_farther_apart_than_the_double_range_refuse_their_blocks_by_name(tmp_path, capsys):
     # Two FINITE levels of opposite sign can sit farther apart than the double range holds
     # (1.7e308 → −1.7e308 is a change of −3.4e308): `diff`, the algebra that rides every block
-    # that did not refuse, has no double to be. A range distance's `diff` is never null, so
-    # this file crashed describe at exit 4 on its own emitted contract; elsewhere the overflow
-    # rode out as a reasonless null. Each such block now refuses WHOLE, by name.
+    # that did not refuse, has no double to be. A range distance's `diff` is never null under
+    # the emitted contract, nor may the overflow ride out as a reasonless null: each such block
+    # refuses WHOLE, by name.
     crash = _write_series(tmp_path / "crash.csv", [1.7e308, -1.7e308])
     code, doc = _run(capsys, ["describe", str(crash), "--windows", "1,2"])
     assert code == 0
@@ -709,7 +707,7 @@ def test_ordinary_log_reads_are_log1p_of_the_excess_bit_for_bit(tmp_path, capsys
 def test_pct_reads_are_the_difference_over_the_base(tmp_path, capsys):
     # The run's pct rule, (b − a)/a: 100 → 110 reads the double 0.1 and 100 → 90 its negation
     # in every pct read — a change, a range distance, a drawdown or run-up — where b/a − 1
-    # rounded the quotient at 1's ulp first, 0.10000000000000009 and −0.09999999999999998.
+    # rounds the quotient at 1's ulp first: 0.10000000000000009 and −0.09999999999999998.
     assert 110.0 / 100.0 - 1.0 != 0.1 and 90.0 / 100.0 - 1.0 != -0.1  # the premise
     y = _write_series(tmp_path / "y.csv", [(100.0, 100.0), (110.0, 90.0)], columns=("up", "dn"))
     code, doc = _run(capsys, ["describe", str(y), "--windows", "1,2"])
@@ -746,9 +744,10 @@ def test_volume_block_hand_computed_and_absent_without_volume(tmp_path, capsys):
 
 
 def test_volume_mean_of_an_overflowing_window_is_exact_never_a_zero_ratio(tmp_path, capsys):
-    # Volumes alternating 1.7e308 / 1.0e308: the trailing SUM overflows, and the mean read inf —
-    # null, beside a `last_to_mean` of exactly 0.0 (last / inf) and no reason at all. The mean of
-    # finite volumes lies between their extremes; summed pre-scaled it is exact, and so the ratio.
+    # Volumes alternating 1.7e308 / 1.0e308: the trailing SUM overflows, so a mean read off it is
+    # inf — null, beside a `last_to_mean` of exactly 0.0 (last / inf) and no reason at all. The
+    # mean of finite volumes lies between their extremes; summed pre-scaled it is exact, and so
+    # the ratio.
     path = _write_flat_ohlcv(
         tmp_path / "v.csv", [10.0 + i for i in range(30)], volumes=[1.7e308, 1.0e308] * 15
     )
@@ -770,8 +769,8 @@ def test_volume_mean_of_an_overflowing_window_is_exact_never_a_zero_ratio(tmp_pa
 
 def test_an_all_equal_window_reads_its_own_mean_and_an_exact_zero_std(tmp_path, capsys):
     # The computed mean of bit-identical values carries its sum's rounding — 21 copies of
-    # 1234.56, summed and divided back, read 1234.5600000000002 — so a held volume's ratio read
-    # 0.9999999999999998, and the direct variance of identical changes was that residue, not
+    # 1234.56, summed and divided back, read 1234.5600000000002 — so a held volume's ratio would
+    # read 0.9999999999999998, and the direct variance of identical changes is that residue, not
     # zero: the 63 log changes of 2**0..2**63 (ln 2 each) read a std of 2.238e-16. Constancy is
     # decided before either is computed; a varying window keeps the direct form's bits.
     from seikan.describe import _dispersion_block
@@ -797,12 +796,12 @@ def test_an_all_equal_window_reads_its_own_mean_and_an_exact_zero_std(tmp_path, 
 
 
 def test_dispersion_diff_std_keeps_its_value_where_its_squares_leave_the_range(tmp_path, capsys):
-    # A VARYING series whose squared 1-bar changes leave the double range: past it the std read
-    # inf — a null beside finite endpoints, with no reason (2**520, 1e160); below it they lost
-    # their bits (2**-536 read 9.1647e-162 where the std is 9.1106e-162) or vanished into the 0.0
-    # only an all-equal series owns (1e-170, 2**-1000). Scaled by a power of two the std is
-    # computed in range — every bit of the unscaled std, scaled — and in range it is np.std's
-    # about the range midpoint.
+    # A VARYING series whose squared 1-bar changes leave the double range: computed directly,
+    # past it the std reads inf — a null beside finite endpoints, with no reason (2**520, 1e160);
+    # below it the squares lose their bits (2**-536) or vanish into the 0.0 only an all-equal
+    # series owns (1e-170, 2**-1000). Scaled by a power of two the std is computed in range —
+    # every bit of the unscaled std, scaled — and in range it is np.std's about the range
+    # midpoint.
     from seikan.describe import _dispersion_block
 
     levels = np.array([1.0, 3.0, 2.0, 5.0, 4.0, 7.0])
@@ -1019,9 +1018,9 @@ def test_describe_roles_stamped_identically_in_schema(tmp_path, capsys):
 
 
 def test_dispersion_std_is_taken_about_the_values_own_offset():
-    # The review's case: three changes clustered at 2**50, [B, B + 0.25, B + 0.25]. About their
-    # rounded raw mean the deviations read [0, 0.25, 0.25] and the std 0.25; about their range
-    # midpoint they are exact, and the std is sqrt(1/48) — the engine pools' rule.
+    # Three changes clustered at 2**50, [B, B + 0.25, B + 0.25]. About their rounded raw mean the
+    # deviations read [0, 0.25, 0.25] and the std 0.25; about their range midpoint they are
+    # exact, and the std is sqrt(1/48) — the engine pools' rule.
     from seikan.describe import _std
 
     b = 2.0**50

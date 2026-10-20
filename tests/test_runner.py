@@ -595,13 +595,12 @@ def test_bar_spacing_stamp_daily_and_irregular(tmp_path):
 
 def test_cells_partition_rows_by_declared_identity_never_by_axis_value(tmp_path):
     # Each (cell × target) frame types its axis columns by the values it holds — int64 for
-    # 2**63 − 1, uint64 for 2**63 — and the concatenated trades frame read both as ONE float64,
-    # so a partition by axis VALUE lumped both declared cells' rows under one key: the second
-    # cell's value matched it (n 44, 86 attempted), the first one's matched nothing (n 0 — a
-    # firing hypothesis reported as never firing), and declaring the second hypothesis moved the
-    # first one's numbers. The parse refuses that axis now (a double cannot hold 2**63 − 1), so
-    # this thesis is built past it, as a library caller can; the rows are partitioned by
-    # declared identity, which no value can merge.
+    # 2**63 − 1, uint64 for 2**63 — and the concatenated trades frame reads both as ONE float64,
+    # so a partition by axis VALUE would lump both declared cells' rows under one key: a firing
+    # hypothesis reported as never firing, and declaring the second hypothesis moving the first
+    # one's numbers. The rows are partitioned by declared identity, which no value can merge.
+    # The parse refuses that axis (a double cannot hold 2**63 − 1), so this thesis is built past
+    # it, as a library caller can.
     px = _bars(tmp_path / "px.csv", [100.0 + math.sin(i) for i in range(44)])
     ok = Thesis.model_validate(
         {
@@ -628,10 +627,10 @@ def test_cells_partition_rows_by_declared_identity_never_by_axis_value(tmp_path)
 
 
 def test_a_pool_whose_exact_sum_is_zero_reads_a_zero_mean_and_no_support(tmp_path):
-    # The 49 diff returns of [0, 2**54, 0, −1, 0] × 10 sum to exactly 0, but np.mean summed
-    # them pairwise and 2**54 swallowed a 1 before its cancelling partner arrived: mean_ret read
-    # 1/49 and the support floor (mean_ret > 0) passed a pool that made exactly nothing. The
-    # graded mean is the exactly rounded sum over n now, and its legs and t_hac read the same.
+    # The 49 diff returns of [0, 2**54, 0, −1, 0] × 10 sum to exactly 0, so mean_ret reads 0 and
+    # the support floor (mean_ret > 0) refuses a pool that makes exactly nothing. The graded mean
+    # is the exactly rounded sum over n, and its legs and t_hac read the same — a pairwise
+    # np.mean lets 2**54 swallow a 1 before its cancelling partner arrives and reads 1/49.
     from seikan.gate import GateThresholds, evaluate_gate
 
     levels = [0.0] + [0.0, 2.0**54, 0.0, -1.0, 0.0] * 10
@@ -657,9 +656,9 @@ def test_a_pool_whose_exact_sum_is_zero_reads_a_zero_mean_and_no_support(tmp_pat
 
 
 def test_an_unreachable_z_score_never_fires_on_an_ulp_scale_alternation(tmp_path):
-    # A two-bar population z-score is at most 1 in magnitude, but about the rounded mean of the
-    # raw values the alternation 2**52, 2**52 + 1 read 1.414: `zscore(close, 2) > 1.1` fired on
-    # 40 of 80 bars and the cell passed. About the window's own offset it reads exactly ±1.
+    # A two-bar population z-score is at most 1 in magnitude, so `zscore(close, 2) > 1.1` never
+    # fires: about the window's own offset the alternation 2**52, 2**52 + 1 reads exactly ±1
+    # (about the rounded mean of the raw values it reads 1.414).
     px = _bars(tmp_path / "px.csv", [2.0**52 + (i % 2) for i in range(80)])
     thesis = Thesis.model_validate(
         {
@@ -681,9 +680,9 @@ def test_an_unreachable_z_score_never_fires_on_an_ulp_scale_alternation(tmp_path
 def test_a_bar_at_its_window_mean_has_a_z_score_of_exactly_zero(tmp_path):
     # The SMA z-score's numerator is the bar's EXACT deviation from its window's exact mean,
     # rounded once. [1.1, 0.7, 1.1, 0.7, 0.9] sums to exactly five times 0.9 — its last bar sits
-    # at the mean — where the direct two-pass deviation read +1.55e-16: on a ten-bar cycle
-    # `close == 0.9 AND zscore(close, 5) > 0` fired 60 times while `close > rolling_mean(close,
-    # 5)`, the same comparison read through the exact mean, fired on none. Neither fires now.
+    # at the mean, where a direct two-pass deviation reads +1.55e-16 — so on a ten-bar cycle
+    # neither `close == 0.9 AND zscore(close, 5) > 0` nor `close > rolling_mean(close, 5)`, the
+    # same comparison read through the exact mean, fires.
     px = _bars(tmp_path / "px.csv", [1.1, 0.7, 1.1, 0.7, 0.9, 1.0, 1.2, 0.8, 1.0, 1.3] * 60)
     close = {"type": "field", "column": "close"}
     at_mean = {
@@ -719,12 +718,12 @@ def test_a_bar_at_its_window_mean_has_a_z_score_of_exactly_zero(tmp_path):
 
 
 def test_a_cross_sectional_z_score_never_passes_its_population_bound(tmp_path):
-    # The review's basket: five members on rising prices, one of them 9.3% above the other four
-    # on each bar and the outlier rotating, so its exact z is the population bound 2 on every bar
-    # and `> 2` holds nowhere. Spelled as the quotient cross_demean(close) / cross_agg(close,
-    # "std"), the roundings read 2.0000000000000004 on some bars, and how many moved with the
-    # declaration order — 16 closed observations forward, 18 reversed: the quotient's stated
-    # boundary. cross_demean(close, scale="std") is clipped to the bound and fires in neither.
+    # Five members on rising prices, one of them 9.3% above the other four on each bar and the
+    # outlier rotating, so its exact z is the population bound 2 on every bar and `> 2` holds
+    # nowhere. Spelled as the quotient cross_demean(close) / cross_agg(close, "std"), the
+    # roundings read 2.0000000000000004 on some bars, and how many moves with the declaration
+    # order — 16 closed observations forward, 18 reversed: the quotient's stated boundary.
+    # cross_demean(close, scale="std") is clipped to the bound and fires in neither.
     names = ["T1", "T2", "T3", "T4", "T5"]
     paths = {
         name: str(
@@ -1086,8 +1085,8 @@ _FORBIDDEN_SUMMARY_KEYS = (
     "median_bars_held",
     "max_bars_held",
     "exit_reasons",
-    # the retired grid breakdown (schema v5): a fired-pools-only duplicate of cells[].by_target,
-    # rollups that averaged per-cell means across horizons, and the derivable per-cell twins
+    # a grid breakdown: a fired-pools-only duplicate of cells[].by_target, rollups that average
+    # per-cell means across horizons, and the derivable per-cell twins
     "stats_table",
     "by_target",
     "by_param",
@@ -1158,8 +1157,8 @@ _FORBIDDEN_SUMMARY_KEYS = (
     "null_mean",
     "null_std",
     "null_p",
-    # the retired v2 spelling of the non-overlap count — renamed n_nonoverlap in schema v3,
-    # so the old key reappearing anywhere would be a silent contract fork
+    # a second spelling of the non-overlap count (n_nonoverlap): the key appearing anywhere
+    # would be a silent contract fork
     "n_eff",
 )
 
@@ -1221,7 +1220,7 @@ def test_dead_cell_quantile_blocks_serialize_as_explicit_nulls(tmp_path):
             assert blk["n"] == 0
             assert all(blk[p] is None for p in points)
             assert blk[tail] is None
-        # the v2 evidence obeys the same doctrine on a dead cell: null-with-reason, zero-count
+        # the other evidence obeys the same doctrine on a dead cell: null-with-reason, zero-count
         # blocks, and the explicit zero episode profile — never an omitted key
         assert st["benchmark_regression"] == {
             "n": 0,
@@ -1258,8 +1257,8 @@ def test_grid_level_evidence_rides_the_run_not_a_cell(tmp_path):
                 "op": "<",
                 # The cut pair must STRADDLE an attainable percentile value (the window-14 grid
                 # is k/14, so 4/14 ≈ 0.286 sits between these): cuts that share a grid gap —
-                # 0.30 with 0.35, say — produce byte-identical masks, and the v3 duplicate
-                # collapse would rightly report 3 distinct candidates for the 6 declared.
+                # 0.30 with 0.35, say — produce byte-identical masks, and the duplicate collapse
+                # would rightly report 3 distinct candidates for the 6 declared.
                 "right": {"type": "constant", "value": [0.25, 0.35], "name": "cut"},
             },
             "params": {"horizon": [5, 10, 20]},
@@ -1317,8 +1316,7 @@ def test_unswept_thesis_pbo_is_single_combo(tmp_path):
 def test_thin_sample_pbo_declines_beside_the_real_population_ledger(tmp_path):
     # Six bars, h=1, two swept cuts that both fire AND close (cut 2.5 closes at bars 2-3, cut 3.5
     # at bar 3): no CSCV partition fits six bars, so the block declines as insufficient_data —
-    # with the population it established from the cells, 2 distinct / 2 scoreable / 2 declared.
-    # The pre-fix block said 0 / 0 / 2 beside cells holding closed observations.
+    # with the population it establishes from the cells, 2 distinct / 2 scoreable / 2 declared.
     path = _series_bars(tmp_path / "y.csv", [1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
     thesis = Thesis.model_validate(
         {
@@ -1430,9 +1428,9 @@ def test_rolling_corr_entry_end_to_end(tmp_path):
 
 
 def test_rolling_corr_never_fires_past_its_bound(tmp_path):
-    # An exactly linear pair correlates exactly 1, and the computed ratio's rounding read
-    # 1.0000000000000002 on about a third of its windows: `rolling_corr(x, 3x + 7, 3) > 1` fired
-    # where it is unreachable. Clipped to [−1, 1], it fires nowhere; `>= 1` still fires.
+    # An exactly linear pair correlates exactly 1, where the computed ratio's rounding reads
+    # 1.0000000000000002 on about a third of its windows. Clipped to [−1, 1],
+    # `rolling_corr(x, 3x + 7, 3) > 1` fires nowhere; `>= 1` still fires.
     idx = pd.date_range("2020-01-01", periods=200, freq="D")
     close = 100 + np.cumsum(np.random.default_rng(3).normal(0, 1, len(idx)))
     pd.DataFrame(
@@ -1467,9 +1465,9 @@ def test_rolling_corr_never_fires_past_its_bound(tmp_path):
 
 
 def test_rolling_corr_of_an_exactly_proportional_pair_never_fires_below_one(tmp_path):
-    # The review's thesis: X over 30-bit integers scaled by 2**-23 against 3X correlates exactly
-    # 1 on every window, and the rounded ratio read 0.9999999999999998 on 38 of the 396, so
-    # `rolling_corr(X, 3X, 5) < 1` fired there. A collinear window reads exactly 1.
+    # X over 30-bit integers scaled by 2**-23 against 3X correlates exactly 1 on every window,
+    # so `rolling_corr(X, 3X, 5) < 1` fires nowhere: a collinear window reads exactly 1, where
+    # the rounded ratio reads 0.9999999999999998 on 38 of the 396.
     idx = pd.date_range("2020-01-01", periods=400, freq="D")
     pd.DataFrame(
         {"open": 100.0, "high": 100.0, "low": 100.0, "close": 100.0, "volume": 1.0}, index=idx
@@ -1500,10 +1498,10 @@ def test_rolling_corr_of_an_exactly_proportional_pair_never_fires_below_one(tmp_
 
 
 def test_rolling_corr_of_an_exactly_uncorrelated_window_is_zero(tmp_path):
-    # [1.1, 0.7, 1.1, 0.7, 0.9] against [0.7, 0.7, 1.1, 1.1, 0.9] covary by exactly 0: the
-    # direct two-pass moments read a correlation of 4.3e-17, and on a ten-bar cycle
-    # `close == 0.9 AND rolling_corr(close, y, 5) > 0` fired 60 times. The moments are exact
-    # arithmetic's, each rounded once — the correlation is 0.0 and it fires on none.
+    # [1.1, 0.7, 1.1, 0.7, 0.9] against [0.7, 0.7, 1.1, 1.1, 0.9] covary by exactly 0, where
+    # direct two-pass moments read a correlation of 4.3e-17. The moments are exact arithmetic's,
+    # each rounded once — the correlation is 0.0, and on a ten-bar cycle
+    # `close == 0.9 AND rolling_corr(close, y, 5) > 0` fires on none.
     px = _bars(tmp_path / "px.csv", [1.1, 0.7, 1.1, 0.7, 0.9, 1.0, 1.2, 0.8, 1.0, 1.3] * 60)
     idx = pd.date_range("2021-01-01", periods=600, freq="1D", name="datetime")
     y = [0.7, 0.7, 1.1, 1.1, 0.9, 1.0, 0.9, 1.2, 1.1, 0.8] * 60
@@ -1929,10 +1927,10 @@ def test_multi_target_bucket_edges_aggregate_by_ordinal(tmp_path):
 
 
 def test_a_pooled_bucket_record_carries_its_composition(tmp_path):
-    # The review's fixture through the run: two targets bucketed by a per-target feature of TIED
-    # values, A filling its three bins 50/25/25 and B 25/25/50, each member's return rising bin
-    # by bin. The pooled ordinal means fall (rho −1), a trend neither member shows; each record
-    # carries by_target, the members' own rows of it, and the summary validates with it.
+    # Through the run: two targets bucketed by a per-target feature of TIED values, A filling
+    # its three bins 50/25/25 and B 25/25/50, each member's return rising bin by bin. The pooled
+    # ordinal means fall (rho −1), a trend neither member shows; each record carries by_target,
+    # the members' own rows of it, and the summary validates with it.
     n = 100  # closed rows per target: bar t measures open[t + 1] → open[t + 2]
     idx = pd.date_range("2021-01-01", periods=n + 2, freq="1D", name="datetime")
     rng = np.random.default_rng(4)
@@ -2009,7 +2007,7 @@ _RANK_ENTRY = {
 
 def test_cross_breadth_reports_a_late_starting_member(tmp_path):
     # One member NaN for its first W bars: the cross-section runs at k=2 there and k=3 after —
-    # the panel says so, bar for bar, where the kernels used to discard it.
+    # the panel says so, bar for bar.
     W = 15
     s = _breadth_basket(tmp_path, _RANK_ENTRY, n=60, late_from=W)
     panel = s["cross_breadth"]
@@ -2651,7 +2649,7 @@ def test_mae_censored_open_is_nan(tmp_path):
 
 
 def test_mae_nan_hole_in_window_invalidates(tmp_path):
-    # THE P2 regression: a single NaN low INSIDE the forward window must invalidate the MAE —
+    # A single NaN low INSIDE the forward window must invalidate the MAE —
     # an incomplete adverse path is never certified finite.
     rows = [
         [110, 111, 109, 110],
@@ -2700,12 +2698,11 @@ def test_mae_clean_window_stays_finite_next_to_a_hole(tmp_path):
 
 
 def test_mae_and_mfe_behind_a_hole_read_their_own_window(tmp_path):
-    # …nor forwards: a window that starts AFTER the hole reads its own extremum. The reviewer's
-    # fixture: lows [1, 95, NaN, 10, 90, 99, 95, 100] with highs mirroring them, a firing on
-    # bar 2 filled at open[3] = 100, horizon 4 — the path is bars 3..6 plus the exit print
-    # open[7] = 100, so MAE = (10 − 100)/100 = −0.9 and MFE = (190 − 100)/100 = 0.9. scipy's
-    # filters carried the NaN's state past its window and read 90 and 110 (−0.10 / +0.10) beside
-    # a trough index pointing at the low of 10.
+    # …nor forwards: a window that starts AFTER the hole reads its own extremum. Lows
+    # [1, 95, NaN, 10, 90, 99, 95, 100] with highs mirroring them, a firing on bar 2 filled at
+    # open[3] = 100, horizon 4 — the path is bars 3..6 plus the exit print open[7] = 100, so
+    # MAE = (10 − 100)/100 = −0.9 and MFE = (190 − 100)/100 = 0.9, and the trough index points
+    # at the low of 10. Guards against a filter carrying the NaN's state past its window.
     nan = float("nan")
     lows = [1, 95, nan, 10, 90, 99, 95, 100]
     highs = [199, 105, nan, 190, 110, 101, 105, 100]
@@ -2817,8 +2814,8 @@ def test_a_window_hole_censors_only_the_frame_it_sits_in(tmp_path, direction, ce
     # only the window whose H/L part contains bar 5 loses the holed frame's mark…
     assert math.isnan(by_fill[5][censored])
     # …its neighbours do not: fill 4's H/L part ends a bar EARLIER and its exit-bar read is the
-    # (finite) open[5], never the holed high — the hole sits in a part of the exit bar the v3
-    # window no longer contains — while fill 6 starts after the hole. Window-local, no smear.
+    # (finite) open[5], never the holed high — the hole sits in a part of the exit bar the
+    # window does not contain — while fill 6 starts after the hole. Window-local, no smear.
     assert math.isfinite(by_fill[4][censored])
     assert math.isfinite(by_fill[3][censored]) and math.isfinite(by_fill[6][censored])
     # the other frame is whole, so its column survives on every closed row
@@ -2855,9 +2852,9 @@ def test_mfe_feed_outcome_uses_the_measured_series(tmp_path):
     assert list(closed["mfe"]) == pytest.approx([3.0, 2.0])
     assert list(closed["mae"]) == pytest.approx([0.0, -1.0])
     # the second row's peak IS its exit mark — a feed outcome has no intra-bar H/L, so the exit
-    # "print" is the measured series itself and the v3 split window is IDENTICAL to the old
-    # inclusive one — while the first row's peak is an interim mark it gave back, in the units
-    # of the FEED, never the target's
+    # "print" is the measured series itself and the split window is IDENTICAL to an inclusive
+    # one — while the first row's peak is an interim mark it gave back, in the units of the
+    # FEED, never the target's
     assert res.summary["outcome"] == {"series": "iv", "kind": "diff", "units": "level_diff"}
 
 
@@ -2893,17 +2890,17 @@ def test_excursions_bracket_the_return_row_wise(tmp_path, direction):
     assert (mfe[defined] > 0.0).any() and (mae[defined] < 0.0).any()
 
 
-# ---- the v3 excursion window: post-exit prices never enter ----------------------------------
+# ---- the excursion window: post-exit prices never enter -------------------------------------
 # The path a fill is marked over is the full H/L of [fill, fill+h−1] plus ONLY the exit print
 # open[fill+h] — the exit bar's own high/low print AFTER the exit and belong to the next holding
-# period. Pre-v3 the window was [fill, fill+h] inclusive, so an exit-bar spike could rewrite
+# period. An inclusive [fill, fill+h] window would let an exit-bar spike rewrite
 # mae/mfe/bars_to_trough off prices the trade never held through.
 
 
 def test_excursions_ignore_the_exit_bars_high_low(tmp_path):
-    # THE AUDIT FIXTURE: a dead-flat path whose EXIT bar spikes to high=1000 / low=1 after
-    # opening flat at 100. The trade never held through that spike — ret == 0 — and the marks
-    # must say so: the pre-v3 inclusive window read mfe=+9.0 / mae=−0.99 off post-exit prices.
+    # A dead-flat path whose EXIT bar spikes to high=1000 / low=1 after opening flat at 100.
+    # The trade never holds through that spike — ret == 0 — and the marks must say so (an
+    # inclusive window reads mfe=+9.0 / mae=−0.99 off post-exit prices).
     rows = [
         [100, 100, 100, 100],
         [95, 95, 95, 95],  # fires (close < 100)
@@ -2953,8 +2950,8 @@ def test_trough_tie_with_the_exit_print_resolves_to_the_path_index(tmp_path):
 
 
 def test_exit_bar_high_low_hole_no_longer_censors_the_excursion(tmp_path):
-    # A NaN in the exit bar's high/low sits OUTSIDE the v3 window — only its open is read — so
-    # the excursion survives; the pre-v3 inclusive window died on it.
+    # A NaN in the exit bar's high/low sits OUTSIDE the window — only its open is read — so the
+    # excursion survives, where an inclusive window would die on it.
     rows = [
         [100, 100, 100, 100],
         [95, 95, 95, 95],  # fires
@@ -3165,9 +3162,9 @@ def test_log_outcome_yields_a_true_log_excess(tmp_path):
 
 def test_log_benchmark_leg_past_the_double_range_closes_instead_of_no_benchmark(tmp_path):
     """The market leg is read by the outcome's own `_measure`, so a benchmark quotient past the
-    double range (1e200 → 1e-200 and back) read ln(0) = −inf / ln(inf) = +inf: the excess went
-    NaN and a window whose two legs were both measurable censored as `no_benchmark`. The
-    scale-safe log closes it with the exact log-excess."""
+    double range (1e200 → 1e-200 and back) closes with the exact log-excess under the scale-safe
+    log — never ln(0) = −inf / ln(inf) = +inf, a NaN excess that would censor a window whose two
+    legs are both measurable as `no_benchmark`."""
     tgt = np.array([100.0, 101.0, 102.0, 103.0, 104.0, 105.0])
     bench = np.array([1.0, 1e200, 1e-200, 1e200, 1.0, 1.0])
     res = _bench_run(tmp_path, tgt, bench, horizon=1, benchmark="market", outcome={"kind": "log"})
@@ -3402,9 +3399,9 @@ def test_log_outcome_censors_two_negative_endpoints(tmp_path):
 
 
 def test_log_outcome_past_the_double_range_closes_with_the_exact_log(tmp_path):
-    """The quotient of 1e200 → 1e-200 underflows to 0.0, so ln(b/a) read −inf and a perfectly
-    measurable window was censored as `no_outcome` — a deleted outcome the checklist then
-    refused. ln(b/a) is the finite −921.03…; the scale-safe log closes the window with it, and
+    """The quotient of 1e200 → 1e-200 underflows to 0.0, and ln of it reads −inf, which would
+    censor a perfectly measurable window as `no_outcome` — a deleted outcome the checklist then
+    refuses. ln(b/a) is the finite −921.03…; the scale-safe log closes the window with it, and
     the direct form (and its bits) stays wherever the quotient is a normal double."""
     trades = _measured(tmp_path, [1.0, 1e200, 1e-200, 1e200, 1.0], "log")
     by_bar = {int(r.entry_bar): r for r in trades.itertuples()}
@@ -3415,8 +3412,8 @@ def test_log_outcome_past_the_double_range_closes_with_the_exact_log(tmp_path):
     assert by_bar[1].ret == np.log(1e200) - np.log(1e-200)
     assert by_bar[2].exit_reason == "horizon"  # 1e200 → 1.0: a normal quotient, direct form
     assert by_bar[2].ret == np.log(1.0 / 1e200)
-    # A SUBNORMAL quotient (3e20 → 1e-300 is 3.3e-321) closed before too, but with ln of the
-    # rounded quotient (−737.92536): it now reads the exact −737.92584.
+    # A SUBNORMAL quotient (3e20 → 1e-300 is 3.3e-321) closes with the exact −737.92584, not ln
+    # of the rounded quotient (−737.92536).
     trades = _measured(tmp_path, [1.0, 3e20, 1e-300, 1.0], "log")
     row = trades[trades["entry_bar"] == 0].iloc[0]
     assert row.exit_reason == "horizon"
@@ -3445,11 +3442,11 @@ def test_log_outcome_is_log1p_of_the_excess_bit_for_bit_on_ordinary_levels(tmp_p
 
 
 def test_log_outcome_of_a_closed_price_cycle_reads_exactly_zero(tmp_path):
-    """The review's path: 100 bars alternating 100 and 110, an unconditional entry, h = 1, log
-    outcomes. Each fall is the exact negation of each rise, so the 98 closed returns sum to
-    exactly 0. Read in its own direction each quotient rounded on its own: mean_ret read 2.1e-17
-    and met the support floor, and a two-bar rolling mean of the one-bar log changes `> 0` fired
-    where the direct two-bar change — exactly 0 — fires nowhere."""
+    """100 bars alternating 100 and 110, an unconditional entry, h = 1, log outcomes. Each fall
+    is the exact negation of each rise, so the 98 closed returns sum to exactly 0: mean_ret reads
+    0 and misses the support floor, and a two-bar rolling mean of the one-bar log changes `> 0`
+    fires nowhere, like the direct two-bar change — guarding against quotients each rounded on
+    its own, in its own direction (a mean_ret of 2.1e-17 that meets the floor)."""
     from seikan.gate import GateThresholds, evaluate_gate
 
     path = _series_bars(tmp_path / "y.csv", [100.0, 110.0] * 50)
@@ -3476,12 +3473,12 @@ def test_log_outcome_of_a_closed_price_cycle_reads_exactly_zero(tmp_path):
 
 
 def test_pct_outcome_of_a_rise_and_the_equal_fall_reads_exactly_zero(tmp_path):
-    """The review's paths: 360 bars cycling [50, 100, 110, 50, 100, 90], entries at 50, h = 1 —
-    60 closed returns of 100 → 110 and 60 of 100 → 90, exactly 0 in sum. Read as b/a − 1, each
-    quotient rounded at 1's ulp first, the two read 0.10000000000000009 and −0.09999999999999998:
-    mean_ret 5.6e-17, and the cell met its support floor. On [100, 100, 110, 90] the decision
-    side read the same rule: `close == 90 AND rolling_mean(change(close, 2, pct), 2) > 0` — a mean
-    of exactly 0 — fired 30 times."""
+    """360 bars cycling [50, 100, 110, 50, 100, 90], entries at 50, h = 1 — 60 closed returns of
+    100 → 110 and 60 of 100 → 90, exactly 0 in sum, so mean_ret reads 0 and the cell misses its
+    support floor. Read as b/a − 1, each quotient rounded at 1's ulp first, the two read
+    0.10000000000000009 and −0.09999999999999998 (the premise: a positive sum). On
+    [100, 100, 110, 90] the decision side reads the same rule: `close == 90 AND
+    rolling_mean(change(close, 2, pct), 2) > 0` — a mean of exactly 0 — never fires."""
     from seikan.gate import GateThresholds, evaluate_gate
 
     assert (110.0 / 100.0 - 1.0) + (90.0 / 100.0 - 1.0) > 0.0  # the premise
@@ -3520,11 +3517,11 @@ def test_pct_outcome_of_a_rise_and_the_equal_fall_reads_exactly_zero(tmp_path):
 
 
 def test_diff_conjunction_withholds_the_cross_target_value_reads(tmp_path):
-    """The review's pair under conjunction: a rate rising 1/1024 a bar beside an index falling
-    1/64, one-bar `diff` outcomes, an unconditional entry. Each target's own panel is in its own
-    level units, but the episode means and |return|-mass shares, the excursion extremes and the
-    buckets pooled by ordinal summed a rate change with index points — quoting the rate in bp
-    flipped the episode mean (−0.0073 → 4.875), its hit rate (0 → 1) and every bucket mean.
+    """A pair under conjunction: a rate rising 1/1024 a bar beside an index falling 1/64,
+    one-bar `diff` outcomes, an unconditional entry. Each target's own panel is in its own level
+    units, but the episode means and |return|-mass shares, the excursion extremes and the
+    buckets pooled by ordinal would sum a rate change with index points — quoting the rate in bp
+    would flip the episode mean (−0.0073 → 4.875), its hit rate (0 → 1) and every bucket mean.
     Those reads are null; the counts and the per-target panels stand, and so does every value
     under `pct` or over one target."""
     n = 100
@@ -3573,7 +3570,7 @@ def test_diff_conjunction_withholds_the_cross_target_value_reads(tmp_path):
 
 def test_pct_outcome_past_the_double_range_censors_silently(tmp_path):
     """A pct return whose ratio overflows (1e-200 → 1e200) has no double to be: it censors as
-    `no_outcome` like any unmeasurable window — without the RuntimeWarning the overflow raised —
+    `no_outcome` like any unmeasurable window — without a RuntimeWarning from the overflow —
     while an underflowing ratio is the correctly rounded −1.0 and closes."""
     trades = _measured(tmp_path, [1.0, 1e-200, 1e200, 1.0], "pct")
     by_bar = {int(r.entry_bar): r for r in trades.itertuples()}
@@ -3983,9 +3980,9 @@ def test_cross_agg_member_cannot_fire_before_its_own_series_exists(tmp_path):
     # CrossAgg broadcasts the group's aggregate into EVERY column wherever k >= min_valid, so a
     # member whose own series lists LATE still SEES the basket's breadth from bar 0 — the
     # sanctioned value semantics — but its warmup latch is gated by its OWN input, so it cannot
-    # fire before its own data begins. Before the gate, the late member fired off the broadcast
-    # into its own missing prices and every such firing censored `no_outcome`, hard-refusing the
-    # cell for what is ordinary listing geometry, not a data hole.
+    # fire before its own data begins. A firing off the broadcast into its own missing prices
+    # would censor `no_outcome`, hard-refusing the cell for what is ordinary listing geometry,
+    # not a data hole.
     n, K, h = 60, 20, 3
     idx = pd.date_range("2021-01-01", periods=n, freq="1D")
     values = {
@@ -4041,9 +4038,9 @@ def test_a_feature_snapshot_is_taken_only_where_its_series_is_initialized(tmp_pa
     # The same seam on the feature side. `cross_agg(rolling_agg(close, 10, "mean"), "mean")`
     # broadcasts A and B's breadth into C from bar 9, but C's own input — its 10-bar mean, its
     # half of the cross-section — starts at bar K + 9: the value C carries before that is not its
-    # observation, and no decision latches on it. The snapshot read it anyway, so C's firings on
-    # bars K..K+8 carried the broadcast into the trades, its association and its buckets. They
-    # snapshot NaN; A's and B's snapshots are unchanged.
+    # observation, and no decision latches on it — nor does a snapshot read it: C's firings on
+    # bars K..K+8 snapshot NaN, keeping the broadcast out of the trades, its association and its
+    # buckets; A's and B's snapshots are unchanged.
     n, K = 80, 20
     idx = pd.date_range("2021-01-01", periods=n, freq="1D")
     rng = np.random.RandomState(3)
@@ -4149,11 +4146,11 @@ def test_cross_mean_excess_is_antisymmetric_for_two_targets(tmp_path):
 
 
 def test_cross_mean_excess_is_taken_about_the_bars_offset(tmp_path):
-    # The review's case: legs [B, B + 1, B + 1] at B = 2**52 (pct legs of 1 → 2**52 + 1 and
-    # 1 → 2**52 + 2), the two B + 1 members selected. About the rounded raw mean (2**52, onto a
-    # member) their excesses read 1 each — "both beat the basket by 1" — while the exact pooled
-    # mean read 1/3, outside its own [worst, best]. About the bar's offset each reads 1/3. A bar
-    # of identical legs reads exactly 0.0 with its bench leg the legs' value.
+    # Legs [B, B + 1, B + 1] at B = 2**52 (pct legs of 1 → 2**52 + 1 and 1 → 2**52 + 2), the two
+    # B + 1 members selected. About the bar's offset each excess reads 1/3. About the rounded raw
+    # mean (2**52, onto a member) they would read 1 each — "both beat the basket by 1" — beside
+    # an exact pooled mean of 1/3, outside its own [worst, best]. A bar of identical legs reads
+    # exactly 0.0 with its bench leg the legs' value.
     n = 40
     idx = pd.date_range("2021-01-01", periods=n, freq="1D")
     odd = np.arange(n) % 2 == 1
@@ -4196,9 +4193,10 @@ def test_cross_mean_excess_is_taken_about_the_bars_offset(tmp_path):
 
 
 def test_cross_mean_member_at_the_basket_mean_reads_exactly_zero(tmp_path):
-    # The cross_demean defect on the outcome side: pct legs [0.25, 0.75, 0.75, −0.25 − 2**-53,
-    # −0.25 + 2**-53] average exactly 0.25, member A's leg. About the bar's rounded centre A's
-    # excess read 1.1e-17 — every A row a hit. Its exact deviation is 0.0: no hit, no loss.
+    # A member at the basket mean, as for cross_demean, on the outcome side: pct legs
+    # [0.25, 0.75, 0.75, −0.25 − 2**-53, −0.25 + 2**-53] average exactly 0.25, member A's leg.
+    # Its exact deviation is 0.0: no hit, no loss (about the bar's rounded centre A's excess
+    # reads 1.1e-17 — every A row a hit).
     n = 40
     idx = pd.date_range("2021-01-01", periods=n, freq="1D")
     odd = np.arange(n) % 2 == 1
@@ -4229,10 +4227,10 @@ def test_cross_mean_member_at_the_basket_mean_reads_exactly_zero(tmp_path):
 
 
 def test_cross_mean_constant_pool_past_the_range_nulls_its_bootstrap_with_its_mean(tmp_path):
-    # The review's basket: A alone fires, on bars whose pct legs [1e307, 0, 1] put each bar's
-    # numerator at 2e307 − 1, so twenty of them sum past the double range and the pooled mean_ret
-    # is null. The pool is constant, and the bootstrap's constant shortcut read a null interval
-    # beside boot_se 0.0 with no reason: it nulls whole, and says why.
+    # A alone fires, on bars whose pct legs [1e307, 0, 1] put each bar's numerator at
+    # 2e307 − 1, so twenty of them sum past the double range and the pooled mean_ret is null.
+    # The pool is constant, and the bootstrap nulls whole and says why — never a null interval
+    # beside boot_se 0.0 with no reason.
     cycles = {"A": [0.5, 1.0, 1e307], "B": [1.0, 1.0, 1.0], "C": [1.0, 1.0, 2.0]}
     files = {t: _series_bars(tmp_path / f"{t}.csv", c * 20) for t, c in cycles.items()}
     thesis = Thesis.model_validate(
@@ -4270,11 +4268,10 @@ def _cross_mean_basket(tmp_path, order, entry, *, n=100, horizon=5, seed=21):
 
 
 def test_cross_mean_full_basket_pooled_mean_is_exactly_zero_in_every_order(tmp_path):
-    # The review's case: every member fires on every bar, so each bar's excess legs sum to zero
-    # and the pooled mean is zero BY CONSTRUCTION. Summed from the rounded per-row excesses it
-    # read ±1e-19 with its sign set by the declaration order — and `support` (mean_ret > 0)
-    # flipped with the order. Computed from the raw legs it is exactly 0.0 in every order, and
-    # the support floor is unmet in every order, as it must be for a zero mean.
+    # Every member fires on every bar, so each bar's excess legs sum to zero and the pooled mean
+    # is zero BY CONSTRUCTION. Computed from the raw legs it is exactly 0.0 in every order, and
+    # the support floor is unmet in every order, as it must be for a zero mean — summed from the
+    # rounded per-row excesses it reads ±1e-19 with its sign set by the declaration order.
     from seikan.gate import GateThresholds, evaluate_gate
 
     for order in ("ABC", "BCA", "CAB"):
@@ -4295,9 +4292,9 @@ def test_cross_mean_partial_basket_whose_excesses_cancel_reads_zero_and_no_suppo
     # 22 members over 32 bars: 7 flat, 7 tripling and 8 doubling every bar, so the h = 1 raw
     # legs are exactly 0, 2 and 1 and each bar's basket mean is exactly 1. Fifteen members fire
     # on every bar — the flat ones, the tripling ones and ONE doubling member (the only one priced
-    # at or above 2**20) — and their excesses (−1, +1, 0) sum to exactly zero. The per-bar form
-    # rounded 15/22 before the cancellation: 450 closed rows read pooled mean_ret 1.18e-16, and
-    # the support floor passed a pool that made exactly nothing over its basket.
+    # at or above 2**20) — and their excesses (−1, +1, 0) sum to exactly zero: the pooled mean_ret
+    # of the 450 closed rows is 0.0 and support is unmet. A per-bar form that rounds 15/22 before
+    # the cancellation reads 1.18e-16 and passes a pool that makes exactly nothing over its basket.
     from seikan.gate import GateThresholds, evaluate_gate
 
     n = 32
@@ -4464,11 +4461,11 @@ def test_cross_mean_pooled_mean_ret_is_the_raw_leg_sum_not_pool_moments(tmp_path
 
 
 def _pow_basket(tmp_path, order="ABC", *, above=0.0, n=12):
-    """The review's basket: members A, B, C priced 2**t, 4**t, 14**t, declared in ``order``,
-    ``cross_mean`` at h=1. Every pct leg is 1, 3 or 13 (exactly while 14**t is a double, t <= 18),
-    so every closed row's excess is one of three NONZERO values whose exact sum is 0 — and whose
-    rounded sum is not, even about the bar's offset (legs 1, 3, 15 cancel there). ``close >
-    above`` fires C first, then B, then A: ``above=0`` makes every bar full."""
+    """Members A, B, C priced 2**t, 4**t, 14**t, declared in ``order``, ``cross_mean`` at h=1.
+    Every pct leg is 1, 3 or 13 (exactly while 14**t is a double, t <= 18), so every closed
+    row's excess is one of three NONZERO values whose exact sum is 0 — and whose rounded sum is
+    not, even about the bar's offset (legs 1, 3, 15 cancel there). ``close > above`` fires C
+    first, then B, then A: ``above=0`` makes every bar full."""
     idx = pd.date_range("2021-01-01", periods=n, freq="1D")
     t = np.arange(n, dtype=float)
     files = {
@@ -4488,12 +4485,12 @@ def _pow_basket(tmp_path, order="ABC", *, above=0.0, n=12):
 
 
 def test_cross_mean_full_bars_are_exactly_zero_in_the_pooled_bar_closed_sums(tmp_path):
-    # The review's case beyond the headline mean: every bar is full, so each bar's excesses sum
-    # to exactly zero while each row is a nonzero rounded value whose bar sum is residue. Every
-    # pooled read that SUMS whole bars — the bootstrap's draws, the eras, the episode ledger and
-    # profile, the HAC's per-bar deviation sums — reads the identity: a zero-width interval at
-    # 0.0, no win and no loss streak, and no long-run variance (HAC null, as on identical legs).
-    # Row-level reads keep each row's own excess.
+    # Beyond the headline mean: every bar is full, so each bar's excesses sum to exactly zero
+    # while each row is a nonzero rounded value whose bar sum is residue. Every pooled read that
+    # SUMS whole bars — the bootstrap's draws, the eras, the episode ledger and profile, the
+    # HAC's per-bar deviation sums — reads the identity: a zero-width interval at 0.0, no win
+    # and no loss streak, and no long-run variance (HAC null, as on identical legs). Row-level
+    # reads keep each row's own excess.
     for order in ("ABC", "CAB"):
         res = _pow_basket(tmp_path, order)
         cell = res.summary["cells"][0]
@@ -4516,8 +4513,8 @@ def test_cross_mean_full_bars_are_exactly_zero_in_the_pooled_bar_closed_sums(tmp
         assert pooled["hit_rate"] == 1 / 3 and pooled["std_ret"] > 1.0
         assert pooled["worst_ret"] == float(by_bar.min())
         assert pooled["best_ret"] == float(by_bar.max())
-    # Over the rounded rows the HAC's variance was residue of either sign: a ~1e-8 SE at some
-    # lengths, null at others. Over the identity it is null at every length.
+    # Over the identity the HAC's variance is null at every length, where over the rounded rows
+    # it is residue of either sign (a ~1e-8 SE at some lengths, null at others).
     for n in range(7, 15):
         pooled = _pow_basket(tmp_path, n=n).summary["cells"][0]["pooled"]
         assert math.isnan(pooled["hac_se"]) and math.isnan(pooled["t_hac"]), n
@@ -4616,17 +4613,16 @@ def test_cross_mean_bar_closed_sums_read_every_bar_at_its_exact_sum(tmp_path):
 def test_cross_mean_cancelling_partial_pool_reads_its_exact_zero_in_every_bar_closed_sum(
     tmp_path,
 ):
-    # The review's basket: six members (p, q, r, p, q, r) of log outcomes, only the first three
-    # firing, three bars apart; on every other firing bar they move (0.95, 0.97, 1.02) and the
-    # last three mirror them, so each firing bar's three excesses cancel exactly — the pooled
-    # mean_ret is exactly 0 — while their three rounded rows sum to residue (a mirrored PAIR's
-    # two rows cancel exactly; three rows need not, though the review's (0.95, 0.96, 1.02) and
-    # (0.95, 0.96, 1.03) happen to once each excess is rounded once). Read off those rows, the HAC
-    # divided the residue (t_hac 5.43, hac_se 1.6e-19 beside mean_ret 0.0), and every other
-    # bar-closed sum minted evidence: a positive bootstrap interval, an episode hit rate of 1.0.
-    # Every bar's exact excess sum is 0, so every one of them reads 0: no long-run variance, a
-    # zero-width interval at 0, no winning episode, zero eras — and a grid of two such cells
-    # (every firing bar, or the moving ones alone) ties on every CSCV split.
+    # Six members (p, q, r, p, q, r) of log outcomes, only the first three firing, three bars
+    # apart; on every other firing bar they move (0.95, 0.97, 1.02) and the last three mirror
+    # them, so each firing bar's three excesses cancel exactly — the pooled mean_ret is exactly
+    # 0 — while their three rounded rows sum to residue (a mirrored PAIR's two rows cancel
+    # exactly; three rows need not, though (0.95, 0.96, 1.02) and (0.95, 0.96, 1.03) happen to
+    # once each excess is rounded once). Every bar's exact excess sum is 0, so every bar-closed
+    # sum reads 0: no long-run variance, a zero-width interval at 0, no winning episode, zero
+    # eras — and a grid of two such cells (every firing bar, or the moving ones alone) ties on
+    # every CSCV split. Read off the rounded rows, the HAC would divide the residue and every
+    # other bar-closed sum would mint evidence.
     n = 92
     idx = pd.date_range("2024-01-01", periods=n, freq="1D")
     levels = {m: np.ones(n) for m in "ABC"}
@@ -4685,10 +4681,10 @@ def test_cross_mean_episodes_whose_excesses_cancel_across_bars_read_exactly_zero
     # One member fires per bar — A, then B, then C — three bars to an episode, eight episodes
     # apart. Log legs over prices 2**t, 4**t and 8**t are 3, 6 and 9 times log 2 on every bar at
     # h=3, so each episode's three excesses cancel exactly (the pooled mean_ret is 0) while no
-    # bar's sum is 0. Each bar's sum rounded over the member count left 3.0e-16 per episode, and
-    # the bar-closed reads minted evidence from it: a positive interval, an episode hit rate of
-    # 1, a win streak of 8. Its numerator rounded once still left 4.4e-16 (it needs more than 53
-    # bits). Each bar carries its numerator exactly now, and every episode reads its 0.
+    # bar's sum is 0. Each bar's sum rounded over the member count leaves 3.0e-16 per episode,
+    # and its numerator rounded once still leaves 4.4e-16 (it needs more than 53 bits): the
+    # bar-closed reads would mint evidence from either. Each bar carries its numerator exactly,
+    # and every episode reads its 0.
     n, h, targets = 50, 3, ["A", "B", "C"]
     idx = pd.date_range("2021-01-01", periods=n, freq="1D")
     t = np.arange(n, dtype=float)
@@ -4869,7 +4865,7 @@ def test_cross_mean_all_full_grid_pbo_and_buckets_take_the_identity_in_any_order
     # feature (the calendar's) sum whole bars, so they read the identity too: every split ties
     # (pbo, lambda_mean and prob_oos_loss 0.0) and every bucket mean is exactly 0.0 (no rank
     # signal, so no bucket_monotonicity) — in every declaration order. Over the rounded rows
-    # both ranked residue, and the ranking followed the order the targets were declared in.
+    # both would rank residue, a ranking that follows the targets' declaration order.
     feats = {
         "dom": {"type": "calendar", "field": "day_of_month"},
         "dow": {"type": "calendar", "field": "day_of_week"},
@@ -5072,10 +5068,10 @@ def test_cross_mean_pooled_mean_overflow_is_refused_not_a_crash(tmp_path):
 
 def test_overflowed_return_mass_refuses_concentration_never_passes_it(tmp_path):
     # Two members, one closed row each, both a pct return of ~1e308 (a 1e-300 open into 1e8)
-    # on disjoint bars: each member's |return| mass is finite, their total overflows. Every
-    # mass share read `x / inf = 0.0` — the pooled top share, BOTH member shares and both
-    # episode shares — and a basket of two ~1e308 bets passed the concentration ceiling as
-    # perfectly spread. An overflowed total has no shares: null, and the check refuses.
+    # on disjoint bars: each member's |return| mass is finite, their total overflows. An
+    # overflowed total has no shares: null — the pooled top share, BOTH member shares and both
+    # episode shares — and the check refuses. Read as `x / inf = 0.0`, every share would pass a
+    # basket of two ~1e308 bets under the concentration ceiling as perfectly spread.
     from seikan.gate import GateThresholds, evaluate_gate
 
     n = 30
@@ -5156,11 +5152,11 @@ def _ceiling_basket(tmp_path, tops, *, n=40):
 
 
 def test_cross_mean_bar_mean_survives_legs_whose_sum_leaves_the_double_range(tmp_path):
-    # Two members whose pct legs of 1e308 and 1.5e308 sum past the double range: the plain row
-    # mean overflowed and every member censored as `no_benchmark` — though the bar's mean,
-    # 1.25e308, is a double. Summed in a scaled frame it is computed: both members close, their
-    # excesses are ∓(1.5e308 − 1e308)/2, the bench leg is the mean, and every bar being full the
-    # pooled mean is exactly 0.
+    # Two members whose pct legs of 1e308 and 1.5e308 sum past the double range, though the
+    # bar's mean, 1.25e308, is a double (a plain row mean overflows and would censor every
+    # member as `no_benchmark`). Summed in a scaled frame it is computed: both members close,
+    # their excesses are ∓(1.5e308 − 1e308)/2, the bench leg is the mean, and every bar being
+    # full the pooled mean is exactly 0.
     res = _ceiling_basket(tmp_path, {"A": 1e8, "B": 1.5e8})
     cov = res.summary["cells"][0]["outcome_coverage"]
     for t in ("A", "B"):
@@ -5172,10 +5168,10 @@ def test_cross_mean_bar_mean_survives_legs_whose_sum_leaves_the_double_range(tmp
     assert rows["B"]["ret"].iloc[0] == pytest.approx((leg_b - leg_a) / 2.0, rel=1e-15)
     assert rows["A"]["ret_bench"].iloc[0] == pytest.approx(leg_a / 2.0 + leg_b / 2.0, rel=1e-15)
     assert res.summary["cells"][0]["pooled"]["mean_ret"] == 0.0
-    # Four members at 1.7e308 beside a flat one: about the bar's offset the centred sum, 2.55e308,
-    # left the range and every member censored as `no_benchmark`, though the bar's mean, 1.36e308,
-    # is a double. Every member closes: the four 3.4e307 above the mean, the flat one 1.36e308
-    # below it.
+    # Four members at 1.7e308 beside a flat one: about the bar's offset the centred sum,
+    # 2.55e308, leaves the range, though the bar's mean, 1.36e308, is a double. Every member
+    # closes (none censors as `no_benchmark`): the four 3.4e307 above the mean, the flat one
+    # 1.36e308 below it.
     res = _ceiling_basket(tmp_path, {"A": 1.7e8, "B": 1.7e8, "C": 1.7e8, "D": 1.7e8, "E": None})
     cov = res.summary["cells"][0]["outcome_coverage"]
     for t in "ABCD":
@@ -5190,11 +5186,11 @@ def test_cross_mean_bar_mean_survives_legs_whose_sum_leaves_the_double_range(tmp
 
 
 def test_cross_mean_bench_leg_is_the_bars_exactly_rounded_mean(tmp_path):
-    # The review's case: five members whose pct legs alternate between the bars
+    # Five members whose pct legs alternate between the bars
     # [0, .5, .5, −.5 − 2**-53, −.5 + 2**-53], which cancel exactly, and [2**-52, .5, .5, −.5, −.5].
-    # About the first bar's offset three of its five subtractions rounded and the bench leg read
-    # −1.1e-17 for an exact 0, so member A — raw legs [0, 2**-52], exactly five times its bench
-    # legs [0, 2**-52/5] — fitted beta 4 and alpha 4.4e-17. Summed exactly: beta 5, alpha 0.
+    # Member A's raw legs [0, 2**-52] are exactly five times its bench legs [0, 2**-52/5]:
+    # summed exactly, beta 5 and alpha 0. About the first bar's offset three of its five
+    # subtractions round, and the bench leg reads −1.1e-17 for an exact 0 (beta 4, alpha 4.4e-17).
     e = 2.0**-53
     legs = ([0.0, 0.5, 0.5, -0.5 - e, -0.5 + e], [2.0**-52, 0.5, 0.5, -0.5, -0.5])
     n = 82  # forty firings on the even bars 0..78, each filled at the next open (1) for one bar
@@ -5267,12 +5263,11 @@ def _ceiling_episode_files(tmp_path, targets):
     ],
 )
 def test_overflowed_episode_mean_reads_null_never_a_crash(tmp_path, targets, mode, direction):
-    # Finite returns of 1e308 and 1.5e308 in one episode sum past the double range, and the
-    # ledger's per-episode mean read inf — into a field typed plain `float`, so json_safe's null
-    # failed the emitted contract: ReportContractError out of compile_thesis, exit 4 out of the
-    # CLI, no report, on input the strict loader admits. The mean is unknown (not even its sign
-    # is): NaN → null, the read episode_profile already nulled off the same episodes — and the
-    # run is warning-free under the suite's -W error.
+    # Finite returns of 1e308 and 1.5e308 in one episode sum past the double range. The
+    # ledger's per-episode mean is unknown (not even its sign is): NaN → null, as the
+    # episode_profile read nulls off the same episodes — and the run is warning-free under the
+    # suite's -W error. An inf there, in a field typed plain `float`, would fail the emitted
+    # contract (ReportContractError out of compile_thesis) on input the strict loader admits.
     from seikan.api import compile_thesis
 
     thesis = Thesis.model_validate(
@@ -5298,16 +5293,14 @@ def test_overflowed_episode_mean_reads_null_never_a_crash(tmp_path, targets, mod
     assert all(np.isnan(m) for m in means[:3])
     assert means[3] == (1e308 if direction == "longonly" else -1e308)  # finite: its own bits
     assert [e["mean_ret"] for e in json_safe(ledger)["entries"]] == [None] * 3 + [means[3]]
-    assert np.isnan(cell["episode_profile"]["mean_ret"])  # the sibling read, as before
+    assert np.isnan(cell["episode_profile"]["mean_ret"])  # the sibling read nulls them too
 
 
 def test_overflowed_bucket_mean_reads_null_never_a_crash(tmp_path):
     # A series target near the double ceiling, diff outcome: every closed row is a finite
-    # ~ -1.6e308, and each conditional bucket's sum of them overflows. The bucket mean read -inf
-    # into a field typed plain `float` — ReportContractError out of compile_thesis — so the one
-    # consumer fix 5 had taught to stand down (bucket_monotonicity) never reached a report. The
-    # bucket mean is null now, monotonicity carries no entry, and the bootstrap whose episode
-    # draws overflow says why its block is null.
+    # ~ -1.6e308, and each conditional bucket's sum of them overflows. The bucket mean is null
+    # (a -inf in that field, typed plain `float`, would fail the emitted contract), monotonicity
+    # carries no entry, and the bootstrap whose episode draws overflow says why its block is null.
     from seikan.api import compile_thesis
 
     rng = np.random.RandomState(5)
@@ -5528,11 +5521,11 @@ def test_cross_mean_member_hole_censors_the_whole_bar(tmp_path):
 
 
 def test_cross_mean_log_leg_past_the_double_range_no_longer_censors_the_bar(tmp_path):
-    # The whole-bar censoring above is for a leg that IS missing. A log leg whose quotient left
-    # the double range (B: 1e200 → 1e-200 and back) read ln(0) = −inf / ln(inf) = +inf → NaN,
-    # so the bar's mean died and the ORDINARY member's rows censored as `no_benchmark` beside
-    # B's `no_outcome`. The scale-safe log measures B exactly, so both members close against the
-    # full two-member basket — and A's excess carries B's ∓921/2 share of the bar mean.
+    # The whole-bar censoring above is for a leg that IS missing. A log leg whose quotient
+    # leaves the double range (B: 1e200 → 1e-200 and back) is measured exactly by the scale-safe
+    # log, so both members close against the full two-member basket — and A's excess carries
+    # B's ∓921/2 share of the bar mean. Read as ln(0) = −inf / ln(inf) = +inf, B's NaN leg would
+    # kill the bar's mean and censor the ORDINARY member's rows as `no_benchmark`.
     idx = pd.date_range("2021-01-01", periods=6, freq="1D")
     a = np.array([100.0, 101.0, 102.0, 103.0, 104.0, 105.0])
     b = np.array([1.0, 1e200, 1e-200, 1e200, 1.0, 1.0])
@@ -5897,7 +5890,7 @@ def test_pooled_rotation_rotates_a_member_whose_only_firing_is_the_final_bar(tmp
         f[: n - 1 - h] = px[1 + h :] / px[1 : n - h] - 1.0
         fwds.append(f)
     rot_p, rot_n_null = _brute_common_shift(masks, fwds)
-    # the defect's footprint: the roster without B (fillable firings only) is a different null
+    # the roster without B (fillable firings only) would be a different null
     assert _brute_common_shift(masks[:1], fwds[:1]) != (rot_p, rot_n_null)
     assert rot_n_null == n - 1  # B's rotated firing defines the shift A alone leaves undefined
 
@@ -5928,10 +5921,11 @@ def test_pooled_rotation_rotates_a_member_whose_only_firing_is_the_final_bar(tmp
 
 
 def test_rotation_stamp_counts_the_shifts_a_pooled_null_rotated(tmp_path):
-    # The run-level stamp read only the per-target pass, whose roster is closed rows. A basket
-    # whose members fire only on the final bar has none — no per-target null at all — while the
-    # pooled pass rotates every FIRED member's mask: its null was formed over 79 shifts (74 of
-    # them defined) and the stamp said 0 shifts, resolution null, below the cell's own count.
+    # A basket whose members fire only on the final bar has no closed rows — no per-target null
+    # at all — while the pooled pass rotates every FIRED member's mask: its null is formed over
+    # 79 shifts (74 of them defined). The run-level stamp counts those shifts, never below the
+    # cell's own count — a stamp read off the per-target pass alone, whose roster is closed rows,
+    # would say 0 shifts, resolution null.
     n = 80
     idx = pd.date_range("2021-01-01", periods=n, freq="1D")
     rng = np.random.RandomState(5)
@@ -6232,9 +6226,9 @@ def test_feature_association_covers_every_feature_and_target(tmp_path):
 
 
 def test_pbo_scores_a_level_heavy_diff_outcome_end_to_end(tmp_path):
-    # A diff outcome on a series-shaped target at level 1e9: the CSCV split scores used to
-    # cancel their one-pass variance to zero there and refuse as "insufficient_data"; the
-    # shifted-moment scoring gives the grid a real pbo block through the public runner.
+    # A diff outcome on a series-shaped target at level 1e9, where a one-pass variance of the
+    # CSCV split scores cancels to zero (and refuses as "insufficient_data"): the shifted-moment
+    # scoring gives the grid a real pbo block through the public runner.
     rng = np.random.RandomState(31)
     vals = list(1e9 + rng.normal(0.0, 1.0, 400).cumsum() * 0.01)
     _series_bars(tmp_path / "y.csv", vals)
@@ -6409,7 +6403,7 @@ def test_event_node_sweep_inside_embedded_condition_is_a_grid_axis(tmp_path):
 
 
 def test_first_recovery_after_a_fresh_excursion_fires_on_rearm_only(tmp_path):
-    # The review's crossing-vs-re-arm case: z = [0, −2.5, −0.5, −1.2, −0.4, −2.6, −0.3]. A bare
+    # The crossing-vs-re-arm case: z = [0, −2.5, −0.5, −1.2, −0.4, −2.6, −0.3]. A bare
     # first_true(z > −1) fires at 2, 4 and 6 (every re-crossing); the thesis "first recovery
     # above −1 after a FRESH excursion below −2" must fire at 2 and 6 only. The event algebra
     # spells it: the arm S = first_true(z < −2); "z > −1 has not held on any bar since the arm,
@@ -6489,9 +6483,9 @@ def _gt0(left):
 
 
 def test_native_sue_style_two_release_mean_vs_bar_mean(tmp_path):
-    # The review's table: prints on day 2 (10) and day 4 (20) over a 10-day index. The bar-clock
-    # mean of the ffilled feed reads 10 on day 3 (two BARS of one print) and 20 from day 5; the
-    # native two-RELEASE mean is 15 from day 4 on and never anything else.
+    # Prints on day 2 (10) and day 4 (20) over a 10-day index. The bar-clock mean of the
+    # ffilled feed reads 10 on day 3 (two BARS of one print) and 20 from day 5; the native
+    # two-RELEASE mean is 15 from day 4 on and never anything else.
     from seikan.api import list_entries
 
     native = {
@@ -6580,9 +6574,9 @@ def test_native_feed_end_to_end_with_lag_and_freshness_guard(tmp_path):
 
 
 def test_freshness_guard_holds_at_its_boundary(tmp_path):
-    # The review's thesis: one print 120 days and 1 ns before the first bar, gated on
-    # ``days_since(eps) <= 120``. The age double-rounded to 120.0 and the guard fired on bar 0;
-    # rounded once it is the next double above 120, so the stale print never fires.
+    # One print 120 days and 1 ns before the first bar, gated on ``days_since(eps) <= 120``.
+    # Rounded once, the age is the next double above 120, so the stale print never fires
+    # (double-rounded it reads 120.0, and the guard would fire on bar 0).
     stamp = pd.Timestamp("2024-01-01") - pd.Timedelta(days=120, nanoseconds=1)
     entry = {
         "type": "threshold",
@@ -6595,9 +6589,9 @@ def test_freshness_guard_holds_at_its_boundary(tmp_path):
     assert run_backtest(thesis, md).trades.empty
 
 
-# The review's native-hole case: daily prints at midnight, plus a NaN print at 06:00 and a
-# finite one at 12:00 on 01-05 — both arrive at the 01-06 bar, whose asof read keeps only the
-# midnight print, so the bar-clock ``external`` leaf never sees the hole the native EMA skipped.
+# The native-hole case: daily prints at midnight, plus a NaN print at 06:00 and a finite one
+# at 12:00 on 01-05 — both arrive at the 01-06 bar, whose asof read keeps only the midnight
+# print, so the bar-clock ``external`` leaf never sees the hole the native EMA consumes.
 _DAILY = [f"2024-01-{d:02d}" for d in range(1, 11)]
 _HOLED_STAMPS = sorted([*_DAILY, "2024-01-05T06:00", "2024-01-05T12:00"])
 
@@ -6621,9 +6615,10 @@ def _native_sources(tmp_path, stamps, values, **kw):
 
 def test_native_print_hole_between_bars_enters_the_sources_panel(tmp_path):
     # The 06:00 NaN print falls between two bars, so the raw leaf — each interval's last print —
-    # never reads it. The native EMA skipped it and read finite after it, every ledger blind; it
-    # now has no value from that print on, so the root is undefined from the bar the print
-    # arrives at, and the native leaf counts the hole there: source_coverage refuses as well.
+    # never reads it. The native EMA has no value from that print on, so the root is undefined
+    # from the bar the print arrives at, and the native leaf counts the hole there:
+    # source_coverage refuses as well. An EMA that skips the print reads finite after it, every
+    # ledger blind.
     from seikan.gate import GateThresholds, evaluate_gate
 
     summary, by_source = _native_sources(tmp_path, _HOLED_STAMPS, _holed_values(_HOLED_STAMPS))
@@ -6692,8 +6687,8 @@ def test_native_hole_before_the_evaluated_interval_counts_on_the_first_bar(tmp_p
 
 def test_native_hole_survives_the_data_start_remedy(tmp_path):
     # data.start slices the BARS, never the prints a native expression reads: excluding the region
-    # of the review's hole leaves every native value as it was, so the hole stays on the ledger
-    # (on the first bar now) — and the refusal names the only remedy that works.
+    # of the hole leaves every native value unchanged, so the hole stays on the ledger (on the
+    # sliced run's first bar) — and the refusal names the only remedy that works.
     values = _holed_values(_HOLED_STAMPS)
     thesis, _md = _native_run(tmp_path, _HOLED_STAMPS, values, _gt0(_NATIVE_EMA))
     sliced = Thesis.model_validate(
@@ -6784,8 +6779,8 @@ def test_per_target_native_leaf_starts_member_by_member(tmp_path):
 
 
 def test_shared_native_feed_is_ledgered_on_every_target(tmp_path):
-    # A shared feed is ONE print history every member reads: the review's hole is on every
-    # target's native leaf, exactly as the evaluation broadcasts the native result.
+    # A shared feed is ONE print history every member reads: the hole is on every target's
+    # native leaf, exactly as the evaluation broadcasts the native result.
     n = 10
     idx = pd.date_range("2024-01-01", periods=n, freq="1D")
     targets = ["A", "B", "C"]
@@ -6817,9 +6812,9 @@ def test_native_nan_print_ending_the_first_started_interval_is_a_hole(tmp_path):
     # The first finite prints and a NaN print that ENDS their interval all arrive at 01-04: the
     # asof value there is the NaN, and the native EMA, seeded by the 06:00 print, has no value
     # from that NaN on. The leaf starts where the first finite print arrives, so the NaN is a
-    # hole on that bar, not warmup (deleting the finite 12:00 print can no longer clean it). The
+    # hole on that bar, not warmup (deleting the finite 12:00 print cannot clean it). The
     # node's init latches on the print clock (finite from 12:00), so the root reads every bar
-    # from 01-04 undecidable — latched on the anchored values it had read 01-04 as warmup.
+    # from 01-04 undecidable — latched on the anchored values, it would read 01-04 as warmup.
     stamps = ["2024-01-03T06:00", "2024-01-03T12:00", "2024-01-03T18:00", *_DAILY[4:]]
     values = _holed_values(stamps, ("2024-01-03T18:00",))
     summary, by_source = _native_sources(tmp_path, stamps, values)
@@ -6850,8 +6845,8 @@ def test_native_counts_a_multi_bar_raw_hole_like_the_raw_leaf(tmp_path):
 
 
 def test_native_hole_follows_the_post_lag_stamps(tmp_path):
-    # The lag shifts every print BEFORE arrival is decided: a one-day lag moves the review's hole
-    # one bar later, an 18-hour lag moves the NaN print onto a bar — counted once either way.
+    # The lag shifts every print BEFORE arrival is decided: a one-day lag moves the hole one bar
+    # later, an 18-hour lag moves the NaN print onto a bar — counted once either way.
     values = _holed_values(_HOLED_STAMPS)
     _summary, by_source = _native_sources(tmp_path, _HOLED_STAMPS, values, lag=1)
     assert by_source["native:eps"] == {"n_missing": 1, "first_available": "2024-01-02T00:00:00"}
@@ -6994,7 +6989,7 @@ _XF = {"type": "external", "name": "x"}
 
 
 def test_cross_agg_breadth_does_not_count_its_broadcast_into_a_late_member(tmp_path):
-    # cross_agg broadcasts the cleared mean into T3 while T3's own x warms: T3 was not reduced
+    # cross_agg broadcasts the cleared mean into T3 while T3's own x warms: T3 is not reduced
     # over there, so k is 3 for those bars and the full basket starts at T3's first value.
     late = np.r_[np.full(10, np.nan), np.ones(20)]
     entry = {
@@ -7012,7 +7007,7 @@ def test_cross_agg_breadth_does_not_count_its_broadcast_into_a_late_member(tmp_p
 def test_breadth_follows_the_values_a_kernel_reduced_over_not_their_init(tmp_path):
     # The inner cross_agg broadcasts into T3 while T3's x warms (value finite, init not). The
     # OUTER cross_rank enters only initialized inputs, so neither node reduces over T3 there:
-    # both k read 3 until T3's own x starts (it used to rank T3 on every bar, k 4 throughout).
+    # both k read 3 until T3's own x starts.
     late = np.r_[np.full(10, np.nan), np.ones(20)]
     inner = {"type": "cross_agg", "input": _XF, "agg": "mean"}
     entry = {
@@ -7030,10 +7025,10 @@ def test_breadth_follows_the_values_a_kernel_reduced_over_not_their_init(tmp_pat
 
 
 def test_a_label_carried_before_its_init_ranks_nobody_end_to_end(tmp_path):
-    # The review's case through the runner: the group label is a cross_agg broadcast, which
-    # carries sector 1 into T3 from bar 0 while T3's own sector feed starts at bar 10. T3 was
-    # ranked there — the bottom of its group, it fired on all ten bars — on a label it did not
-    # have yet. It is in no group until its label starts, and T2 is its group's bottom meanwhile.
+    # Through the runner: the group label is a cross_agg broadcast, which carries sector 1 into
+    # T3 from bar 0 while T3's own sector feed starts at bar 10. T3 is in no group until its
+    # label starts, and T2 is its group's bottom meanwhile — ranked on a label it does not have
+    # yet, T3 would sit at the bottom of its group and fire on all ten bars.
     late = np.r_[np.full(10, np.nan), np.ones(20)]
     label = {"type": "cross_agg", "input": {"type": "external", "name": "sector"}, "agg": "mean"}
     entry = {
@@ -7064,9 +7059,9 @@ def _rank_ge(q, **selectors):
 
 
 def test_cross_rank_where_ranks_within_the_eligible_population_end_to_end(tmp_path):
-    # The review's case: x = [100, 90, 80, 70], only the last two eligible. Ranked within the
-    # eligible population the 80 member is on top and fires; the guarded GLOBAL rank fires
-    # nobody (100 tops the basket but is ineligible; 80 is in the bottom half).
+    # x = [100, 90, 80, 70], only the last two eligible. Ranked within the eligible population
+    # the 80 member is on top and fires; the guarded GLOBAL rank fires nobody (100 tops the
+    # basket but is ineligible; 80 is in the bottom half).
     within = {"type": "and", "conditions": [_ELIG_GE1, _rank_ge(0.8, where=_ELIG_GE1)]}
     res = _pop_basket(tmp_path, within, x=[100, 90, 80, 70], elig=[0, 0, 1, 1])
     assert set(res.trades["target"]) == {"T2"}
@@ -7124,10 +7119,11 @@ def test_cross_rank_group_sector_relative_end_to_end(tmp_path):
 
 
 def test_grouped_breadth_counts_only_groups_that_cleared_the_floor(tmp_path):
-    # The review's case: four members in two sectors of two, min_valid=3 PER GROUP — no group
-    # ever reaches the floor, so the kernel emits nothing on any bar. The ledger used to count
-    # all four entering members against the floor once (k=4 ≥ 3): 30 bars "evaluated", the
-    # full basket "present" from bar 0, for a node that never produced a value.
+    # Four members in two sectors of two, min_valid=3 PER GROUP — no group ever reaches the
+    # floor, so the kernel emits nothing on any bar and the ledger evaluates no bar. Counting
+    # all four entering members against the floor at once (k=4 ≥ 3) would report 30 bars
+    # "evaluated" and the full basket "present" from bar 0, for a node that never produces a
+    # value.
     sector = {"type": "external", "name": "sector"}
     res = _pop_basket(
         tmp_path,
@@ -7199,8 +7195,9 @@ def test_ungrouped_breadth_bars_below_the_floor_are_not_evaluated(tmp_path):
     ],
 )
 def test_grouped_breadth_of_demean_and_agg_counts_the_reduced_members(tmp_path, node):
-    # The review's case on the other two kernels: the singleton sector {T3} is never reduced over
-    # (cross_agg broadcasts nothing into it either), so k is the three members of sector 1.
+    # The singleton-sector case on the other two kernels: the singleton sector {T3} is never
+    # reduced over (cross_agg broadcasts nothing into it either), so k is the three members of
+    # sector 1.
     entry = {
         "type": "threshold",
         "left": node,

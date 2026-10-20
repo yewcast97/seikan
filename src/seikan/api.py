@@ -66,9 +66,8 @@ def _sufficient_report(md: MarketData, thesis: Thesis) -> DataReport | None:
     carrying the full data_report).
 
     ``md.report`` describes the load and is never written: the warning describes one thesis's
-    horizon, and appended to the shared report it surfaced in every result over that ``md`` —
-    a horizon-95 compile wrote "only 4 bars can anchor … (95)" into an earlier horizon-1
-    result."""
+    horizon, and appended to the shared report it would surface in every result over that
+    ``md`` — a later compile's horizon written into an earlier result."""
     errors, warnings = dataio.sufficiency_check(len(md.index), thesis.params.horizon)
     if errors:
         _refuse(md, errors, errors[0]["message"])
@@ -140,36 +139,30 @@ def list_entries(thesis: Thesis, md: MarketData) -> EntryListReport:
     the signal-listing counterpart to :func:`compile_thesis` (no backtest, no statistics, no
     horizon-runway requirement).
 
-    Shares the event study's DSL and compiler: it consumes the same materialized ``MarketData`` (the
-    caller loads once with ``load_market_data(thesis.data, files)`` — the CLI shares one load
-    across both compute paths, and the evaluation memo rides it as the ``MarketData`` memos, so a
-    backtest that
-    already ran over this ``md`` leaves nothing here to rebuild) and builds the same entry firing
-    mask, then
-    reports every True bar's timestamp
-    in ascending order — for each (swept signal param combo × target). Because it reuses
-    ``vectorize.signal``, the listed firings are bit-identical to the bars the backtest measures at.
-    These are raw signal firings, not observations: a last-bar firing is listed even though it has
-    no next bar to fill at. The measurement ``horizon`` does not affect the firing mask, so it is
-    not part of the iteration (``iter_param_assignments`` expands only the entry-tree sweeps).
-    Whether the provided series is up to date is the caller's business — ``series_end`` only
-    reports where the given joined index stops.
+    Shares the event study's DSL and compiler: it consumes the same materialized ``MarketData``
+    (the caller loads once with ``load_market_data(thesis.data, files)``; the evaluation memos
+    ride it, so a backtest that already ran over this ``md`` leaves nothing here to rebuild) and
+    builds the same entry firing mask, then reports every True bar's timestamp in ascending order
+    — for each (swept signal param combo × target). Because it reuses ``vectorize.signal``, the
+    listed firings are bit-identical to the bars the backtest measures at. These are raw signal
+    firings, not observations: a last-bar firing is listed even though it has no next bar to fill
+    at (the runner keeps only the firings it can fill, ``fire + 1 <= n_bars - 1``, so that one has
+    no trades row and no ``outcome_coverage`` count). The measurement ``horizon`` does not affect
+    the firing mask, so it is not part of the iteration (``iter_param_assignments`` expands only
+    the entry-tree sweeps). Whether the provided series is up to date is the caller's business —
+    ``series_end`` only reports where the given joined index stops.
 
     The report also carries the per-bar evidence in two frames, and the CLI writes each one on its
     own flag. ``root_series`` holds every deduplicated root series node (each threshold operand
     except bare constants — the operands of a Condition embedded in an event node included, since
-    each is a decision root of its own — scalarized per combo; the value frames are already in the
-    ``MarketData`` memos from this function's own ``signal`` calls, or from a backtest that ran
-    first, so no series is ever built twice); ``seikan run --root-series-out`` writes it, because it
-    answers why a bar did or did not fire. ``entry_flags`` holds the 0/1 column per (combo ×
-    target), and ``seikan run --entry-flags-out`` writes it. That the mask gets an output of its
-    own is exactly the last-bar seam noted above: the runner drops a firing it cannot fill
-    (``fire + 1 <= n_bars - 1``), so a final-bar firing produces no trades row and no
-    ``outcome_coverage`` count, and nothing in observation shape can report it. Flags and
+    each is a decision root of its own — scalarized per combo, off the same memos, so no series is
+    ever built twice); ``seikan run --root-series-out`` writes it, because it answers why a bar did
+    or did not fire. ``entry_flags`` holds the 0/1 column per (combo × target), and ``seikan run
+    --entry-flags-out`` writes it — the one CLI output a last-bar firing reaches. Flags and
     ``timestamps`` are read off the SAME ``vectorize.signal`` mask, so they agree bit for bit —
-    with each other and with the backtest. What stays library-only is the raw ``entries`` ROWS: the
-    per-(combo × target) timestamp lists have no CLI output, so a caller wanting firings in list
-    shape rather than as a per-bar matrix comes through here.
+    with each other and with the backtest. What stays library-only is the raw ``entries`` ROWS:
+    the per-(combo × target) timestamp lists have no CLI output, so a caller wanting firings in
+    list shape rather than as a per-bar matrix comes through here.
 
     Like :func:`compile_thesis`, ``md`` must be a load of the thesis's data declaration.
     """

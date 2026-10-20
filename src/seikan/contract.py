@@ -206,22 +206,14 @@ METRIC_ROLES: dict[str, JsonValue] = {
         "attribution, never a ranking; only max_member_share_abs gates, and cell_evidence "
         "reads by_target only to reconcile that maximum)",
     ],
-    # ONE machine-readable class per reported metric, so a consuming agent can tell what KIND of
-    # number it is holding without parsing prose: `descriptive` describes the realized sample and
-    # certifies nothing; `inference` is an uncalibrated inferential estimator (directionally
-    # informative, never significance); `integrity` is an accounting/reconciliation ledger whose
-    # job is to make missing or tampered evidence visible — the rotation null's resolution stamp
-    # and a cell's `rot_n_null` are integrity by that rule, not inference. The class is ORTHOGONAL
-    # to gating: `mean_ret` and `concentration` are descriptive quantities a check happens to
-    # read, and integrity is reserved for ledgers, not for "the gate looks at it". `n` /
-    # `n_nonoverlap` are integrity by that rule — counts whose JOB is visibility:
-    # `n_nonoverlap` is the
-    # greedy non-overlapping count, carried precisely so the overlap inflation (n=400,
-    # n_nonoverlap=18)
-    # cannot hide — the same accounting job as `n`, and NOT an inferential estimate, though the
-    # reliability layer sets its df from it. A BLOCK classes as a
-    # whole; the one dotted override is `episode_stats.n`, the reconciliation count
-    # `cell_evidence` re-checks, while `episode_stats` itself (the cluster profile) stays
+    # ONE machine-readable class per reported metric; the three classes and their rules (a block
+    # classes as a whole, the class is orthogonal to gating) are stated once, in
+    # ``METRIC_ROLES_DOC["metric_classes"]``. By those rules the rotation null's resolution stamp
+    # and a cell's `rot_n_null` are integrity, not inference, and so are `n` / `n_nonoverlap` —
+    # counts whose JOB is visibility: `n_nonoverlap`, the greedy non-overlapping count, keeps the
+    # overlap inflation from hiding and is NOT an inferential estimate, though the reliability
+    # layer sets its df from it. The one dotted override is `episode_stats.n`, the reconciliation
+    # count `cell_evidence` re-checks, while `episode_stats` itself (the cluster profile) stays
     # descriptive.
     "metric_classes": {
         # inference — uncalibrated inferential estimators (see each one's caveat)

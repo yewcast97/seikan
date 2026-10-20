@@ -235,10 +235,9 @@ def test_every_declared_cell_is_on_the_record_including_non_firing_ones(tmp_path
 
 
 def test_a_negated_warming_branch_mints_no_observations(tmp_path):
-    # The review's repro end to end: `or(not(ema(close, 40) > 0), close < 0)` over 70 rising
-    # bars closed 39 observations and cleared the support floors — every one a warmup bar whose
-    # `not` read `~False` while the live `close < 0` branch initialized the `or`. Warmup has no
-    # truth value: nothing fires, and nothing is a hole either.
+    # End to end: `or(not(ema(close, 40) > 0), close < 0)` over 70 rising bars. Warmup has no
+    # truth value: nothing fires, and nothing is a hole either — guarding against a warmup bar
+    # whose `not` reads `~False` while the live `close < 0` branch initializes the `or`.
     path = tmp_path / "px.csv"
     _write_px(path, np.linspace(100.0, 170.0, 70))
     warming = {
@@ -261,10 +260,10 @@ def test_a_negated_warming_branch_mints_no_observations(tmp_path):
 
 
 def test_an_impossible_mean_predicate_mints_no_observations(tmp_path):
-    # The review's run: the five-bar window [x − ulp, x, x, x, x] at x = 0.9757632206350922 read
-    # its mean an ulp ABOVE its maximum (the exactly rounded sum over the count rounds twice), so
-    # `rolling_mean(close, 5) > rolling_max(close, 5)` — false of every window there is — fired on
-    # 59 of 602 bars and closed 59 observations. Rounded once, a mean never leaves its window.
+    # The five-bar window [x − ulp, x, x, x, x] at x = 0.9757632206350922: the exactly rounded
+    # sum over the count rounds twice and reads its mean an ulp ABOVE its maximum, where
+    # `rolling_mean(close, 5) > rolling_max(close, 5)` — false of every window there is — would
+    # fire. Rounded once, a mean never leaves its window, so nothing fires.
     x = 0.9757632206350922
     pattern = [1.0] * 5 + [float(np.nextafter(x, -np.inf)), x, x, x, x]
     path = tmp_path / "px.csv"
@@ -282,12 +281,11 @@ def test_an_impossible_mean_predicate_mints_no_observations(tmp_path):
 
 
 def test_a_window_at_the_largest_double_runs_to_completion(tmp_path):
-    # The review's run: a three-bar rolling mean over a series opening at the largest finite
-    # double. The window's mean max / 3 is a double, but three times its rounding is past the
-    # range, and the quotient's correction — its residual formed in the input frame — ran for
-    # good: `seikan run` never returned. The product is read in a frame; the window fires like
-    # any other, and the run completes with its ledgers. A series-shaped target: its zeros are
-    # no prices.
+    # A three-bar rolling mean over a series opening at the largest finite double. The window's
+    # mean max / 3 is a double, but three times its rounding is past the range, so a quotient
+    # correction whose residual is formed in the input frame would never terminate. The product is
+    # read in a frame; the window fires like any other, and the run completes with its ledgers.
+    # A series-shaped target: its zeros are no prices.
     path = tmp_path / "series.csv"
     idx = pd.date_range("2015-01-02", periods=6, freq="1D").rename("datetime")
     values = [np.finfo(float).max, 0.0, 0.0, 1.0, 2.0, 3.0]
@@ -498,11 +496,11 @@ _FEED = {"type": "external", "name": "px"}
 )
 @pytest.mark.parametrize("level", [0.007, 0.1, 100.1, 0.7])
 def test_a_constant_decimal_feed_mints_no_firings(tmp_path, left, op, right, level):
-    # The review's kernel probe end to end: a feed stuck at a decimal level (a rate at its floor)
-    # has no dispersion and equals every average of itself — but the computed mean of a constant
-    # decimal window is not the constant (0.1, 100.1, 0.7: it read z = ±1 on every bar), and the
-    # convex EMA update drifted off the feed the same way (0.007 settles at 0.006999999999999999
-    # at window 10). Exact zero dispersion: nothing fires, nothing is a hole.
+    # End to end: a feed stuck at a decimal level (a rate at its floor) has no dispersion and
+    # equals every average of itself — but a plain floating-point mean of a constant decimal
+    # window is not the constant (0.1, 100.1, 0.7), and a convex EMA update drifts off the feed
+    # the same way (0.007 settles at 0.006999999999999999 at window 10). Exact zero dispersion:
+    # nothing fires, nothing is a hole.
     n_bars = 300
     path, feed = tmp_path / "px.csv", tmp_path / "feed.csv"
     _write_px(path, _planted_dip_px(n_bars, 5, 9))
@@ -538,9 +536,9 @@ def _feed_thesis(name, entry):
 
 
 def test_a_feed_pinned_after_moving_does_not_lock_the_ew_zscore(tmp_path):
-    # Move, then pin: the EW mean's update is absorbed a few ulps off the pinned value, and the
-    # z-score used to lock at ±1/√(1−α) (±1.41 at window 3) on every pinned bar. It decays as
-    # exact arithmetic says — nothing fires once the move is far behind, and nothing is a hole.
+    # Move, then pin: the EW mean's update is absorbed a few ulps off the pinned value, where a
+    # z-score can lock at ±1/√(1−α) (±1.41 at window 3) on every pinned bar. It decays as exact
+    # arithmetic says — nothing fires once the move is far behind, and nothing is a hole.
     n_bars, n_move = 300, 40
     values = np.full(n_bars, 0.007)
     values[:n_move] = 0.007 + np.random.RandomState(0).normal(0.0, 0.0014, n_move)
@@ -566,8 +564,8 @@ def test_a_feed_pinned_after_moving_does_not_lock_the_ew_zscore(tmp_path):
 def test_a_stepped_rate_sits_above_its_ew_mean_on_every_held_bar(tmp_path):
     # A rate that only ever steps UP and holds: exact arithmetic keeps it above its EW mean on
     # every bar from the first step on (the deviation decays, never changes sign), so
-    # `zscore(rate, 5, ema) > 0` holds on bars 20..299. Zeroing the deviation once the mean's
-    # update was absorbed lost the tail of every hold (250 of 280 bars fired).
+    # `zscore(rate, 5, ema) > 0` holds on bars 20..299 — where zeroing the deviation once the
+    # mean's update is absorbed would lose the tail of every hold.
     n_bars = 300
     values = np.r_[np.full(20, 1.0), np.full(80, 1.25), np.full(100, 1.5), np.full(100, 1.75)]
     path, feed = tmp_path / "px.csv", tmp_path / "feed.csv"
@@ -586,8 +584,8 @@ def test_a_stepped_rate_crosses_above_its_ema_once(tmp_path):
     # A rate that only ever steps UP and holds sits above its EW mean on every bar from the first
     # step on (exact arithmetic never lets the mean reach a held value), so the crossover recipe
     # `first_true(px > ema(px, 5))` fires ONCE, on the first step. An ema that landed ON the held
-    # value during the hold at 1.5 read `px > ema` False there and fired a second "crossover" on
-    # the step to 1.75 (bar 200).
+    # value during the hold at 1.5 would read `px > ema` False there and fire a second
+    # "crossover" on the step to 1.75 (bar 200).
     n_bars = 300
     values = np.r_[np.full(20, 1.0), np.full(80, 1.25), np.full(100, 1.5), np.full(100, 1.75)]
     path, feed = tmp_path / "px.csv", tmp_path / "feed.csv"
@@ -815,10 +813,10 @@ def test_a_held_feed_read_through_its_ema_keeps_the_dispersion_guard_decided(tmp
     # subnormal. The documented guard `and(rolling_agg(x, N, std) > 0, zscore(x) …)` reads True
     # on every VARYING window of that decay and False only once the ema has settled (an
     # all-equal window), and the z-score it guards is defined wherever it reads True, so every
-    # bar stays decided: `signal_coverage` keeps n_undefined 0 and the check met. An underflowed
-    # variance read the all-equal window's std 0.0 on the decay (the guard False on moving data);
-    # NaN-gated, it left 964 of these bars undecidable; and the EW z-score at alpha >= 0.5
-    # rounded its own variance to 0.0 there — NaN beside the guard's True on 760-920 bars.
+    # bar stays decided: `signal_coverage` keeps n_undefined 0 and the check met. This guards
+    # against an underflowed variance reading the all-equal window's std 0.0 on the decay (the
+    # guard False on moving data) and an EW z-score at alpha >= 0.5 rounding its own variance to
+    # 0.0 there (NaN beside the guard's True).
     n_bars, n_move = 2000, 100
     values = np.full(n_bars, 0.0)
     values[:n_move] = 1.0 + np.cumsum(np.random.RandomState(5).normal(0.0, 0.01, n_move))
@@ -854,10 +852,10 @@ def test_a_held_feed_read_through_its_ema_fires_where_its_exact_ew_z_does(tmp_pa
     # The same held feed, under a threshold BELOW the decay's |z|. The ema's decay is geometric
     # (ratio 2/3), and the EW z at window 2 of a geometric input is a constant exact arithmetic
     # keeps however deep it goes: −1/(2√2) ≈ −0.354. Where the ema is still a normal double but
-    # its squares are not (|e| < ~1.5e-154), the EW variance read as computed rounded to 0.0 — z
-    # NaN beside the guard's True, the coverage check unmet — and floored at the smallest
-    # subnormal it collapsed z toward 0, so `z > -0.25` entered on ~600 bars of the hold exact
-    # arithmetic never enters on. The lifted recurrence reads −0.354 there: no entry, all decided.
+    # its squares are not (|e| < ~1.5e-154), the lifted recurrence reads −0.354: no entry, all
+    # decided. The EW variance as computed rounds to 0.0 there (z NaN beside the guard's True),
+    # and floored at the smallest subnormal it collapses z toward 0, where `z > -0.25` would
+    # enter on bars exact arithmetic never enters on.
     n_bars, n_move = 2000, 100
     values = np.full(n_bars, 0.0)
     values[:n_move] = 1.0 + np.cumsum(np.random.RandomState(5).normal(0.0, 0.01, n_move))
@@ -897,12 +895,12 @@ def test_a_held_feed_read_through_its_ema_fires_where_its_exact_ew_z_does(tmp_pa
 
 def test_a_landed_step_held_is_decided_and_signed(tmp_path):
     # The landing gap, end to end: a feed that steps by two ulps (1.0 to 1.0000000000000004) and
-    # holds. At alpha 0.75 a plain mean's update lands ON the new value on the bar the feed moved,
-    # so the hold read z 0.0 where exact arithmetic keeps it above 0 (`z > 0` decided False)
-    # until the variance, with no deviation to feed it, rounded to 0.0 after ~490 held bars: from
-    # there the z was undefined, and signal_coverage refused the cell over a hold exact
-    # arithmetic decides. The compensated mean keeps the gap below its last bit: z > 0 on all
-    # 999 bars from the step on, every one decided, and the entry fires on each of them.
+    # holds. At alpha 0.75 a plain mean's update lands ON the new value on the bar the feed
+    # moves, so its hold reads z 0.0 where exact arithmetic keeps it above 0 (`z > 0` decided
+    # False), then an undefined z once the variance, with no deviation to feed it, rounds to 0.0
+    # — signal_coverage refusing a hold exact arithmetic decides. The compensated mean keeps the
+    # gap below its last bit: z > 0 on all 999 bars from the step on, every one decided, and the
+    # entry fires on each of them.
     n_bars = 1000
     values = np.full(n_bars, np.nextafter(np.nextafter(1.0, 2.0), 2.0))
     values[0] = 1.0
@@ -996,13 +994,13 @@ def test_not_over_a_decision_hole_neither_fires_nor_meets(tmp_path):
 
 
 def test_a_first_true_hole_stays_undecided_past_the_sibling_that_absorbs_it(tmp_path):
-    # The review's probe, through the public API: `or(first_true(C, cooldown=3), H)` over a child C
-    # alternating F, T with a hole at bar 5, and a sibling H True on bars 5-8 only. Whether the hole
-    # was True decides the cooldown's phase for good (fires at 5, 9, 13, … or at 7, 11, 15, …), so
-    # every True bar of C from the hole on is undecidable. The hole and the `cooldown` bars it
-    # tainted covered 5-8 — exactly where H absorbs the `or` (T∨U = T) — and then declared the
-    # decision known, firing one completion's phase (11, 15, …) with a clean `signal_coverage`. Now
-    # the odd bars from 9 on, where H is a decided False (F∨U = U), are the ledger's undecided bars.
+    # Through the public API: `or(first_true(C, cooldown=3), H)` over a child C alternating F, T
+    # with a hole at bar 5, and a sibling H True on bars 5-8 only. Whether the hole is True
+    # decides the cooldown's phase for good (fires at 5, 9, 13, … or at 7, 11, 15, …), so every
+    # True bar of C from the hole on is undecidable: the odd bars from 9 on, where H is a decided
+    # False (F∨U = U), are the ledger's undecided bars. Tainting only the hole and its `cooldown`
+    # bars would cover 5-8 — exactly where H absorbs the `or` (T∨U = T) — and fire one
+    # completion's phase (11, 15, …) with a clean `signal_coverage`.
     n_bars = 60
     feed_values = (np.arange(n_bars) % 2).astype(float)
     feed_values[5] = np.nan
@@ -1043,12 +1041,12 @@ def test_a_first_true_hole_stays_undecided_past_the_sibling_that_absorbs_it(tmp_
 
 
 def test_a_never_available_or_leaf_refuses_source_coverage_end_to_end(tmp_path):
-    # The v3 branch's reason for existing, run end-to-end: `dip OR (iv > 0)` where the iv feed's
-    # stamps all land AFTER the run window — post-asof-ffill it is NaN on every bar. Kleene
-    # absorption (T∨U = T) lets the dip sibling fire the root, the never-warming branch stays
-    # vacuously defined (signal_coverage clean), and support happily grades the sibling's
-    # firings — the pre-v3 "the run cannot fire on it anyway, so support refuses" rationale,
-    # defeated. Only the source panel records the leaf, so only source_coverage can refuse it.
+    # Why source_coverage refuses a never-available leaf, run end-to-end: `dip OR (iv > 0)` where
+    # the iv feed's stamps all land AFTER the run window — post-asof-ffill it is NaN on every
+    # bar. Kleene absorption (T∨U = T) lets the dip sibling fire the root, the never-warming
+    # branch stays vacuously defined (signal_coverage clean), and support happily grades the
+    # sibling's firings — which defeats "the run cannot fire on it anyway, so support refuses".
+    # Only the source panel records the leaf, so only source_coverage can refuse it.
     n_bars = 1000
     path, feed = tmp_path / "px.csv", tmp_path / "iv.csv"
     _planted_dip_series(path, n_bars, 5, 9)
@@ -1149,7 +1147,7 @@ def test_kleene_absorbed_operand_hole_leaves_source_coverage_unmet(tmp_path):
     holed = _hole_field(tmp_path / "holed.csv", px, "high", bar)
     summary = _run_entry(holed, _AND_ENTRY)
 
-    # The pooled root channel is BLIND here — this is the regression, stated as an assertion.
+    # The pooled root channel is BLIND here — the blind spot this test exists for, as an assertion.
     assert summary["cells"][0]["signal_coverage"]["target"]["n_undefined"] == 0
     src = summary["sources"]["target"]
     assert src["n_missing"] == 1
@@ -1170,8 +1168,7 @@ def test_a_first_true_hole_every_completion_decides_is_absorbed(tmp_path, hole, 
     ``prev`` the hole wrote — so the node, and the root, read DEFINED and fire exactly the clean
     run's bars, the pooled ledger clean. A raw NaN print is the source panel's to refuse; a NaN
     computed inside the expression (``log`` of a negative print) is no raw leaf's, so it moves no
-    decision and is ledgered nowhere — as under ``F∧U = F``. The hole used to read undecided on
-    the hole bar and the ``max(1, cooldown)`` bars after it."""
+    decision and is ledgered nowhere — as under ``F∧U = F``."""
     n_bars = 1000
     px = _planted_dip_px(n_bars, 5, 9)
     path, feed = tmp_path / "px.csv", tmp_path / "feed.csv"
@@ -1223,9 +1220,10 @@ def test_interior_hole_leaves_source_coverage_unmet(tmp_path):
 
 
 def test_a_raw_hole_under_an_ema_leaves_both_coverage_checks_unmet(tmp_path):
-    """``ema`` skips a NaN: it carried its running state across a raw hole and read every later
-    bar as decided, the source read under the transform the one ledger to see it. It has no value
-    from the hole on, so the root is undecided from there too and both ledgers refuse."""
+    """An ``ema`` that skips a NaN carries its running state across a raw hole and reads every
+    later bar as decided, leaving the source read under the transform the one ledger to see it.
+    It has no value from the hole on, so the root is undecided from there too and both ledgers
+    refuse."""
     px = _planted_dip_px(1000, 5, 9)
     entry = {
         "type": "threshold",
@@ -1245,9 +1243,9 @@ def test_a_raw_hole_under_an_ema_leaves_both_coverage_checks_unmet(tmp_path):
 
 def test_a_domain_hole_under_an_ema_is_undecided_from_there_on(tmp_path):
     """A NaN computed inside the expression is no raw leaf's hole: ``log`` of a negative print
-    leaves the source panel clean. ``ema`` skipped it and carried its state across, so the root
-    read decided on every later bar and every check was met; the node has no value from the hole
-    on now, and ``signal_coverage`` refuses those bars."""
+    leaves the source panel clean. The node has no value from the hole on, and
+    ``signal_coverage`` refuses those bars — an ``ema`` that skipped the NaN and carried its
+    state across would read the root decided on every later bar, every check met."""
     n_bars = 1000
     px = _planted_dip_px(n_bars, 5, 9)
     path, feed = tmp_path / "px.csv", tmp_path / "feed.csv"
@@ -1392,7 +1390,7 @@ def test_no_check_reads_the_evidence_riders(tmp_path):
 # path is free to carry any planted response. Events are SPARSE (gaps 6–10 > h) on purpose: a
 # basket entry that fires (for some member) nearly every bar chains ALL observations into ONE
 # merged episode cluster, and concentration then refuses at max_cluster_share_abs=1.0 — correct,
-# pre-existing doctrine, pinned separately below.
+# and pinned separately below.
 
 N_BASKET_BARS = 1200
 

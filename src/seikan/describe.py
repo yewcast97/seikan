@@ -304,13 +304,13 @@ def _missingness_block(s: pd.Series) -> MissingnessBlock:
 
 def _mean(vals: np.ndarray) -> float:
     """The arithmetic mean of finite values, overflow-safe: the direct ``vals.mean()`` wherever
-    its sum stays in range, bit for bit — save an all-equal window, whose mean IS its value: the
-    rounded sum of 21 copies of 1234.56, divided back, reads 1234.5600000000002, a held volume's
-    ``last_to_mean`` of 0.9999999999999998 for an exact 1. Where the sum overflowed — the mean
-    itself never does, lying between the values' extremes — the values are pre-scaled by the
-    power of two ``2**-c`` (``2**c ≥ 2n``, which keeps every partial sum in range), the mean is
-    scaled back and held in ``[min, max]`` like any convex combination. Read off the overflowed
-    ``inf`` instead, the mean was null and a ratio over it a FINITE 0.0."""
+    its sum stays in range, bit for bit — save an all-equal window, whose mean IS its value (the
+    rounded sum of bit-identical values, divided back, carries the sum's rounding, so a held
+    volume's ``last_to_mean`` would miss an exact 1). Where the sum overflows — the mean itself
+    never does, lying between the values' extremes — the values are pre-scaled by the power of
+    two ``2**-c`` (``2**c ≥ 2n``, which keeps every partial sum in range), the mean is scaled back
+    and held in ``[min, max]`` like any convex combination. Read off the overflowed ``inf``
+    instead, the mean would be null and a ratio over it a FINITE 0.0."""
     lo, hi = float(vals.min()), float(vals.max())
     if lo == hi:
         return lo
@@ -330,30 +330,28 @@ def _std(vals: np.ndarray) -> float:
     (:func:`~seikan.numeric.midrange`, the engine pools' offset) wherever that variance is a
     normal double, on every VARYING window. An all-equal window is exactly ``0.0``, decided
     before any variance is formed: the computed mean of bit-identical values carries its sum's
-    rounding, so their direct variance is a residue, not zero (the 63 identical log changes of a
-    doubling series read a std of 2.238e-16). Elsewhere the squared deviations left the double
-    range — past it the std read ``inf`` (a null beside finite endpoints, with no reason, or a
-    pct refused as unrepresentable while it was an ordinary double); below it a VARYING series
-    read the 0.0 an all-equal one owns, or a std off a subnormal variance's lost bits — so the
-    deviations are scaled by the power of two that brings the largest into ``[0.5, 1)`` and the
-    std is scaled back: exact on the way up (scaling up by a power of two never rounds), to
-    rounding on the way down, floored at the smallest subnormal as the kernels' lifted std is
-    (``compiler.nb``) — a series that varies never reads zero dispersion. A REPORTED number,
-    never a divisor, so it is computed rather than refused. Non-finite only where a value or the
-    std itself leaves the double range — NaN off a non-finite change (a 1-bar change of two
-    finite levels, or a 1-bar ratio, past it), ``inf`` off a std past DBL_MAX (four changes
-    alternating ±1.7e308, whose std is ~1.96e308; a diff std only — pct changes, each ≥ −1, keep
-    theirs under ~0.71·DBL_MAX) — and :func:`_dispersion_block` refuses either by name: a
-    ``pct`` std under its ``ratio_reason``, a ``diff`` std its whole block."""
+    rounding, so their direct variance is a residue, not zero. Elsewhere the squared deviations
+    leave the double range — past it the direct std reads ``inf`` (a null beside finite
+    endpoints, with no reason, or a pct refused as unrepresentable while it is an ordinary
+    double); below it a VARYING series reads the 0.0 an all-equal one owns, or a std off a
+    subnormal variance's lost bits — so the deviations are scaled by the power of two that brings
+    the largest into ``[0.5, 1)`` and the std is scaled back: exact on the way up (scaling up by a
+    power of two never rounds), to rounding on the way down, floored at the smallest subnormal as
+    the kernels' lifted std is (``compiler.nb``) — a series that varies never reads zero
+    dispersion. A REPORTED number, never a divisor, so it is computed rather than refused.
+    Non-finite only where a value or the std itself leaves the double range — NaN off a
+    non-finite change (a 1-bar change of two finite levels, or a 1-bar ratio, past it), ``inf``
+    off a std past DBL_MAX (four changes alternating ±1.7e308, whose std is ~1.96e308; a diff std
+    only — pct changes, each ≥ −1, keep theirs under ~0.71·DBL_MAX) — and
+    :func:`_dispersion_block` refuses either by name: a ``pct`` std under its ``ratio_reason``, a
+    ``diff`` std its whole block."""
     lo, hi = float(vals.min()), float(vals.max())
     if not (_finite(lo) and _finite(hi)):
         return math.nan
     if lo == hi:
         return 0.0
-    # About the values' OWN offset, their range midpoint — the engine's pool rule: deviations
-    # from it are exact wherever the values lie within a factor of two of it, where the rounded
-    # raw mean's rounding is the level's ulp ([B, B + 0.25, B + 0.25] at B = 2**50 read 0.25
-    # for 0.1443).
+    # About the values' OWN offset, their range midpoint — the engine's pool rule
+    # (`numeric.midrange` says why).
     y = vals - midrange(lo, hi)
     with np.errstate(over="ignore", invalid="ignore"):
         var = float(np.var(y, ddof=1))

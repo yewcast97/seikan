@@ -67,16 +67,16 @@ REJECTIONS = [
     (
         "field_count_mismatch",
         "datetime,close\n2021-01-01,2021-01-04,100\n2021-01-02,2021-01-05,101\n",
-    ),  # header + 1 on EVERY record: pandas read an implicit index and loaded it clean, shifted
+    ),  # header + 1 on EVERY record: pandas reads an implicit index and loads it clean, shifted
     ("field_count_mismatch", "datetime,close\n2021-01-01,100,\n2021-01-02,101,\n"),  # trailing
-    ("field_count_mismatch", "datetime,a,b\n2021-01-01,1,2\n2021-01-02,3\n"),  # short: was padded
+    ("field_count_mismatch", "datetime,a,b\n2021-01-01,1,2\n2021-01-02,3\n"),  # short: pandas pads
     ("field_count_mismatch", "datetime,close\n2021-01-01,100\n2021-01-02,101,7\n"),  # one ragged
     ("bad_timestamp", "datetime,close\n01/02/2021,100\n01/03/2021,100\n"),  # US-style
     ("bad_timestamp", "datetime,close\n02.01.2021,100\n03.01.2021,100\n"),  # EU-style
     (
         "bad_timestamp",
         "datetime,close\n2021-01-01T00:00:00.0000000001,100\n2021-01-02,101\n",
-    ),  # a digit past the nanosecond: truncated, it read as midnight
+    ),  # a digit past the nanosecond: truncated, it reads as midnight
     (
         "tz_aware_timestamp",
         "datetime,close\n2021-01-01T00:00:00+09:00,100\n2021-01-02T00:00:00+09:00,101\n",
@@ -112,9 +112,9 @@ def test_rejections(tmp_path, code, text):
 
 def test_a_fractional_digit_past_the_nanosecond_refuses_and_trailing_zeros_admit(tmp_path):
     # The parsed clock is nanosecond resolution and the ISO parser TRUNCATES further digits, so
-    # `.0000000001` read as midnight — admitted as another instant, or as a duplicate of the bar
-    # stamped there. A nonzero digit past the ninth refuses, naming the cause; zeros past it name
-    # the same instant and admit.
+    # `.0000000001` reads as midnight — admitted, it is another instant, or a duplicate of the
+    # bar stamped there. A nonzero digit past the ninth refuses, naming the cause; zeros past it
+    # name the same instant and admit.
     df, rep = _run(
         tmp_path,
         "datetime,close\n2021-01-01T00:00:00,100\n2021-01-01T00:00:00.0000000001,101\n"
@@ -138,10 +138,10 @@ def test_a_fractional_digit_past_the_nanosecond_refuses_and_trailing_zeros_admit
 
 
 def test_value_cells_read_correctly_rounded(tmp_path):
-    # pandas' parser is not correctly rounded: it read 0.00000000000000001 as 0.0 and missed by an
-    # ulp on nearly half of all 17-significant-digit strings — the form repr and every
-    # pandas-written CSV use — so a file read back did not hold the values written to it. Every
-    # cell now reads as the double nearest its decimal, which is float()'s value.
+    # pandas' parser is not correctly rounded: it reads 0.00000000000000001 as 0.0 and misses by
+    # an ulp on nearly half of all 17-significant-digit strings — the form repr and every
+    # pandas-written CSV use — so a file read back through it does not hold the values written to
+    # it. Every cell reads as the double nearest its decimal, which is float()'s value.
     rng = np.random.default_rng(3)
     vals = np.concatenate(
         [rng.standard_normal(2000) * 10.0 ** rng.integers(-30, 30, 2000), rng.random(2000)]
@@ -158,7 +158,7 @@ def test_value_cells_read_correctly_rounded(tmp_path):
     assert np.array_equal(got, want)
     assert got[: len(vals)].tolist() == vals.tolist()  # every repr round-trips, bit for bit
     assert got[len(vals) + 1000] == 1e-17 and np.signbit(got[len(vals) + 1004])
-    # the old reading missed on this very file
+    # pandas' own reading misses on this very file
     assert (pd.to_numeric(pd.Series(written)).to_numpy() != want).sum() > 1000
     # inf/infinity in any case still parse, and still refuse as non-finite — never as text
     for cell in ("inf", "-Infinity", "INF", "1e400"):
@@ -186,9 +186,9 @@ def test_error_names_file_column_and_line(tmp_path):
 
 
 def test_a_row_is_named_by_the_physical_line_its_record_starts_on(tmp_path):
-    # The review's file: a skipped blank line puts the bad value on line 4, which the example
-    # named as row index + 2 = 3. A row is named by the line its record starts on — past blank
-    # and whitespace-only lines, and past a quoted line break spanning one record over two.
+    # A skipped blank line puts the bad value on line 4, where row index + 2 says 3. A row is
+    # named by the line its record starts on — past blank and whitespace-only lines, and past a
+    # quoted line break spanning one record over two.
     _, rep = _run(tmp_path, "datetime,close\n2021-01-01,100\n\n2021-01-02,oops\n")
     (err,) = rep.errors
     assert err["examples"] == [{"csv_line": 4, "value": "oops"}]
@@ -235,7 +235,7 @@ def test_sha256_survives_content_refusal(tmp_path):
 
 
 def test_file_is_read_exactly_once(tmp_path, monkeypatch):
-    # Structural TOCTOU regression: digest, header sniff, record-shape scan, parse and its
+    # Structural TOCTOU guard: digest, header sniff, record-shape scan, parse and its
     # cross-check all consume ONE buffer, so a rewrite between stages cannot make the reported
     # identity describe different bytes than the ones measured. Counting opens is the only way to
     # assert the property structurally.
@@ -259,10 +259,10 @@ def test_file_is_read_exactly_once(tmp_path, monkeypatch):
 
 
 def test_an_unnamed_header_column_refuses_before_pandas_names_it(tmp_path):
-    # The review's header `datetime,,unnamed: 1`: pandas named the empty field `Unnamed: 1`,
-    # which lower-cased onto the written `unnamed: 1` — two columns under one name, and the read
-    # crashed on it (AttributeError, exit 4). The empty name refuses at the header, naming the
-    # field and its line; a duplicate among the written names is reported beside it.
+    # The header `datetime,,unnamed: 1`: pandas names the empty field `Unnamed: 1`, which
+    # lower-cases onto the written `unnamed: 1` — two columns under one name. The empty name
+    # refuses at the header, naming the field and its line; a duplicate among the written names
+    # is reported beside it.
     path = _write(tmp_path, "datetime,,unnamed: 1\n2024-01-01,1,2\n2024-01-02,3,4\n")
     df, rep = read_strict_csv(path)
     assert df is None and [e["code"] for e in rep.errors] == ["unnamed_column"]
@@ -323,9 +323,10 @@ def test_missing_file(tmp_path):
 
 @pytest.mark.parametrize("case", ["file_as_parent", "name_too_long"])
 def test_any_filesystem_error_at_the_read_is_an_unreadable_file(tmp_path, case):
-    # Only a directory and a denied read were caught: a regular file named as a parent
-    # (NotADirectoryError) or a name past the filesystem's limit (ENAMETOOLONG) escaped the reader
-    # as a bare OSError, which the CLI answered as exit 4 `internal` with no data_report.
+    # Not only a directory and a denied read: a regular file named as a parent
+    # (NotADirectoryError) and a name past the filesystem's limit (ENAMETOOLONG) are unreadable
+    # files too, never a bare OSError out of the reader, which the CLI would answer as exit 4
+    # `internal` with no data_report.
     if case == "file_as_parent":
         path = _write(tmp_path, _GOOD) + "/x.csv"
     else:
@@ -354,7 +355,7 @@ def test_utf8_bom_tolerated(tmp_path):
 def test_an_undecodable_byte_is_named_by_its_file_offset_and_line(tmp_path, n_before, bom, eol):
     # A cp1252 export whose first accented byte sits deep in the file: the streaming decoder counts
     # its position from the start of its 8 KiB read chunk (and from past a BOM), pandas' from its
-    # 256 KiB buffer, so the codec's own "position" named some other byte. The refusal names the
+    # 256 KiB buffer, so the codec's own "position" names some other byte. The refusal names the
     # byte's offset in the FILE and the csv line it sits on.
     rows = "".join(f"2021-01-01,{i}{eol}" for i in range(n_before)).encode()
     blob = (
@@ -377,9 +378,9 @@ def test_an_undecodable_byte_is_named_by_its_file_offset_and_line(tmp_path, n_be
 
 
 def test_header_plus_one_on_every_record_refuses_instead_of_shifting(tmp_path):
-    # Every record one field longer than the header: pandas read the first field as an implicit
-    # index, so `datetime` read the SECOND date of each record and the first was discarded — the
-    # file loaded clean and wrong. Now nothing loads, and every offending line is named.
+    # Every record one field longer than the header: pandas reads the first field as an implicit
+    # index, so `datetime` reads the SECOND date of each record and the first is discarded — the
+    # file would load clean and wrong. Nothing loads, and every offending line is named.
     text = "datetime,close\n2021-01-01,2021-01-04,100\n2021-01-02,2021-01-05,101\n"
     df, rep = _run(tmp_path, text)
     assert df is None and rep.n_rows is None and rep.shape is None
@@ -465,12 +466,12 @@ def test_blank_lines_skip_with_pandas_parity(tmp_path):
 
 def test_header_is_the_first_record_pandas_reads(tmp_path):
     # Leading blank lines skip before the header, so the duplicate-name sniff inspects the header
-    # pandas actually uses: it used to inspect the blank line, and the case-folded duplicate went
-    # on to crash the read.
+    # pandas actually uses — not the blank line, which would let the case-folded duplicate through
+    # to the read.
     df, rep = _run(tmp_path, "\n  \ndatetime,close,Close\n2021-01-01,1,2\n")
     assert df is None and [e["code"] for e in rep.errors] == ["duplicate_column"]
     # with nothing but blank lines there is no header for pandas either ("No columns to parse
-    # from file", which was `unreadable`): empty of records, and said so apart from a 0-byte file
+    # from file"): empty of records, and said so apart from a 0-byte file
     for text, says in (
         ("", "file is empty"),
         ("\n  \n\t\r\n", "file holds only blank lines, no header"),
@@ -495,7 +496,7 @@ def test_a_field_past_the_csv_field_limit_is_unreadable_not_a_crash(tmp_path):
 def test_an_unclosed_quote_is_named_by_the_line_it_opens_on(tmp_path):
     # csv.reader closes an unterminated quote at EOF, so the quote reads the rest of the file as
     # one field. A short rest is one record short of fields, named where the quote opens (pandas
-    # said only "EOF inside string starting at row 2", counting lines from 0); a rest past the
+    # says only "EOF inside string starting at row 2", counting lines from 0); a rest past the
     # field limit is unreadable, again named by that line and pointing at the quote.
     tail = "".join(f"2021-02-{d:02d},{d}\n" for d in range(1, 29))
     _, rep = _run(tmp_path, 'datetime,close\n2021-01-01,1\n"2021-01-02,2\n' + tail)
@@ -512,11 +513,12 @@ def test_an_unclosed_quote_is_named_by_the_line_it_opens_on(tmp_path):
 
 
 def test_the_field_limit_is_pinned_not_read_from_the_process(tmp_path, monkeypatch):
-    # csv.field_size_limit() is interpreter-global, and the scan used to read whatever it held:
-    # once a co-imported package raised it (scipy's ARFF reader does), an unclosed quote read as a
-    # field_count_mismatch and an over-long decimal or header name loaded; a lowered one refused
-    # a clean file. The scan pins the stdlib default for read_strict_csv's stages, so the bytes
-    # alone decide, and hands the caller's limit back on every exit: admitted, refused, raised.
+    # csv.field_size_limit() is interpreter-global, and a co-imported package can raise it
+    # (scipy's ARFF reader does): a scan reading whatever it holds takes an unclosed quote as a
+    # field_count_mismatch and loads an over-long decimal or header name under a raised limit,
+    # and refuses a clean file under a lowered one. The scan pins the stdlib default for
+    # read_strict_csv's stages, so the bytes alone decide, and hands the caller's limit back on
+    # every exit: admitted, refused, raised.
     # The lone-\r file is clean too, but its endings send the tokenizer cross-check (stage 5) back
     # through the record scan, so a pin released before that stage refuses it under the lowered
     # limit — every stage that scans is covered, not only the two ahead of the parse.
@@ -571,9 +573,9 @@ def test_a_doubled_bom_is_dropped_as_pandas_drops_it(tmp_path):
 
 def test_a_record_pandas_reads_differently_after_a_bare_carriage_return_refuses(tmp_path):
     # Past a blank line ended by a LONE \r, pandas' tokenizer swallows the delimiter that opens the
-    # next record and pads its end: `,2022,5` read as `2022,5,` — a record the scan had counted
-    # right (datetime empty, a=2022, b=5) loaded as datetime=2022, a=5, b=NaN, exit 0. The frame
-    # is cross-checked against the scan wherever a lone \r occurs, and the line is named.
+    # next record and pads its end: `,2022,5` reads as `2022,5,` — a record the scan counts right
+    # (datetime empty, a=2022, b=5) reaches the frame as datetime=2022, a=5, b=NaN. The frame is
+    # cross-checked against the scan wherever a lone \r occurs, and the line is named.
     for blank in ("\r", " \t\r"):
         for eol in ("\n", "\r\n"):
             text = f"datetime,a,b{eol}2021-01-01,1,2{eol}{blank},2022,5{eol}"
@@ -582,15 +584,15 @@ def test_a_record_pandas_reads_differently_after_a_bare_carriage_return_refuses(
             (err,) = rep.errors
             assert err["code"] == "unreadable"
             assert err["examples"] == [{"csv_line": 4}]
-    # a space-led record after a lone \r: pandas re-read the header as a data row (refused, but as
-    # a bad timestamp `datetime`); now the line the readings part on is named
+    # a space-led record after a lone \r: pandas re-reads the header as a data row (a bad
+    # timestamp `datetime`); the line the readings part on is named
     _, rep = _run(tmp_path, "datetime,close\r 2021-01-01,1\r")
     (err,) = rep.errors
     assert err["code"] == "unreadable" and err["examples"] == [{"csv_line": 2}]
 
 
 def test_a_nul_byte_pandas_cuts_a_field_at_refuses(tmp_path):
-    # pandas' tokenizer ends a field at a NUL byte: `1\x002` loaded as close=1.0, exit 0.
+    # pandas' tokenizer ends a field at a NUL byte: `1\x002` reads as close=1.0.
     df, rep = _run(tmp_path, "datetime,close\n2021-01-01,1\x002\n2021-01-02,3\n")
     assert df is None
     (err,) = rep.errors
@@ -598,13 +600,13 @@ def test_a_nul_byte_pandas_cuts_a_field_at_refuses(tmp_path):
 
 
 def test_a_quote_pandas_opens_at_its_read_buffer_edge_refuses(tmp_path):
-    # pandas' tokenizer reads 256 KiB at a time, and a space-led line it entered as a possible
+    # pandas' tokenizer reads 256 KiB at a time, and a space-led line it enters as a possible
     # blank backs up only to the start of the current buffer: with every leading space before the
     # edge and a quote opening the next buffer, it opens a QUOTED field where csv.reader — and
-    # pandas anywhere else in the file — reads a literal quote. `   "<date>",5` loaded
-    # quote-stripped, a clean timestamp at exit 0. A space-led quote anywhere now joins the
-    # cross-check and the disagreement refuses; one byte off the edge the readings agree, and the
-    # same line refuses as the bad timestamp it is, exactly as before.
+    # pandas anywhere else in the file — reads a literal quote, so `   "<date>",5` reads
+    # quote-stripped, a clean timestamp. A space-led quote anywhere joins the cross-check and the
+    # disagreement refuses; one byte off the edge the readings agree, and the same line refuses as
+    # the bad timestamp it is.
     edge = 256 * 1024
     head = "datetime,close\n"
     dates = pd.date_range("1990-01-01", periods=20200, freq="D").strftime("%Y-%m-%d")
@@ -624,11 +626,11 @@ def test_a_quote_pandas_opens_at_its_read_buffer_edge_refuses(tmp_path):
 def test_a_bom_pandas_drops_at_its_read_buffer_edge_refuses(tmp_path):
     # Until its first line closes, pandas' tokenizer drops a BOM that opens a 256 KiB read buffer,
     # as it drops one opening the file. With a U+FEFF at character 262144 of an over-long header,
-    # `\ufeffclose` — distinct from `close` to the duplicate check — reached pandas as a second
-    # `close`: `close` loaded the other column's values and the file's own `close` became
-    # `close.1`, exit 0. A BOM past the file's start now joins the cross-check and the header
-    # disagreement refuses; one character off the edge the readings agree and the file loads
-    # exactly as before, the BOM kept in its name.
+    # `\ufeffclose` — distinct from `close` to the duplicate check — reaches pandas as a second
+    # `close`: `close` would load the other column's values and the file's own `close` become
+    # `close.1`. A BOM past the file's start joins the cross-check and the header disagreement
+    # refuses; one character off the edge the readings agree and the file loads, the BOM kept in
+    # its name.
     edge = 256 * 1024
     pads = ["a" * 87378, "b" * 87377, "c" * 87377]  # each under the csv field limit (131072)
     for lead in ("", "\ufeff"):  # the codec drops a leading BOM before the tokenizer counts
@@ -651,7 +653,7 @@ def test_a_bom_pandas_drops_at_its_read_buffer_edge_refuses(tmp_path):
 def test_bare_carriage_return_files_pandas_reads_faithfully_still_admit(tmp_path):
     # The cross-check refuses a disagreement, never the line ending: a classic-Mac file with blank
     # and whitespace lines and quoted cells, and an empty first cell after a record's lone \r
-    # (pandas reads that one right), load exactly as before.
+    # (pandas reads that one right), admit with every value where the file puts it.
     df, rep = _run(tmp_path, 'datetime,close\r2021-01-01,1\r\r2021-01-02,"2"\r \r2021-01-03,3\r')
     assert rep.ok, rep.errors
     assert df["close"].tolist() == [1.0, 2.0, 3.0]
@@ -748,9 +750,9 @@ def test_calendar_gap_warns_but_passes(tmp_path):
 
 
 def test_calendar_gap_is_read_in_exact_ticks_at_any_span(tmp_path):
-    # The review's case: three nanosecond-stamped rows 200 years apart. The Timedelta median
-    # times the factor overflowed int64 nanoseconds and crashed the read (OverflowError); every
-    # spacing sits near the median, so the file loads clean.
+    # Three nanosecond-stamped rows 200 years apart: every spacing sits near the median, so the
+    # file loads clean — guarding against the Timedelta median times the factor, which overflows
+    # int64 nanoseconds (OverflowError).
     text = (
         "datetime,x\n"
         "1700-01-01T00:00:00.000000001,1\n"
@@ -817,9 +819,10 @@ def _spacing(stamps: list[str]) -> tuple:
 
 
 def test_bar_spacing_is_exact_in_the_index_resolution(tmp_path):
-    # The stamp was computed on int64 NANOSECONDS, which overflowed wherever two consecutive bars
-    # lie more than ~292 years apart — spans an [s]/[us] index (pandas ≥ 2 keeps the parsed
-    # resolution) holds without complaint: a 1700/2024 pair read −8222340873.709552 s.
+    # The stamp is exact in the index's own resolution. Computed on int64 NANOSECONDS it would
+    # overflow wherever two consecutive bars lie more than ~292 years apart — spans an [s]/[us]
+    # index (pandas ≥ 2 keeps the parsed resolution) holds without complaint: there a 1700/2024
+    # pair would read −8222340873.709552 s.
     assert _spacing(["1700-01-01", "2024-01-01"]) == (10_224_403_200,) * 3
     assert _spacing(["1500-01-01", "1500-01-02", "2000-01-01"]) == (
         86400,

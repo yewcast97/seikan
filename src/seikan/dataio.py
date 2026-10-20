@@ -73,8 +73,8 @@ _LONE_CR = re.compile(rb"\r(?!\n)")
 _SPACED_QUOTE = re.compile(rb'\n[ \t]+"')
 #: The value-cell grammar, ASCII only: a signed decimal (``1``, ``1.``, ``.5``, ``-0``) with an
 #: optional exponent, or a signed ``inf``/``infinity`` in any case (non-finite, refused later by
-#: :func:`check_frame`). It is the set pandas' parser used to admit, and it gates ``float()``,
-#: which alone would also read ``1_000``, Arabic-Indic (``١٢٣``) and full-width digits.
+#: :func:`check_frame`). It gates ``float()``, which alone would also read ``1_000``,
+#: Arabic-Indic (``١٢٣``) and full-width digits.
 _NUMBER = r"[+-]?(?:(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?|(?i:inf|infinity))"
 
 
@@ -248,7 +248,7 @@ def read_strict_csv(
     The file is read ONCE and every stage (digest, header sniff, record-shape scan, parse and its
     cross-check) consumes that one buffer, so the digest describes exactly the bytes the engine
     measured: a rewrite between stages cannot split the reported identity from the evidence
-    actually parsed. The whole file is held in memory — pandas materialized it anyway. A load that
+    actually parsed. The whole file is held in memory — pandas materializes it anyway. A load that
     binds one file under several keys reads it through one :class:`StrictCsvReader`, which keeps
     that single read for every binding of the path.
 
@@ -278,14 +278,14 @@ class StrictCsvReader:
 
     A load can bind one file under several keys — two targets, a target and the benchmark, every
     member of a per-target feed. Read once per binding, a file rewritten between two of those
-    reads was measured as two different files under one path, and the report's data identity
-    (one sha256 per path) named only the last: a digest of bytes the other binding never parsed.
-    A reader built with the paths a load will read (``paths``, one entry per binding) reads each
-    distinct path once — its bytes, or the failure to read them — and every binding of it parses
-    those same bytes under its own role and expected shape, so all of them carry the one digest
-    by construction. A snapshot is held only until its path's last planned read, so a load holds
-    no more file bytes than one read per binding did; a path read beyond its plan (or by a reader
-    built with none) is read afresh.
+    reads would be measured as two different files under one path, and the report's data identity
+    (one sha256 per path) would name only the last: a digest of bytes the other binding never
+    parsed. A reader built with the paths a load will read (``paths``, one entry per binding)
+    reads each distinct path once — its bytes, or the failure to read them — and every binding of
+    it parses those same bytes under its own role and expected shape, so all of them carry the one
+    digest by construction. A snapshot is held only until its path's last planned read, so a load
+    holds no more file bytes than one read per binding would; a path read beyond its plan (or by a
+    reader built with none) is read afresh.
     """
 
     def __init__(self, paths: Iterable[str] = ()) -> None:
@@ -460,10 +460,10 @@ def _header_columns(path: str, blob: bytes, rep: FileReport) -> tuple[int, list[
     The header is the first record :func:`_records` yields — the one pandas reads, leading blank
     lines skipped — and a name is read stripped and lower-cased, as every later stage reads it.
     pandas names an EMPTY one ``Unnamed: N`` and a repeated one ``col.1``, names the file never
-    wrote, and an invented name can collide with a written one: ``datetime,,unnamed: 1`` loaded
-    two columns called ``unnamed: 1`` and crashed the read (exit 4). The one name that may be
-    empty is the timestamp column's — the first column, where none is named ``datetime`` (the
-    index pandas writes unnamed) — because no stage reads it by name."""
+    wrote, and an invented name can collide with a written one: ``datetime,,unnamed: 1`` would
+    load two columns called ``unnamed: 1``. The one name that may be empty is the timestamp
+    column's — the first column, where none is named ``datetime`` (the index pandas writes
+    unnamed) — because no stage reads it by name."""
     try:
         first = next(_records(blob), None)
     except UnicodeDecodeError as exc:  # decoding is lazy — it surfaces at the first read
@@ -701,10 +701,9 @@ def _parse_value_columns(
     column.
 
     A number is read CORRECTLY ROUNDED — the double nearest the decimal the file writes, which
-    is what ``float()`` returns. ``pd.to_numeric`` is not: it read ``0.00000000000000001`` as
-    ``0.0`` and missed by an ulp on nearly half of all 17-significant-digit strings, the form
-    ``repr`` and every pandas-written CSV use, so a file read back did not hold the values that
-    were written to it."""
+    is what ``float()`` returns — so a file read back holds the values written to it, the
+    17-significant-digit form ``repr`` and every pandas-written CSV use included. Never
+    ``pd.to_numeric``, which is not correctly rounded."""
     value_cols = [c for c in raw.columns if c != ts_col]
     if not value_cols:
         rep.error("no_value_columns", f"{path}: no value columns besides the timestamp")
@@ -780,8 +779,7 @@ def _descriptive_warnings(
             )
     if len(df) > 2:
         # Exact tick arithmetic, as `bar_spacing` reads the clock: a Timedelta median times the
-        # factor overflowed int64 nanoseconds past ~29 years of spacing and crashed the read
-        # (three nanosecond-stamped rows 200 years apart), where every spacing is near the median.
+        # factor overflows int64 nanoseconds past ~29 years of spacing.
         spacings = _tick_spacings(df.index)
         median = _median_ticks(spacings)
         if median > 0:
@@ -835,9 +833,9 @@ def bar_spacing(index: pd.DatetimeIndex) -> BarSpacing:
     engine still never interprets cadence — translation into "trading days" stays the caller's.
 
     Exact in the index's OWN resolution: its ticks are differenced as Python integers, and the
-    median of an even count is the exact midpoint of its two middle spacings. A cast to int64
-    nanoseconds overflowed wherever two consecutive bars lie more than ~292 years apart, which
-    an ``[s]``/``[us]`` index holds without complaint — a 1700/2024 pair read −8.2e9 s."""
+    median of an even count is the exact midpoint of its two middle spacings. Never a cast to
+    int64 nanoseconds, which overflows wherever two consecutive bars lie more than ~292 years
+    apart — a span an ``[s]``/``[us]`` index holds without complaint."""
     if len(index) < 2:
         return {"min_seconds": None, "median_seconds": None, "max_seconds": None}
     per_second = ticks_per_second(index)

@@ -654,16 +654,16 @@ _ASSIGNMENT = {"zscore_window": 20, "horizon": 21}
     [
         (_ASSIGNMENT, dict(_ASSIGNMENT)),
         ({}, {}),
-        # the second review's spelling: 1 and 1.0 are one value, and the identity read them apart
+        # 1 and 1.0 are one value, so the identity must not read them apart
         (_ASSIGNMENT, {"zscore_window": 20.0, "horizon": 21.0}),
         (_ASSIGNMENT, {"horizon": "21", "zscore_window": 20}),
     ],
 )
 def test_evidence_complete_refuses_a_declared_cell_on_the_record_twice(params, copy):
-    # The review's record: a two-cell grid holding one cell twice is the right size, and every
-    # check met — a declared hypothesis missing behind a copy of another. Two cells naming the
-    # same params are one hypothesis, whatever else they carry and however the values are
-    # spelled (the gate reads 1, 1.0 and "1" as one count everywhere else).
+    # A grid holding one cell twice can be the right size, a declared hypothesis missing behind
+    # a copy of another. Two cells naming the same params are one hypothesis, whatever else they
+    # carry and however the values are spelled (the gate reads 1, 1.0 and "1" as one count
+    # everywhere else).
     cells = [_cell(params=params), _cell(params=copy, n=50), _cell(params={"horizon": 5})]
     report = evaluate_gate(_summary(cells=cells, n_hypotheses_attempted=3))
     check = _run(report)["evidence_complete"]
@@ -713,9 +713,9 @@ def test_unreadable_cells_panel_yields_no_graded_cells_without_raising():
     "bad", [math.nan, math.inf, -math.inf, 3.5, None, "4", pytest.param(10**400, id="10**400")]
 )
 def test_evidence_complete_uncountable_grid_size_refuses(bad):
-    # int(1.9) == 1 truncation is drifted input, not a countable search size — and int(inf) used
-    # to raise OverflowError, a crash where the contract promises a refusal. So did float() of a
-    # JSON integer past the double range (json.loads keeps 10**400 exact).
+    # int(1.9) == 1 truncation is drifted input, not a countable search size — and int(inf)
+    # raises OverflowError, as does float() of a JSON integer past the double range (json.loads
+    # keeps 10**400 exact): a crash where the contract promises a refusal.
     check = _run(evaluate_gate(_summary(cells=[_cell()], n_hypotheses_attempted=bad)))[
         "evidence_complete"
     ]
@@ -813,11 +813,11 @@ def test_a_late_starting_source_is_warmup_not_a_hole():
 
 
 def test_a_never_available_source_refuses():
-    # Warmup requires a start to EXIST (policy v3). The old rationale — "the run cannot fire on
-    # it anyway, so support refuses" — is defeated by a decisive sibling: `X or <never-available
-    # leaf>` fires through Kleene absorption (T∨U = T), support grades the sibling's firings,
-    # and the missing leaf leaves no trace anywhere else. The panel records the fact factually
-    # (zero post-warmup holes, a null first_available); the REFUSAL is this check's.
+    # Warmup requires a start to EXIST. "The run cannot fire on it anyway, so support refuses"
+    # is defeated by a decisive sibling: `X or <never-available leaf>` fires through Kleene
+    # absorption (T∨U = T), support grades the sibling's firings, and the missing leaf leaves no
+    # trace anywhere else. The panel records the fact factually (zero post-warmup holes, a null
+    # first_available); the REFUSAL is this check's.
     s = _summary(
         sources={
             "AAA": _sources(
@@ -856,18 +856,17 @@ def _first_available(stamp, **over) -> dict:
 def test_a_garbage_first_available_refuses(bad):
     # first_available is a timezone-naive ISO-8601 timestamp or an explicit null — anything else
     # is drifted input, refused fail-closed like every other unreadable field here. Read as "a
-    # string is a start", the empty string and "not-a-date" met the check; the stamp is held to
-    # the loader's rule: no format guessing, no offset, nothing past the nanosecond.
+    # string is a start", the empty string and "not-a-date" would meet the check; the stamp is
+    # held to the loader's rule: no format guessing, no offset, nothing past the nanosecond.
     check = _run(evaluate_gate(_first_available(bad)))["source_coverage"]
     assert not check.met
     assert "is neither a timezone-naive ISO-8601 timestamp nor null" in check.detail
 
 
 def test_a_first_available_lies_inside_the_evaluated_interval():
-    # The review's stamp: "2030-01-01T00:00:00" beside an interval ending 2022-05-24 met the
-    # check. A start is the first bar the input was available on — a bar of the run — so a stamp
-    # past index_end or before index_start refuses; the endpoints themselves and a nanosecond
-    # stamp inside meet.
+    # A start is the first bar the input was available on — a bar of the run — so a stamp past
+    # index_end ("2030-01-01T00:00:00" beside an interval ending 2022-05-24) or before
+    # index_start refuses; the endpoints themselves and a nanosecond stamp inside meet.
     for stamp in ("2030-01-01T00:00:00", "2022-05-24T00:00:00.000000001", "2019-12-31T23:59:59"):
         check = _run(evaluate_gate(_first_available(stamp)))["source_coverage"]
         assert not check.met, stamp
@@ -1138,8 +1137,8 @@ def test_cell_evidence_rejects_unknown_exit_reasons():
 
 
 def test_cell_evidence_refuses_a_non_string_exit_reason_key():
-    # Sorting the unknown keys for the detail raised TypeError on a mixed {1, "unexpected"} — a
-    # crash where drifted input must refuse with a detail.
+    # A plain sort of the unknown keys for the detail raises TypeError on a mixed
+    # {1, "unexpected"} — a crash where drifted input must refuse with a detail.
     cell = _cell()
     cell["outcome_coverage"]["AAA"]["exit_reasons"].update({1: 0, "unexpected": 0})
     check = _cell_checks(evaluate_gate(_summary(cells=[cell])))["cell_evidence"]
@@ -1167,7 +1166,7 @@ def test_cell_evidence_n_nonoverlap_cannot_exceed_n():
 
 def test_cell_evidence_n_nonoverlap_is_bounded_by_the_horizons_windows():
     # A firing fills at the next bar's open and closes 21 bars later, so a 600-bar index closes
-    # at most ⌊(600 − 2) / 21⌋ = 28 non-overlapping windows; the review's 40 (of n = 42) passed.
+    # at most ⌊(600 − 2) / 21⌋ = 28 non-overlapping windows: 40 (of n = 42) refuses, 28 meets.
     check = _cell_checks(evaluate_gate(_summary(cells=[_cell(n_nonoverlap=40)])))["cell_evidence"]
     assert not check.met
     assert "n_nonoverlap=40 exceeds 28" in check.detail
@@ -1185,10 +1184,10 @@ def test_cell_evidence_episode_panel_must_total_the_per_target_counts():
 
 
 def test_the_episode_ceiling_read_cannot_fall_below_its_own_panel():
-    # The review's tamper: one cluster carrying every row (largest_cluster_share_abs 1.0), its
-    # max_cluster_share_abs rewritten to 0.5 — the one-episode ceiling graded the rewritten
-    # number and nothing read it against the panel it sits in. The maximum over the clusters'
-    # shares is at least the largest-by-count cluster's, and one cluster's share is exactly 1.
+    # The tamper: one cluster carrying every row (largest_cluster_share_abs 1.0), its
+    # max_cluster_share_abs rewritten to 0.5 — the number the one-episode ceiling grades, so it
+    # is read against the panel it sits in. The maximum over the clusters' shares is at least
+    # the largest-by-count cluster's, and one cluster's share is exactly 1.
     cell = _cell()
     cell["episode_stats"].update(
         {
@@ -1216,12 +1215,12 @@ def test_the_episode_ceiling_read_cannot_fall_below_its_own_panel():
 
 
 def test_the_episode_ceiling_read_is_at_least_the_clusters_mean_share():
-    # The review's tamper: two clusters at 0.30 each — the other holds 0.70 of the mass — met the
-    # ceiling, and so did three at 0.2. The largest of n_clusters shares of one mass is at least
-    # their mean, and since every share is the correctly rounded exact quotient of exact masses
-    # (as 1/n_clusters is of its integers) the floor is exact: the boundary pool whose largest
-    # cluster holds exactly a third reads 0.33333333333333337 and meets it, where the quotient
-    # of two rounded masses, an ulp under, would have been refused off an honest pool.
+    # The tampers: two clusters at 0.30 each — the other holds 0.70 of the mass — and three at
+    # 0.2. The largest of n_clusters shares of one mass is at least their mean, and since every
+    # share is the correctly rounded exact quotient of exact masses (as 1/n_clusters is of its
+    # integers) the floor is exact: the boundary pool whose largest cluster holds exactly a
+    # third reads 0.33333333333333337 and meets it, where the quotient of two rounded masses, an
+    # ulp under, would refuse an honest pool.
     tampers = [(2, 0.30, 0.30), (3, 0.2, 0.2), (3, 0.2, 0.33333333333333326), (1, 0.5, 0.5)]
     for n_clusters, largest, top in tampers:
         cell = _cell(cluster_share=largest)
@@ -1237,12 +1236,12 @@ def test_the_episode_ceiling_read_is_at_least_the_clusters_mean_share():
 
 
 def test_a_top_share_is_at_least_its_counts_share_of_the_pool():
-    # The review's tamper: a 100-observation pool whose top_share_abs was rewritten to 0.0 met
-    # every check (the ceiling reads the share against [0, 1] and 0.6 alone), as did one that
-    # dropped n_top and top_frac. The largest k of n magnitudes carry at least k/n of their mass,
-    # k = max(1, ceil(n/20)) the emission's own count, so a share below k/n is impossible — and
-    # the floor is exact: the share is the correctly rounded exact quotient of exact masses, k/n
-    # the correctly rounded quotient of its integers, and rounding is monotone.
+    # The tamper: a 100-observation pool whose top_share_abs is rewritten to 0.0, n_top and
+    # top_frac dropped (the ceiling reads the share against [0, 1] and 0.6 alone). The largest k
+    # of n magnitudes carry at least k/n of their mass, k = max(1, ceil(n/20)) the emission's own
+    # count, so a share below k/n is impossible — and the floor is exact: the share is the
+    # correctly rounded exact quotient of exact masses, k/n the correctly rounded quotient of
+    # its integers, and rounding is monotone.
     cell = _cell(n=100, top_share=0.0)
     cell["by_target"]["AAA"]["concentration"] = {"top_share_abs": 0.0}
     check = _cell_checks(evaluate_gate(_summary(cells=[cell])))["cell_evidence"]
@@ -1279,10 +1278,10 @@ def test_a_top_share_is_at_least_its_counts_share_of_the_pool():
 
 
 def test_a_mean_lies_within_its_pools_extrema():
-    # The review's tamper: a mean of 0.02 beside a pool whose worst and best observations are
-    # −0.2 and −0.01 met every check, though no mean of negative returns is positive. A mean is
-    # its pool's exact sum over its count, rounded once, and the extrema are the same rows, so
-    # rounding — monotone — keeps it inside them: exactly, a mean on either bound meets.
+    # The tamper: a mean of 0.02 beside a pool whose worst and best observations are −0.2 and
+    # −0.01, though no mean of negative returns is positive. A mean is its pool's exact sum over
+    # its count, rounded once, and the extrema are the same rows, so rounding — monotone — keeps
+    # it inside them: exactly, a mean on either bound meets.
     cell = _cell(mean_ret=0.02)
     cell["by_target"]["AAA"].update({"worst_ret": -0.2, "best_ret": -0.01})
     check = _cell_checks(evaluate_gate(_summary(cells=[cell])))["cell_evidence"]
@@ -1316,9 +1315,9 @@ def test_a_mean_lies_within_its_pools_extrema():
 
 @pytest.mark.parametrize("bad", [0, -1, 43, "junk", None, 1.5, float("nan")])
 def test_the_episode_cluster_count_is_a_count_the_pool_can_hold(bad):
-    # n_clusters of 0, -1, "junk" and null met every check beside 42 rows — and the one-cluster
-    # rule read nothing off them. Every closed row lies in exactly one cluster: a pool of n rows
-    # holds 1..n clusters, an empty one none.
+    # n_clusters of 0, -1, "junk" or null beside 42 rows leave the one-cluster rule nothing to
+    # read off. Every closed row lies in exactly one cluster: a pool of n rows holds 1..n
+    # clusters, an empty one none.
     cell = _cell()  # n = 42
     cell["episode_stats"]["n_clusters"] = bad
     check = _cell_checks(evaluate_gate(_summary(cells=[cell])))["cell_evidence"]
@@ -2007,8 +2006,8 @@ def test_pooled_n_nonoverlap_cannot_exceed_pooled_n():
 
 def test_pooled_n_nonoverlap_is_bounded_by_the_horizons_windows():
     # Same-bar firings across members collapse to ONE greedy window, so pooled.n_nonoverlap obeys
-    # the bar clock's own window count — ⌊(600 − 2) / 21⌋ = 28 at the cell's horizon — even
-    # though pooled.n legitimately can reach n_bars × members. Bounded by n_bars alone, 29 passed.
+    # the bar clock's own window count — ⌊(600 − 2) / 21⌋ = 28 at the cell's horizon — even though
+    # pooled.n legitimately can reach n_bars × members. Bounded by n_bars alone, 29 would pass.
     cell = _basket_cell(n=350, pooled=_pooled(n=700, n_nonoverlap=29))
     check = _cell_checks(evaluate_gate(_basket(cells=[cell])))["cell_evidence"]
     assert not check.met
@@ -2018,12 +2017,12 @@ def test_pooled_n_nonoverlap_is_bounded_by_the_horizons_windows():
 
 
 def test_pooled_n_nonoverlap_lies_between_the_members_largest_and_their_total():
-    # The review's tamper: two members of 20 overlapping observations each, one disjoint window
-    # apiece and two pooled, with pooled.n_nonoverlap rewritten from 2 to 8 — the support floor —
-    # met every check. Greedy earliest-start on equal windows is the largest disjoint set, so a
-    # member's windows are a disjoint selection of the pool's (pooled >= the largest member) and
-    # a disjoint pooled selection splits into disjoint selections within its members (pooled <=
-    # their total).
+    # The tamper: two members of 20 overlapping observations each, one disjoint window apiece
+    # and two pooled, with pooled.n_nonoverlap rewritten from 2 to 8 — the support floor.
+    # Greedy earliest-start on equal windows is the largest disjoint set, so a member's windows
+    # are a disjoint selection of the pool's (pooled >= the largest member) and a disjoint
+    # pooled selection splits into disjoint selections within its members (pooled <= their
+    # total).
     def basket(pooled_windows, members=(1, 1)):
         cell = _basket_cell(n=20, pooled=_pooled(n=40, n_nonoverlap=pooled_windows))
         for tgt, k in zip(("AAA", "BBB"), members, strict=True):
@@ -2108,10 +2107,9 @@ def test_member_mass_breach_leaves_basket_concentration_unmet():
     [{"AAA": 1.0, "BBB": 0.0}, {}, {"AAA": 0.5}, {"AAA": 0.5, "BBB": 1.5}, {1: 0.5, 2: 0.5}, None],
 )
 def test_a_basket_one_name_read_is_the_maximum_of_its_decomposition(by_target):
-    # The review's tamper: max_member_share_abs 0.5 beside shares {AAA: 1.0, BBB: 0.0} — one
-    # member carrying the whole mass — met every check, concentration grading the maximum alone
-    # and nothing reading it against the decomposition the runner takes it from. So did an
-    # empty breakdown.
+    # The tamper: max_member_share_abs 0.5 beside shares {AAA: 1.0, BBB: 0.0} — one member
+    # carrying the whole mass — or beside an empty breakdown. Concentration grades the maximum
+    # alone, so it is read against the decomposition the runner takes it from.
     pooled = _pooled()
     pooled["member_share"] = {"by_target": by_target, "max_member_share_abs": 0.5}
     report = evaluate_gate(_basket(cells=[_basket_cell(pooled=pooled)]))
@@ -2122,10 +2120,10 @@ def test_a_basket_one_name_read_is_the_maximum_of_its_decomposition(by_target):
 
 
 def test_a_baskets_member_shares_conserve_the_pools_mass():
-    # The review's tamper one step on: shares {AAA: 0.5, BBB: 0.0} under a maximum of 0.5 agree
-    # with each other and met every check — half the pool's |return| mass gone from its own
-    # decomposition. Each share is one rounded quotient of exact masses, so the shares sum to 1
-    # within rounding: three thirds meet, a decomposition short of (or past) the mass refuses.
+    # The tamper one step on: shares {AAA: 0.5, BBB: 0.0} under a maximum of 0.5 agree with each
+    # other, half the pool's |return| mass gone from its own decomposition. Each share is one
+    # rounded quotient of exact masses, so the shares sum to 1 within rounding: three thirds
+    # meet, a decomposition short of (or past) the mass refuses.
     def _with(shares: dict[str, float]) -> dict:
         targets = tuple(shares)
         pooled = _pooled(
@@ -2354,7 +2352,7 @@ def test_stricter_than_canonical_constructs(field, value):
 def test_unknown_seikan_env_var_is_a_hard_error(monkeypatch, var):
     # A typo'd threshold var means the caller believes a checklist ran that didn't — refuse loudly
     # instead of silently falling back to defaults (the SEIKAN_ namespace is owned, in any letter
-    # case: the lowercase spelling constructed at the default 30).
+    # case: unrefused, the lowercase spelling would construct at the default 30).
     monkeypatch.setenv(var, "300")
     with pytest.raises(ValidationError):
         GateThresholds()
@@ -2374,7 +2372,7 @@ def test_seikan_env_knobs_are_read_in_any_letter_case(monkeypatch):
         "SEIKAN_GATE_PROFILE",
         "SEIKAN_THESIS_MIN_PSR",
         "SEIKAN_THESIS_MIN_N_EFF",
-    ],  # last: the retired v2 knob name
+    ],  # last: a retired knob name
 )
 def test_unsupported_threshold_env_vars_are_hard_errors(monkeypatch, var):
     # The known set is derived from `model_fields`, so every knob the model does not define is
@@ -2415,7 +2413,7 @@ def test_the_exam_handed_in_is_the_exam_that_runs(monkeypatch):
     t = GateThresholds(thesis_min_trades=45)
     monkeypatch.setenv("SEIKAN_THESIS_MIN_TRADES", "30")
     report = evaluate_gate(_summary(), t)
-    # 42 < the caller's stricter 45 floor — the env's laxer 30 did not take over.
+    # 42 < the caller's stricter 45 floor — the env's laxer 30 does not take over.
     assert not _cell_checks(report)["support"].met
 
 
@@ -2541,10 +2539,11 @@ def test_hash_rejects_the_column_fields_bound_at_the_invocation(data):
 def test_outcome_ledger_counts_cannot_exceed_the_index_length():
     """A target fires at most once per bar, so no ledger count can outrun ``n_bars``.
 
-    Without this bound the outcome side was asymmetric with the decision side (which enforces
-    ``n_undefined <= n_bars`` and ``sources.n_missing <= n_bars``): a forged ledger claiming more
-    firings than the index has bars reconciled internally — every count inflated together, and
-    ``n_nonoverlap <= n`` only gets easier — so an internally impossible cell graded as fully met.
+    Without this bound the outcome side would be asymmetric with the decision side (which
+    enforces ``n_undefined <= n_bars`` and ``sources.n_missing <= n_bars``): a forged ledger
+    claiming more firings than the index has bars reconciles internally — every count inflated
+    together, and ``n_nonoverlap <= n`` only gets easier — so an internally impossible cell
+    would grade as fully met.
     """
     report = evaluate_gate(_summary(cells=[_cell(n=_N_BARS + 1)]))
     ev = _cell_checks(report)["cell_evidence"]
@@ -2571,10 +2570,10 @@ def test_a_cell_exactly_filling_the_horizons_geometry_is_still_met():
 
 def test_open_observations_cannot_outrun_the_horizons_geometry():
     # A firing is right-censored only from bar n_bars − 1 − horizon on, so at most
-    # min(horizon, n_bars − 1) firings can be open. The review's summary over 600 bars at
-    # horizon 21: 142 attempted, 42 closed and 100 open reconciled everywhere and met every
-    # check — the same 100 classified no_outcome refuse — where 21 can be open. Open stays the
-    # one reason outcome_coverage allows; the count is the geometry's, cell_evidence's to hold.
+    # min(horizon, n_bars − 1) firings can be open. A summary over 600 bars at horizon 21 with
+    # 142 attempted, 42 closed and 100 open reconciles everywhere — the same 100 classified
+    # no_outcome refuse — where 21 can be open. Open stays the one reason outcome_coverage
+    # allows; the count is the geometry's, cell_evidence's to hold.
     def _ledger(n_open: int) -> dict:
         cell = _cell(n=42)
         reasons = {"horizon": 42, "open": n_open, "no_outcome": 0, "no_benchmark": 0}
@@ -2598,9 +2597,9 @@ def test_open_observations_cannot_outrun_the_horizons_geometry():
 
 def test_closed_observations_cannot_outrun_the_horizons_geometry():
     # A firing at bar t fills at t + 1 and closes at t + 1 + horizon, so 31 bars close at most 29
-    # observations of horizon 1 (and anchor 30). The review's summary: the run's 29 closed and
-    # one open became 30 closed, every ledger reconciled, and the 30-observation support floor
-    # was met over a geometry that cannot supply it.
+    # observations of horizon 1 (and anchor 30). The forgery: the run's 29 closed and one open
+    # rewritten as 30 closed, every ledger reconciled, would meet the 30-observation support
+    # floor over a geometry that cannot supply it.
     def _over_31_bars(n_closed: int, n_attempted: int = 30) -> dict:
         cell = _cell(n=n_closed, n_nonoverlap=8, params={"zscore_window": 20, "horizon": 1})
         reasons = {
@@ -2630,8 +2629,8 @@ def test_closed_observations_cannot_outrun_the_horizons_geometry():
 
 
 def test_a_pooled_count_cannot_outrun_the_members_closed_geometry():
-    # Two members over 600 bars close at most 2 × 578 observations of horizon 21; a pooled n of
-    # 1,200 — n_bars × len(targets), the old bound — sailed through that read.
+    # Two members over 600 bars close at most 2 × 578 observations of horizon 21, so a pooled n
+    # of 1,200 refuses, though it is within n_bars × len(targets).
     cell = _basket_cell(n=_N_BARS - 1 - 21, pooled=_pooled(n=2 * _N_BARS))
     check = _cell_checks(evaluate_gate(_basket(cells=[cell])))["cell_evidence"]
     assert not check.met

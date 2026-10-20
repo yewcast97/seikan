@@ -562,11 +562,11 @@ _BAR_COUNT_SITES = {
 
 @pytest.mark.parametrize("site", list(_BAR_COUNT_SITES))
 def test_every_bar_count_param_is_capped_at_parse(site):
-    # The schema's domain is the EXECUTABLE domain. 10**20 used to validate and then, as an ema /
-    # zscore-ema / bars_since_extremum window, a cooldown or a rolling.window, reach a numba
-    # kernel or a pandas window as an integer no machine type holds — a TypingError /
-    # OverflowError, exit 4 from caller input — and elsewhere run all warmup or meet the data
-    # check (the horizon); anything past 2**31 − 1 now refuses at parse.
+    # The schema's domain is the EXECUTABLE domain: anything past 2**31 − 1 refuses at parse.
+    # Admitted, 10**20 would, as an ema / zscore-ema / bars_since_extremum window, a cooldown or
+    # a rolling.window, reach a numba kernel or a pandas window as an integer no machine type
+    # holds — a TypingError / OverflowError, exit 4 from caller input — and elsewhere run all
+    # warmup or meet the data check (the horizon).
     build, admitted_at_ceiling = _BAR_COUNT_SITES[site]
     for bad in (_CEILING + 1, 10**20):
         with pytest.raises(ValidationError, match="less than or equal to 2147483647"):
@@ -744,8 +744,8 @@ def test_external_feed_lag_validation():
         ("1h30m", 90 * 60 * 10**9),
         ("1 h 30 min", 90 * 60 * 10**9),
         ("1.5 days", 36 * 3600 * 10**9),
-        ("0.57 days", 49248 * 10**9),  # pandas read 49247999999999: a nanosecond short
-        ("1d", 86400 * 10**9),  # pandas warned on d / w / H / S (an error under -W error)
+        ("0.57 days", 49248 * 10**9),  # pandas reads 49247999999999: a nanosecond short
+        ("1d", 86400 * 10**9),  # pandas warns on d / w / H / S (an error under -W error)
         ("36H", 36 * 3600 * 10**9),
         ("2w", 14 * 86400 * 10**9),
         ("2 Days", 2 * 86400 * 10**9),
@@ -766,12 +766,12 @@ def test_external_feed_string_lag_reads_exactly(lag, ns):
 @pytest.mark.parametrize(
     ("lag", "match"),
     [
-        # past the nanosecond: pandas TRUNCATED — 1s, and no lag at all for 0.5ns
+        # past the nanosecond: pandas TRUNCATES — 1s, and no lag at all for 0.5ns
         ("1.0000000001s", "not a whole number of nanoseconds"),
         ("0.5ns", "not a whole number of nanoseconds"),
         ("1.0000001ms", "not a whole number of nanoseconds"),
-        # forms pandas read some other way: ISO-8601 (P1DT1.5H as 1 day 1 h 0.001 s), a dropped
-        # comma (1,5h as 15 h), a bare number (5 NANOSECONDS), a clock
+        # forms pandas reads some other way: ISO-8601 (P1DT1.5H), a dropped comma (1,5h as
+        # 15 h), a bare number (5 NANOSECONDS), a clock
         ("P1DT1.5H", "is not a duration"),
         ("1,5h", "is not a duration"),
         ("5", "is not a duration"),
@@ -779,7 +779,8 @@ def test_external_feed_string_lag_reads_exactly(lag, ns):
         ("1M", "is not a duration"),
         ("-1h", ">= 0"),
         ("106752 days", "past the clock's range"),
-        # a fraction past the double range: its message's float() raised OverflowError (exit 4)
+        # a fraction past the double range — guards against its message's float() raising
+        # OverflowError (exit 4)
         ("9" * 400 + ".5ns", "past the clock's range"),
     ],
 )
@@ -797,7 +798,7 @@ def test_external_feed_string_lag_refuses_what_it_cannot_read_exactly(lag, match
 def test_data_bounds_past_the_nanosecond_refuse():
     # pandas truncates a seconds fraction past the ninth digit, so the bound would name another
     # instant — midnight here — and the start/end order would compare the truncated ones. The
-    # CSV reader already refused such a stamp; the document's bounds now do too.
+    # document's bounds refuse such a stamp, as the CSV reader does.
     from seikan.dsl.schema import DataSpec
 
     with pytest.raises(ValidationError, match=r"past the nanosecond.*2024-01-01T00:00:00\)"):
@@ -1610,7 +1611,7 @@ def test_basket_mode_hashes_differently():
     assert canonical_dsl_hash(conj) != canonical_dsl_hash(basket)
 
 
-# ---- Phase-1 algebra nodes (calendar / days_since / shift / unary_op / drawdown.input) ----
+# ---- algebra nodes (calendar / days_since / shift / unary_op / drawdown.input) ----
 
 
 def _th(entry: dict, data: dict | None = None) -> dict:
@@ -1672,8 +1673,8 @@ def test_shift_and_unary_are_depth_transparent():
     # zscore(x - shift(x)) is one operator level (shift/binary_op are plumbing) — allowed even
     # wrapped once more; and a chain of FIVE real operator levels threaded with shift/unary_op/
     # binary_op plumbing at every stage is still accepted (if the plumbing counted, this chain
-    # would read >= 7 levels and reject — acceptance pins the transparency at the new cap). A
-    # sixth real level rejects.
+    # would read >= 7 levels and reject — acceptance pins the transparency at the cap). A sixth
+    # real level rejects.
     diff = {
         "type": "binary_op",
         "op": "-",
@@ -2962,10 +2963,10 @@ def test_ema_alpha_bounds(alpha):
 @pytest.mark.parametrize("alpha", [1e-19, 5e-324, math.nextafter(2.0**-30, 0.0)])
 def test_ew_alpha_below_its_floor_refuses_at_parse(alpha):
     # An alpha warms over the span ceil(2/alpha − 1), so a decay below 2**-30 is a warmup past
-    # the bar-count ceiling: 1e-19 (2e19 bars, past 2**64) was an integer no machine type numba
+    # the bar-count ceiling: 1e-19 (2e19 bars, past 2**64) is an integer no machine type numba
     # compiles for holds and the subnormal 5e-324 an infinite span math.ceil cannot convert —
-    # both exit 4 from a thesis this schema accepted — while the alpha one ulp under the floor ran
-    # all warmup. Every EW alpha site, scalar or swept, refuses at parse instead.
+    # both an exit 4 if admitted — while the alpha one ulp under the floor runs all warmup. Every
+    # EW alpha site, scalar or swept, refuses at parse instead.
     for node in (
         {"type": "ema", "input": _FIELD_CLOSE, "alpha": alpha},
         {"type": "ema", "input": _FIELD_CLOSE, "alpha": [0.06, alpha]},
@@ -3223,9 +3224,9 @@ def test_axis_name_reserved_refused(name):
 
 
 def test_swept_constant_named_timestamps_is_refused_at_parse():
-    # The review's sweep: list_entries writes each row as {**combo, "target", "timestamps"}, so a
-    # swept constant named `timestamps` had its cutoff overwritten by the firing list — two rows
-    # left with no cutoff to tell them apart. The name is reserved, refused at parse (exit 3).
+    # list_entries writes each row as {**combo, "target", "timestamps"}, so a swept constant
+    # named `timestamps` would have its cutoff overwritten by the firing list — two rows left
+    # with no cutoff to tell them apart. The name is reserved, refused at parse (exit 3).
     entry = _SIMPLE_ENTRY | {
         "right": {"type": "constant", "name": "timestamps", "value": [90.0, 105.0]}
     }

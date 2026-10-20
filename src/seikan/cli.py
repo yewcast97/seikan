@@ -1,78 +1,34 @@
 """The seikan CLI — a stateless statistical reporter for other agents.
 
-Subcommands:
+Subcommands (the full contract is ``seikan schema`` and CONTRACT.md):
 
 - ``seikan run <thesis.json> --data KEY=PATH [--column KEY=COL] ...`` — measure a thesis and write
-  the outputs the caller NOMINATES, one
-  flag each; at least one is required (a run that asks for nothing is a usage error, refused before
-  the thesis file is even read). The thesis names its series and the invocation locates them:
-  ``--data`` binds a file to each declared key, and ``--column`` binds a CSV column to any key
-  whose file holds several numeric columns (never to ``benchmark``, which always reads its file's
-  ``open``). **Silent on success**: exit 0 prints NOTHING on stdout — the
-  outputs are the files, and stdout carries a JSON error envelope or nothing at all.
-
-  - ``--report-out <path>`` — the full statistical JSON document (always overwritten), in a
-    FIXED layer order: the top-level ``seikan_version`` /
-    ``report_schema_version`` / ``command`` header EVERY document carries → ``identity`` (dsl_hash,
-    per-KEY data digests — ``{path, column, sha256}`` for every declared data key — the threshold
-    snapshot actually used + whether it is canonical + its
-    per-knob provenance) → ``data_report`` → ``outputs`` (every nominated file; each CSV also
-    carries a row count) →
-    the engine ``summary`` **verbatim** (every declared parameter × horizon cell, non-firing combos
-    included — never filtered by a checklist result). The summary always stamps ``target_mode``
-    ('conjunction' | 'basket' — which cross-target semantics produced every number), and in basket
-    mode each cell additionally carries the ``pooled`` cross-target panel its checklist rubric
-    grades instead of per-member floors → the ``gate`` section
-    (``{policy_version, n_cells, n_met, run_checks, cells}`` — every check reported for every
-    cell) → compact ``metric_roles`` (which fields the checklist consumes, the exact claim, what is
-    evidence-only; the prose rationale lives in ``seikan schema``). The exit code is NOT a verdict:
-    a completed run exits 0 whatever the per-cell results say, which live in ``gate.cells``. No
-    time series ever ride the report — the per-observation rows have their own flags below.
-  - ``--trades-out <path>`` — the per-observation trades CSV (one row per firing × target ×
-    horizon, with the post-entry path columns).
-  - ``--root-series-out <path>`` — the per-bar values of every deduplicated root series node (each
-    threshold operand in the entry tree except bare constants), labelled by ``render_series``, with
-    ``@<target>`` column families when several targets. Value columns ONLY — the per-bar DECISION
-    INPUT view: a fired bar becomes a row of the trades CSV instead, in observation shape, and the
-    0/1 flags ride their own file below.
-  - ``--entry-flags-out <path>`` — the per-bar 0/1 entry-flag matrix, one integer column per (param
-    combo × target), bit-identical to the firing mask the backtest measures at. It is the ONE CLI
-    output that carries a firing on the FINAL bar: such a firing has no next open to anchor at, so
-    it opens no observation, has no trades row and is counted in no ``outcome_coverage`` ledger —
-    this file is where it shows up, and what answers "is my thesis firing NOW?".
-
-  Compute is LAZY — only what the nominated outputs need. ``--report-out`` or ``--trades-out``
-  runs the full-grid event study (which requires an index long enough to close one observation at
-  the longest horizon); a run nominating ONLY ``--root-series-out`` and/or ``--entry-flags-out``
-  takes the cheaper listing path instead — ONE ``list_entries`` call serving both frames: no
-  full-grid backtest, and no horizon-runway requirement, since a signal series is well-defined on
-  an index too short to measure anything. The market data itself is loaded exactly ONCE per run,
-  after request validation, and the one materialized ``MarketData`` is shared by both compute
-  paths.
+  the outputs the caller NOMINATES, one flag each: ``--report-out`` (the JSON report),
+  ``--trades-out`` (one row per firing × target × horizon), ``--root-series-out`` (the per-bar
+  decision inputs) and ``--entry-flags-out`` (the per-bar 0/1 firing matrix — the one output that
+  carries a final-bar firing). At least one is required: a run that nominates nothing is a usage
+  error, refused before the thesis file is read. The thesis names its series and the invocation
+  locates them: ``--data`` binds a file to each declared key, ``--column`` the CSV column a key
+  reads where its file holds several (never ``benchmark``'s). **Silent on success**: stdout
+  carries a JSON error envelope or nothing. Compute follows nomination — the report or trades
+  run the full-grid event study, the per-bar outputs alone take the cheaper listing path (no
+  horizon-runway requirement) — off ONE load.
+- ``seikan hash <thesis.json|->`` — validate a thesis and emit its canonical identity (dsl_hash +
+  the data keys a run must bind).
 - ``seikan check-data <files...>`` — pre-flight the strict-CSV contract on data files alone.
-- ``seikan describe <files...>`` — profile data files (levels, changes, dispersion, range
-  position, missingness): pure DESCRIPTION that measures nothing and supports no thesis. One JSON
-  document on stdout; its ``data_report`` is byte-equal to ``check-data``'s over the same files,
-  and a refused file gets a stub profile while the document is still emitted.
-- ``seikan schema`` — the DSL JSON Schema + threshold/checklist-contract/CSV/exit-code reference
-  (agents self-serve); ``--markdown`` streams the human-readable DSL guide.
+- ``seikan describe <files...>`` — profile data files: pure description that measures nothing.
+- ``seikan schema`` — the DSL JSON Schema + contract reference; ``--markdown`` the DSL guide.
 
-Exit codes: 0 run completed — every nominated output was written · 2 input data failed strict
-validation · 3 invalid request — an argparse usage error (including a run
-that nominates no output), an unreadable or invalid thesis or gate-threshold set, or an unusable
-nominated output path (``usage`` / ``dsl_invalid`` / ``thresholds_invalid`` envelopes; the
-thresholds one also covers unknown ``SEIKAN_*`` env vars, a hard error) · 4 internal error. Every
-seikan-DETECTED error emits a machine-readable JSON envelope on stdout — ``{seikan_version,
-report_schema_version, command, error}`` with ``error = {type, message, errors?}``. For ``run``
-that envelope is the ONLY thing that ever reaches stdout, since its outputs are files;
-``check-data``, ``describe`` and ``schema`` still emit their own document there on success — the
-silence is a property of ``run``, not of the CLI. ``--help`` / ``--version`` (conventional
-non-JSON, exit 0) and a SIGINT (KeyboardInterrupt — Python's default, no envelope) carry no
-envelope either.
+Exit codes describe the RUN, never the evidence (a completed run exits 0 whatever its cells
+report): 0 completed · 2 input data failed strict validation · 3 invalid request — a usage error,
+an unreadable or invalid thesis or gate-threshold set, an unusable nominated output path
+(``usage`` / ``dsl_invalid`` / ``thresholds_invalid``) · 4 internal error. Every seikan-DETECTED
+error emits ``{seikan_version, report_schema_version, command, error: {type, message, errors?}}``
+on stdout; ``--help`` / ``--version`` and a SIGINT carry no envelope. The other commands emit
+their own document on stdout on success — the silence is ``run``'s, not the CLI's.
 
-Seikan does not select, rank, or crown a winning cell. It measures every hypothesis the thesis
-declares and reports each one honestly; choosing among them — and pricing the multiplicity of
-having looked at ``n_hypotheses_attempted`` of them — belongs to the calling agent.
+Seikan does not select, rank, or crown a winning cell: choosing among them — and pricing the
+multiplicity of ``n_hypotheses_attempted`` — belongs to the calling agent.
 """
 
 from __future__ import annotations
@@ -148,16 +104,7 @@ from seikan.types import (
 #: gate -> metric_roles), the ``outputs`` block naming the files a run wrote, and the error
 #: envelope ``{type, message, errors?}``. It is the one number that tells an agent whether the
 #: binary in front of it is the contract it is holding, so a reader-visible shape change bumps it
-#: rather than arriving silently. v6 (this build) ADDED ``by_target`` — each participating
-#: target's own n / mean_ret / hit_rate — to every conditional-bucket record that pools several
-#: targets' rows by ordinal (``cells[].conditional_buckets.<feature>.buckets[]``): the pooled
-#: means weight the targets by their rows per ordinal, and the composition read was missing;
-#: every v5 key and number is unchanged. v5 REMOVED the legacy ``stats_table`` /
-#: ``by_target``/``by_param``/``n_stats_rows`` grid breakdown, the nominal ``t_iid``/``p_iid``
-#: pair and the derivable ``sharpe``/``firing_rate`` from the summary, renamed the trades column
-#: ``bars_held`` → ``horizon`` (always present), and ADDED the integrity reads ``rot_n_null``
-#: (per panel) and ``pbo.n_splits_attempted`` / ``pbo.n_candidates_min``; every surviving number
-#: was byte-identical to v4.
+#: rather than arriving silently.
 REPORT_SCHEMA_VERSION = 6
 
 
@@ -354,8 +301,8 @@ def _user_path(raw: str) -> str:
     ``--data`` path — so the loader, the collision checks, the writes and the report's
     ``data_digests`` / ``outputs`` paths all read one spelling. Nothing else is respelled (``""``
     stays the empty path its own refusal names). Expanded only by the guards, a CSV bound as
-    ``~/prices.csv`` was read from a literal ``./~`` directory the guards never looked at, and a
-    report nominated at that file overwrote it."""
+    ``~/prices.csv`` would be read from a literal ``./~`` directory the guards never looked at,
+    and a report nominated at that file would overwrite it."""
     return os.path.expanduser(raw)
 
 
@@ -657,9 +604,8 @@ def _write_lazy_outputs(
 ) -> tuple[EventStudyResult | None, dict[str, OutputEntry]]:
     """Compute-follows-nomination: the backtest for report/trades, ONE listing call for the two
     per-bar CSVs, each CSV written to its ``stage``d temporary, `outputs` keyed in nomination
-    order (the report's entry first even though its file is staged last). ``md`` is the run's ONE
-    materialized MarketData — compile_thesis and list_entries take it as a required parameter and
-    never load, and the evaluation memo rides it (the memos riding ``md``), so every
+    order. ``md`` is the run's ONE materialized MarketData — compile_thesis and list_entries take
+    it as a required parameter and never load, and the evaluation memos ride it, so every
     series/condition is built at most once, whichever path asks first.
     """
     # `outputs` is keyed in NOMINATION order — report, trades, root_series, entry_flags — so the
@@ -679,13 +625,11 @@ def _write_lazy_outputs(
             }
     if args.root_series_out is not None or args.entry_flags_out is not None:
         # ONE listing call serves BOTH per-bar outputs: root_series (the decision INPUTS) and
-        # entry_flags (the decisions themselves) are two frames of the same EntryListReport, built
-        # off the one evaluation memo riding md — shared with the backtest above, so nominating
-        # both listing outputs costs exactly what nominating one costs, and a listing after a
-        # backtest rebuilds no series or condition at all. When both
-        # kinds of output are nominated the backtest runs FIRST, so every DataError surfaces from
-        # the strict path (its guards are a superset of the listing's — horizon sufficiency,
-        # features included in the volume check).
+        # entry_flags (the decisions themselves) are two frames of the same EntryListReport, so
+        # nominating both costs exactly what nominating one costs. When both kinds of output are
+        # nominated the backtest runs FIRST, so every DataError surfaces from the strict path (its
+        # guards are a superset of the listing's — horizon sufficiency, features included in the
+        # volume check).
         listing = list_entries(thesis, md)
         # root_series first, so `outputs` keeps its declared key order whichever flags were passed.
         if args.root_series_out is not None:
@@ -780,20 +724,16 @@ def _cmd_run(args: argparse.Namespace) -> int:
     mapping = _parse_data_pairs(args.data)
     columns = _parse_column_pairs(args.column)
     files, thresholds = _validate_request(args, thesis, mapping, columns, nominated)
-    # The market data is loaded exactly ONCE, here, and the one materialized MarketData is
-    # shared by both compute paths (the evaluation memo rides it as the MarketData memos). Loading
-    # sits
-    # after every exit-3 refusal and before any O(grid × length) compute, so a strict-CSV
-    # violation is still exit 2 ahead of all measurement work.
+    # The market data is loaded exactly ONCE, here, and the one materialized MarketData (the
+    # evaluation memos ride it) is shared by both compute paths. Loading sits after every exit-3
+    # refusal and before any O(grid × length) compute, so a strict-CSV violation is still exit 2
+    # ahead of all measurement work.
     md = load_market_data(thesis.data, files)  # DataError → exit 2 in main()
-    # Every nominated file is STAGED — written to a temporary beside its target — and published
-    # only once the last of them, the report, is written: a failure anywhere before that (a CSV
-    # or report write error, ENOSPC, the report refusing its contract validation, a refused run)
-    # leaves every target as it was, so a previous run's report is never left beside this run's
-    # CSVs by a failed write. The report is staged LAST and so renamed last: it ENUMERATES the
-    # other outputs, so it never vouches for a file that did not land. The renames themselves
-    # are the one window staging cannot close — one failing leaves the files renamed before it
-    # beside the previous report.
+    # Every nominated file is STAGED and published only once the last of them, the report, is
+    # written (`serialize.staged_outputs`): a failure before that — a refused run included —
+    # leaves every target as it was; the renames themselves are the one window staging cannot
+    # close. The report is staged LAST and so renamed last: it ENUMERATES the other outputs, so it
+    # never vouches for a file that did not land.
     with staged_outputs() as stage:
         result, outputs = _write_lazy_outputs(args, thesis, md, stage)
         if args.report_out is not None:
@@ -809,16 +749,15 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
 
 def _cmd_hash(args: argparse.Namespace) -> int:
-    # The identity a caller otherwise computes by importing `api.canonical_dsl_hash`: validate the
-    # DSL document and emit its canonical hash plus `data_keys` — the EXACT key set a `run`'s
+    # The identity a caller otherwise computes by importing `seikan.canonical_dsl_hash`: validate
+    # the DSL document and emit its canonical hash plus `data_keys` — the EXACT key set a `run`'s
     # `--data` must answer (the reserved `benchmark` included when `params.benchmark == "market"`),
     # so a host can assemble the whole invocation from this one document without embedding Python.
     # `-` reads the thesis from stdin, because an agent holding a candidate document should not
-    # need a scratch file to learn its identity. The document rides stdout at exit 0 — the
-    # silence-on-success contract belongs to `run`, whose outputs are files; this command's output
-    # IS its document, exactly like check-data/describe/schema. An unreadable or invalid thesis
-    # rides the ordinary exit-3 `dsl_invalid` envelope out of main(); nothing here touches data
-    # files or writes anything.
+    # need a scratch file to learn its identity. The document rides stdout at exit 0, like
+    # check-data/describe/schema (the silence is `run`'s). An unreadable or invalid thesis rides
+    # the ordinary exit-3 `dsl_invalid` envelope out of main(); nothing here touches data files or
+    # writes anything.
     if args.thesis == "-":
         # Read the BYTES, which `_parse_thesis` decodes as UTF-8 exactly as it does a file's:
         # `sys.stdin.read()` would decode with the locale (surrogateescape, never raising), so

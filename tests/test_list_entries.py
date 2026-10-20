@@ -246,9 +246,9 @@ def test_list_entries_runup_and_bars_since_extremum(tmp_path):
 
 
 def test_list_entries_subnormal_cycle_reads_its_mad_and_never_fires_above_it(tmp_path):
-    # The review's read: closes [u, 3u, 4u, 5u] (u = 5e-324) have the MAD u on every window of 4,
-    # so `rolling_agg(close, 4, mad) > u` holds on none — it fired 81 times, the even window's
-    # median having lost the half of its middle gap.
+    # Closes [u, 3u, 4u, 5u] (u = 5e-324) have the MAD u on every window of 4, so
+    # `rolling_agg(close, 4, mad) > u` holds on none — guarding against an even window's median
+    # that loses the half of its middle gap.
     u = 5e-324
     path = _bars(tmp_path / "sub.csv", [u, 3 * u, 4 * u, 5 * u] * 21)
     mad = {"type": "rolling_agg", "input": {"type": "field", "column": "close"}, "window": 4}
@@ -264,10 +264,10 @@ def test_list_entries_subnormal_cycle_reads_its_mad_and_never_fires_above_it(tmp
 
 
 def test_list_entries_log_change_never_exceeds_the_pct_change(tmp_path):
-    # The review's read: closes alternating 100 and 100.00000001. ln(1 + r) ≤ r for every r > −1,
-    # so `change(close, log) > change(close, pct)` holds on no bar — it fired on all 60 rises,
-    # the log of the quotient rounded at 1's ulp reading 1.000000082690371e-10 above the pct
-    # change's 9.999993721976352e-11 (exact: 9.999993721476353e-11).
+    # Closes alternating 100 and 100.00000001. ln(1 + r) ≤ r for every r > −1, so
+    # `change(close, log) > change(close, pct)` holds on no bar: each rise's log reads the exact
+    # 9.999993721476353e-11, under the pct change's 9.999993721976352e-11 — guarding against the
+    # log of the quotient rounded at 1's ulp, which reads 1.000000082690371e-10, above it.
     path = _bars(tmp_path / "alt.csv", [100.0, 100.00000001] * 60)
     close = {"type": "field", "column": "close"}
     entry = {
@@ -529,9 +529,9 @@ def test_signals_collision_fallback(tmp_path):
 def test_listing_csvs_reread_when_names_differ_only_in_case(tmp_path):
     # Targets 'A' and 'a', and feeds 'IV' and 'iv', are distinct data keys — but the strict
     # reader compares headers stripped and lower-cased, so the listing frames' 'close@A' and
-    # 'close@a' (and 'entry@A' and 'entry@a') were ONE header to it, and both CSVs refused to
-    # re-read (duplicate_column). A name taken under that rule takes a '#N' suffix, in
-    # declaration order, and both files re-read.
+    # 'close@a' (and 'entry@A' and 'entry@a') are ONE header to it, and unsuffixed both CSVs
+    # would refuse to re-read (duplicate_column). A name taken under that rule takes a '#N'
+    # suffix, in declaration order, and both files re-read.
     idx = pd.date_range("2021-01-01", periods=6, freq="1D")  # the `_bars` clock
     files = {
         "A": str(_bars(tmp_path / "upper.csv", [100.0, 101.0, 99.0, 102.0, 103.0, 101.0])),
@@ -739,8 +739,8 @@ def test_listing_after_backtest_rebuilds_nothing(tmp_path, monkeypatch):
 def test_each_result_carries_its_own_horizon_warning(tmp_path):
     # The barely_sufficient warning describes one thesis's horizon, so it rides the RESULT's own
     # data_report and never md.report, which describes the load. Written into the shared report,
-    # a horizon-13 compile's warning surfaced in an earlier horizon-1 result, and in every later
-    # one over that md.
+    # a horizon-13 compile's warning would surface in an earlier horizon-1 result, and in every
+    # later one over that md.
     path = _bars(tmp_path / "px.csv", [float(100 + i) for i in range(20)])
     short = _thesis(_lt(1000.0), horizon=1)
     long = _thesis(_lt(1000.0), horizon=13)  # 20 bars, h=13: sufficient, under the comfort floor

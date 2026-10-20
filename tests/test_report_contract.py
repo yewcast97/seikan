@@ -188,7 +188,7 @@ def test_ratio_reason_is_a_closed_vocabulary_and_whole_refusals_need_none(descri
 
 def test_validate_summary_holds_a_summary_to_the_run_root(run_doc):
     # A library caller's check of an engine summary, without a document: the emitted summary
-    # validates, a deep extra key refuses, and a retired key (the schema-v4 breakdown) too.
+    # validates, a deep extra key refuses, and a retired key (`stats_table`) too.
     validate_summary(run_doc["summary"])
     drifted = copy.deepcopy(run_doc["summary"])
     drifted["cells"][0]["by_target"]["target"]["stray"] = 1.0

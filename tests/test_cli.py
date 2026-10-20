@@ -264,10 +264,9 @@ def test_run_at_the_double_ceiling_reports_null_means_never_an_internal_error(
 ):
     # Finite returns whose SUMS leave the double range: an episode's pct returns of 1e308 and
     # 1.5e308 (a 1e-300 quote into 1e8 and 1.5e8), and a series target's diff rows of ~-1.6e308
-    # summed per bucket.
-    # The ledger's and the buckets' means were plain floats, so their overflow's null failed the
-    # emission seam: exit 4 `internal`, no report, on admitted input. Exit 0 with the means null —
-    # and in-process under the suite's -W error, so no numpy warning escaped the run either.
+    # summed per bucket. Exit 0 with the ledger's and the buckets' means null — never exit 4
+    # `internal` with no report on admitted input — and in-process under the suite's -W error,
+    # so no numpy warning escapes the run either.
     n = 200
     idx = pd.date_range("2021-01-01", periods=n, freq="1D")
     if read == "episodes":
@@ -318,9 +317,9 @@ def test_run_bucketing_a_feature_at_the_double_ceiling_keeps_its_true_bins(tmp_p
     # A 1e-300 <-> 1e8 OHLCV target: its default ret_5 reads -1 on a firing at an even bar and
     # 1e308·(u/u') on an odd one — a third of the closed rows at -1, so the true qcut forms three
     # bins. pandas renders a label by rounding each edge through x·10**3, so past ~1.8e305 every
-    # edge read "inf", the colliding "(inf, inf]" labels merged the top two bins, and the
-    # rendering's overflow warned — exit 4 `internal` under -W error, as this in-process run is.
-    # The single-target panel reads its true bins by index now, labelled by ordinal where no
+    # edge reads "inf", the colliding "(inf, inf]" labels merge the top two bins, and the
+    # rendering's overflow warns — exit 4 `internal` under -W error, as this in-process run is.
+    # The single-target panel reads its true bins by index, labelled by ordinal where no
     # interval string can print them.
     n = 200
     idx = pd.date_range("2019-01-01", periods=n, freq="1D")
@@ -369,7 +368,7 @@ def test_run_bucketing_a_feature_at_the_double_ceiling_keeps_its_true_bins(tmp_p
     feature = trades.loc[~trades["is_open"] & trades["ret"].notna(), "ret_5"].dropna()
     assert feature.max() > 1e308 and feature.min() < 0  # the premise: edges past the rendering
     true_bins = pd.qcut(feature, q=4, labels=False, duplicates="drop").value_counts().sort_index()
-    assert len(true_bins) == 3  # pandas' labels merged the top two
+    assert len(true_bins) == 3  # pandas' labels merge the top two
     panel = doc["summary"]["cells"][0]["conditional_buckets"]["ret_5"]
     assert panel["reason"] is None
     assert [(b["bucket"], b["n"]) for b in panel["buckets"]] == [
@@ -382,10 +381,10 @@ def test_run_bucketing_a_feature_spanning_the_double_range_reads_its_true_bins(
     tmp_path, capsys, targets
 ):
     # A declared feature off a feed alternating ±1.7e308·u: its quantile interpolation crosses
-    # zero between two order statistics whose spread passes the double range, so the median edge
-    # read -inf and both bucket arms cut the panel on it — "(-inf, -inf]" 1 / "(-inf, inf]" 177
-    # / "(inf, inf]" 60 with a rank read off it, beside a warning that is exit 4 `internal` under
-    # -W error, as this in-process run is. Each member's true bins now, by ordinal.
+    # zero between two order statistics whose spread passes the double range, so the
+    # interpolated median edge overflows to -inf, and a panel cut on it carries a warning that is
+    # exit 4 `internal` under -W error, as this in-process run is. Both bucket arms read each
+    # member's true bins, by ordinal.
     n = 240
     idx = pd.date_range("2018-01-01", periods=n, freq="1D")
     rng = np.random.RandomState(4)
@@ -650,7 +649,7 @@ def test_report_metric_roles_compact_with_claim(tmp_path, capsys):
     assert set(roles["caveats"]) <= set(classes)
     assert classes["rot_p"] == "inference" and classes["rot_n_null"] == "integrity"
     assert classes["mean_ret"] == "descriptive" and classes["n_nonoverlap"] == "integrity"
-    # the known-invalid iid pair and the derivable convenience reads are gone, not reclassed
+    # the known-invalid iid pair and the derivable convenience reads are absent, not reclassed
     for retired in ("t_iid", "p_iid", "sharpe", "firing_rate", "median_ret", "nominal"):
         assert retired not in classes and retired not in classes.values()
     assert all(
@@ -659,7 +658,7 @@ def test_report_metric_roles_compact_with_claim(tmp_path, capsys):
     assert "anti-conservative" in roles["caveats"]["t_hac"]
     # a percentile interval over few episodes undercovers (iid null, horizon 1: ~16% of 95%
     # intervals miss at 5 episodes, where the HAC t at df n − 1 reads ~5%), so the caveat says
-    # so and claims no ordering against t_hac — it read "less anti-conservative than t_hac"
+    # so and claims no ordering against t_hac: "anti-conservative" appears nowhere in it
     boot = roles["caveats"]["boot"]
     assert "INDEPENDENCE" in boot and "undercovers on few" in boot
     assert "anti-conservative" not in boot
@@ -879,8 +878,8 @@ def test_unreadable_thesis_bytes_are_the_ordinary_dsl_invalid_envelope(
 ):
     # Bytes that are no JSON document — not UTF-8, an integer past Python's 4,300-digit
     # conversion limit, nesting past the recursion limit — are an invalid request like any
-    # malformed thesis, from a file or from stdin: exit 3 `dsl_invalid`. Each escaped the
-    # parse's handlers as exit 4 `internal`, a traceback on stderr.
+    # malformed thesis, from a file or from stdin: exit 3 `dsl_invalid`, never an exit 4
+    # `internal` escaping the parse's handlers with a traceback on stderr.
     thesis = tmp_path / "t.json"
     thesis.write_bytes(_UNREADABLE_THESES[case])
     if source == "hash -":
@@ -901,8 +900,8 @@ def test_unreadable_thesis_bytes_are_the_ordinary_dsl_invalid_envelope(
 
 @pytest.mark.parametrize("command", ["hash", "run"])
 def test_a_thesis_path_naming_a_directory_is_dsl_invalid(tmp_path, capsys, command):
-    # A path that names no readable FILE is the missing file's tier (exit 3), not exit 4: only
-    # FileNotFoundError was caught, so a directory read as IsADirectoryError, `internal`.
+    # A path that names no readable FILE is the missing file's tier (exit 3), not exit 4: a
+    # directory raises IsADirectoryError, which a FileNotFoundError-only catch leaves `internal`.
     argv = [command, str(tmp_path)]
     if command == "run":
         argv += [
@@ -1202,12 +1201,12 @@ def test_input_clobber_refusal_sees_through_the_path_spelling(tmp_path, capsys):
 
 
 def test_a_leading_tilde_names_the_callers_home_at_every_consumer(tmp_path, capsys, monkeypatch):
-    # The review's collisions, beside a working directory holding a directory literally named
-    # `~`. The guards expanded `~` (and pathlib reads `./~/px.csv` as `~/px.csv`) while the
-    # loaders read the spelling literally, so they protected one file while the run read another
-    # — and a report nominated at the file it read overwrote it, exit 0. `~` is the caller's home
-    # at every consumer now, expanded once as the command line is parsed; `./~` is the literal
-    # directory. Both px.csv files exist, with different bytes, so the run says which it read.
+    # Collisions beside a working directory holding a directory literally named `~`: `~` is the
+    # caller's home at every consumer, expanded once as the command line is parsed, and `./~` is
+    # the literal directory (pathlib reads `./~/px.csv` as `~/px.csv`). Guards expanding `~` while
+    # the loaders read the spelling literally would protect one file while the run reads another,
+    # and a report nominated at the file it reads would overwrite it, exit 0. Both px.csv files
+    # exist, with different bytes, so the run says which it read.
     home, cwd = tmp_path / "home", tmp_path / "cwd"
     (cwd / "~").mkdir(parents=True)
     home.mkdir()
@@ -1277,10 +1276,10 @@ def _case_insensitive(tmp_path: Path) -> bool:
 
 
 def test_run_refuses_an_output_the_filesystem_resolves_to_an_input(tmp_path, capsys):
-    # The spelling check resolved `..` and symlinks, but a case-insensitive volume opens PX.csv
-    # as px.csv — a different string, the same file — and the run wrote over the CSV it measured.
-    # The filesystem decides now: one (device, inode) for both paths is one file. A volume that
-    # keeps case apart holds two files, and the run goes ahead.
+    # A case-insensitive volume opens PX.csv as px.csv — a different string, the same file — which
+    # a spelling check resolving `..` and symlinks cannot see, so the run would write over the CSV
+    # it measures. The filesystem decides: one (device, inode) for both paths is one file. A
+    # volume that keeps case apart holds two files, and the run goes ahead.
     px = _write_ohlcv(tmp_path / "px.csv")
     thesis = _write_thesis(tmp_path / "t.json")
     before = px.read_bytes()
@@ -1308,8 +1307,8 @@ def test_run_refuses_an_output_the_filesystem_resolves_to_an_input(tmp_path, cap
 
 
 def test_run_refuses_two_outputs_the_filesystem_resolves_to_one_file(tmp_path, capsys):
-    # out.json and OUT.json are one file on a case-insensitive volume: the later write destroyed
-    # the earlier output while `outputs` went on enumerating both. Refused before any compute,
+    # out.json and OUT.json are one file on a case-insensitive volume: the later write would
+    # destroy the earlier output while `outputs` enumerates both. Refused before any compute,
     # and the probe removes every file it had to create.
     px = _write_ohlcv(tmp_path / "px.csv")
     thesis = _write_thesis(tmp_path / "t.json")
@@ -1528,8 +1527,8 @@ def test_a_per_target_feed_is_answered_under_its_derived_keys(tmp_path, capsys):
 def test_run_refuses_an_output_that_would_overwrite_a_mapped_feed(tmp_path, capsys):
     # The clobber guard walks the RESOLVED mapping, so it protects every file the invocation bound
     # — a per-target feed's CSV as surely as a target's — and quotes the one thing that identifies
-    # it here: the key the caller typed. There is no DSL field left to name instead, and that is an
-    # improvement: the guard cannot fall behind a thesis that grows a new kind of key.
+    # it here: the key the caller typed. There is no DSL field to name instead, and that is the
+    # point: the guard cannot fall behind a thesis that grows a new kind of key.
     thesis, mapping = _per_target_feed_thesis(tmp_path)
     victim = mapping["iv@BBB"]
     before = victim.read_bytes()
@@ -1595,10 +1594,10 @@ def test_data_digests_are_keyed_by_the_logical_key(tmp_path, capsys):
 
 
 def test_one_file_bound_to_two_keys_is_one_snapshot_under_one_digest(tmp_path, capsys, monkeypatch):
-    # A file rewritten between the reads of the two keys bound to it: read once per key, the
-    # target measured the first bytes and the benchmark the second, while the digest lookup by
-    # path kept the last — the target's digest named bytes it never parsed. Every key bound to one
-    # path now measures one snapshot, so every digest is the digest of the bytes its key read.
+    # A file rewritten between the reads of the two keys bound to it. Every key bound to one path
+    # measures one snapshot, so every digest is the digest of the bytes its key read — guarding
+    # against a read per key, where the target measures the first bytes, the benchmark the second,
+    # and a digest looked up by path names bytes the target never parsed.
     import hashlib
 
     import seikan.dataio as dataio_mod
@@ -1836,7 +1835,7 @@ def test_run_refuses_a_multi_column_series_file_with_no_binding(tmp_path, capsys
     # A yield-curve CSV holds several series and says nothing about which of them this key IS.
     # Picking one (the first, the alphabetical) would measure a series nobody asked for, so the run
     # refuses and names the pair that answers it — the caller's fix is an invocation edit, and
-    # there is no DSL field left to point them at instead.
+    # there is no DSL field to point them at instead.
     curve = _write_multi_series(tmp_path / "curve.csv")
     thesis = _write_thesis(tmp_path / "t.json")
     out = tmp_path / "r.json"
@@ -1880,8 +1879,8 @@ def test_a_misspelled_column_names_the_key_whose_binding_is_wrong(tmp_path, caps
     # difference load-bearing: one vendor CSV answers two feed keys, each reading its own column,
     # so "wide.csv has no column 'slwo'" would leave a caller staring at two --column pairs aimed
     # at one path with nothing to say which of them to edit. Naming the key turns the refusal back
-    # into the token that has to change — the same service the OHLCV and unbound refusals already
-    # performed, and the one the loader's own contract promises for all three.
+    # into the token that has to change — the same service the OHLCV and unbound refusals
+    # perform, and the one the loader's own contract promises for all three.
     px = _write_ohlcv(tmp_path / "px.csv")
     wide = _write_multi_series(tmp_path / "wide.csv", ("fast", "slow"))
     thesis = _write_feed_thesis(tmp_path / "t.json", ["fast", "slow"])
@@ -2007,9 +2006,9 @@ def test_run_bad_data_exits_2_with_report(tmp_path, capsys):
 
 
 def test_a_filesystem_error_reading_a_data_file_is_a_data_refusal(tmp_path, capsys):
-    # A regular file named as a parent directory: the strict reader caught only a directory and
-    # a denied read, so the NotADirectoryError escaped every command as exit 4 `internal`, and
-    # the batch lost its data_report. It is an unreadable file: exit 2, coded, the report kept.
+    # A regular file named as a parent directory raises NotADirectoryError, which a reader that
+    # catches only a directory and a denied read lets escape every command as exit 4 `internal`,
+    # losing the batch's data_report. It is an unreadable file: exit 2, coded, the report kept.
     child = _write_ohlcv(tmp_path / "px.csv") / "x.csv"
     thesis = _write_thesis(tmp_path / "t.json")
     out = tmp_path / "r.json"
@@ -2574,7 +2573,7 @@ def test_unknown_threshold_flags_are_usage_errors(capsys, flag):
         "SEIKAN_THESIS_MIN_OOS_N_EFF",  # no holdout tail to put a floor under
         "SEIKAN_GATE_PROFILE",  # no profile system to select
         "SEIKAN_THESIS_MIN_PSR",  # PSR rides as evidence; no check reads it
-        "SEIKAN_THESIS_MIN_N_EFF",  # the retired v2 knob name — renamed N_NONOVERLAP in v3
+        "SEIKAN_THESIS_MIN_N_EFF",  # a retired knob name, superseded by N_NONOVERLAP
         "SEIKAN_MAX_P_VALUE",  # a plain typo (missing THESIS_)
         "seikan_thesis_min_trade",  # a lowercase typo: the knobs are read in any letter case
         "Seikan_Thesis_Min_Trade",
@@ -3004,9 +3003,9 @@ def test_check_data_pass_and_fail(tmp_path, capsys):
 
 def test_a_feed_lag_past_the_clock_is_a_data_refusal_never_an_internal_error(tmp_path, capsys):
     # A feed stamped at the nanosecond clock's last instant, declared with a publication lag:
-    # the shift has no instant to land on, and pandas' OverflowError escaped the load as exit 4.
-    # The file itself is clean (check-data admits it); the thesis's lag and its stamps cannot be
-    # combined — a data refusal, exit 2, under spec_data_mismatch.
+    # the shift has no instant to land on, and pandas' OverflowError must not escape the load as
+    # exit 4. The file itself is clean (check-data admits it); the thesis's lag and its stamps
+    # cannot be combined — a data refusal, exit 2, under spec_data_mismatch.
     px = _write_ohlcv(tmp_path / "px.csv")
     feed = tmp_path / "rate.csv"
     pd.DataFrame(
@@ -3026,8 +3025,8 @@ def test_a_feed_lag_past_the_clock_is_a_data_refusal_never_an_internal_error(tmp
 
 
 def test_check_data_refuses_an_unnamed_header_column_instead_of_crashing(tmp_path, capsys):
-    # `datetime,,unnamed: 1`: pandas' invented `Unnamed: 1` collided with the written name and
-    # the strict read crashed (exit 4, an internal error). It is a data refusal: exit 2, coded.
+    # `datetime,,unnamed: 1`: pandas' invented `Unnamed: 1` collides with the written name. It is
+    # a data refusal — exit 2, coded — never a crash of the strict read (exit 4, internal).
     bad = tmp_path / "unnamed.csv"
     bad.write_text("datetime,,unnamed: 1\n2024-01-01,1,2\n2024-01-02,3,4\n", encoding="utf-8")
     code, doc = _run(capsys, ["check-data", str(bad)])
@@ -3037,10 +3036,10 @@ def test_check_data_refuses_an_unnamed_header_column_instead_of_crashing(tmp_pat
 
 
 def test_every_strict_reader_refuses_a_shifted_record_shape(tmp_path, capsys):
-    # Every record one field longer than the header: pandas read the first field as an implicit
-    # index, so this file passed check-data CLEAN (exit 0) with its first dates silently
-    # discarded. check-data, describe and run all admit through read_strict_csv, so each now
-    # exits 2 carrying the same field_count_mismatch error, validated at emission.
+    # Every record one field longer than the header: pandas reads the first field as an implicit
+    # index, so a read through pandas alone admits this file with its first dates silently
+    # discarded. check-data, describe and run all admit through read_strict_csv, so each exits 2
+    # carrying the same field_count_mismatch error, validated at emission.
     shifted = tmp_path / "shifted.csv"
     shifted.write_text(
         "datetime,close\n2021-01-01,2021-01-04,100\n2021-01-02,2021-01-05,101\n", encoding="utf-8"
@@ -3457,8 +3456,8 @@ def test_trades_out_preflight_leaves_existing_file_untouched(tmp_path, capsys):
 
 def test_preflight_leaves_a_dangling_output_symlink_and_its_target_alone(tmp_path, capsys):
     # A dangling symlink reads as absent, so the probe's append open creates the link's TARGET.
-    # The cleanup unlinked the nominated path — the LINK — so a run that then failed on the data
-    # deleted the caller's symlink and left an empty file where it pointed.
+    # A run that then fails on the data removes that target and keeps the caller's symlink — the
+    # cleanup never unlinks the nominated path (the LINK) or leaves an empty file where it points.
     bad = tmp_path / "bad.csv"
     bad.write_text("datetime,close\nnot-a-date,1\n", encoding="utf-8")
     thesis = _write_thesis(tmp_path / "t.json")
@@ -3586,9 +3585,8 @@ def test_failed_report_write_leaves_previous_report_intact(tmp_path, capsys, mon
 def test_a_failed_report_leaves_every_previous_output_intact(tmp_path, capsys, monkeypatch):
     # Staging: every nominated file is written beside its target and published only once the
     # report, the last of them, is written — so a report that fails (here its contract
-    # validation) leaves the previous run's report AND its CSVs as they were. The CSVs were
-    # replaced before the report was serialized, which left the previous report enumerating this
-    # run's files.
+    # validation) leaves the previous run's report AND its CSVs as they were, never the previous
+    # report enumerating this run's CSVs.
     from seikan.emitted import ReportContractError
 
     def _refuse(command, doc):
@@ -3618,8 +3616,8 @@ def test_a_failed_report_leaves_every_previous_output_intact(tmp_path, capsys, m
 @pytest.mark.parametrize("dangling", [False, True], ids=["existing", "dangling"])
 def test_outputs_write_through_a_symlink(tmp_path, capsys, dangling):
     # A nominated symlink is written THROUGH: the file it names takes the output (created where the
-    # link dangles) and the link stays. The temp file was renamed over the LINK, which turned the
-    # caller's link into a regular file and left the file it named stale, or never written.
+    # link dangles) and the link stays — never a temp file renamed over the LINK, which turns the
+    # caller's link into a regular file and leaves the file it named stale, or never written.
     px = _write_ohlcv(tmp_path / "px.csv")
     thesis = _write_thesis(tmp_path / "t.json")
     runs = tmp_path / "runs"

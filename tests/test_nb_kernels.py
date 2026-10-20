@@ -129,10 +129,10 @@ def _rtol(got, want):
 @pytest.mark.parametrize("k", [536, 565, 1000])
 def test_varying_window_whose_variance_underflows_reads_its_exact_std_never_zero(k):
     # Below the normal range a window's squared deviations underflow: at 2**-536 they land in the
-    # SUBNORMAL range — the std of (1, 3, 2)·2**-536 read 3.85e-162 where it is 3.63e-162 — and
-    # from ~2**-540 down they vanish, the VARYING window's std reading the exact 0.0 an all-equal
-    # window owns (`std > 0` decided False on moving data). Lifted by a power of two the moments
-    # are computed in range, so the std is the unscaled one times 2**-k, every bit.
+    # SUBNORMAL range, and from ~2**-540 down they vanish, which would give the VARYING window the
+    # exact 0.0 std an all-equal window owns (`std > 0` decided False on moving data). Lifted by a
+    # power of two the moments are computed in range, so the std is the unscaled one times 2**-k,
+    # every bit.
     x = np.array([1.0, 3.0, 2.0, 5.0])
     s = 2.0**-k
     want = rolling_agg_1d(x, 3, "std") * s
@@ -150,7 +150,7 @@ def test_varying_window_whose_variance_underflows_reads_its_exact_std_never_zero
 
 def test_subnormal_windows_read_the_unscaled_z_and_a_std_floored_above_zero():
     # Windows of SUBNORMAL values — an ema settling onto its floor walks 3, 2, 1 smallest steps:
-    # every square underflowed to 0.0, so each varying window read std 0.0 and z NaN, the
+    # every square underflows to 0.0, which would give each varying window std 0.0 and z NaN, the
     # all-equal window's answers. Lifted, the z-score is the unscaled windows' z, bit for bit;
     # the std is rounded once to the subnormal grid, and where it would round to 0.0 (0.47 of
     # a step) it floors at the smallest subnormal — a varying window is never zero dispersion.
@@ -172,7 +172,7 @@ def test_subnormal_windows_read_the_unscaled_z_and_a_std_floored_above_zero():
 def test_std_keeps_every_bit_while_the_variance_is_a_normal_double():
     # The out-of-range rule binds only below the normal range: at 2**-500 (deviations ~1e-151,
     # variances ~1e-301) every moment scales exactly by its power of two, so both stds are the
-    # unscaled bits times 2**-500 — no window the direct form represented moves.
+    # unscaled bits times 2**-500 — no window the direct form represents moves.
     x = np.array([1.0, 3.0, 2.0, 5.0, 4.0])
     s = 2.0**-500
     np.testing.assert_array_equal(rolling_agg_1d(x * s, 3, "std"), rolling_agg_1d(x, 3, "std") * s)
@@ -221,7 +221,7 @@ def test_change_diff_allows_zero_base():
 
 def test_change_log_past_the_double_range_is_finite():
     # 1e200 → 1e-200 is a quotient of 1e-400 (underflow to 0.0) and the reverse one of 1e400
-    # (overflow to inf): ln of either was ∓inf → NaN, an undecidable decision bar over two
+    # (overflow to inf): ln of either is ∓inf → NaN, an undecidable decision bar over two
     # perfectly finite levels. The scale-safe log reads ln(b) − ln(a) exactly there; a pct of
     # the overflowing ratio has no double to be and stays NaN.
     # The kernel reads np.log, so its exact expectations do too; the reference mirror reads
@@ -232,8 +232,8 @@ def test_change_log_past_the_double_range_is_finite():
     np.testing.assert_array_equal(got, [np.nan, down, -down, -np.log(1e200)])
     _assert(got, ref.change(arr, 1, "log"))
     np.testing.assert_array_equal(change_1d(arr, 1, "pct"), [np.nan, -1.0, np.nan, -1.0])
-    # A SUBNORMAL quotient (3e20 → 1e-300 is 3.3e-321) was finite but precision-lost — ln of the
-    # rounded quotient read −737.92536 — and the rule reads the exact −737.92584 there too.
+    # A SUBNORMAL quotient (3e20 → 1e-300 is 3.3e-321) is finite but precision-lost — ln of the
+    # rounded quotient reads −737.92536 — and the rule reads the exact −737.92584 there too.
     sub = np.array([3e20, 1e-300])
     exact = np.log(1e-300) - np.log(3e20)
     assert exact != np.log(1e-300 / 3e20)
@@ -268,15 +268,15 @@ def test_log_ratio_is_log1p_of_the_excess_bit_for_bit_on_ordinary_levels():
     np.testing.assert_array_equal(scalar, scalar_want)
     np.testing.assert_array_max_ulp(np.array(scalar), want, maxulp=1)
     # ...so a move's reverse reads its exact negation: read in its own direction each quotient
-    # rounded on its own, and ln(fl(110/100)) + ln(fl(100/110)) was 4.2e-17
+    # rounds on its own, and ln(fl(110/100)) + ln(fl(100/110)) is 4.2e-17
     np.testing.assert_array_equal(log_ratio_array(den, num), -want)
     assert math.log(110.0 / 100.0) + math.log(100.0 / 110.0) != 0.0  # the premise
     assert log_ratio(110.0, 100.0) + log_ratio(100.0, 110.0) == 0.0
 
 
 def test_log_ratio_of_a_small_move_carries_a_relative_rounding():
-    # ln(fl(hi/lo)) rounded the quotient at 1's ulp first, an ABSOLUTE rounding of up to 2**-53
-    # under every move: the review's 100 → 100.00000001 read 1.000000082690371e-10 for
+    # ln(fl(hi/lo)) rounds the quotient at 1's ulp first, an ABSOLUTE rounding of up to 2**-53
+    # under every move: 100 → 100.00000001 reads 1.000000082690371e-10 for
     # 9.999993721476353e-11 — ABOVE its own pct change, where ln(1 + r) ≤ r for every r > −1 —
     # and two adjacent doubles near 100 read 2.2e-16 for 1.4e-16. log1p of the relative excess
     # reads the move itself.
@@ -369,7 +369,7 @@ def test_log_ratio_twins_share_one_rule_at_the_range_edges():
     assert np.isfinite(arr).all() and np.isfinite(scalar).all()
     assert arr[0] == -arr[1] and scalar[0] == -scalar[1]
     assert arr[2] == -arr[3] and scalar[2] == -scalar[3]
-    # Read in its own direction the subnormal quotient's ln was finite but wrong (−737.92536);
+    # Read in its own direction the subnormal quotient's ln is finite but wrong (−737.92536);
     # its reciprocal overflows, and both twins read the exact difference of logs.
     assert arr[4] != np.log(1e-300 / 3e20)
     assert scalar[4] == -737.9258420467627 != math.log(1e-300 / 3e20)
@@ -386,7 +386,7 @@ def test_log_ratio_twins_share_one_rule_at_the_range_edges():
 
 
 def test_pct_change_is_the_difference_over_its_base():
-    # num/den − 1 rounds the quotient at 1's ulp before the exact subtraction: 100 → 110 read
+    # num/den − 1 rounds the quotient at 1's ulp before the exact subtraction: 100 → 110 reads
     # 0.10000000000000009 and 100 → 90 −0.09999999999999998, a pair summing to 1.1e-16. The
     # difference over its base is correctly rounded wherever that difference is exact
     # (den/2 ≤ num ≤ 2·den, Sterbenz), so the pair is ±0.1 — in the rule and in every kernel
@@ -499,9 +499,9 @@ def test_window_kernels_are_bit_identical_in_any_batch(monkeypatch, order):
 
 def test_window_kernels_run_in_memory_linear_in_the_input():
     # Each reduction over the (bars − w + 1) × targets × w window view — the moments, the sorts,
-    # the comparison, the `isnan(...).any` gate — materialized the whole stack: 162 MiB for a
-    # 0.24 MiB input of 2,000 bars × 16 targets at window 252, 270 MiB for its correlation (~22 GiB
-    # at 5,000 × 500). In batches the kernels keep the input's own scale.
+    # the comparison, the `isnan(...).any` gate — would materialize the whole stack in one piece:
+    # 162 MiB for a 0.24 MiB input of 2,000 bars × 16 targets at window 252. In batches the
+    # kernels keep the input's own scale.
     rng = np.random.default_rng(0)
     a = rng.standard_normal((3000, 32))
     b = rng.standard_normal((3000, 32))
@@ -590,12 +590,12 @@ def test_rolling_corr_shape_mismatch_raises():
     [1e300, 1e160, 1e80, 1e150, 2.0**500, 1e-85, 1e-150, 2.0**-500, 1e-160, 2.0**-1000, 5e-324],
 )
 def test_rolling_corr_of_a_series_with_itself_is_exactly_one_at_any_scale(scale):
-    # The review's probe: at 1e80 the variance PRODUCT overflowed and `cov / inf` read a finite
-    # 0.0 — a perfect correlation reported as none; at 1e-85 it underflowed to 0 and read NaN.
-    # The moments are exact in each window's own frame and equal (cov == va == vb), and the
-    # denominator is taken with the exponents moved out (sqrt(va²) == va), so corr(x, x) is
-    # exactly 1.0 at every scale, past the range of the variances (1e160, 1e300) and down to
-    # subnormal values, as it is at 1.
+    # At 1e80 the variance PRODUCT overflows, where `cov / inf` would read a finite 0.0 — a
+    # perfect correlation reported as none — and at 1e-85 it underflows to 0 (a NaN). The moments
+    # are exact in each window's own frame and equal (cov == va == vb), and the denominator is
+    # taken with the exponents moved out (sqrt(va²) == va), so corr(x, x) is exactly 1.0 at every
+    # scale, past the range of the variances (1e160, 1e300) and down to subnormal values, as it
+    # is at 1.
     x = np.array([1.0, 3.0, 2.0, 5.0, 4.0, 7.0, 6.0])
     want = [np.nan, np.nan] + [1.0] * 5
     np.testing.assert_array_equal(rolling_corr_1d(scale * x, scale * x, 3), want)
@@ -606,7 +606,7 @@ def test_rolling_corr_of_a_series_with_itself_is_exactly_one_at_any_scale(scale)
 def test_rolling_corr_is_exactly_scale_invariant_past_the_variance_product_range(k):
     # Scaling both legs by 2**k leaves every window's framed moments as they were, so the pair
     # reads the SAME bits as the unscaled windows — with the variance product near 2**(4k), far
-    # past the double range both ways (the direct form read 0.0 above it, NaN below).
+    # past the double range both ways (where the direct form reads 0.0 above it, NaN below).
     rng = np.random.RandomState(14)
     a = rng.randn(60)
     b = 0.5 * a + rng.randn(60)
@@ -654,10 +654,10 @@ def test_rolling_corr_is_exact_arithmetics_rounded_once():
 
 
 def test_rolling_corr_never_leaves_its_range():
-    # The review's windows: y = ±3x + 7 over [−83, 70, −13] correlate exactly ±1, and the
-    # computed ratio read ±1.0000000000000002 — `rolling_corr(x, y) > 1` fired where it is
-    # unreachable. A collinear window reads exactly ±1, and every other ratio is clipped to
-    # [−1, 1] (numpy's corrcoef and scipy's pearsonr rule).
+    # The windows y = ±3x + 7 over [−83, 70, −13] correlate exactly ±1, where a computed ratio
+    # reads ±1.0000000000000002 and `rolling_corr(x, y) > 1` would fire where it is unreachable.
+    # A collinear window reads exactly ±1, and every other ratio is clipped to [−1, 1] (numpy's
+    # corrcoef and scipy's pearsonr rule).
     x = np.array([-83.0, 70.0, -13.0])
     for k in (3.0, -3.0):
         assert rolling_corr_1d(x, k * x + 7.0, 3)[-1] == k / 3.0
@@ -677,12 +677,12 @@ def test_rolling_corr_never_leaves_its_range():
 
 
 def test_rolling_corr_of_a_collinear_window_is_exactly_pm_one():
-    # The review's pair: X over 30-bit integers scaled by 2**-23, against 3X. Every window
-    # correlates exactly 1, and the three rounded moments and the ratio read 0.9999999999999998
-    # on 38 of its 396 windows, so `rolling_corr(X, 3X, 5) < 1` fired there. A ratio within
-    # 2**-48 of ±1 has its window tested for collinearity in exact arithmetic: every pair of
-    # y = λx + μ — any slope, offset, binade and window — reads exactly sign(λ), and the frozen
-    # reference (exact cov² == va·vb) agrees bit for bit.
+    # X over 30-bit integers scaled by 2**-23, against 3X: every window correlates exactly 1, so
+    # `rolling_corr(X, 3X, 5) < 1` fires nowhere — guarding against three rounded moments whose
+    # ratio reads 0.9999999999999998. A ratio within 2**-48 of ±1 has its window tested for
+    # collinearity in exact arithmetic: every pair of y = λx + μ — any slope, offset, binade and
+    # window — reads exactly sign(λ), and the frozen reference (exact cov² == va·vb) agrees bit
+    # for bit.
     x = np.random.default_rng(1907).integers(1, 2**30, 400) * 2.0**-23
     np.testing.assert_array_equal(rolling_corr_1d(x, 3.0 * x, 5)[4:], 1.0)
     rng = np.random.default_rng(41)
@@ -705,10 +705,10 @@ def test_rolling_corr_of_a_collinear_window_is_exactly_pm_one():
 
 
 def test_rolling_corr_past_the_variance_range_reads_the_unscaled_correlation():
-    # corr(1e160·x, x): the LEFT leg's deviations (past ~1.3e154) squared past the double range,
-    # and `cov / sqrt(inf · vb)` read a finite 0.0 — "uncorrelated" for a perfectly correlated
-    # pair — then, NaN-gated, an undecidable bar. Each leg's moments are exact in its window's
-    # own frame, where nothing leaves the range: the pair reads exactly 1, as unscaled.
+    # corr(1e160·x, x): the LEFT leg's deviations (past ~1.3e154) square past the double range,
+    # where `cov / sqrt(inf · vb)` would read a finite 0.0 — "uncorrelated" for a perfectly
+    # correlated pair — or, NaN-gated, an undecidable bar. Each leg's moments are exact in its
+    # window's own frame, where nothing leaves the range: the pair reads exactly 1, as unscaled.
     x = np.array([1.0, 3.0, 2.0, 5.0, 4.0, 7.0])
     want = [np.nan, np.nan, 1.0, 1.0, 1.0, 1.0]
     for left, right in ((1e160 * x, x), (x, 1e160 * x), (2.0**1000 * x, 2.0**-1000 * x)):
@@ -717,11 +717,10 @@ def test_rolling_corr_past_the_variance_range_reads_the_unscaled_correlation():
 
 
 def test_rolling_corr_with_an_underflowed_variance_reads_the_unscaled_correlation():
-    # Deviations of ~1e-161 square into the SUBNORMAL range: the variances (and the covariance)
-    # rounded to a few multiples of 5e-324. Divided by the direct product where that stayed
-    # normal (a wide right leg), they read 0.99745 for 0.99968; at 2**-1000 every square vanished
-    # and the window read NaN. Each leg's moments are exact in its window's own frame, so each
-    # pair reads the unscaled windows' correlation, every bit.
+    # Deviations of ~1e-161 square into the SUBNORMAL range: computed directly, the variances
+    # (and the covariance) round to a few multiples of 5e-324, and at 2**-1000 every square
+    # vanishes. Each leg's moments are exact in its window's own frame, so each pair reads the
+    # unscaled windows' correlation, every bit.
     a = np.array([1.0, -1.0, 2.0, 0.5, -0.5, 1.5])
     b = np.array([1.1, -0.9, 2.0, 0.4, -0.6, 1.2])
     exact = rolling_corr_1d(a, b, 3)
@@ -788,12 +787,13 @@ def test_ordinary_windows_are_bit_identical_to_the_shifted_direct_forms():
 
 
 def test_moments_about_the_window_offset_keep_an_ulp_scale_spread():
-    # About the rounded mean of the raw values a spread at its level's ulp was lost: the mean of
+    # About the rounded mean of the raw values a spread at its level's ulp is lost: the mean of
     # [2**52, 2**52 + 1] rounds onto a member, the deviations read [0, 1] for [−0.5, 0.5], the
     # std 0.707 for 0.5 and the z-score 1.414 — past the two-point population bound of 1, so
-    # `zscore(F, 2) > 1.1` fired on every bar of an alternating series where it is unreachable.
-    # Three points [2**52, 2**52 + 1, 2**52 + 1] against [0, 1, 1] correlate exactly 1 (read
-    # 0.577), and their cross-section demeans to [−2/3, 1/3, 1/3] (read [0, 1, 1]).
+    # `zscore(F, 2) > 1.1` would fire on every bar of an alternating series where it is
+    # unreachable. Three points [2**52, 2**52 + 1, 2**52 + 1] against [0, 1, 1] correlate exactly
+    # 1 (0.577 about the raw mean), and their cross-section demeans to [−2/3, 1/3, 1/3] ([0, 1, 1]
+    # about it).
     big = 2.0**52
     pair = _c1([big, big + 1.0])
     assert zscore_sma_1d(pair.ravel(), 2)[1] == 1.0
@@ -818,12 +818,12 @@ def test_moments_about_the_window_offset_keep_an_ulp_scale_spread():
 
 
 def test_decision_side_means_are_exactly_rounded_sums():
-    # numpy sums pairwise, and a large term swallowed a small one before its cancelling partner
-    # arrived: [1, −2**-54, −1, 2**-54, 0] sums to exactly 0, and every mean a decision reads off
-    # it read 1.1e-17 — `cross_agg(x, mean) > 0` fired — and 0 after a permutation of the
-    # members, the decision hanging on the order the targets were declared in. Each mean is the
-    # exact sum over the count, rounded once: 0.0 in every order (the offset is 0 here, so each
-    # member's deviation is its value).
+    # numpy sums pairwise, and a large term swallows a small one before its cancelling partner
+    # arrives: [1, −2**-54, −1, 2**-54, 0] sums to exactly 0, where a pairwise mean reads 1.1e-17
+    # — `cross_agg(x, mean) > 0` firing — and 0 after a permutation of the members, the decision
+    # hanging on the order the targets are declared in. Each mean is the exact sum over the
+    # count, rounded once: 0.0 in every order (the offset is 0 here, so each member's deviation
+    # is its value).
     e = 2.0**-54
     row = np.array([[1.0, -e, -1.0, e, 0.0]])
     for perm in itertools.permutations(range(5)):
@@ -832,7 +832,7 @@ def test_decision_side_means_are_exactly_rounded_sums():
         assert nb.cross_centre(r, np.isfinite(r))[1][0, 0] == 0.0
         np.testing.assert_array_equal(nb.cross_demean_apply_nb(r, 2), r)
         assert rolling_agg_1d(r.ravel(), 5, "mean")[-1] == 0.0
-    # the event_agg example: [2**54, 1, −2**54] sums to 1 exactly — the pairwise sum read 0
+    # the event_agg example: [2**54, 1, −2**54] sums to 1 exactly — a pairwise sum reads 0
     assert rolling_agg_1d(np.array([2.0**54, 1.0, -(2.0**54)]), 3, "mean")[-1] == 1.0 / 3.0
     # against the exact rational mean over magnitudes forty decades apart, cancelling giants
     # beside sub-ulp terms and holed windows (NaN), and the same rows across a cross-section
@@ -876,11 +876,10 @@ def _rational_mean(vals: list[float]) -> float:
 
 
 def test_a_decision_mean_is_rounded_once_and_never_leaves_its_window():
-    # The review's window: the exactly rounded sum over the count rounds TWICE, and
-    # [x − ulp, x, x, x, x] read 0.9757632206350924 — an ulp above its own maximum — on every
-    # decision mean, where the mean rounds to x itself; `rolling_mean(X, 5) > rolling_max(X, 5)`
-    # fired on 59 of 602 bars. Rounded once, a mean is the exact rational mean's double, so it
-    # never leaves [min, max].
+    # The exactly rounded sum over the count rounds TWICE: over [x − ulp, x, x, x, x] it reads
+    # 0.9757632206350924 — an ulp above its own maximum — where the mean rounds to x itself, and
+    # `rolling_mean(X, 5) > rolling_max(X, 5)` would fire. Rounded once, a mean is the exact
+    # rational mean's double, so it never leaves [min, max].
     x = 0.9757632206350922
     vals = [math.nextafter(x, -math.inf), x, x, x, x]
     col = np.array(vals)[:, None]
@@ -893,7 +892,7 @@ def test_a_decision_mean_is_rounded_once_and_never_leaves_its_window():
     on = np.ones((5, 1), dtype=bool)
     assert nb.event_agg_apply_nb(fire, on, on, col, "mean")[-1, 0] == x
     # every path, against exact rationals: two-value ties round to even, subnormal means, the
-    # review's shape across binades, counts of 2**j + 1 (the sum's rounding at its worst),
+    # [x − ulp, x, …] shape across binades, counts of 2**j + 1 (the sum's rounding at its worst),
     # cancelling giants, and sums past 2**996 where the quotient's split needs its frame
     rng = np.random.default_rng(15)
     windows: list[list[float]] = []
@@ -945,10 +944,10 @@ def test_a_decision_mean_is_rounded_once_and_never_leaves_its_window():
 
 
 def test_a_mean_whose_count_times_quotient_overflows_still_rounds_once():
-    # The review's window: [max, 0, 0] at the largest finite double has the mean max / 3, a
-    # double, and `q = fl(fl(S) / 3)` is its rounding — but 3·q is past the range, so a residual
-    # formed in the input frame read the sum itself and the correction stepped toward it for
-    # good: every mean path hung. The quotient's product is read in the split's frame, and the
+    # The window [max, 0, 0] at the largest finite double has the mean max / 3, a double, and
+    # `q = fl(fl(S) / 3)` is its rounding — but 3·q is past the range, so a residual formed in
+    # the input frame would read the sum itself and the correction step toward it for good,
+    # hanging every mean path. The quotient's product is read in the split's frame, and the
     # residual is the sum's own residue plus one exact double.
     big = np.finfo(float).max
     vals = [big, 0.0, 0.0]
@@ -1007,9 +1006,9 @@ def test_a_mean_whose_count_times_quotient_overflows_still_rounds_once():
 
 
 def test_cross_means_are_exactly_rounded_sums_over_the_count():
-    # The cross_mean bench leg. The review's row cancels exactly, but about its offset
-    # (`cross_centre`: offset + mean of the differences) three of the five subtractions rounded
-    # and the leg read −1.1e-17. Summed exactly it is 0.0 in every member order.
+    # The cross_mean bench leg. The row cancels exactly, but about its offset (`cross_centre`:
+    # offset + mean of the differences) three of the five subtractions round, and the leg would
+    # read −1.1e-17. Summed exactly it is 0.0 in every member order.
     e = 2.0**-53
     row = np.array([[0.0, 0.5, 0.5, -0.5 - e, -0.5 + e]])
     for perm in itertools.permutations(range(5)):
@@ -1044,22 +1043,22 @@ def test_cross_means_are_exactly_rounded_sums_over_the_count():
 
 
 def test_a_cross_sections_exact_sum_is_read_in_any_member_order():
-    # Summed directly, [1e308, 1e308, −1e308, −1e308] left the double range on the way in this
-    # order: `cross_agg(x, mean)` read NaN, beside 0.0 in another order and off the bench leg. A
-    # row with a member past 2**996 is summed in a frame scaled by 2**-28 — the same frame in any
-    # member order — so every order reads the exact sum.
+    # Summed directly, [1e308, 1e308, −1e308, −1e308] leaves the double range on the way in this
+    # order and reads NaN, beside 0.0 in another order. A row with a member past 2**996 is summed
+    # in a frame scaled by 2**-28 — the same frame in any member order — so every order reads the
+    # exact sum.
     row = np.array([1e308, 1e308, -1e308, -1e308])
     for perm in itertools.permutations(range(4)):
         r = row[None, list(perm)]
         f = np.isfinite(r)
         assert nb._row_exact_sums(r, f)[0] == 0.0 and nb.cross_means(r, f)[0] == 0.0
         np.testing.assert_array_equal(nb.cross_agg_apply_nb(r, "mean", 2), np.zeros((1, 4)))
-    # a mean whose sum is past the range: `cross_agg`'s is the bench leg's (it read NaN)
+    # a mean whose sum is past the range: `cross_agg`'s is the bench leg's
     wide = np.array([[1e308, 1.5e308, 1e308, 1.5e308]])
     assert np.isnan(nb._row_exact_sums(wide, np.isfinite(wide))[0])
     np.testing.assert_array_equal(nb.cross_agg_apply_nb(wide, "mean", 2), np.full((1, 4), 1.25e308))
-    # a member the frame cannot hold exactly (below 2**-1046) leaves the row undecidable in every
-    # order — `cross_agg` read 2e-321 in one, NaN in another, and the bench leg 0.0
+    # a member the frame cannot hold exactly (below 2**-1046) leaves the row undecidable in
+    # every order
     tiny = np.array([1e308, 1e308, -1e308, -1e308, 1e-320])
     for perm in itertools.permutations(range(5)):
         r = tiny[None, list(perm)]
@@ -1069,13 +1068,13 @@ def test_a_cross_sections_exact_sum_is_read_in_any_member_order():
 
 
 def test_cross_demean_reads_no_deviation_the_frame_rounded():
-    # Summed in the frame scaled by 2**-28, [1e308, −1e308, 1e-320, 0] rounded its small members
-    # and their deviations, 7.5e-321 and −2.5e-321, read a decided 0.0: `x == 0 AND
-    # cross_demean(x) >= 0` held for a member below the mean. The frame cannot hold 1e-320
+    # Summed in the frame scaled by 2**-28, [1e308, −1e308, 1e-320, 0] rounds its small members:
+    # their deviations, 7.5e-321 and −2.5e-321, would read a decided 0.0, and `x == 0 AND
+    # cross_demean(x) >= 0` hold for a member below the mean. The frame cannot hold 1e-320
     # exactly, so the row is undecidable.
     assert np.isnan(nb.cross_demean_apply_nb(np.array([[1e308, -1e308, 1e-320, 0.0]]), 2)).all()
     # A frame that holds every member divides back in the input frame: dividing inside it, the
-    # deviations 4·2**-1046 / 5 and −2**-1046 / 5 read 1.33e-315 for 1.06e-315 and −0.0.
+    # deviations 4·2**-1046 / 5 and −2**-1046 / 5 would read 1.33e-315 for 1.06e-315 and −0.0.
     row = [1e308, -1e308, 2.0**-1046, 0.0, 0.0]
     total = sum(map(Fraction, row))
     got = nb.cross_demean_apply_nb(np.array([row]), 2)[0]
@@ -1084,11 +1083,11 @@ def test_cross_demean_reads_no_deviation_the_frame_rounded():
 
 
 def test_cross_demean_is_each_members_exact_deviation():
-    # The review's row sums to exactly 0, so its first member sits AT the mean — but the offset
-    # subtraction rounded two members and the first demeaned to 2.2e-17: `x == 0 AND
-    # cross_demean(x) > 0` fired. Each member's numerator k·x − S is summed exactly and rounded
-    # once over k: the member at the mean reads exactly 0.0, every other one its exact
-    # deviation's sign, in any member order.
+    # The row sums to exactly 0, so its first member sits AT the mean — where the offset
+    # subtraction rounds two members and would demean the first to 2.2e-17, firing `x == 0 AND
+    # cross_demean(x) > 0`. Each member's numerator k·x − S is summed exactly and rounded once
+    # over k: the member at the mean reads exactly 0.0, every other one its exact deviation's
+    # sign, in any member order.
     e = 2.0**-52
     row = np.array([[0.0, 1.0, 1.0, -1.0 - e, -1.0 + e]])
     for perm in itertools.permutations(range(5)):
@@ -1143,7 +1142,7 @@ def test_cross_zscore_reads_its_population_bound_in_every_member_order():
     # equal values beside one other sit ON that bound — where the quotient's roundings read
     # 2.0000000000000004 for the exact 2 of [100, 100, 100, 100, 109.3] in every member order
     # (3.0000000000000004 for [1.1] + [0.7] * 9), so `cross_demean(x) / cross_agg(x, "std") > 2`
-    # fired where exact arithmetic never does. `cross_demean(x, scale="std")` is clipped to it.
+    # fires where exact arithmetic never does. `cross_demean(x, scale="std")` is clipped to it.
     # (the last stays an ulp short of √2 in every order: the clip is the bound, not a landing)
     for row, n_past in (
         ([100.0, 100.0, 100.0, 100.0, 109.3], 5),
@@ -1218,8 +1217,8 @@ def test_cross_zscore_is_the_exact_deviation_over_the_std():
 
 def test_cross_zscore_of_a_subnormal_cross_section_is_read_lifted():
     # Divided in the input frame, [0, 5e-324]'s deviations ∓2**-1075 round (ties to even) to ∓0.0
-    # and the quotient read a z of 0 for ∓1 — `> 0` false for the member above the mean. A row
-    # whose variance fell below the normal range is computed on its values lifted by 2**600,
+    # and the quotient reads a z of 0 for ∓1 — `> 0` false for the member above the mean. A row
+    # whose variance falls below the normal range is computed on its values lifted by 2**600,
     # deviation and std alike (the SMA z-score's rule), so it reads the z it has in an unbounded
     # exponent range.
     for row in ([0.0, 5e-324], [0.0, 0.0, 5e-324], [0.0, 1e-322, 2e-322, 3e-322, 4e-322]):
@@ -1232,7 +1231,7 @@ def test_cross_zscore_of_a_subnormal_cross_section_is_read_lifted():
     np.testing.assert_array_equal(nb.cross_zscore_apply_nb(np.array([[0.0, 5e-324]]), 2), [[-1, 1]])
 
 
-# ---- Phase-1 kernels: shift / unary_op --------------------------------------
+# ---- algebra kernels: shift / unary_op --------------------------------------
 
 
 def test_shift_matches_reference():
@@ -1531,11 +1530,11 @@ def test_first_true_long_holed_series_matches_the_merged_reference(cooldown):
 
 
 def test_first_true_hole_in_an_alternating_child_is_undefined_while_the_worlds_disagree():
-    # The review's probe: a child alternating F, T with a hole at bar 5, cooldown 3. Had the hole
-    # been True it fired there (then 9, 13, …); had it been False the next edge was bar 7 (then
-    # 11, 15, …). The two phases never meet again, so every True bar from the hole on is
-    # undecidable, while every False bar — no world fires on it — is decided. A taint of
-    # `cooldown` bars declared the decision known again from bar 9, on one world's phase.
+    # A child alternating F, T with a hole at bar 5, cooldown 3. If the hole is True it fires
+    # there (then 9, 13, …); if it is False the next edge is bar 7 (then 11, 15, …). The two
+    # phases never meet again, so every True bar from the hole on is undecidable, while every
+    # False bar — no world fires on it — is decided. A taint of `cooldown` bars would declare
+    # the decision known again from bar 9, on one world's phase.
     n = 24
     value = np.arange(n) % 2 == 1
     defined = np.ones(n, dtype=bool)
@@ -1713,7 +1712,7 @@ def test_bars_since_extremum_apply_nb_is_columnwise():
 
 @pytest.mark.parametrize("base", [0.0, 1e8, 1e12])
 def test_zscore_sma_translation_invariant_across_levels(base):
-    # The one-pass E[x²]−E[x]² variance lost its mantissa at large levels (all-NaN at 1e12);
+    # The one-pass E[x²]−E[x]² variance loses its mantissa at large levels (all-NaN at 1e12);
     # the centered two-pass form is level-free up to input quantization (~eps·base/σ).
     r = _rand(200, seed=11)
     z0 = zscore_sma_1d(r, 20)
@@ -1725,14 +1724,14 @@ def test_zscore_sma_translation_invariant_across_levels(base):
 
 def test_zscore_sma_overflowed_variance_is_nan_and_an_underflowed_one_is_lifted():
     # At 1e160 the squared deviations overflow the window variance to inf, and `(x − mean) / inf`
-    # read a FINITE 0.0 — "exactly at the mean" on every bar, which `z > 0` / `z < 0` decided:
-    # NaN now, landing where `x / 0` does (undecidable once the series has initialized).
+    # would read a FINITE 0.0 — "exactly at the mean" on every bar, which `z > 0` / `z < 0`
+    # decide. The z is NaN there, landing where `x / 0` does (undecidable once the series has
+    # initialized).
     x = np.array([1.0, 3.0, 2.0, 5.0, 4.0, 7.0])
     np.testing.assert_array_equal(zscore_sma_1d(1e160 * x, 3), np.full(6, np.nan))
     np.testing.assert_array_equal(ref.zscore_sma(1e160 * x, 3), np.full(6, np.nan))
-    # Below the normal range the squares lost their bits — at 2**-536 z read 1.3608 where it is
-    # 1.3363 (on random walks, past its population bound √(w−1)) — or vanished (2**-600 on: z
-    # NaN off a variance of 0.0). The lifted window reads the unscaled z, every bit, as does the
+    # Below the normal range the squares lose their bits (2**-536) or vanish (2**-600 on: z NaN
+    # off a variance of 0.0). The lifted window reads the unscaled z, every bit, as does the
     # direct form anywhere in between (2**±500).
     want = zscore_sma_1d(x, 3)
     for k in (500, -500, -536, -600, -1000):
@@ -1742,13 +1741,12 @@ def test_zscore_sma_overflowed_variance_is_nan_and_an_underflowed_one_is_lifted(
 
 def test_zscore_sma_never_exceeds_its_population_bound():
     # No member of a window deviates from its mean by more than √(w−1) population stds, and a
-    # window of w−1 equal values beside one other sits exactly ON that bound: the ratio's last
-    # rounding read 2.0000000000000004 for the exact 2 of [100, 100, 100, 100, 100.3], and
-    # `zscore(close, 5) > 2` fired on every such window of a ten-bar cycle — 60 closed
-    # observations of an impossible predicate. The z is clipped to the bound, as the EW z-score
-    # and a correlation are to theirs; a window within it keeps every bit, and one whose rounding
-    # fell an ulp SHORT of the bound keeps that too ([100, 100, 100.3] at w = 3) — the clip is the
-    # exact bound, not a landing.
+    # window of w−1 equal values beside one other sits exactly ON that bound: the exact 2 of
+    # [100, 100, 100, 100, 100.3], on 60 windows of a ten-bar cycle, where the ratio's last
+    # rounding reads 2.0000000000000004 and the impossible `zscore(close, 5) > 2` would fire. The
+    # z is clipped to the bound, as the EW z-score and a correlation are to theirs; a window
+    # within it keeps every bit, and one whose rounding falls an ulp SHORT of the bound keeps
+    # that too ([100, 100, 100.3] at w = 3) — the clip is the exact bound, not a landing.
     review = np.array([100.0, 100.0, 100.0, 100.0, 100.3])
     assert zscore_sma_1d(review, 5)[-1] == 2.0
     assert ref.zscore_sma(review, 5)[-1] == 2.0
@@ -1771,7 +1769,7 @@ def test_zscore_sma_never_exceeds_its_population_bound():
 
 def test_zscore_sma_numerator_is_the_exact_deviation_rounded_once():
     # [1.1, 0.7, 1.1, 0.7, 0.9] sums to exactly five times 0.9: its last bar sits AT the exact
-    # mean, where the direct two-pass deviation read +1.55e-16 — and −1.55e-16 with a 0.7 first,
+    # mean, where the direct two-pass deviation reads +1.55e-16 — and −1.55e-16 with a 0.7 first,
     # the sign hanging on the window's order. The exact deviation is 0.0 in every order, and in
     # general the numerator is the exact rational deviation rounded once, across every binade
     # (subnormal members included), a lifted window's read off its lifted values.
@@ -1807,10 +1805,10 @@ def test_an_ema_decaying_through_a_hold_stays_decided_until_it_settles():
     # Every window of the decay VARIES: its std is positive and its z-score defined, so the guard
     # recipe `std > 0` and the z it guards agree on every bar; only the settled ema's windows
     # read zero dispersion (std 0.0, z NaN). Read as computed, the decay windows' variance of 0.0
-    # made their std the all-equal window's 0.0 (the guard False on moving data) and their z NaN.
-    # The EW z-score's variance rounded to 0.0 on the decay at alpha >= 0.5 (window 2 or 3,
-    # alpha 0.6) — NaN on 760-920 bars beside the guard's True; its recurrence runs lifted there
-    # (`nb._EW_LIFT_VAR`), so it is defined on every bar past warmup.
+    # would make their std the all-equal window's 0.0 (the guard False on moving data) and their
+    # z NaN, and the EW z-score's variance would round to 0.0 on the decay at alpha >= 0.5
+    # (window 2 or 3, alpha 0.6); its recurrence runs lifted there (`nb._EW_LIFT_VAR`), so it is
+    # defined on every bar past warmup.
     rng = np.random.RandomState(7)
     px = 100.0 * np.exp(np.cumsum(0.01 * rng.randn(2500)))
     px[300:2300] = px[299]
@@ -1836,9 +1834,9 @@ def test_an_ema_decaying_through_a_hold_stays_decided_until_it_settles():
             np.testing.assert_array_equal(z_ew, ref.zscore_ema_alpha(series, alpha, warm))
     # ...and at its VALUE. Above alpha 5/9 the EW z of the (ratio 2/3) decay converges to a
     # constant however deep it goes — −1/(2√2) at window 2. Where the ema is still a normal double
-    # but its squares are not, the variance read as computed rounded to 0.0 (z NaN) and, floored
-    # at the smallest subnormal, collapsed z toward 0: `z > -0.25` held on ~600 bars exact
-    # arithmetic keeps at −0.354. Lifted, every one of them reads the constant.
+    # but its squares are not, the variance read as computed rounds to 0.0 (z NaN) and, floored
+    # at the smallest subnormal, collapses z toward 0 (`z > -0.25` holding where exact arithmetic
+    # keeps −0.354). Lifted, every one of them reads the constant.
     deep = (np.abs(e) < 1.5e-154) & (np.abs(e) >= 2.0**-1022)
     assert deep.sum() > 800
     r = 1.0 - nb.ema_params(5, None)[0]  # the ema's own decay factor on a 0.0 change
@@ -1867,9 +1865,9 @@ def test_zscore_ema_translation_invariant_across_levels(base):
 def test_zscore_ema_is_exactly_scale_invariant_past_the_variance_range(k):
     # The EW z-score of x·2**k is the z-score of x — every bit, at every scale: scaling by a power
     # of two never rounds, so the recurrence on the scaled input is the same steps. Below ~2**-510
-    # the variance's squares left the normal range: at 2**-536 the z read 0.5103 for 0.5275 (and
-    # past its bound √((1−α)/α) on random walks), from ~2**-540 down NaN — and floored at the
-    # smallest subnormal, 0.0 on every bar. The recurrence runs lifted there instead.
+    # the variance's squares leave the normal range (computed directly the z is NaN from ~2**-540
+    # down, or 0.0 on every bar with the variance floored at the smallest subnormal); the
+    # recurrence runs lifted there instead.
     rng = np.random.RandomState(0)
     walk = np.round(rng.randn(300).cumsum() * 4.0)  # integers: every scaled value is exact
     walk[[50, 51]] = np.nan
@@ -1892,8 +1890,8 @@ def test_cross_agg_std_translation_invariant_across_levels(base):
     s = nb.cross_agg_apply_nb(a + base, "std", 2)
     tol = 1e-9 if base == 0.0 else (1e-6 if base <= 1e8 else 1e-3)
     np.testing.assert_allclose(s, s0, rtol=0, atol=tol, equal_nan=True)
-    # The one-pass form clamped the cancelled variance to a silent 0.0 std at large levels,
-    # which the documented z-score recipe then divided by; the centered form stays positive.
+    # The one-pass form clamps the cancelled variance to a silent 0.0 std at large levels,
+    # which the documented z-score recipe then divides by; the centered form stays positive.
     assert np.isfinite(s).all() and (s > 0).all()
 
 
@@ -1901,7 +1899,7 @@ def test_kernel_overflow_yields_nan_never_inf():
     # Finite inputs whose arithmetic overflows (or divides by a denormal) must emit NaN — the
     # undecidable ledger's food — never ±inf, which would latch warmup and decide thresholds, and
     # never a FINITE number read off an overflowed intermediate. Exact values, not "not inf": a
-    # bare not-inf check passed the 0.0 that `x / inf` makes of an overflowed denominator.
+    # bare not-inf check would pass the 0.0 that `x / inf` makes of an overflowed denominator.
     nan = np.nan
     huge = np.full(30, 1e308)
     cases = [
@@ -1914,8 +1912,9 @@ def test_kernel_overflow_yields_nan_never_inf():
         (change_1d(np.array([1e308, -1e308, 1e308]), 1, "diff"), [nan, nan, nan]),
         (drawdown_1d(np.array([1e-320, -1e308])), [0.0, nan]),
         (runup_1d(np.array([1e-320, 1e308])), [0.0, nan]),
-        # a series against itself at a SUBNORMAL-variance scale (deviations 5e-161): the squares
-        # underflowed and the product divided by 0.0 → inf; lifted, the windows read exactly 1
+        # a series against itself at a SUBNORMAL-variance scale (deviations 5e-161): unlifted,
+        # the squares underflow and the product divides by 0.0 → inf; lifted, the windows read
+        # exactly 1
         (
             rolling_corr_1d(np.tile([0.0, 1e-160], 6), np.tile([0.0, 1e-160], 6), 4),
             [nan] * 3 + [1.0] * 9,
@@ -1945,8 +1944,8 @@ def test_kernel_overflow_yields_nan_never_inf():
 
 @pytest.mark.parametrize("c", [0.1, 100.1, 0.7, -2.7])
 def test_constant_decimal_window_has_exact_zero_dispersion(c):
-    # The review's probe: the computed mean of a constant DECIMAL window is not the constant
-    # ((0.1 + 0.1 + 0.1) / 3 != 0.1), and the residual minted zscore_sma([0.1]*3) == -1,
+    # The computed mean of a constant DECIMAL window is not the constant
+    # ((0.1 + 0.1 + 0.1) / 3 != 0.1), and its residual would mint zscore_sma([0.1]*3) == -1,
     # [100.1]*3 == +1 and rolling_corr(x, x) == 1. A constant window has exact answers: the mean
     # is the value, the std and the demeaned values are 0.0, z-score and correlation undefined.
     flat = np.full(6, c)
@@ -1972,8 +1971,9 @@ def test_constant_decimal_window_has_exact_zero_dispersion(c):
 
 
 def test_constant_window_inside_a_varying_series_is_exact_only_there():
-    # Only the windows whose values are all equal change; every other window is computed
-    # exactly as before (bit for bit — a window one ulp off constant is NOT constant).
+    # Only the windows whose values are all equal take the exact constant answers; every other
+    # window is computed as a varying one, bit for bit — a window one ulp off constant is NOT
+    # constant.
     arr = np.array([1.0, 2.0, 0.1, 0.1, 0.1, 0.4, np.nextafter(0.4, 1.0), 0.4])
     z = zscore_sma_1d(arr, 3)
     assert np.isnan(z[:2]).all() and np.isnan(z[4])
@@ -1985,7 +1985,7 @@ def test_constant_window_inside_a_varying_series_is_exact_only_there():
 
 def test_grouped_constant_cross_section_is_exact():
     # Grouping wraps the same kernels, so a group whose members share one value demeans to 0.0
-    # and aggregates exactly — beside a varying group computed as before.
+    # and aggregates exactly — beside a varying group computed as usual.
     a = np.array([[0.1, 0.1, 0.1, 0.2, 0.5]])
     lab = np.array([[1.0, 1.0, 1.0, 2.0, 2.0]])
     dm = nb.cross_grouped_apply_nb(lambda x: nb.cross_demean_apply_nb(x, 2), a, lab)
@@ -2035,8 +2035,9 @@ def test_cross_agg_median_and_frac_positive_are_exact_on_constant_rows(c):
 
 @pytest.mark.parametrize("c", [0.1, 0.007, 100.1, 0.7])
 def test_ema_of_a_constant_decimal_feed_is_the_constant(c):
-    # The convex update alpha*x + (1-alpha)*e does not return e when x == e: a flat feed's EMA
-    # drifted to a fixed point a few ulps off the feed, and `x > ema(x)` read a sign on every bar.
+    # The convex update alpha*x + (1-alpha)*e does not return e when x == e: on a flat feed it
+    # drifts to a fixed point a few ulps off the feed, where `x > ema(x)` would read a sign on
+    # every bar.
     flat = np.full(400, c)
     for w in (3, 10, 50):
         got = nb.ema_1d(flat, *nb.ema_params(w, None))
@@ -2049,8 +2050,8 @@ def test_ema_of_a_constant_decimal_feed_is_the_constant(c):
 
 def test_ema_never_crosses_a_held_value():
     # Move, then hold: exact arithmetic approaches the held value from the side it came from and
-    # never reaches it. The rounded convex update could land past it (a held stretch read the
-    # opposite sign) or ON it (`x <= ema(x)` fired); held inside the open interval it stays
+    # never reaches it. The rounded convex update can land past it (a held stretch reading the
+    # opposite sign) or ON it (`x <= ema(x)` firing); held inside the open interval it stays
     # strictly on its own side, one ulp short of the value at the closest.
     rng = np.random.default_rng(5)
     for _ in range(300):
@@ -2064,10 +2065,10 @@ def test_ema_never_crosses_a_held_value():
 
 
 def test_zscore_ema_of_a_held_stretch_decays_instead_of_locking():
-    # A series that moves and then holds: the EW mean converges until its update falls below
-    # half an ulp, then stuck a few ulps off the held value; the deviation froze at that residue,
-    # the variance settled at (1-alpha)*d^2, and the z-score locked at exactly ±1/sqrt(1-alpha)
-    # (1.2247 at window 5) for as long as the input held. Exact arithmetic decays it to 0.
+    # A series that moves and then holds: a plain EW mean converges until its update falls below
+    # half an ulp, then sticks a few ulps off the held value; the deviation freezes at that
+    # residue, the variance settles at (1-alpha)*d^2, and the z-score would lock at exactly
+    # ±1/sqrt(1-alpha) for as long as the input holds. Exact arithmetic decays it to 0.
     rng = np.random.default_rng(6)
     for _ in range(200):
         c = round(float(rng.uniform(0.01, 200.0)), 2)
@@ -2085,7 +2086,7 @@ def test_zscore_ema_of_a_held_stretch_keeps_its_exact_sign():
     # Exact arithmetic moves a held input's deviation x − μ to (1 − α)·(x − μ) every bar: it
     # decays and KEEPS ITS SIGN, so `z > 0` ("above its EW mean") holds on every bar of a hold
     # reached from below. A mean that rounds onto or past the held value, or a deviation zeroed
-    # once the update is absorbed, read the opposite sign on most held bars.
+    # once the update is absorbed, would read the opposite sign on most held bars.
     rng = np.random.default_rng(8)
     for _ in range(40):
         c = round(float(rng.uniform(0.01, 200.0)), 2)
@@ -2122,7 +2123,7 @@ def test_zscore_ema_of_an_ulp_alternation_is_variation(c):
 def test_event_agg_mean_of_a_run_one_ulp_off_constant_is_the_exact_mean_rounded_once():
     # Only a bit-identical run takes its value as the mean; one ulp off is variation, read as the
     # exact sum over the count like any other run — rounded once, so it stays inside the run's
-    # range (the exactly rounded sum over the count rounded twice and could land an ulp outside).
+    # range (the exactly rounded sum over the count rounds twice and can land an ulp outside).
     n = 40
     x = np.full(n, 0.1)
     x[10] = np.nextafter(0.1, 1.0)
@@ -2136,9 +2137,9 @@ def test_event_agg_mean_of_a_run_one_ulp_off_constant_is_the_exact_mean_rounded_
 
 
 def test_event_agg_running_sum_is_exact():
-    # `acc += v` lost a term a larger one swallowed and never got it back when that term
-    # cancelled: one event at bar 0 over [2**54, 1, −2**54, 0, …] has an exact sum of 1 from bar
-    # 2 on, and the kernel read 0 there — event_agg(E, X, sum) == 0 fired on every bar. The
+    # `acc += v` loses a term a larger one swallows and never gets it back when that term
+    # cancels: one event at bar 0 over [2**54, 1, −2**54, 0, …] has an exact sum of 1 from bar 2
+    # on, where such a running sum reads 0 — event_agg(E, X, sum) == 0 firing on every bar. The
     # running sum is kept exact and read correctly rounded: math.fsum of the window, bit for bit,
     # on every bar of random and adversarial windows (fsum's half-even step across partials
     # included: [1e-16, 1, 1e16] reads 1.0000000000000002e16, where a float sum reads 1e16).
@@ -2215,11 +2216,11 @@ def _exact_ew_z(x, alpha, warmup):
 
 
 def test_zscore_ema_keeps_the_mean_it_cannot_represent():
-    # The review's walk: [1, 1, 1 + 2**-52] at alpha 0.5. A plain mean update rounds at the
-    # level: μ + α·d = 1 + 2**-53 rounded back onto 1, so the deviation read the whole step and z
-    # read 2 — past the bound √((1−α)/α) = 1, which the exact z sits on. The compensated mean
-    # keeps the half step it cannot represent: z is exactly 1, as it is for the same walk shifted
-    # onto 0, where the mean is representable.
+    # The walk [1, 1, 1 + 2**-52] at alpha 0.5. A plain mean update rounds at the level:
+    # μ + α·d = 1 + 2**-53 rounds back onto 1, so the deviation reads the whole step and z reads
+    # 2 — past the bound √((1−α)/α) = 1, which the exact z sits on. The compensated mean keeps the
+    # half step it cannot represent: z is exactly 1, as it is for the same walk shifted onto 0,
+    # where the mean is representable.
     x = np.array([1.0, 1.0, 1.0 + 2.0**-52])
     assert nb.zscore_ema_1d(x, 0.5, 3)[2] == 1.0
     assert nb.zscore_ema_1d(x - 1.0, 0.5, 3)[2] == 1.0
@@ -2268,14 +2269,11 @@ def test_zscore_ema_deviation_that_underflows_keeps_its_exact_sign(side):
     # Window 2 (alpha 2/3) at the smallest subnormals — where an `ema` of a change settles after a
     # hold: the input steps (∓3 to ∓1 of them, or ∓1 of them to 0.0) and holds for 1,500 bars.
     # Exact arithmetic moves the deviation to (1 − α)·d every held bar: it decays and keeps the
-    # step's sign. Read as computed, the EW variance rounded to 0.0 (z NaN on the first bars, or
-    # on every bar of a hold onto 0.0), and a deviation (1 − α)·d that rounded to ±0.0 was
-    # floored at the NEGATIVE subnormal whatever d's sign: z below the mean on a hold exact
-    # arithmetic keeps above it. Floored where it rounded to 0.0, the variance collapsed z to
-    # 2.2e-162 from the first held bar (the bound √((1−α)/α) = 0.707 there). Lifted, the decay
-    # reads the z-scores of the same steps at ordinary scale, bit for bit, as long as those stay
-    # in range (~650 bars); past the frame's reach the variance and the deviation are floored
-    # where they underflow, the sign kept.
+    # step's sign. Read as computed, the EW variance rounds to 0.0 (z NaN on the first bars, or
+    # on every bar of a hold onto 0.0), and the deviation (1 − α)·d to ±0.0. Lifted, the decay
+    # reads the z-scores of the same steps at ordinary scale, bit for bit (the first held bar on
+    # the bound √((1−α)/α) = 0.707), as long as those stay in range (~650 bars); past the frame's
+    # reach the variance and the deviation are floored where they underflow, the sign kept.
     u = 5e-324
     alpha, warm = nb.ema_params(2, None)
     for first, held in ((-3.0 * u, -u), (-u, 0.0)):
@@ -2301,9 +2299,9 @@ def test_zscore_ema_landing_gap_hold_is_decided_and_signed(x0, ulps, spec):
     # Exact arithmetic keeps the deviation (1 − α)**t·(x1 − x0) on the step's side on every held
     # bar, and the compensated mean keeps that gap below μ's last bit: the z is decided on every
     # held bar with the step's sign, at exact arithmetic's value wherever the variance is a normal
-    # double. A plain mean read 0.0 there — `z > 0` decided False against exact True — until the
-    # variance, with no deviation to feed it, rounded to 0.0 (~490 bars at alpha 0.75) and the z
-    # was undefined from there: refusals the coverage ledger recorded on a decided hold.
+    # double. A plain mean reads 0.0 there — `z > 0` decided False against exact True — until the
+    # variance, with no deviation to feed it, rounds to 0.0 and the z is undefined from there:
+    # refusals the coverage ledger would record on a decided hold.
     x1 = x0
     for _ in range(abs(ulps)):
         x1 = np.nextafter(x1, math.copysign(np.inf, ulps))
@@ -2336,8 +2334,8 @@ def test_zscore_ema_hold_onto_its_mean_reads_its_exact_deviation(path, spec, exa
     # mean, and otherwise the few ulps the computed mean rounded away (RiskMetrics' 0.06 onto
     # 5.03 sits above it). The compensated mean keeps those ulps, so the z reads exact
     # arithmetic's for the whole hold: a decided 0.0, or a decaying z with the exact sign. A plain
-    # mean read 0.0 either way and, at alpha >= 0.5, undefined once its variance rounded to 0.0
-    # (~1070 held bars at 0.5, ~535 at 0.75): the hold refused where exact arithmetic decides it.
+    # mean reads 0.0 either way and, at alpha >= 0.5, is undefined once its variance rounds to
+    # 0.0: the hold refused where exact arithmetic decides it.
     *head, held = path
     alpha, warm = nb.ema_params(*spec)
     assert held == head[0] + alpha * (head[1] - head[0])  # the input moves ONTO the computed μ
@@ -2354,8 +2352,7 @@ def test_zscore_ema_of_ordinary_walks_with_holds_is_decided_on_every_bar():
     # Price walks that hold — read directly and through an `ema`, whose last steps onto the held
     # value are ulps that alpha 0.75 and 0.9 LAND on (the landing gap) — are decided on every bar
     # past warmup, and each hold keeps one sign, exact arithmetic's (x − μ) decaying by (1 − α)
-    # per bar. A plain mean refused 5,000+ of these bars once a landing gap's variance
-    # underflowed.
+    # per bar. A plain mean would refuse these bars once a landing gap's variance underflows.
     rng = np.random.default_rng(13)
     for _ in range(16):
         level = float(rng.choice([0.05, 1.0, 100.0, 4500.0]))
@@ -2378,8 +2375,8 @@ def test_zscore_ema_of_ordinary_walks_with_holds_is_decided_on_every_bar():
 def test_zscore_ema_at_alpha_one_is_undefined_on_every_bar():
     # At alpha 1 (the DSL refuses it) the EW mean IS the last value and the EW variance exactly 0:
     # undefined throughout. A full-weight update that rounds off the value (1.1 + (0.1 − 1.1) is
-    # 0.10000000000000009) left a deviation in the hold, and a floor read z = −2.2e-162 off a
-    # variance exact arithmetic keeps at 0 — every bar from the fourth on. No floor binds at 1.
+    # 0.10000000000000009) leaves a deviation in the hold, where a floor would read z = −2.2e-162
+    # off a variance exact arithmetic keeps at 0. No floor binds at 1.
     x = np.r_[1.1, np.full(5, 0.1)]
     np.testing.assert_array_equal(nb.zscore_ema_1d(x, 1.0, 1), np.full(6, np.nan))
     np.testing.assert_array_equal(ref.zscore_ema_alpha(x, 1.0, 1), np.full(6, np.nan))
@@ -2399,8 +2396,8 @@ def test_event_agg_mean_of_a_constant_run_is_the_value():
 
 
 def test_change_pct_negative_endpoints_are_nan():
-    # −4 → −2 read as −50% under the old `prev != 0` rule while the level ROSE; now any pair
-    # with a non-positive endpoint censors, and only 2 → 4 (both strictly positive) measures.
+    # −4 → −2 reads as −50% under a bare `prev != 0` rule while the level RISES; any pair with a
+    # non-positive endpoint censors, and only 2 → 4 (both strictly positive) measures.
     arr = np.array([-4.0, -2.0, 2.0, 4.0, -1.0])
     got = change_1d(arr, 1, "pct")
     _assert(got, np.array([np.nan, np.nan, np.nan, 1.0, np.nan]))
@@ -2408,9 +2405,9 @@ def test_change_pct_negative_endpoints_are_nan():
 
 
 def test_drawdown_runup_nonpositive_extremum_is_nan():
-    # The audit's probe: on [-1, -2, -0.5] the unguarded ratio emitted drawdown [0, 1, 0] — the
-    # deepest bar reading as a +100% run-up — and runup [0, 0, -0.75]. Non-positive extremum
-    # now censors, and the documented bounds hold everywhere a value is emitted.
+    # On [-1, -2, -0.5] an unguarded ratio emits drawdown [0, 1, 0] — the deepest bar reading as
+    # a +100% run-up — and runup [0, 0, -0.75]. A non-positive extremum censors, and the
+    # documented bounds hold everywhere a value is emitted.
     signed = np.array([-1.0, -2.0, -0.5])
     assert np.isnan(drawdown_1d(signed)).all()
     assert np.isnan(runup_1d(signed)).all()
@@ -2693,9 +2690,9 @@ def _per_label_reference(kernel, a, lab):
     ids=["rank", "demean", "mean", "median", "std"],
 )
 def test_cross_grouped_is_one_pass_per_row_rank_bit_for_bit(kernel):
-    # The review's construction: a fresh label on every bar is ONE group per bar — the same
-    # result as one constant label, bit for bit, in at most `targets` kernel passes (a pass per
-    # label over the history made 4,000 of them here). Mixed labels match the per-label passes.
+    # A fresh label on every bar is ONE group per bar — the same result as one constant label,
+    # bit for bit, in at most `targets` kernel passes (a pass per label over the history would
+    # make 4,000 of them here). Mixed labels match the per-label passes.
     rng = np.random.default_rng(0)
     a = rng.standard_normal((4000, 4))
     a[rng.random(a.shape) < 0.1] = np.nan
@@ -2763,11 +2760,11 @@ def _rational_mad(vals: list[float]) -> float:
 
 
 def test_rolling_mad_is_taken_about_the_windows_lower_middle_value():
-    # The review's window: 2**52 + [0, 1, 1, 2, 2, 3] has the median B + 1.5, which rounds to
-    # B + 2, and the deviations about that rounded centre read a MAD of 1.0 — translated by −B
-    # exactly, the same window read 0.5, and `rolling_mad(X, 6) > rolling_mad(X − B, 6)` fired on
-    # 595 of 606 bars. The deviations are taken in the window's frame about its lower middle
-    # value, exact wherever the window lies within a factor of two of it: 0.5, the translate's.
+    # The window 2**52 + [0, 1, 1, 2, 2, 3] has the median B + 1.5, which rounds to B + 2:
+    # deviations about that rounded centre read a MAD of 1.0 where the window translated by −B
+    # exactly reads 0.5, and `rolling_mad(X, 6) > rolling_mad(X − B, 6)` would fire. The
+    # deviations are taken in the window's frame about its lower middle value, exact wherever the
+    # window lies within a factor of two of it: 0.5, the translate's.
     big = 2.0**52
     x = big + np.array([0.0, 1.0, 1.0, 2.0, 2.0, 3.0])
     assert rolling_agg_1d(x, 6, "mad")[-1] == 0.5 == rolling_agg_1d(x - big, 6, "mad")[-1]
@@ -2807,16 +2804,16 @@ def test_rolling_median_mad_apply_nb_are_columnwise():
 
 
 def test_a_window_wider_than_the_double_range_reads_its_mad_in_its_halves():
-    # The review's window: [-1e308, 1e308] has the MAD 1e308 (median 0, both deviations 1e308),
-    # but its deviation from the lower middle value overflowed the frame and read NaN. An
-    # overflowing deviation could also displace the median of the rest: this window read
-    # 1.108e308 for 1.009e308. Such a window reads its MAD in its halves, doubled.
+    # The window [-1e308, 1e308] has the MAD 1e308 (median 0, both deviations 1e308), but its
+    # deviation from the lower middle value overflows the frame, and an overflowing deviation
+    # can also displace the median of the rest (the second window here). Such a window reads its
+    # MAD in its halves, doubled.
     np.testing.assert_array_equal(
         rolling_agg_1d(np.array([-1e308, 1e308]), 2, "mad"), [np.nan, 1e308]
     )
     x = np.ldexp(np.array([-2270207.0, -12172030.0, 16568487.0, 8508056.0]), 1000)
     assert rolling_agg_1d(x, 4, "mad")[-1] == _rational_mad(x.tolist()) == 9419347 * 2.0**1000
-    # an odd window's overflowing deviations sort past its middle: it read its MAD and still does
+    # an odd window's overflowing deviations sort past its middle, so it reads its MAD
     np.testing.assert_array_equal(
         rolling_agg_1d(np.array([-1e308, 1e308, 1e308]), 3, "mad"), [np.nan, np.nan, 0.0]
     )
@@ -2830,10 +2827,10 @@ def test_a_window_wider_than_the_double_range_reads_its_mad_in_its_halves():
 
 
 def test_an_even_windows_subnormal_middle_gap_keeps_its_half_in_the_mad():
-    # The review's window: [u, 3u, 4u, 5u] (u = 5e-324) has the median 3.5u and the MAD u, but
-    # the half of its middle gap u rounded to 0 in the lower middle value's frame, the deviations
-    # about it read a MAD of 2u, and `rolling_mad(x, 4) > u` fired on every window. The window is
-    # retaken doubled, where the gap's half is exact, and halved once.
+    # The window [u, 3u, 4u, 5u] (u = 5e-324) has the median 3.5u and the MAD u, but the half of
+    # its middle gap u rounds to 0 in the lower middle value's frame, where the deviations would
+    # read a MAD of 2u and `rolling_mad(x, 4) > u` fire on every window. The window is retaken
+    # doubled, where the gap's half is exact, and halved once.
     u = 5e-324
     assert set(rolling_agg_1d(np.array([u, 3 * u, 4 * u, 5 * u] * 21), 4, "mad")[3:]) == {u}
     # 1.5u is a tie, rounded once to 2u; an odd window's median is a member, never retaken
@@ -2852,9 +2849,9 @@ def test_an_even_windows_subnormal_middle_gap_keeps_its_half_in_the_mad():
 
 
 def test_an_even_median_and_its_mad_never_overflow_at_the_ceiling():
-    # The review's case: a constant window of 1e308 read its mean 1e308 but its median and MAD
-    # NaN — numpy's even median sums its middle pair, and np.nanmedian summed even an odd row's
-    # middle with itself. The pair now meets at its overflow-safe midpoint.
+    # A constant window of 1e308 reads its mean 1e308, its median 1e308 and its MAD 0.0, where
+    # a median that sums its middle pair overflows — numpy's even median does, and np.nanmedian
+    # sums even an odd row's middle with itself. The pair meets at its overflow-safe midpoint.
     x = np.full(3, 1e308)
     np.testing.assert_array_equal(rolling_agg_1d(x, 2, "median"), [np.nan, 1e308, 1e308])
     np.testing.assert_array_equal(rolling_agg_1d(x, 2, "mad"), [np.nan, 0.0, 0.0])

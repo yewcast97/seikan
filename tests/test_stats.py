@@ -68,9 +68,9 @@ def _episodes(rets, reasons=None, feature=None) -> pd.DataFrame:
 
 
 def test_statistics_version_is_stamped():
-    # v5: corrections — warmup has no truth value and negation waits for its whole operand, exact
-    # zero dispersion, native-clock print holes, rotation-null ties within the FFT's rounding, the
-    # exact cross_mean pooled mean, and the breadth k a cross kernel actually reduced over.
+    # Version 5: warmup has no truth value and negation waits for its whole operand, exact zero
+    # dispersion, native-clock print holes, rotation-null ties within the FFT's rounding, the
+    # exact cross_mean pooled mean, and the breadth k a cross kernel actually reduces over.
     assert STATISTICS_VERSION == 5
 
 
@@ -138,14 +138,14 @@ def test_pool_moments_shape_metrics_known_answers():
 
 def test_pool_moments_cvar_5_is_the_mean_of_the_worst_twentieth():
     # The realized 5% expected shortfall is a COUNT, ⌈n/20⌉ — `concentration`'s — never the
-    # observations at or below p05: a tie AT p05 joined that tail whole, and 99 zeros beside one
-    # −0.5 read −0.005 for a worst 5% of −0.1.
+    # observations at or below p05, a tail a tie AT p05 joins whole: 99 zeros beside one −0.5
+    # read a worst 5% of −0.1, not the at-or-below tail's −0.005.
     assert pool_moments(np.array([-0.5] + [0.0] * 99))["cvar_5"] == -0.1
     # one observation through n = 20, two from n = 21
     assert pool_moments(np.arange(20.0))["cvar_5"] == 0.0
     assert pool_moments(np.arange(21.0))["cvar_5"] == 0.5
-    # p05 is never read: across a gap past the double range it interpolated to +inf, and
-    # `v <= inf` took the WHOLE pool's mean, +2.3e307, for a worst observation of −1e308
+    # p05 is never read: across a gap past the double range it interpolates to +inf, and
+    # `v <= inf` would take the WHOLE pool's mean, +2.3e307, for a worst observation of −1e308
     assert pool_moments(np.array([-1e308, 8e307, 9e307]))["cvar_5"] == -1e308
     # ...and a worst twentieth whose sum leaves the range has no mean: NaN → null
     assert np.isnan(pool_moments(np.array([-1.7e308, -1e308] + [0.0] * 19))["cvar_5"])
@@ -153,8 +153,8 @@ def test_pool_moments_cvar_5_is_the_mean_of_the_worst_twentieth():
 
 def test_pool_moments_tail_reads_describe_a_one_observation_pool():
     # Both tail reads are defined at n = 1 — p05 = p95 = the observation, as pool_quantiles
-    # reports them, and the worst twentieth is the observation itself — but sat behind the std's
-    # n > 1 guard: a one-row pool read null beside its own p05 and p95.
+    # reports them, and the worst twentieth is the observation itself — so neither sits behind
+    # the std's n > 1 guard: a one-row pool reads them, never null beside its own p05 and p95.
     s = pool_moments(np.array([-0.1]))
     assert s["tail_ratio"] == 1.0 and s["cvar_5"] == -0.1
     assert pool_quantiles(np.array([-0.1]))["p05"] == -0.1
@@ -188,15 +188,15 @@ def test_edge_ratio_arithmetic_and_refusals():
     assert np.isnan(edge_ratio(mae, np.full(3, np.nan)))
     assert np.isnan(edge_ratio(np.zeros(3), mfe))  # never went against: no ratio
     # THE PAIRING PIN: a hole in EITHER leg drops the row from BOTH legs — an mae finite on a
-    # censored-mfe row contributes nothing to the ratio (pre-v3 each leg filtered its own
-    # subset, so the two means could cover trades that never shared a path).
+    # censored-mfe row contributes nothing to the ratio (each leg filtering its own subset, the
+    # two means could cover trades that never shared a path).
     mae_holed = np.array([-0.02, np.nan, -0.04])
     mfe_holed = np.array([0.03, 0.06, np.nan])
     assert edge_ratio(mae_holed, mfe_holed) == pytest.approx(0.03 / 0.02)
 
 
 def test_ratio_reads_refuse_an_overflowed_operand():
-    # Finite returns whose SUM overflows: `x / inf` was a FINITE 0.0 — a win/loss ratio, a
+    # Finite returns whose SUM overflows: `x / inf` is a FINITE 0.0 — a win/loss ratio, a
     # profit factor and an edge ratio of exactly zero, a reader takes at face value. An operand
     # past the double range is no evidence: NaN → null.
     # (No errstate around the engine: its overflows are expected inputs, never warnings.)
@@ -288,7 +288,7 @@ def test_pool_quantiles_points_are_ordered():
 
 def test_pool_quantiles_interpolated_past_the_double_range_are_not_finite():
     # p05 and p10 interpolate between -1.7e308 and 1.7e308, a gap past the double range: the
-    # computed points are ±inf (p10's true 1.36e308 read -inf) → null, never a finite point —
+    # computed points are ±inf (p10's true 1.36e308 reads -inf) → null, never a finite point —
     # and silently, the overflow an expected input. Points between equal neighbours stand.
     q = pool_quantiles(np.array([-1.7e308] + [1.7e308] * 9))
     assert not np.isfinite(q["p05"]) and not np.isfinite(q["p10"])
@@ -391,9 +391,9 @@ def test_bucket_monotonicity_constant_means_is_none():
 
 def test_bucket_monotonicity_of_an_overflowed_bucket_mean_is_none():
     # A populated bucket whose return sum overflowed reads mean = inf (or NaN off inf − inf),
-    # which ranked it above every finite bucket (rho 0.4 here) whatever its true place. Its place
-    # is unknown, and so is the rank signal — dropping it would read the rest's rho 1.0 as if
-    # the bucket were empty. An EMPTY bucket still just drops out.
+    # which would rank it above every finite bucket (rho 0.4 here) whatever its true place. Its
+    # place is unknown, and so is the rank signal — dropping it would read the rest's rho 1.0 as
+    # if the bucket were empty. An EMPTY bucket still just drops out.
     for overflowed in (float("inf"), float("-inf"), float("nan")):
         assert _bucket_monotonicity(_recs([0.01, overflowed, 0.02, 0.03])) is None
     empty = {"bucket": "e", "n": 0, "mean_ret": float("nan"), "hit_rate": float("nan")}
@@ -673,7 +673,7 @@ def test_episode_panels_withhold_value_reads_across_incommensurable_targets():
 
 def test_cell_conditional_buckets_single_target_column_is_identical():
     # A constant `target` column routes through the same verbatim kernel path as no column at
-    # all: single-target cells are bit-identical to the pre-v3 pooled read, interval labels
+    # all: single-target cells are bit-identical to the read without one, interval labels
     # included.
     feat = np.linspace(0.0, 1.0, 40)
     bare = _episodes(list(feat * 0.1), feature=list(feat))
@@ -691,8 +691,8 @@ def test_cell_conditional_buckets_single_target_column_is_identical():
 
 def test_cell_conditional_bucket_means_past_the_double_range_are_nan():
     # Finite returns of 1e308 and 1.5e308 in the lower three buckets: each one's sum overflows,
-    # and its mean read ±inf — a value the emitted contract (a plain float) then refused, and a
-    # sign the overflow picked. NaN → null instead, on the one-target path and on the ordinal
+    # and a mean read off it is ±inf — a value the emitted contract (a plain float) refuses, and
+    # a sign the overflow picks. NaN → null instead, on the one-target path and on the ordinal
     # path alike, while a bucket whose sum stays in range keeps its bits.
     feat = np.arange(24, dtype=float)
     rets = np.where(feat < 18, np.where(feat % 2 == 0, 1e308, 1.5e308), 0.25)
@@ -722,11 +722,11 @@ def test_cell_conditional_bucket_means_past_the_double_range_are_nan():
 )
 def test_ordinal_buckets_pandas_cannot_label_keep_their_bins(feat):
     # Per-target edges pandas cannot render: it rounds each interval LABEL's edges through
-    # x·10**precision. Past ~1.8e305 every label read "(inf, inf]" (and warned), and the
-    # categorical's codes, built off those colliding labels, merged all four quartiles into ONE
-    # bucket; under ~1e-306 in magnitude a break read NaN and the labelled qcut raised. Both
-    # were refused as `insufficient_distinct_values`. The ordinal path reads the bin indices
-    # alone: four buckets of six rows per member, silently.
+    # x·10**precision. Past ~1.8e305 every label reads "(inf, inf]" (and warns), and the
+    # categorical's codes, built off those colliding labels, merge all four quartiles into ONE
+    # bucket; under ~1e-306 in magnitude a break reads NaN and the labelled qcut raises. The
+    # ordinal path reads the bin indices alone: four buckets of six rows per member, silently,
+    # never an `insufficient_distinct_values` refusal.
     frame = pd.DataFrame(
         {
             "target": ["A"] * 24 + ["B"] * 24,
@@ -745,11 +745,11 @@ def test_ordinal_buckets_pandas_cannot_label_keep_their_bins(feat):
 @pytest.mark.parametrize(
     ("feat", "true_n"),
     [
-        # Edges past ~1.8e305 rendered "inf": "(-1.001, inf]" 30 / "(inf, inf]" 30 over three
-        # true bins, the two "(inf, inf]" labels' bins merged by the categorical (and warned).
+        # Edges past ~1.8e305 render "inf": "(-1.001, inf]" 30 / "(inf, inf]" 30 over three
+        # true bins, the two "(inf, inf]" labels' bins merged by the categorical (with a warning).
         (np.r_[np.full(30, -1.0), np.linspace(1e306, 1.7e308, 30)], [30, 15, 15]),
-        # Edges under ~1e-306 in magnitude: 10**digits overflowed, the breaks read NaN, no
-        # interval could be built, and the qcut's ValueError refused a feature with four bins.
+        # Edges under ~1e-306 in magnitude: 10**digits overflows, the breaks read NaN, no
+        # interval can be built, and the labelled qcut raises ValueError on four bins.
         (np.linspace(1e-320, 5e-307, 40), [10, 10, 10, 10]),
         # ONE edge past the ceiling, the labels still distinct: pandas' "(0.77, inf]" names a
         # bin it cannot print — the rendered breaks must be finite, not merely distinct.
@@ -759,10 +759,10 @@ def test_ordinal_buckets_pandas_cannot_label_keep_their_bins(feat):
 )
 def test_single_target_buckets_pandas_cannot_label_keep_their_bins(feat, true_n):
     # The single-target arm passes the frozen kernel's records through, interval labels and all
-    # — but its membership came off pandas' rendered labels, which leave the double range at
-    # both ends of the feature scale. The bins are read by index now; where no interval string
-    # prints them faithfully, each populated bin takes its ordinal, the multi-target arm's
-    # label. Silent: pandas' rendering runs under errstate (the suite's -W error).
+    # — but its membership is read by bin index, never off pandas' rendered labels, which leave
+    # the double range at both ends of the feature scale. Where no interval string prints the
+    # bins faithfully, each populated bin takes its ordinal, the multi-target arm's label.
+    # Silent: pandas' rendering runs under errstate (the suite's -W error).
     ret = np.linspace(-0.05, 0.05, feat.size)  # ascending with the feature: a planted rank
     out = cell_conditional_buckets(pd.DataFrame({"feat": feat, "ret": ret}), ["feat"])
     block = out["conditional_buckets"]["feat"]
@@ -790,10 +790,10 @@ def test_single_target_buckets_pandas_can_label_keep_its_intervals():
 def test_buckets_of_a_feature_spanning_the_double_range_are_its_true_bins(n_targets):
     # A feature whose values span more than the double range: pandas interpolates a quantile as
     # a + (b − a)·t, and b − a overflows between the two order statistics either side of zero,
-    # so the median edge read -inf (with a warning) and both arms cut their bins on it — 1/17/6
-    # where the true bins are 6/6/6/6, a non-monotone panel with a rank read. Such a pool holds
-    # only values past 2**970 in magnitude, so its halved twin's bins are exactly its own: the
-    # true bins, labelled by ordinal (no interval label prints an edge there), silently.
+    # so the median edge reads -inf (with a warning) — bins cut on it read 1/17/6 where the true
+    # bins are 6/6/6/6. Such a pool holds only values past 2**970 in magnitude, so its halved
+    # twin's bins are exactly its own: the true bins, labelled by ordinal (no interval label
+    # prints an edge there), silently.
     rng = np.random.default_rng(3)
     feat = np.r_[-1.7e308 * rng.uniform(0.95, 1, 12), 1.7e308 * rng.uniform(0.95, 1, 12)]
     rng.shuffle(feat)
@@ -858,7 +858,7 @@ def test_cell_buckets_read_a_whole_full_bar_at_its_exact_zero_in_any_declaration
     # for every member): every member's quartile edges agree, so every bar's rows land in ONE
     # ordinal and every record is whole bars — whose exact mean is 0.0. Averaged over the
     # rounded rows it is residue (~1e-19), and the residue ranks: a bucket_monotonicity whose
-    # rho (pairwise sums) moved with nothing but the order the targets were declared in. The
+    # rho (pairwise sums) moves with nothing but the order the targets are declared in. The
     # counts and hit rates stay row-level: each row's excess is its own.
     import itertools
 
@@ -971,11 +971,10 @@ def test_cell_buckets_read_every_bar_held_whole_at_its_exact_sum():
 def test_cell_buckets_of_one_participating_member_read_its_one_row_bars_exactly():
     # A cross_mean pool whose valid rows all belong to ONE member takes the single-target cut
     # (pandas' interval labels). The only bar that cut can hold whole is a one-row bar — the
-    # basket's other members' rows sit unbucketed — and it held none: every record read its
-    # rows' rounded excesses, where the pool's every other bar-closed read (the episode means,
-    # the CSCV split means) takes each bar's exact numerator. Now each A-only bar enters its
-    # record at its exact numerator over 3, as in the multi-target arm; the labels, n and
-    # hit_rate are the frozen kernel's.
+    # basket's other members' rows sit unbucketed — and each A-only bar enters its record at its
+    # exact numerator over 3, never at its row's rounded excess: as in the multi-target arm and
+    # the pool's every other bar-closed read (the episode means, the CSCV split means). The
+    # labels, n and hit_rate are the frozen kernel's.
     feat = {m: np.resize(np.arange(7, dtype=float), 48) for m in "ABC"}
     frame, raw = _full_bar_frame("ABC", feat)
     alone = frame[frame["target"] == "A"].reset_index(drop=True)  # B and C never fired
@@ -1131,10 +1130,10 @@ def test_newey_west_contiguous_matches_classic_bartlett():
 
 
 def test_newey_west_sparse_independent_events_keep_iid_se():
-    # THE P0 regression: on a sparse pool whose events sit further apart than the horizon there
-    # is NO overlap — every cross term must drop and the SE must equal the iid SE exactly. The
-    # ordinal-lag estimator collapsed this SE to ~0.23x (Bartlett with lag ≈ n → Σdev ≈ 0),
-    # fabricating significance on independent returns.
+    # On a sparse pool whose events sit further apart than the horizon there is NO overlap —
+    # every cross term must drop and the SE must equal the iid SE exactly. An ordinal-lag
+    # estimator collapses this SE to ~0.23x (Bartlett with lag ≈ n → Σdev ≈ 0), fabricating
+    # significance on independent returns.
     rng = np.random.RandomState(11)
     n, h = 12, 60
     rets = rng.standard_normal(n)
@@ -1195,11 +1194,10 @@ def _hac_exact(rets: np.ndarray, bars: np.ndarray, h: int) -> tuple[float, float
 def test_newey_west_sums_each_bar_before_the_quadratic_form():
     # Ten members fire together on 40 bars, two apart, at h = 1: five rows of +0.5, four of −0.5
     # and one of −0.5 + k·2**−24 (k cycling 1..4), so each bar's deviations cancel to
-    # (k − 2.5)·2**−24. Accumulated row by row, the squared deviations (~0.25 each) and the
-    # same-bar cross terms that cancel them were summed apart, and the cancellation destroyed the
-    # combined variance: SE 3.7252902984619143e-10 and t 40.0, where the estimator's exact value
-    # is SE 1.05499077648638e-9, t 14.124446891825533 — a 65% understatement. The rows enter
-    # through their per-bar sums now, exactly rounded.
+    # (k − 2.5)·2**−24. The rows enter through their per-bar sums, exactly rounded: the
+    # estimator's exact value, SE 1.05499077648638e-9 and t 14.124446891825533. Accumulated row
+    # by row, the squared deviations (~0.25 each) and the same-bar cross terms that cancel them
+    # sum apart, and the cancellation destroys the combined variance.
     rets, bars = [], []
     for b in range(40):
         rets += [0.5] * 5 + [-0.5] * 4 + [-0.5 + (b % 4 + 1) * 2.0**-24]
@@ -1218,9 +1216,9 @@ def test_newey_west_sums_each_bar_before_the_quadratic_form():
 
 
 def test_newey_west_same_bar_sum_keeps_the_centre_a_rounded_deviation_lost():
-    # mean = 2**-53 / 5. Each row's `r − mean` rounded to ±0.5, so the two-row bars summed to 0
-    # for their exact −2·mean and the SE read 1.986e-17 for the exact 2.432e-17. One fsum over a
-    # bar's raw returns and its copies of −mean keeps it: the estimator's exact value.
+    # mean = 2**-53 / 5. Each row's `r − mean` rounds to ±0.5, so two-row bars of rounded
+    # deviations sum to 0 for their exact −2·mean. One fsum over a bar's raw returns and its
+    # copies of −mean keeps it: the estimator's exact value, an SE of 2.432e-17.
     rets, bars = np.array([0.5, -0.5, 0.5, -0.5, 2.0**-53]), np.array([0, 0, 3, 3, 6])
     t, se = newey_west_mean(rets, bars, 1)
     assert (t, se) == _hac_exact(rets, bars, 1) == (0.9128709291752769, 2.432376777795247e-17)
@@ -1229,8 +1227,9 @@ def test_newey_west_same_bar_sum_keeps_the_centre_a_rounded_deviation_lost():
 
 
 def test_newey_west_same_bar_sum_past_the_double_range_is_null_never_a_crash():
-    # Finite returns whose same-bar sum leaves the double range: fsum raised OverflowError out
-    # of the run (exit 4 on valid input) where every other unrepresentable estimate is null.
+    # Finite returns whose same-bar sum leaves the double range: null, like every other
+    # unrepresentable estimate — never fsum's OverflowError out of the run (exit 4 on valid
+    # input).
     rets, bars = np.array([-1e308, 8e307, 8e307, -1e308]), np.array([0, 1, 1, 2])
     t, se = newey_west_mean(rets, bars, 1)
     assert np.isnan(t) and np.isnan(se)
@@ -1267,13 +1266,12 @@ def test_newey_west_bar_deviation_sums_are_exact_about_the_exact_mean():
 
 
 def test_newey_west_members_cancelling_within_each_bar_have_no_long_run_variance():
-    # The review's basket: three members alternate [0.8, −0.4, −0.4] and [0, 0, 0] over 40 bars
-    # beside a fourth at 2**−52 (h = 1), so every bar sits exactly at the mean 2**−54. Each row's
-    # deviation was rounded about the pool's range midpoint before its bar summed it, and the bars
-    # read ±5.6e-17 — an SE of 1.6e-18 and t 35.7 where the estimator has no variance at all.
-    # The bar sums are exact about the exact mean: no estimate, on the kernel and on the basket's
-    # pooled read. With the fourth at 2**−51 on every other bar the bars vary for real (±2**−53)
-    # and the SE is the estimator's exact value; it read 27% high.
+    # Three members alternate [0.8, −0.4, −0.4] and [0, 0, 0] over 40 bars beside a fourth at
+    # 2**−52 (h = 1), so every bar sits exactly at the mean 2**−54 and the estimator has no
+    # variance at all. The bar sums are exact about the exact mean: no estimate, on the kernel
+    # and on the basket's pooled read (a deviation rounded before its bar sums it reads ±5.6e-17
+    # a bar). With the fourth at 2**−51 on every other bar the bars vary for real (±2**−53) and
+    # the SE is the estimator's exact value.
     def basket(odd):
         cols = np.zeros((50, 4))
         cols[0:40:2, :3] = [0.8, -0.4, -0.4]
@@ -1301,12 +1299,11 @@ def test_newey_west_members_cancelling_within_each_bar_have_no_long_run_variance
 
 
 def test_newey_west_deviations_are_summed_about_the_pools_offset():
-    # The review's pool: 10,000 returns at 1 + k·2**-52 (k alternating 0 and 1, the last 32),
-    # three bars apart at h = 1, so the estimate is the iid std/√n. The reported mean rounds at
-    # the LEVEL's ulp, as large as the deviations themselves, and about it the HAC read an SE of
-    # 1.714e-18 for the exact 1.312e-18 — while the same pool shifted onto 0, whose mean is
-    # representable, read the exact value: the estimate hung on the level. Summed exactly about
-    # the exact mean, the pool and its shift read the same SE, the exact one to rounding.
+    # A pool of 10,000 returns at 1 + k·2**-52 (k alternating 0 and 1, the last 32), three bars
+    # apart at h = 1, so the estimate is the iid std/√n. The reported mean rounds at the LEVEL's
+    # ulp, as large as the deviations themselves, so an SE taken about it hangs on the level.
+    # Summed exactly about the exact mean, the pool and its shift onto 0 read the same SE, the
+    # exact one to rounding.
     u = np.tile([0.0, 1.0], 5000)
     u[-1] = 32.0
     rets = 1.0 + 2.0**-52 * u
@@ -1323,7 +1320,7 @@ def test_newey_west_deviations_are_summed_about_the_pools_offset():
 
 def test_newey_west_pool_whose_bars_sit_at_its_mean_is_null():
     # Every row on ONE bar: the one deviation sum Σr − n·mean is exactly 0 for the exact mean,
-    # and the quadratic form read the centre's rounding — (1.03e16, 2.27e-17) for rows that vary.
+    # however the rows vary — all a quadratic form could read there is the centre's rounding.
     t, se = newey_west_mean(np.array([0.1, 0.2, 0.4]), np.zeros(3, dtype=int), 5)
     assert np.isnan(t) and np.isnan(se)
     # Two bars, each at the pool's mean however its rows vary: the same residue.
@@ -1339,11 +1336,11 @@ def test_newey_west_pool_whose_bars_sit_at_its_mean_is_null():
 def test_exact_mean_keeps_the_exact_sum_sign_and_zero():
     # np.mean sums pairwise in floating point, and a large term swallows a small one before its
     # cancelling partner arrives: the 49 diff returns of [0, 2**54, 0, −1, 0] × 10 sum to exactly
-    # 0 and np.mean read 1/49. The exactly rounded sum keeps the exact sum's sign and its zero.
+    # 0 and np.mean reads 1/49. The exactly rounded sum keeps the exact sum's sign and its zero.
     levels = np.array([0.0] + [0.0, 2.0**54, 0.0, -1.0, 0.0] * 10)
     rets = np.diff(levels[1:])  # the h = 1 diff returns open[t+2] − open[t+1], t = 0..48
     assert sum(Fraction(r) for r in rets.tolist()) == 0
-    assert float(np.mean(rets)) == 1 / 49  # the defect
+    assert float(np.mean(rets)) == 1 / 49  # the premise
     assert exact_mean(rets) == 0.0
     assert pool_moments(rets)["mean_ret"] == 0.0
     assert baseline_summary(rets)["mean_ret"] == 0.0
@@ -1359,26 +1356,26 @@ def test_exact_mean_keeps_the_exact_sum_sign_and_zero():
     # an ordinary pool reads the exact rational mean, rounded once
     v = np.random.RandomState(2).normal(0.0, 0.01, 1000)
     assert exact_mean(v) == float(sum(map(Fraction, v.tolist())) / 1000)
-    # rounded ONCE: the exactly rounded sum over the count rounds twice, and the review's pool
-    # [x − ulp, x, x, x, x] read an ulp ABOVE its own maximum off it, where the mean rounds to x
-    # itself — as a plain pool and as parts rows over a scale
+    # rounded ONCE: the exactly rounded sum over the count rounds twice, and over the pool
+    # [x − ulp, x, x, x, x] it reads an ulp ABOVE the pool's own maximum, where the mean rounds
+    # to x itself — as a plain pool and as parts rows over a scale
     x = 0.9757632206350922
     pool = np.array([np.nextafter(x, -np.inf), x, x, x, x])
-    assert math.fsum(pool.tolist()) / 5 > x  # the defect
+    assert math.fsum(pool.tolist()) / 5 > x  # the premise
     assert exact_mean(pool) == x == pool_moments(pool)["mean_ret"]
     assert exact_mean(np.column_stack([2.0 * pool, np.zeros(5)]), scale=2) == x
 
 
 def test_exact_sums_are_the_same_double_in_any_order_at_the_range():
     # math.fsum accumulates in doubles and raises where a running partial leaves the range even
-    # when the exact sum has a double: [1e308, 1e308, −1e308, −1e308] raised ("intermediate
-    # overflow in fsum") and exact_sum read NaN, while the alternating order read 0.0 — the same
-    # 80 closed diff returns of a run gave a null mean in one bar order and 0.0 in another. The
-    # sum is retaken as exact rationals there; a sum that genuinely leaves the range stays NaN.
+    # when the exact sum has a double: [1e308, 1e308, −1e308, −1e308] raises ("intermediate
+    # overflow in fsum") where the alternating order reads 0.0. The sum is retaken as exact
+    # rationals there, so the sum and a pool's mean read 0.0 in either order; a sum that
+    # genuinely leaves the range stays NaN.
     paired = np.array([1e308, 1e308, -1e308, -1e308])
     alternating = np.array([1e308, -1e308, 1e308, -1e308])
     with pytest.raises(OverflowError):
-        math.fsum(paired.tolist())  # the defect's source
+        math.fsum(paired.tolist())  # the premise
     assert exact_sum(paired) == exact_sum(alternating) == 0.0
     assert exact_mean(np.tile(paired, 20)) == exact_mean(np.tile(alternating, 20)) == 0.0
     assert exact_sum(np.array([1e308, 1e308, -1e308, 1.0])) == 1e308
@@ -1438,7 +1435,7 @@ def test_tail_p_tolerance_counts_near_ties_as_ties():
 
 
 def test_tail_p_of_an_overflowed_observed_mean_is_nan_never_the_floor():
-    # An observed mean past the double range sat above every finite null value: the p FLOOR,
+    # An observed mean past the double range sits above every finite null value — the p FLOOR,
     # the strongest evidence the rotation can give, minted from an overflow. No observation: NaN.
     for observed in (float("inf"), float("-inf")):
         p, n_null = _tail_p(observed, np.array([0.1, 0.2, 0.3]))
@@ -1446,11 +1443,11 @@ def test_tail_p_of_an_overflowed_observed_mean_is_nan_never_the_floor():
 
 
 def test_rotation_null_near_the_ceiling_reads_its_exact_p_in_the_unit_frame():
-    # One firing on a forward column holding 5e307 and 1e307: the raw transform's partial sums
-    # (~T × 5e307) left the double range at two DEFINED shifts — one of them the shift onto
-    # 5e307, the only one that beats the observed 1e307 — and the read was voided (null, never
-    # the 1/7 of its survivors). In the column's unit frame nothing leaves the range: exact
-    # arithmetic's 2/9 over all 8 defined shifts, as on the same column far below the ceiling.
+    # One firing on a forward column holding 5e307 and 1e307: a raw transform's partial sums
+    # (~T × 5e307) leave the double range at two DEFINED shifts — one of them the shift onto
+    # 5e307, the only one that beats the observed 1e307. In the column's unit frame nothing
+    # leaves the range: exact arithmetic's 2/9 over all 8 defined shifts, as on the same column
+    # far below the ceiling.
     fwd = np.array([-0.4, -0.75, 0.2, 5e307, -1.6, 2.0, -1.0, -0.2, 1e307])
     mask = np.zeros(9)
     mask[8] = 1.0
@@ -1462,10 +1459,9 @@ def test_rotation_null_near_the_ceiling_reads_its_exact_p_in_the_unit_frame():
 
 
 def test_a_subnormal_constant_column_ties_every_rotation():
-    # The review's case: forward returns of 1e-323 on every finite bar, so every rotation's mean
-    # IS the observed one. The raw transform ran on values of a few bits, its means came out as
-    # rounding noise, and rot_p read 0.05 — the floor — where the same mask over unit-scale
-    # returns read 1.0. The unit frame runs it on 0.5.
+    # Forward returns of 1e-323 on every finite bar, so every rotation's mean IS the observed
+    # one: rot_p 1.0, as over unit-scale returns. The unit frame runs the transform on 0.5 —
+    # run on the raw values of a few bits, its means would be rounding noise.
     T = 20
     mask = np.zeros(T)
     mask[[16, 18, 19]] = 1.0
@@ -1493,8 +1489,8 @@ def test_rotation_den_is_an_exact_count():
 @pytest.mark.parametrize("c", [0.1, float(np.log(2.0)), 0.3, 0.013])
 def test_constant_return_pool_rotation_p_is_one(c):
     # Every rotated mask of a constant-return pool selects the SAME conditional mean: the whole
-    # null ties the observed value and rot_p is exactly 1. The FFT's rounding residue (~1e-16)
-    # used to break those ties at random — a constant pool read rot_p as low as 0.016.
+    # null ties the observed value and rot_p is exactly 1 — the FFT's rounding residue (~1e-16)
+    # breaks none of those ties.
     rng = np.random.RandomState(4)
     T = 61
     fwd = np.full(T, c)
@@ -1627,7 +1623,7 @@ def test_rotation_tie_band_does_not_swallow_a_resolvable_gap():
 def test_rotation_unit_frame_bounds_the_column_and_keeps_its_norm():
     # The transform runs on fwd · 2**-e, e the exponent of its largest finite magnitude, so that
     # magnitude lies in [0.5, 1): the 2-norm the tie band scales with is finite and positive at
-    # every scale (sqrt(x·x) of the raw column overflowed past ~1.3e154 and vanished below
+    # every scale (sqrt(x·x) of the raw column overflows past ~1.3e154 and vanishes below
     # ~1e-162), NaN bars stay NaN, and a column of zeros sets no frame.
     from seikan.analysis._rotation import _ffts_for
 
@@ -1991,8 +1987,8 @@ def test_pooled_reliability_empty_and_short_guards_mirror_reliability_summary():
 
 def test_pooled_rotation_over_opposite_members_at_the_ceiling_ties_every_shift():
     # Two members firing on one bar whose forward returns are +1.7e308 and -1.7e308: each raw
-    # transform overflowed, to +inf and to -inf, and the common-shift null summed them — inf − inf,
-    # a null read. In the unit frame each numerator is finite and the pair cancels exactly at
+    # transform overflows, to +inf and to -inf, and a common-shift null summing them reads
+    # inf − inf. In the unit frame each numerator is finite and the pair cancels exactly at
     # every shift: every rotation's pooled mean is the observed 0, a tie — rot_p 1.0, silently.
     T = 16
     m = np.zeros(T)
@@ -2010,7 +2006,7 @@ def test_pooled_rotation_frames_members_of_different_scales_together():
     # The common frame is the largest member's — a member of zeros sets none. A subnormal member
     # (small integer multiples of 2**-1074, ties galore) pooled beside a member of zeros reads the
     # rot_p of the same pool at unit scale; framed at the zero member's exponent 0 instead, its
-    # rotation means ran at their raw subnormal scale, where distinct means round together.
+    # rotation means would run at their raw subnormal scale, where distinct means round together.
     rng = np.random.RandomState(4)
     T = 40
     for _ in range(20):
@@ -2103,10 +2099,10 @@ def test_cscv_pbo_single_combo_and_empty_guards():
 
 
 def test_cscv_pbo_six_bar_sample_declines_beside_the_real_candidate_counts():
-    # The review's scenario: six bars, h=1, two distinct candidates that both fired. No block
-    # partition fits six bars (S=4 needs eight), so the block declines — but the population is a
-    # property of the cells, not of the partition: 2 distinct / 2 scoreable / 2 declared. The
-    # pre-fix block reported 0 / 0 / 2, a ledger claiming no candidate ever existed.
+    # Six bars, h=1, two distinct candidates that both fired. No block partition fits six bars
+    # (S=4 needs eight), so the block declines — but the population is a property of the cells,
+    # not of the partition: 2 distinct / 2 scoreable / 2 declared, never a ledger claiming no
+    # candidate ever existed.
     T = 6
     fwd = np.array([0.01, -0.02, 0.03, 0.01, np.nan, np.nan])
     cells = []
@@ -2343,9 +2339,9 @@ def test_cscv_pbo_conjunction_stays_blind_to_a_one_member_edge():
 
 
 def test_cscv_pbo_identical_candidates_collapse_to_single_combo():
-    # A grid of byte-identical clones is ONE candidate wearing many names: pre-v3 the strict
-    # test rank handed the train winner rank 1 (worst) for tying with its own copies, reading
-    # PBO = 1.0 — maximal overfitting — off a grid with NO selection in it.
+    # A grid of byte-identical clones is ONE candidate wearing many names: a strict test rank
+    # hands the train winner rank 1 (worst) for tying with its own copies, reading PBO = 1.0 —
+    # maximal overfitting — off a grid with NO selection in it.
     rng = np.random.RandomState(13)
     T = 800
     fwd = rng.normal(0.0, 0.01, T)
@@ -2362,8 +2358,8 @@ def test_cscv_pbo_identical_candidates_collapse_to_single_combo():
 def test_cscv_pbo_midrank_full_test_tie_is_lambda_zero():
     # Two DISTINCT masks whose pools carry the same values in every block: every split's train
     # AND test scores tie exactly, the midrank puts the winner at ω = 0.5, λ = 0 — a split that
-    # cannot distinguish candidates is not evidence of overfitting. The pre-v3 strict rank read
-    # this grid as pbo = 1.0.
+    # cannot distinguish candidates is not evidence of overfitting, as a strict rank's pbo = 1.0
+    # would claim.
     T, h = 400, 1
     fwd = np.zeros(T)
     vals = (0.01, -0.02, 0.03)
@@ -2383,13 +2379,13 @@ def test_cscv_pbo_midrank_full_test_tie_is_lambda_zero():
 
 
 def test_cscv_pbo_candidates_with_the_same_block_returns_tie_in_any_row_order():
-    # The review's case: two candidates holding the same six returns in each of eight blocks, in
-    # other row orders. Every split ties in exact arithmetic, but the block sums ran in row order
-    # and their last bits ranked the candidates: pbo 0.571, lambda_mean -0.248. Exact block sums
-    # are the same doubles in any order, so every split is a full tie.
+    # Two candidates holding the same six returns in each of eight blocks, in other row orders.
+    # Every split ties in exact arithmetic; block sums taken in row order would rank the
+    # candidates by their last bits. Exact block sums are the same doubles in any order, so
+    # every split is a full tie.
     T, h = 800, 1
     vals = np.array([-0.04, -0.02, 0.0, 0.02, 0.04, 0.06])
-    # each block's six returns in row order, as indices into `vals` (the review's seed 8)
+    # each block's six returns in row order, as indices into `vals` (drawn with seed 8)
     orders = (
         "035124 350124 530142 325014 254130 154203 025143 013452",
         "054321 105342 402513 241305 234150 153402 421035 251043",
@@ -2455,16 +2451,17 @@ def test_concentration_never_reads_below_its_counts_share_of_the_pool():
 
 
 def test_concentration_of_an_overflowed_mass_is_nan_never_a_passing_zero():
-    # 100 returns of 3e306: the top-5 mass (1.5e307) is finite, the total overflows, and the
-    # share read 0.0 — "no concentration", which the ceiling check passed. NaN refuses instead.
+    # 100 returns of 3e306: the top-5 mass (1.5e307) is finite and the total overflows, so a
+    # share read off it is 0.0 — "no concentration", which the ceiling check passes. NaN
+    # refuses instead.
     out = concentration(np.full(100, 3e306))
     assert out["n_top"] == 5 and np.isnan(out["top_share_abs"])
 
 
 def test_concentration_share_never_passes_one():
-    # The review's case: five masses among 95 zeros. Summed pairwise, the total's eight-way
-    # accumulation rounded the five otherwise than their own sum, and the top 5% held
-    # 1.0000000000000002 of it. A subset's exact sum never exceeds the whole's.
+    # Five masses among 95 zeros. Summed pairwise, the total's eight-way accumulation rounds the
+    # five otherwise than their own sum, and the top 5% holds 1.0000000000000002 of it. A
+    # subset's exact sum never exceeds the whole's: a share of 1.0.
     top = [0.8605673135181114, 0.6019700926291229, 0.43127194749784414, 0.29344776720559157]
     out = concentration(np.r_[top, 0.2448757820521963, np.zeros(95)])
     assert out["n_top"] == 5 and out["top_share_abs"] == 1.0
@@ -2542,8 +2539,8 @@ def test_mass_shares_are_the_correctly_rounded_exact_quotients():
     # Three disjoint episodes whose |return| rows are [1, 127·2**-60], [1, 65·2**-60] and
     # [1, 65·2**-60]: the first holds more than a third of the pool's mass, yet the quotient of
     # its ROUNDED mass over the rounded total — 1.0 over 3 + 2**-51, each sum rounded the other
-    # way — read 0.33333333333333326, an ulp under the correctly rounded 1/3: a share the
-    # gate's pigeonhole floor would refuse off an honest pool. Every share is now the correctly
+    # way — reads 0.33333333333333326, an ulp under the correctly rounded 1/3: a share the
+    # gate's pigeonhole floor would refuse off an honest pool. Every share is the correctly
     # rounded value of the exact quotient, 0.33333333333333337 here, and so at least
     # 1/n_clusters for the largest — in episode_stats, the ledger and the top-share read alike.
     day = pd.Timedelta(days=1)
@@ -2559,7 +2556,7 @@ def test_mass_shares_are_the_correctly_rounded_exact_quotients():
     masses = [sum(map(Fraction, map(abs, rows[i : i + 2]))) for i in (0, 2, 4)]
     total = sum(masses)
     assert masses[0] >= total / 3
-    rounded = math.fsum(np.abs(rows[:2])) / math.fsum(np.abs(rows))  # the quotient it read
+    rounded = math.fsum(np.abs(rows[:2])) / math.fsum(np.abs(rows))  # the rounded sums' quotient
     assert rounded == 0.33333333333333326 < 1 / 3
     want = float(masses[0] / total)
     assert want == 0.33333333333333337 >= 1 / 3
@@ -2607,11 +2604,10 @@ def test_every_mass_share_is_the_exact_quotient_on_random_pools():
 
 def test_episode_shares_and_the_hhi_pair_hold_their_bounds():
     # A zero-mass episode (three rows of 0.0) before one of [0.1, 0.1, 0.1, 0.1, 0.2]: summed
-    # pairwise, the pool's mass rounded below the episode's own, and the share read
-    # 1.0000000000000002, the hhi 1.0000000000000004, the effective count 0.9999999999999996 and
-    # the ledger's omitted share past a cap of one 1.0000000000000002. Five equal episodes of 0.3
-    # read an effective count of 5.000000000000001, past n_clusters. Exact masses and the exact
-    # hhi pair hold every bound.
+    # pairwise, the pool's mass rounds below the episode's own, so the share, the hhi and the
+    # ledger's omitted share past a cap of one land above 1 and the effective count below it.
+    # Summed so, five equal episodes of 0.3 read an effective count past n_clusters. Exact
+    # masses and the exact hhi pair hold every bound.
     day = pd.Timedelta(days=1)
     base = pd.Timestamp("2021-01-01")
     days = [0, 1, 2, 200, 201, 202, 203, 204]
@@ -2641,8 +2637,8 @@ def test_episode_shares_and_the_hhi_pair_hold_their_bounds():
 
 def test_episode_shares_of_an_overflowed_mass_are_nan_never_a_passing_zero():
     # Two disjoint episodes of 1e308 each: the total |return| mass overflows, and every share
-    # read `x / inf = 0.0` — a max_cluster_share_abs of zero, which the one-episode ceiling
-    # passes. No share of an overflowed total exists: NaN, which the checklist refuses.
+    # read off it is `x / inf = 0.0` — a max_cluster_share_abs of zero, which the one-episode
+    # ceiling passes. No share of an overflowed total exists: NaN, which the checklist refuses.
     day = pd.Timedelta(days=1)
     base = pd.Timestamp("2021-03-01")
     frame = pd.DataFrame(
@@ -2874,11 +2870,11 @@ def test_episode_profile_streaks_walk_time_order_and_zero_breaks_both():
 
 def test_episode_profile_reads_nothing_off_an_overflowed_episode_mean():
     # One episode of two overlapping rows, 1.2e308 and 1.3e308: its true mean is 1.25e308, but
-    # its row SUM overflows, and a pairwise mean read inf. The profit factor (6.0 here) and the
-    # quantiles were read WITHOUT it — the pool filters drop a non-finite value — the worst
-    # return beside it, and the hit rate and the win streak off its overflowed sign. Its value
-    # and sign are unknown, so every read over the episode means is null and it breaks both
-    # streaks (2, not 3). (Two EQUAL rows read their value: an all-equal pool's exact mean.)
+    # its row SUM overflows, and a pairwise mean reads inf — a value the pool filters drop, so
+    # the profit factor, the quantiles and the worst return would read WITHOUT it, and the hit
+    # rate and the win streak off its overflowed sign. Its value and sign are unknown, so every
+    # read over the episode means is null and it breaks both streaks (2, not 3). (Two EQUAL rows
+    # read their value: an all-equal pool's exact mean.)
     day = pd.Timedelta(days=1)
     base = pd.Timestamp("2021-03-01")
     starts = [0, 1, 20, 40, 60, 80]
@@ -2899,10 +2895,10 @@ def test_episode_profile_reads_nothing_off_an_overflowed_episode_mean():
 
 def test_episode_ledger_mean_past_the_double_range_is_nan_never_a_signed_inf():
     # The ledger's per-episode mean over finite rows whose sum leaves the double range. Read off
-    # the overflow it was `inf` — into a field the emitted contract typed plain `float` (the
-    # run died at the seam) — and not even sign-safe: 1e308 + 1e308 is +inf before three rows of
-    # -1.7e308 bring the true sum (and mean, -6.2e307) below zero. NaN → null, the unknown mean
-    # episode_profile already reads nothing off; an episode in range keeps its bits.
+    # the overflow it is `inf` — into a field the emitted contract types plain `float` — and not
+    # even sign-safe: 1e308 + 1e308 is +inf before three rows of -1.7e308 bring the true sum (and
+    # mean, -6.2e307) below zero. NaN → null, the unknown mean episode_profile reads nothing
+    # off; an episode in range keeps its bits.
     day = pd.Timedelta(days=1)
     base = pd.Timestamp("2021-03-01")
     starts = [0, 1, 2, 3, 4, 40]
@@ -2924,10 +2920,10 @@ def test_episode_ledger_mean_past_the_double_range_is_nan_never_a_signed_inf():
 
 
 def test_episode_means_are_exactly_rounded_sums():
-    # The review's episodes: four overlapping rows [−0.5, −2**−55, 0.5, 2**−55] each, summing to
-    # exactly 0. Summed pairwise each mean read 6.9e-18 — eight "winning" episodes, a hit rate of
-    # 1 and a win streak of 8 beside a row mean_ret of exactly 0. The exactly rounded sum reads
-    # every episode at 0: no win, no streak.
+    # Eight episodes of four overlapping rows [−0.5, −2**−55, 0.5, 2**−55] each, summing to
+    # exactly 0. A naive pairwise sum reads each mean 6.9e-18 — eight "winning" episodes beside
+    # a row mean_ret of exactly 0; the exactly rounded sum reads every episode at 0: no win, no
+    # streak.
     day = pd.Timedelta(days=1)
     base = pd.Timestamp("2022-01-03")
     rows = [-0.5, -(2.0**-55), 0.5, 2.0**-55]
@@ -3097,7 +3093,7 @@ def test_cross_mean_pooled_mean_full_bars_are_exactly_zero_in_any_member_order()
     full = np.ones_like(raw, dtype=bool)
     for perm in ([0, 1, 2, 3, 4], [4, 2, 0, 3, 1], [1, 0, 4, 3, 2]):
         assert cross_mean_pooled_mean(raw[:, perm], full[:, perm]) == 0.0
-    # the per-row route it replaces carries residue whose sign depends on the order
+    # a per-row route carries residue whose sign depends on the order
     excess = raw - raw.mean(axis=1, keepdims=True)
     assert float(np.mean(excess)) != 0.0
 
@@ -3135,12 +3131,13 @@ def test_cross_mean_pooled_mean_identical_rows_are_exactly_zero_whatever_closed(
 
 def test_cross_mean_pooled_mean_partial_basket_cancels_exactly():
     # A 22-member bar of 7 zeros, 7 twos and 8 ones has mean 1; its 15 firing members (the zeros,
-    # the twos, one of the ones) have excesses summing to exactly 0. The per-bar form rounded the
-    # membership fraction before the cancellation — 15 − fl(15/22)·22 = 1.8e-15 — and a pool of
-    # such bars read a positive mean_ret the support floor passed. The weighted legs sum exactly.
+    # the twos, one of the ones) have excesses summing to exactly 0. A per-bar form rounding the
+    # membership fraction before the cancellation reads 15 − fl(15/22)·22 = 1.8e-15 — over a
+    # pool of such bars a positive mean_ret that passes the support floor. The weighted legs sum
+    # exactly.
     raw = np.array([[0.0] * 7 + [2.0] * 7 + [1.0] * 8] * 30)
     closed = np.array([[True] * 15 + [False] * 7] * 30)
-    assert 15.0 - (15 / 22) * 22.0 != 0.0  # the defect's arithmetic
+    assert 15.0 - (15 / 22) * 22.0 != 0.0  # the premise
     assert cross_mean_pooled_mean(raw, closed) == 0.0
     for perm in (np.arange(22)[::-1], np.random.RandomState(3).permutation(22)):
         assert cross_mean_pooled_mean(raw[:, perm], closed[:, perm]) == 0.0
@@ -3160,8 +3157,8 @@ def test_cross_mean_pooled_mean_partial_basket_cancels_exactly():
 
 
 def test_cross_mean_pooled_mean_overflow_is_refusable_not_a_crash():
-    # Finite legs whose exact pooled sum leaves the double range: the per-row route read inf
-    # (refused by the gate as non-finite); the exact route must not raise out of the run.
+    # Finite legs whose exact pooled sum leaves the double range: NaN — the exact route must not
+    # raise out of the run.
     assert np.isnan(cross_mean_pooled_mean(np.array([[1.5e308, 0.0]] * 3), np.array([[1, 0]] * 3)))
     # a bar whose own sum overflows
     raw = np.array([[1.5e308, 1.5e308, -1.0]] * 2)
@@ -3247,7 +3244,7 @@ def test_cross_mean_pooled_hac_reads_the_exact_bar_deviation_sums():
 def test_cross_mean_pooled_hac_has_no_variance_where_every_bar_sum_is_exactly_zero():
     # Every bar's excess sum exactly 0 — all-full bars, identical legs, a firing subset whose
     # excesses cancel — is no long-run variance: null, in any member order. Read off the rounded
-    # rows, each bar's sum was residue, and the HAC divided it.
+    # rows, each bar's sum is residue for the HAC to divide.
     rng = np.random.RandomState(19)
     raw = np.round(rng.normal(0.001, 0.02, (60, 4)), 6)
     full = np.ones_like(raw, dtype=bool)
@@ -3264,7 +3261,7 @@ def test_cross_mean_pooled_hac_has_no_variance_where_every_bar_sum_is_exactly_ze
     closed22 = np.array([[True] * 15 + [False] * 7] * 30)
     t, se = _pooled_hac(raw22 - 1.0, raw22, closed22, 0.0, 2)
     assert np.isnan(t) and np.isnan(se)
-    # the review's basket: members (a, b, a, b); only the first two fire, three bars apart, and
+    # a basket of members (a, b, a, b); only the first two fire, three bars apart, and
     # every other firing bar they move while their twins mirror them — each firing bar's two
     # excesses cancel exactly, its two rounded rows do not
     a, b = math.log(0.99), math.log(0.98)
@@ -3377,9 +3374,9 @@ def test_benchmark_regression_constant_decimal_legs_are_degenerate_exactly():
 def test_benchmark_regression_variance_product_out_of_range_is_exact(k):
     # Both legs scaled by 2**k: every moment scales exactly, so beta and r2 keep their bits and
     # alpha scales exactly — while the variance PRODUCT under r2 sits near 2**(4k), outside the
-    # double range. As a double product it read r2 = NaN above it (inf / inf), an r2 off in its
-    # 9th digit in the subnormal range (k = -262), and raised ZeroDivisionError out of the run
-    # once the product underflowed to 0.0 (k = -500).
+    # double range. As a double product it would read r2 = NaN above it (inf / inf), an r2 off in
+    # its 9th digit in the subnormal range (k = -262), and raise ZeroDivisionError once the
+    # product underflows to 0.0 (k = -500).
     rng = np.random.RandomState(4)
     raw = rng.randn(30)
     bench = 0.5 * raw + rng.randn(30)
@@ -3401,7 +3398,7 @@ def _exact_fit(raw, bench):
 def test_benchmark_regression_is_its_exact_moments_quotient_rounded_once():
     # beta and r2 are the exact moments' quotients, rounded once: one double on every platform.
     # `np.cov` (a BLAS sum times a rounded 1/(n − 1)) over `np.var` (a pairwise sum over n − 1)
-    # read identical legs at beta ≠ 1 on most pools, and these legs — an exact slope 0.3125 ulp
+    # reads identical legs at beta ≠ 1 on most pools, and these legs — an exact slope 0.3125 ulp
     # below 5 — at beta 5.0 under Accelerate's summation order, 5.000000000000001 under OpenBLAS's
     # (CI's), alpha −2.5e-32 beside it.
     raw, bench = np.resize([0.0, 2.0**-52], 40), np.resize([0.0, 2.0**-52 / 5.0], 40)
@@ -3424,11 +3421,10 @@ def test_benchmark_regression_is_its_exact_moments_quotient_rounded_once():
 
 
 def test_benchmark_regression_moments_past_the_range_fit_exactly_beta_past_it_declines():
-    # A bench leg past ~1e154 overflowed its variance as a double: `beta = cov / inf` read a
-    # FINITE 0.0 — a fit that never happened — and then declined. Its exact moments have no range
-    # to leave: scaled by 2**532 it fits as the unscaled leg does, beta scaled by 2**-532 and
-    # alpha and r2 kept. A beta past the double range (a wide raw leg on a narrow bench) read inf
-    # with reason None, and declines, saying why.
+    # A bench leg past ~1e154 overflows its variance as a double, where `beta = cov / inf` reads
+    # a FINITE 0.0 — a fit that never happened. Its exact moments have no range to leave: scaled
+    # by 2**532 it fits as the unscaled leg does, beta scaled by 2**-532 and alpha and r2 kept.
+    # A beta past the double range (a wide raw leg on a narrow bench) declines, saying why.
     rng = np.random.RandomState(4)
     raw = rng.randn(30)
     bench = 0.5 * raw + rng.randn(30)
@@ -3445,12 +3441,11 @@ def test_benchmark_regression_moments_past_the_range_fit_exactly_beta_past_it_de
 
 
 def test_benchmark_regression_subnormal_variances_fit_exactly():
-    # Legs of ~1e-161 square into the SUBNORMAL range as doubles: the variance product underflowed
-    # to 0.0 and r2 raised ZeroDivisionError out of the run, the lost bits read r2 = 2.0 for 0.99
-    # in an unbounded exponent range, and then such legs declined `not_representable` — a bench
-    # variance of 0.0 off a VARYING leg had read as "no_benchmark_variation". Exact moments lose
-    # no bits: legs scaled by 2**-536 fit as the unscaled legs do (alpha scaled exactly), a bench
-    # leg at 1e-170 is fitted, and a raw leg at 2**-536 keeps its r2.
+    # Legs of ~1e-161 square into the SUBNORMAL range as doubles, where the variance product
+    # loses its bits or underflows to 0.0 — and a bench variance of 0.0 off a VARYING leg is not
+    # "no_benchmark_variation". Exact moments lose no bits: legs scaled by 2**-536 fit as the
+    # unscaled legs do (alpha scaled exactly), a bench leg at 1e-170 is fitted, and a raw leg at
+    # 2**-536 keeps its r2.
     rng = np.random.RandomState(152)
     raw = rng.randn(8)
     bench = 0.99 * raw + 0.05 * rng.randn(8)
@@ -3632,17 +3627,16 @@ def test_pool_moments_near_constant_pool_moments_are_null_and_silent():
 
 
 def test_pool_moments_shape_is_taken_about_the_pools_own_offset():
-    # The review's pool: 1 + k·eps, k = 0..21, is symmetric — its third central moment is
-    # exactly 0 — but about scipy's own rounded mean the deviations carried that mean's
-    # rounding, and skewness read 0.666 (kurtosis 1.9136) where its translate by −1 reads 0
-    # (1.7950). About the pool's range midpoint the deviations are exact: the moments are the
-    # translate's.
+    # The pool 1 + k·eps, k = 0..21, is symmetric — its third central moment is exactly 0 —
+    # but about scipy's own rounded mean the deviations carry that mean's rounding (a skewness of
+    # 0.666 where its translate by −1 reads 0). About the pool's range midpoint the deviations
+    # are exact: the moments are the translate's, skewness 0 and kurtosis 1.7950.
     eps = np.finfo(float).eps
     pool = 1.0 + np.arange(22) * eps
     s, translate = pool_moments(pool), pool_moments(pool - 1.0)
     assert s["skewness"] == translate["skewness"] == 0.0
     assert s["kurtosis"] == translate["kurtosis"] == pytest.approx(1.7950310559, rel=1e-10)
-    # pools within 17 ulps of 1 tripped scipy's "Precision loss" warning (an exception under
+    # pools within 17 ulps of 1 trip scipy's "Precision loss" warning (an exception under
     # -W error, which this suite runs): about the offset they read their exact-rational moments
     for ulps in ([0, 17, 16], [0, 0, 3, 15]):
         rets = 1.0 + np.array(ulps) * eps
@@ -3656,10 +3650,10 @@ def test_pool_moments_shape_is_taken_about_the_pools_own_offset():
 
 
 def test_pool_std_is_taken_about_the_pools_own_offset():
-    # The review's case: about the rounded raw mean, [2**52, 2**52 + 1]'s deviations read [0, 1]
-    # — the mean rounds onto a member — and std_ret read 1.0 for the exact sqrt(0.5). About the
-    # pool's range midpoint the deviations are exact. The baseline and the bootstrap's SE take the
-    # same read (`ddof1_std`).
+    # About the rounded raw mean, [2**52, 2**52 + 1]'s deviations read [0, 1] — the mean rounds
+    # onto a member — for a std of 1.0. About the pool's range midpoint the deviations are exact:
+    # std_ret is the exact sqrt(0.5). The baseline and the bootstrap's SE take the same read
+    # (`ddof1_std`).
     from seikan.analysis._pools import ddof1_std
 
     assert pool_moments(np.array([2.0**52, 2.0**52 + 1.0]))["std_ret"] == math.sqrt(0.5)
@@ -3671,9 +3665,9 @@ def test_pool_std_is_taken_about_the_pools_own_offset():
 
 def test_benchmark_regression_clustered_legs_read_their_exact_line():
     # Legs clustered at 2**40 (spreads of 31 and 62 ulps, past the near-constant gate): about
-    # their rounded raw means the deviations carried each mean's rounding and the fit read beta
-    # 1.9984 and r2 0.9988 for an exact line of slope 2. The exact moments read the exact line;
-    # alpha stays on the raw means.
+    # their rounded raw means the deviations carry each mean's rounding (a fit of beta 1.9984 for
+    # an exact line of slope 2). The exact moments read the exact line; alpha stays on the raw
+    # means.
     level = 2.0**40
     ulp = float(np.spacing(level))
     bench = level + ulp * np.array([0.0, 31.0, 31.0])
@@ -3684,10 +3678,11 @@ def test_benchmark_regression_clustered_legs_read_their_exact_line():
 
 
 def test_benchmark_regression_alpha_reads_the_exact_leg_means():
-    # The review's legs: the bench leg at 2**50 + 8i, the raw leg 1 above it — beta exactly 1,
-    # and the panel's exactly rounded leg means exactly 1 apart. alpha centred on the pairwise
-    # means instead, whose rounding at the level's ulp (0.25) put them 0.75 apart: alpha 0.75
-    # beside a mean_ret_raw − mean_ret_bench of 1, an identity the panel itself contradicted.
+    # The bench leg at 2**50 + 8i, the raw leg 1 above it — beta exactly 1, and the panel's
+    # exactly rounded leg means exactly 1 apart. The pairwise means round at the level's ulp
+    # (0.25) to 0.75 apart, so an alpha centred on them reads 0.75 beside a mean_ret_raw −
+    # mean_ret_bench of 1, an identity the panel itself would contradict. alpha reads the exact
+    # leg means: 1.
     bench = 2.0**50 + 8.0 * np.arange(31)
     raw = bench + 1.0
     assert float(np.mean(raw)) - float(np.mean(bench)) == 0.75  # the premise
@@ -3698,7 +3693,7 @@ def test_benchmark_regression_alpha_reads_the_exact_leg_means():
 
 
 def test_benchmark_regression_r2_never_exceeds_one():
-    # An exactly linear pair explains all of its variance, and the computed ratio's rounding read
+    # An exactly linear pair explains all of its variance, and a computed ratio's rounding reads
     # an r2 past 1 (by up to 8.9e-16) on about a third of `raw = k·bench + c` pools — a share of
     # the variance explained that no fit has. The exact moments' quotient is at most 1
     # (Cauchy–Schwarz, exactly), and rounding is monotone.
@@ -3715,10 +3710,9 @@ def test_benchmark_regression_r2_never_exceeds_one():
 
 def test_benchmark_regression_near_constant_bench_declines_a_varying_raw_leg_is_fitted():
     # Spread within a few ulps of the mean: the bench leg has no resolvable variation to divide
-    # by — an arbitrary beta (1.9e16 before) — and the fit declines. The raw leg is no divisor,
-    # and its deviations about its offset are exact however small: it is fitted. Its
-    # near-constant shortcut read the review's exact line raw = 1 + bench over
-    # bench = eps·[−4, −2, 0, 2, 4] as beta 0 and r2 null beside reason None, for a slope of 1.
+    # by — only an arbitrary beta — and the fit declines. The raw leg is no divisor, and its
+    # deviations about its offset are exact however small: it is fitted, and the exact line
+    # raw = 1 + bench over bench = eps·[−4, −2, 0, 2, 4] reads its slope of 1.
     near = 0.007 + np.array([0.0, 1.0, 0.0, 2.0, 1.0]) * np.spacing(0.007)
     assert np.ptp(near) > 0.0
     other = np.array([0.01, 0.03, 0.02, 0.05, 0.04])
@@ -3749,9 +3743,9 @@ def test_constant_pool_bootstrap_is_degenerate_exactly(c):
 
 @pytest.mark.parametrize("c", [1e308, -1e308, 3e307])
 def test_constant_pool_bootstrap_past_the_range_is_the_value(c):
-    # Eight equal returns whose sum leaves the double range: the degenerate interval read the
-    # overflowed np.mean — a null interval beside boot_se 0.0, no reason. Every value is equal,
-    # so the value IS the exact arithmetic mean: the interval is c, boot_se 0.0, nothing null.
+    # Eight equal returns whose sum leaves the double range: every value is equal, so the value
+    # IS the exact arithmetic mean, never an overflowed np.mean — the interval is c, boot_se 0.0,
+    # nothing null.
     ci = episode_bootstrap_ci(np.full(8, c), np.arange(8) * 10, 5)
     assert ci["n_episodes"] == 8 and ci["n_boot"] > 0 and ci["reason"] is None
     assert ci["ci_lo"] == ci["ci_hi"] == c and ci["boot_se"] == 0.0
@@ -3760,8 +3754,8 @@ def test_constant_pool_bootstrap_past_the_range_is_the_value(c):
 def test_constant_parts_pool_bootstrap_past_the_range_is_not_representable():
     # A cross_mean pool's rows are a bar's exact parts over the member count: twenty equal rows
     # [2e307, −1] over 3 sum past the double range, so their exact mean — the pool's mean_ret — is
-    # null, and the constant-pool shortcut read a null interval beside boot_se 0.0, no reason.
-    # The block nulls whole and says why, as for an overflowed episode sum.
+    # null. The block nulls whole and says why, as for an overflowed episode sum — never a null
+    # interval beside boot_se 0.0 and no reason.
     rets, bars = np.full(20, 0.5), np.arange(20) * 3
     pool = np.tile([2e307, -1.0], (20, 1))
     assert np.isnan(exact_mean(pool, 3))  # the premise
@@ -3783,10 +3777,9 @@ def test_ddof1_std_of_an_all_equal_pool_is_exactly_zero():
 
 def test_varying_pool_whose_variance_leaves_the_range_has_null_dispersion_never_zero():
     # Deviations of ~1e-170 square below the smallest subnormal: a VARYING pool's computed
-    # variance is exactly 0.0 and std_ret / boot_se read 0.0 — the answer reserved for an
-    # all-equal pool (or bit-identical draws). At 2**-536 the squares are SUBNORMAL and the
-    # variance has lost its bits (std_ret read 5.88e-162 for a pool whose std is 5.68e-162). An
-    # overflowed one read inf. None is a dispersion: NaN → null.
+    # variance is exactly 0.0, the std_ret / boot_se reserved for an all-equal pool (or
+    # bit-identical draws). At 2**-536 the squares are SUBNORMAL and the variance has lost its
+    # bits; an overflowed one is inf. None is a dispersion: NaN → null.
     tiny = np.array([0.0, 1e-170, 2e-170, 3e-170])
     assert np.isnan(pool_moments(tiny)["std_ret"])
     assert np.isnan(baseline_summary(tiny)["std_ret"])
@@ -3807,8 +3800,8 @@ def test_varying_pool_whose_variance_leaves_the_range_has_null_dispersion_never_
 
 def test_bootstrap_se_of_overflowed_draws_is_null_never_a_degenerate_zero():
     # Twelve returns near 1e308: every resampled mean's episode sum overflows, so every draw is
-    # +inf — and `inf == inf` passed the bit-identical-draws test: boot_se 0.0, a degenerate
-    # distribution, beside a null interval. Draws past the double range have no spread: null.
+    # +inf — and `inf == inf` would pass the bit-identical-draws test (boot_se 0.0, a degenerate
+    # distribution). Draws past the double range have no spread: null.
     ci = episode_bootstrap_ci(np.linspace(0.5e308, 1e308, 12), np.arange(12) * 10, 5)
     assert ci["n_episodes"] == 12 and np.isnan(ci["ci_lo"]) and np.isnan(ci["ci_hi"])
     assert np.isnan(ci["boot_se"]) and ci["reason"] == "not_representable"
@@ -3825,9 +3818,9 @@ def test_bootstrap_se_of_draws_whose_variance_overflows_is_null_with_its_reason(
 @pytest.mark.parametrize("sign", [1.0, -1.0])
 def test_bootstrap_interval_over_an_overflowed_episode_is_null_never_one_sided(sign):
     # ONE episode's two rows sum past the double range and seven are ordinary: every draw that
-    # resamples it is ±inf and ranks at one end, so the percentile read one FINITE bound over
-    # draws that left the range (ci_lo −0.28125 above, ci_hi 1.34375 below) beside a null one. A
-    # quantile of such draws is no interval: both bounds null, like boot_se.
+    # resamples it is ±inf and ranks at one end, so a percentile reads one FINITE bound over
+    # draws that left the range beside a null one. A quantile of such draws is no interval: both
+    # bounds null, like boot_se.
     rets = np.array([1.2e308, 1.2e308, 1.0, -2.0, 0.5, 3.0, -1.0, 2.0, 0.25])
     rets[:2] *= sign
     bars = np.array([0, 1, 20, 40, 60, 80, 100, 120, 140])
@@ -3842,12 +3835,12 @@ def test_bootstrap_interval_over_an_overflowed_episode_is_null_never_one_sided(s
 
 def test_bootstrap_episode_sums_are_exactly_rounded():
     # Eight separated episodes of [1, −2**54, −1, 2**54] on consecutive bars (h = 2 chains each
-    # into one): every episode sums to exactly 0, and so does the pool. Summed in floating
-    # point (np.add.reduceat) each episode read 1, and the bootstrap a zero-width interval at
-    # 0.25 with boot_se 0.0 beside a mean_ret of 0 — excluding the mean it brackets.
+    # into one): every episode sums to exactly 0, and so does the pool. Summed in floating point
+    # (np.add.reduceat) each episode reads 1 — a bootstrap interval that excludes the mean_ret
+    # of 0 it brackets. Summed exactly, the interval sits on 0 with boot_se 0.0.
     rets = np.array([1.0, -(2.0**54), -1.0, 2.0**54] * 8)
     bars = (np.arange(8)[:, None] * 10 + np.arange(4)[None, :]).ravel()
-    assert float(np.add.reduceat(rets, [0, 4])[0]) == 1.0  # the premise: the old segment sum
+    assert float(np.add.reduceat(rets, [0, 4])[0]) == 1.0  # the premise: a segment sum in doubles
     ci = episode_bootstrap_ci(rets, bars, 2)
     assert ci["reason"] is None and ci["n_episodes"] == 8
     assert ci["ci_lo"] == ci["ci_hi"] == pool_moments(rets)["mean_ret"] == 0.0
@@ -3856,15 +3849,15 @@ def test_bootstrap_episode_sums_are_exactly_rounded():
 
 @pytest.mark.parametrize("mixed", [False, True])
 def test_bootstrap_draws_are_exact_means_rounded_once(mixed):
-    # The review's pool: seven separated episodes of the two doubles beside 0.1, whose exact sum
-    # is twice 0.1's double — every episode's exact mean is 0.1's double, and so is every draw's.
-    # Each episode's sum was exactly rounded but each draw's sum of them and its quotient were
-    # rounded after it: a zero-width interval at 0.09999999999999999 beside a mean_ret of 0.1.
-    # Its mixed twin puts 0.1 itself between every other episode's pair, 2- and 3-row episodes
-    # at that same exact mean.
+    # Seven separated episodes of the two doubles beside 0.1, whose exact sum is twice 0.1's
+    # double — every episode's exact mean is 0.1's double, and so is every draw's. A draw's sum
+    # of exactly rounded episode sums and its quotient, each rounded after it, put a zero-width
+    # interval at 0.09999999999999999 beside a mean_ret of 0.1; each draw is its exact mean,
+    # rounded once. Its mixed twin puts 0.1 itself between every other episode's pair, 2- and
+    # 3-row episodes at that same exact mean.
     below, above = np.nextafter(0.1, 0.0), np.nextafter(0.1, 1.0)
     assert Fraction(float(below)) + Fraction(float(above)) == 2 * Fraction(0.1)
-    assert np.full(7, 0.2).sum() / 14 != 0.1  # the premise: the old draw arithmetic
+    assert np.full(7, 0.2).sum() / 14 != 0.1  # the premise: draw arithmetic in doubles
     eps = [[below, 0.1, above] if mixed and k % 2 else [below, above] for k in range(7)]
     rets = np.concatenate(eps)
     bars = np.concatenate([10 * k + np.arange(len(e)) for k, e in enumerate(eps)])
@@ -3934,7 +3927,7 @@ def test_bootstrap_over_full_bar_zeros_is_exactly_zero():
     # A `cross_mean` basket whose every bar is full: each bar's excesses sum to zero by
     # identity, its rounded rows to residue. Summing the pool values (0.0 on every full-bar row)
     # the interval sits at exactly 0.0 with an SE of exactly 0.0 — summing the rows themselves
-    # it sat at the residue.
+    # it would sit at the residue.
     bars = np.repeat(np.arange(6) * 10, 3)
     rets = np.tile([-5.333333333333333, -3.333333333333333, 8.666666666666668], 6)
     assert float(np.sum(rets[:3])) != 0.0  # the premise: the rounded excesses do not cancel
@@ -3945,7 +3938,7 @@ def test_bootstrap_over_full_bar_zeros_is_exactly_zero():
 
 
 def test_constant_pool_has_no_bucket_monotonicity():
-    # A constant pool's bucket means are its value, every one (their pairwise sums rounded apart
+    # A constant pool's bucket means are its value, every one (pairwise sums round them apart
     # with the bucket sizes): no rank signal.
     rng = np.random.RandomState(3)
     trades = pd.DataFrame({"ret": np.full(45, 0.7), "feat": rng.normal(0.0, 1.0, 45)})
@@ -3968,10 +3961,10 @@ _ZERO_SUM_ORDERS = (
 
 @pytest.mark.parametrize("targets", [("A",), ("A", "B")], ids=["one_target", "ordinals"])
 def test_buckets_holding_the_same_returns_read_the_same_mean(targets):
-    # Four buckets of the same six returns, each in another row order: the rounded means rose
-    # with the order and ranked as a perfectly monotone edge (rho 1.0) on the one-target kernel
-    # and on the ordinal arm alike. The bucket means are exactly rounded: 0.0 each, no rank
-    # signal.
+    # Four buckets of the same six returns, each in another row order: the rounded means rise
+    # with the order and would rank as a perfectly monotone edge (rho 1.0) on the one-target
+    # kernel and on the ordinal arm alike. The bucket means are exactly rounded: 0.0 each, no
+    # rank signal.
     rets = np.concatenate(_ZERO_SUM_ORDERS)
     rounded = (
         pd.Series(rets).groupby(np.repeat(np.arange(4), 6)).mean().tolist()
@@ -3997,8 +3990,8 @@ def test_buckets_holding_the_same_returns_read_the_same_mean(targets):
 @pytest.mark.parametrize(("c", "n"), [(0.1, 3), (0.1, 25), (0.007, 5), (0.007, 40)])
 def test_constant_decimal_pool_has_no_dispersion_to_divide_by(c, n):
     # The computed mean of a constant DECIMAL pool is not the constant (these (c, n) are the
-    # cases where numpy's is not), so np.std read the rounding residue as ~1e-17 of dispersion
-    # and the HAC divided by it: |t_hac| ~ 1e16 on a pool with no variation at all.
+    # cases where numpy's is not), so np.std reads the rounding residue as ~1e-17 of dispersion,
+    # and a HAC dividing by it reads |t_hac| ~ 1e16 on a pool with no variation at all.
     rets = np.full(n, c)
     assert float(np.mean(rets)) != c  # the premise
     t, se = newey_west_mean(rets, np.arange(n), h=3)
@@ -4017,9 +4010,9 @@ def test_newey_west_near_constant_pool_is_null():
 
 
 def test_newey_west_overflowed_long_run_variance_is_null_never_a_zero_t():
-    # Returns past ~1e154 overflow the long-run variance: `mean / inf` read a FINITE t of 0.0
+    # Returns past ~1e154 overflow the long-run variance: `mean / inf` reads a FINITE t of 0.0
     # beside an infinite SE — "no edge" minted from an overflow. Below the ceiling the direct
-    # form is untouched: a power-of-two scale reproduces t exactly and scales the SE exactly.
+    # form stands: a power-of-two scale reproduces t exactly and scales the SE exactly.
     rets = np.random.RandomState(3).randn(40)
     bars = np.arange(40) * 10
     t, se = newey_west_mean(rets * 2.0**520, bars, 5)
@@ -4033,9 +4026,9 @@ def test_newey_west_overflowed_long_run_variance_is_null_never_a_zero_t():
 
 def test_newey_west_underflowed_variance_is_null_never_a_crash():
     # Returns of ±3e-162 square into the bottom of the subnormal range: the long-run variance
-    # over n = 20 rounded down to an SE of exactly 0.0, and `mean / se` raised ZeroDivisionError
-    # out of the run. At 2**-520 the variance stayed subnormal-nonzero and t read off its lost
-    # bits (-1.1031486149 for -1.1031486153). Below the normal range: no estimate, (NaN, NaN).
+    # over n = 20 rounds down to an SE of exactly 0.0, where `mean / se` raises
+    # ZeroDivisionError. At 2**-520 the variance stays subnormal-nonzero and a t read off it has
+    # lost bits. Below the normal range: no estimate, (NaN, NaN).
     t, se = newey_west_mean(np.array([3e-162, -3e-162] * 10), np.arange(20) * 10, 5)
     assert np.isnan(t) and np.isnan(se)
     rets = np.random.RandomState(3).randn(40)
@@ -4045,8 +4038,7 @@ def test_newey_west_underflowed_variance_is_null_never_a_crash():
 
 def test_pool_moments_shape_reads_off_an_out_of_range_variance_power_are_null():
     # skewness = m3 / m2**1.5 and kurtosis = m4 / m2**2: at a 2**-266 scale (~1e-80) m2**2 and m4
-    # are SUBNORMAL — kurtosis read 3.7180340 for 3.7172188 — and at 2**-350 m2**1.5 is too
-    # (skewness -0.1399959974 for -0.1399960027). A moment read off lost bits is null; while
+    # are SUBNORMAL, and at 2**-350 m2**1.5 is too. A moment read off lost bits is null; while
     # the power stays normal every bit survives the power-of-two scale.
     v = np.random.RandomState(0).standard_t(4, 200)
     base = pool_moments(v)
@@ -4061,8 +4053,9 @@ def test_pool_moments_shape_reads_off_an_out_of_range_variance_power_are_null():
 
 def test_pool_moments_shape_read_whose_moment_overflows_under_a_normal_power_is_null():
     # One deviation past ~5.6e102 cubes to inf while the 999 small rows keep m2**1.5 (~1e304) a
-    # normal double: scipy's skewness read inf / finite = -inf, a non-finite value in the
-    # in-memory summary (json_safe nulled it only on the way out). NaN, like every other read.
+    # normal double: scipy's skewness reads inf / finite = -inf, a non-finite value that would
+    # sit in the in-memory summary (json_safe nulls it only on the way out). NaN, like every
+    # other read.
     out = pool_moments(np.array([-6e102] + [1e99] * 999))
     assert np.isnan(out["skewness"]) and np.isnan(out["kurtosis"])
     assert np.isfinite(out["std_ret"])
@@ -4081,9 +4074,9 @@ def test_pool_moments_exact_constant_pool_moments_are_null():
 
 
 def test_cscv_level_heavy_returns_still_score():
-    # A diff outcome on a series at level 1e9: the raw one-pass Σx² − n·mean² variance was pure
-    # rounding garbage there (quantum ~100 against a true SS ~1e-4 — clamped to 0, every split
-    # score NaN → "insufficient_data"). Shifted moments score it like any other grid.
+    # A diff outcome on a series at level 1e9: a raw one-pass Σx² − n·mean² variance is pure
+    # rounding garbage there (quantum ~100 against a true SS ~1e-4). Shifted moments score it
+    # like any other grid.
     rng = np.random.RandomState(21)
     cells = _pbo_cells(rng, 800, 12)
     for c in cells:
@@ -4096,8 +4089,8 @@ def test_cscv_level_heavy_returns_still_score():
 
 def test_cscv_basket_equals_union_at_huge_level():
     # The basket's pooled column IS the union pool — the same rows in another order, and every
-    # per-column sum is exact — so the two grids agree bit for bit, even at level 1e9 where the
-    # raw one-pass form cancelled.
+    # per-column sum is exact — so the two grids agree bit for bit, even at level 1e9 where a
+    # raw one-pass form cancels.
     rng = np.random.RandomState(9)
     T, h = 800, 1
     fwd_a = rng.normal(0.0, 0.01, T) + 1e9
@@ -4144,8 +4137,8 @@ def test_cscv_constant_split_pool_is_never_ranked(mode, targets):
     # Combo 0's returns vary across the run but are constant within each half, so the S=8
     # split whose train blocks are the first half (and its test blocks, the second) scores a
     # constant pool. Shifted by the WHOLE column's mean, its reconstructed variance is rounding
-    # residue — the Sharpe read ±1e7 there and outranked every honest candidate. A constant
-    # pool has no dispersion: it drops out of that split's ranking like any undefined score.
+    # residue — a Sharpe read off it (±1e7) outranks every honest candidate. A constant pool has
+    # no dispersion: it drops out of that split's ranking like any undefined score.
     cells = _two_level_cells(targets)
     out = cscv_pbo(cells, 400, list(targets), mode=mode, n_combos_declared=5)
     assert out["reason"] is None and out["blocks"] == 8
@@ -4165,9 +4158,8 @@ def _split_values(columns, blocks):
 def test_cscv_split_score_reads_exact_constancy_per_split():
     # The column varies (0.1 in blocks 0-1, 0.3 in blocks 2-3), but a split over blocks {0, 1}
     # alone is a constant pool. Shifted by the WHOLE column's mean, with unequal block counts,
-    # its reconstructed variance is residue that once scored a Sharpe of ~7.6e7; the per-block
-    # extrema (and the rounding floor behind them) leave it undefined, while a split mixing the
-    # two levels varies and scores.
+    # its reconstructed variance is residue; the per-block extrema (and the rounding floor
+    # behind them) leave it undefined, while a split mixing the two levels varies and scores.
     r = np.array([0.1] * 5 + [0.3] * 5)
     b = np.array([0, 0, 1, 1, 1, 2, 2, 3, 3, 3])
     columns = _split_columns(r, b)
@@ -4190,8 +4182,8 @@ def test_cscv_split_score_nulls_dispersion_below_rounding():
 
 def test_cscv_split_score_of_an_overflowed_sd_is_nan_never_zero():
     # A column with one observation in each of two blocks, X and Y: their exact variance
-    # (X − Y)²/2 is past the double range — sd = inf, and `mean / inf` scored a FINITE 0.0
-    # Sharpe that entered the split's ranking. NaN drops it from the split instead.
+    # (X − Y)²/2 is past the double range — sd = inf, and `mean / inf` is a FINITE 0.0 Sharpe
+    # that would enter the split's ranking. NaN drops it from the split instead.
     x, y = 1.3e154, -1.2e154
     assert (Fraction(x) - Fraction(y)) ** 2 / 2 > Fraction(np.finfo(float).max)  # the premise
     columns = _split_columns(np.array([x, y]), np.array([0, 1]), s=2)
@@ -4215,7 +4207,7 @@ def test_cscv_pbo_over_returns_whose_variance_overflows_declines_silently(scale)
 def test_cscv_pbo_scores_returns_whose_squares_overflow_while_their_variance_is_a_double():
     # At 2**518 the largest return squares past the double range while every split's variance
     # is a double: exact, every split scores, and the power of two keeps every bit — the unscaled
-    # grid's block. Accumulated from the rows' squared deviations, the grid declined
+    # grid's block. Accumulated from the rows' squared deviations, the grid would decline
     # `insufficient_data`.
     keys = ("pbo", "n_splits", "lambda_mean", "prob_oos_loss", "oos_degradation_slope")
     cells = _pbo_cells(np.random.RandomState(5), 800, 12)
@@ -4229,11 +4221,11 @@ def test_cscv_pbo_scores_returns_whose_squares_overflow_while_their_variance_is_
 
 
 def test_cscv_prob_oos_loss_reads_the_exact_rank_where_the_sharpe_underflows():
-    # The review's grid: candidate A holds [1e150, −1e150, −1e-200] in each of 8 blocks and B
-    # twice that — a positive multiple, so every split ties (pbo and lambda_mean 0.0) — and every
-    # split's mean is negative. As a double that Sharpe, ~−3e-201 over an sd of ~8.5e149,
-    # underflows to −0.0, and `< 0.0` counted no loss on any of the 70 splits; the loss is read
-    # off the exact rank, whose sign is the mean's.
+    # Candidate A holds [1e150, −1e150, −1e-200] in each of 8 blocks and B twice that — a
+    # positive multiple, so every split ties (pbo and lambda_mean 0.0) — and every split's mean
+    # is negative. As a double that Sharpe, ~−3e-201 over an sd of ~8.5e149, underflows to −0.0,
+    # where `< 0.0` counts no loss on any of the 70 splits; the loss is read off the exact rank,
+    # whose sign is the mean's.
     n, s = 192, 8
     w = n // s
     mask = np.zeros(n, dtype=bool)
@@ -4256,8 +4248,7 @@ def test_cscv_prob_oos_loss_reads_the_exact_rank_where_the_sharpe_underflows():
 
 def test_cscv_split_score_of_a_subnormal_variance_is_nan_never_a_sharpe():
     # Returns of ~1e-161 have a SUBNORMAL variance, which holds fewer bits than the Sharpe divides
-    # by (read off one, the score was 0.13804 for 0.13853): NaN. While the variance stays normal
-    # the power-of-two scale keeps every bit of the score.
+    # by: NaN. While the variance stays normal the power-of-two scale keeps every bit of the score.
     r = np.random.RandomState(8).randn(40)
     b = np.repeat(np.arange(4), 10)
     blocks = np.array([0, 2])
@@ -4285,9 +4276,9 @@ def test_cscv_near_constant_split_pool_is_never_ranked():
 def test_cscv_single_level_near_constant_pool_is_never_ranked(mode, targets):
     # Combo 0 sits at ONE level with every other bar one ulp up: the column's own mean lies on
     # the values, so a split's centered sum of squares is computed accurately — and is still
-    # only rounding-scale spread. It scored a Sharpe of ~1e15, won every split and read pbo 0.0;
-    # the HAC's gate (largest deviation within 10 ulps of the mean, read off the per-block
-    # extrema) leaves it unranked whatever the column's other blocks hold.
+    # only rounding-scale spread, a Sharpe of ~1e15 that would win every split. The HAC's gate
+    # (largest deviation within 10 ulps of the mean, read off the per-block extrema) leaves it
+    # unranked whatever the column's other blocks hold.
     T = 400
     rng = np.random.RandomState(9)
     level = np.full(T, 0.005)
@@ -4315,12 +4306,11 @@ def test_cscv_split_score_of_an_exact_constant_pool_near_the_column_mean_is_nan(
 
 
 def test_cscv_pbo_split_means_carry_their_rows_exact_sign():
-    # The review's grid: two candidates over returns cycling through ±0.1, ±0.2, ±0.3, 0.01
-    # higher in the second half — A on the first six bars of every block, B on the next twelve.
-    # No split's exact mean is negative, and the split over the first half's blocks is exactly
-    # 0 for both, a tie. Rebuilt as the split's mean shift plus the column's mean, that 0 read
-    # −2.6e-18 for each over its own sd: a test loss for the train winner, its rank turned —
-    # pbo 2/70, prob_oos_loss 1/70.
+    # Two candidates over returns cycling through ±0.1, ±0.2, ±0.3, 0.01 higher in the second
+    # half — A on the first six bars of every block, B on the next twelve. No split's exact mean
+    # is negative, and the split over the first half's blocks is exactly 0 for both, a tie: no
+    # test loss (a mean rebuilt as the split's mean shift plus the column's mean reads that 0 as
+    # −2.6e-18, a loss for the train winner).
     T, S = 480, 8
     ret = np.tile([-0.3, -0.2, -0.1, 0.1, 0.2, 0.3], T // 6)
     ret[T // 2 :] += 0.01
@@ -4340,8 +4330,8 @@ def test_cscv_pbo_split_means_carry_their_rows_exact_sign():
 
 def test_cscv_split_mean_is_the_rows_exact_sum_across_blocks():
     # Block sums 2**55, 2, −2**55 and −2: the split over blocks 0-3 holds rows summing to
-    # exactly 0, so its Sharpe is 0.0. Added over the blocks in floating point, 2**55 swallowed
-    # the 2 before its partner arrived, and the split's mean read −0.25.
+    # exactly 0, so its Sharpe is 0.0. Added over the blocks in floating point, 2**55 swallows
+    # the 2 before its partner arrives, and the split's mean reads −0.25.
     r = np.array([2.0**54, 1.0, -(2.0**54), -1.0, 0.5, -0.5, 0.25, -0.25] * 2)
     columns = _split_columns(r, np.tile(np.arange(8), 2), s=8)
     assert _split_values(columns, np.arange(4))[0] == 0.0
@@ -4349,10 +4339,10 @@ def test_cscv_split_mean_is_the_rows_exact_sum_across_blocks():
 
 def test_cscv_split_pool_inside_one_regime_still_scores():
     # Combo 0 sits at 0.005 on the first half of the bars and at 0.022 on the second, each with
-    # a 1e-9 spread: a split inside one half has real dispersion, 1e-7 of its level. Its one-pass
-    # sum of squares about the WHOLE column's mean was the difference of two sums ~1e14 times
-    # larger, and the accumulation-error gate refused it in both splits that hold one half; the
-    # merged block moments score it in every split.
+    # a 1e-9 spread: a split inside one half has real dispersion, 1e-7 of its level. A one-pass
+    # sum of squares about the WHOLE column's mean is the difference of two sums ~1e14 times
+    # larger, which an accumulation-error gate would refuse; the merged block moments score it
+    # in every split.
     cells = _two_level_cells(("t",))
     noise = np.random.RandomState(4).normal(0.0, 1e-9, 400)
     for cell in cells:
@@ -4365,7 +4355,7 @@ def test_cscv_split_pool_inside_one_regime_still_scores():
 
 def test_cscv_split_score_is_exact_arithmetics_rounded_once():
     # Every split's mean and ddof=1 variance are its rows' exact ones, each correctly rounded —
-    # at level 1e9, where the raw one-pass Σx² − n·mean² form cancelled to rounding noise, and
+    # at level 1e9, where a raw one-pass Σx² − n·mean² form cancels to rounding noise, and
     # at level 0 — its Sharpe the mean over the variance's root, and its rank key the exact
     # Sharpe's square with its sign.
     from itertools import combinations
@@ -4385,11 +4375,10 @@ def test_cscv_split_score_is_exact_arithmetics_rounded_once():
 
 
 def test_cscv_pbo_candidates_with_the_same_exact_moments_tie():
-    # The review's construction: per block, candidate A holds α·[10, 13, 13, 16] and B
-    # α·[11, 11, 14, 16] — other returns with the same count, sum and sum of squares, so the same
-    # exact mean and variance on every split: a full tie, pbo and lambda_mean 0.0. Merged from
-    # the blocks' centered moments, each row's squared deviation rounded on its own, the two
-    # Sharpes parted in their last bits and 99 of 100 such grids read a nonzero pbo (up to 0.214).
+    # Per block, candidate A holds α·[10, 13, 13, 16] and B α·[11, 11, 14, 16] — other returns
+    # with the same count, sum and sum of squares, so the same exact mean and variance on every
+    # split: a full tie, pbo and lambda_mean 0.0. Merged from the blocks' centered moments, each
+    # row's squared deviation rounded on its own, the two Sharpes would part in their last bits.
     # α spans binades and signs, its low six mantissa bits cleared so every multiple is exact.
     s, per = 8, 6
     rng = np.random.RandomState(0)
@@ -4415,11 +4404,11 @@ def test_cscv_pbo_candidates_with_the_same_exact_moments_tie():
 
 @pytest.mark.parametrize(("mode", "targets"), [("conjunction", ("t",)), ("basket", ("A", "B"))])
 def test_cscv_pbo_candidates_with_proportional_returns_tie(mode, targets):
-    # The review's pair: candidate 1 holds exactly three times candidate 0's returns on the same
-    # bars, so the same Sharpe on every split — a full tie. As the quotient of the rounded mean
-    # and the root of the rounded variance the two Sharpes parted in their last bits, and the
-    # strict train and test comparisons read a winner and a loser. Ranked by the exact Sharpe
-    # every split ties: pbo and lambda_mean 0.0, under basket with both members scaled.
+    # Candidate 1 holds exactly three times candidate 0's returns on the same bars, so the same
+    # Sharpe on every split — a full tie. As the quotient of the rounded mean and the root of the
+    # rounded variance the two Sharpes part in their last bits, and strict train and test
+    # comparisons read a winner and a loser. Ranked by the exact Sharpe every split ties: pbo and
+    # lambda_mean 0.0, under basket with both members scaled.
     T = 480
     rng = np.random.RandomState(20)
     for _ in range(10):
@@ -4448,10 +4437,10 @@ def test_cscv_split_over_a_block_holding_an_unknown_bar_sum_is_unscored():
 
 def test_cscv_split_score_reads_each_blocks_spread_at_its_own_level():
     # Blocks 0-1 alternate 0 and 2**-56, blocks 2-3 sit at 1.0 / 1.2. Shifted by the whole
-    # column's mean (≈ 0.55), every tiny row read −0.55: the split over blocks {0, 1} had a
-    # variance of exactly 0 and scored NaN where its Sharpe is √(19/20). About each block's own
-    # offset the split's score reads its own rows alone — bit-identical whether the held-out
-    # blocks sit at 1 or at 2**-56.
+    # column's mean (≈ 0.55), every tiny row reads −0.55, so the split over blocks {0, 1} would
+    # have a variance of exactly 0 where its Sharpe is √(19/20). About each block's own offset
+    # the split's score reads its own rows alone — bit-identical whether the held-out blocks sit
+    # at 1 or at 2**-56.
     tiny = np.array([0.0, 2.0**-56] * 10)
     b = np.repeat(np.arange(4), 10)
     beside_level = np.concatenate([tiny, np.array([1.0, 1.2] * 10)])
@@ -4461,9 +4450,9 @@ def test_cscv_split_score_reads_each_blocks_spread_at_its_own_level():
         for r in (beside_level, beside_tiny)
     ]
     assert scores[0] == scores[1] == pytest.approx(math.sqrt(19 / 20))
-    # the review's grid through cscv_pbo: two alternating-bar candidates over a column whose first
-    # half alternates 0 / 2**-56 pairwise and whose second half sits at 1 / 1.2 — the two splits
-    # drawn from the first half alone went unscored (68 of 70); every split scores now
+    # through cscv_pbo: two alternating-bar candidates over a column whose first half alternates
+    # 0 / 2**-56 pairwise and whose second half sits at 1 / 1.2 — every split scores, the two
+    # drawn from the first half alone included
     T = 176
     half = np.arange(T) < T // 2
     fwd = np.where(
@@ -4534,14 +4523,14 @@ def test_oos_degradation_slope_matches_centered_ols_and_reason():
     tr_c, te_c = tr - tr.mean(), te - te.mean()
     assert reason is None and slope == pytest.approx(float(tr_c @ te_c / (tr_c @ tr_c)))
     # Near-constant train scores at a large level: an exact-zero std test would sail into a
-    # rank-deficient fit (numpy's polyfit warned "poorly conditioned" and emitted an arbitrary
+    # rank-deficient fit (numpy's polyfit warns "poorly conditioned" and emits an arbitrary
     # min-norm slope); the scale-relative test nulls it with the reason said out loud.
     tr_flat = np.full(8, 1e6)
     tr_flat[3] += 1e-10
     slope, reason = _degradation_slope(tr_flat, np.linspace(0.0, 1.0, 8))
     assert slope is None and reason == "degenerate_train_scores"
-    # Small scores with real spread are no degenerate fit: floored at a magnitude of 1, the test
-    # read these as constant and nulled their exact slope of −1.
+    # Small scores with real spread are no degenerate fit: a test floored at a magnitude of 1
+    # would read these as constant and null their exact slope of −1.
     tr_small = np.array([0.0, 3.471605e-16, 1e-16, 2e-16, 2.5e-16, 0.5e-16, 1.5e-16, 3e-16])
     slope, reason = _degradation_slope(tr_small, -tr_small)
     assert reason is None and slope == pytest.approx(-1.0)
@@ -4593,8 +4582,7 @@ def test_cscv_pbo_all_full_cross_mean_grid_ties_in_every_declaration_order():
     # Every candidate's every bar is full, so every split's exact pooled mean is 0: each split
     # is a full tie (λ = 0, no test loss, no train spread for the slope). Over the rounded rows
     # each split Sharpe is residue / sd, and pbo, lambda_mean and prob_oos_loss rank that
-    # residue (they followed the order the targets were declared in while each member's rows
-    # summed apart).
+    # residue.
     import itertools
 
     keys = ("pbo", "lambda_mean", "prob_oos_loss")
@@ -4710,13 +4698,13 @@ def test_cscv_split_mean_sums_the_bars_exact_excess_sums():
 
 
 def test_cscv_pbo_basket_candidates_holding_the_same_block_returns_tie_however_members_split():
-    # The review's grid: two candidates over two members, each holding the same six returns in
-    # every block, split between the members differently (and fired on other bars). Exact
-    # arithmetic ties every split: pbo, lambda_mean and prob_oos_loss 0.0. Scored off
-    # per-member moments — each member's rows about its own mean, pooled through the cross-term
-    # expansion — the two Sharpes parted in their last bits with the split, and this full tie
-    # read pbo 0.343, lambda_mean −0.208. A basket candidate is ONE column, its members' rows
-    # pooled: the same block sums whichever member holds a return, in any member order.
+    # Two candidates over two members, each holding the same six returns in every block, split
+    # between the members differently (and fired on other bars). Exact arithmetic ties every
+    # split: pbo, lambda_mean and prob_oos_loss 0.0. Scored off per-member moments — each
+    # member's rows about its own mean, pooled through the cross-term expansion — the two
+    # Sharpes would part in their last bits with the split. A basket candidate is ONE column,
+    # its members' rows pooled: the same block sums whichever member holds a return, in any
+    # member order.
     T, six = 800, [-0.0413, -0.0187, 0.0009, 0.0221, 0.0397, 0.0583]
     a_holds = [  # per block, candidate 0's and candidate 1's A subsets; B holds the rest
         ((0, 1, 2), (0, 3, 5)),

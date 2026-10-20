@@ -1,5 +1,5 @@
 """Shared helpers for the suite: the data-binding pair, the synthetic-CSV writers, the smallest
-condition builders, and the gate-result readers that several modules used to re-declare.
+condition builders, and the gate-result readers.
 
 A thesis NAMES its series and never locates them, so materializing market data is two steps: bind
 the declared keys to files (``resolve_data_files``), then load. Every test that needs data does the

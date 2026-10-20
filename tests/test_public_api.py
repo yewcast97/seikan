@@ -83,10 +83,10 @@ def test_list_entries_expands_shared_axes(tmp_path):
 
 
 def test_a_load_answers_one_data_declaration(tmp_path):
-    # A MarketData holds feeds ALIGNED under the declaration it was loaded with. The review's
-    # misuse: a lag-0 load handed to a thesis declaring a 1-day lag read the feed a bar early —
-    # +100% where the declared lag measures 0%. Both entry points refuse a load of another
-    # declaration; a thesis declaring the same data shares the load, whatever else it asks.
+    # A MarketData holds feeds ALIGNED under the declaration it was loaded with: a lag-0 load
+    # handed to a thesis declaring a 1-day lag would read the feed a bar early (+100% where the
+    # declared lag measures 0%). Both entry points refuse a load of another declaration; a thesis
+    # declaring the same data shares the load, whatever else it asks.
     px = bars(tmp_path / "px.csv", [100.0 + i for i in range(40)])
     feed = tmp_path / "f.csv"
     idx = pd.date_range("2021-01-01", periods=40, freq="1D", name="datetime")
@@ -125,11 +125,11 @@ def test_a_load_answers_one_data_declaration(tmp_path):
 
 def test_a_load_refuses_bindings_that_do_not_answer_its_declaration(tmp_path):
     # Both entry points compare the declaration a load is stamped with (``MarketData.spec``), so
-    # the load must be of exactly what that declaration names. The review's misuse: bindings
-    # resolved for an A-only thesis, loaded under the A + B declaration, read A alone stamped as
-    # A + B, and the A + B thesis's one cell was met on A's +0.23% mean where the honest load
-    # (B at −0.28%) leaves it unmet. The loader refuses before a file is read — the A path names
-    # no file, so a read would have raised its DataError instead.
+    # the load must be of exactly what that declaration names. Bindings resolved for an A-only
+    # thesis, loaded under the A + B declaration, would read A alone stamped as A + B, and the
+    # A + B thesis's one cell would be met on A's +0.23% mean where the honest load (B at −0.28%)
+    # leaves it unmet. The loader refuses before a file is read — the A path names no file, so a
+    # read would raise its DataError instead.
     a = bars(tmp_path / "A.csv", [100.0 + 0.25 * i for i in range(80)])
     b = bars(tmp_path / "B.csv", [100.0 - 0.25 * i for i in range(80)])
     a_only, both = (
@@ -151,8 +151,8 @@ def test_a_load_refuses_bindings_that_do_not_answer_its_declaration(tmp_path):
 
 def test_a_load_refuses_feed_bindings_that_do_not_answer_its_declaration(tmp_path):
     # A hand-built ``DataFiles`` is held to the declaration's feeds the same way: a feed the
-    # declaration lacks loaded silently, and a declared feed left unbound, or a per-target feed's
-    # map short of a member, died with a ``KeyError`` deep in the load instead of a refusal.
+    # declaration lacks, a declared feed left unbound, or a per-target feed's map short of a
+    # member is refused — never loaded silently, never a ``KeyError`` deep in the load.
     targets = {
         name: str(bars(tmp_path / f"{name}.csv", [100.0 + i for i in range(40)])) for name in "AB"
     }

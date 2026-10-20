@@ -15,44 +15,40 @@ constant, so no layer can drift from another on which variance still carries its
 **The log ratio.** ``ln(num/den)`` of two strictly positive finite levels is always a
 representable double (its magnitude never exceeds 1455), and it is read SIGNED: the log of the
 larger level ``hi`` over the smaller ``lo``, negated where ``num < den``, so ``ln(a/b)`` is
-``−ln(b/a)`` bit for bit. Read in its own direction each quotient rounded on its own:
-``ln(fl(110/100))`` is 0.09531017980432493 and ``ln(fl(100/110))`` −0.09531017980432490, so a
-price cycle 100 → 110 → 100, a move that went nowhere, summed to 2e-17 — a positive mean log
-return the support floor graded, and a rolling-mean sign predicate firing. A longer cycle (100 →
-110 → 120 → 100) cancels only to rounding, as any sum of rounded terms does. The log is
-``log1p`` of the larger level's relative EXCESS over the smaller, ``(hi − lo) / lo`` — the
-percent change's own read (below), the correctly rounded quotient wherever ``hi ≤ 2·lo`` — and
-``log1p`` of a non-negative argument passes at most its relative rounding through (condition
-number ≤ 1), so the log carries a RELATIVE rounding however small the move: measured within 1.4
-ulps of exact across every binade. ``ln(fl(hi/lo))`` rounded the quotient at the ulp of 1 first,
-an ABSOLUTE rounding of up to 2**-53 under every move: 100 → 100.00000001 read
-1.000000082690371e-10 for 9.999993721476353e-11, above its own percent change
-9.999993721976352e-11 where ``ln(1 + r) ≤ r`` for every ``r > −1`` (``change(close, log) >
-change(close, pct)`` fired on 60 of 120 bars alternating the pair), and two adjacent doubles near
-100 read 2.2e-16 for 1.4e-16. The excess is 0 or at least 2**-53, so it never underflows; past
-the double range it overflows to ``inf`` exactly where the quotient does (``1e200`` over
-``1e-200``: there ``hi − lo`` is ``hi``), and its log, NaN after the finite-or-NaN sanitation,
-would censor an outcome whose true value is the finite ``921.034…`` — there the difference of
-logs ``ln(hi) − ln(lo)``, which never leaves the range, stands in. Neither the quotient's log nor
-the difference of logs may stand in anywhere else: each reads other bits on almost every ordinary
+``−ln(b/a)`` bit for bit and a price cycle 100 → 110 → 100, a move that went nowhere, sums to
+exactly 0. Read in its own direction, each quotient would round on its own and the cycle would
+sum to a positive mean log return — one the support floor grades and a rolling-mean sign
+predicate fires on. A longer cycle (100 → 110 → 120 → 100) cancels only to rounding, as any sum
+of rounded terms does. The log is ``log1p`` of the larger level's relative EXCESS over the
+smaller, ``(hi − lo) / lo`` — the percent change's own read (below), the correctly rounded
+quotient wherever ``hi ≤ 2·lo`` — and ``log1p`` of a non-negative argument passes at most its
+relative rounding through (condition number ≤ 1), so the log carries a RELATIVE rounding however
+small the move: measured within 1.4 ulps of exact across every binade. ``ln(fl(hi/lo))`` would
+round the quotient at the ulp of 1 first, an ABSOLUTE rounding of up to 2**-53 under every move,
+enough to read a small move's log above its own percent change where ``ln(1 + r) ≤ r`` for every
+``r > −1``. The excess is 0 or at least 2**-53, so it never underflows; past the double range it
+overflows to ``inf`` exactly where the quotient does (``1e200`` over ``1e-200``: there
+``hi − lo`` is ``hi``), and its log, NaN after the finite-or-NaN sanitation, would censor an
+outcome whose true value is the finite ``921.034…`` — there the difference of logs
+``ln(hi) − ln(lo)``, which never leaves the range, stands in. Neither the quotient's log nor the
+difference of logs may stand in anywhere else: each reads other bits on almost every ordinary
 pair. Each twin keeps its callers' log implementations (``math.log1p`` and ``math.log`` for the
 scalar reads, ``np.log1p`` and ``np.log`` for the array reads), which need not agree to the last
 bit: numpy picks its kernel by CPU, and its AVX-512 Linux build reads Intel's SVML ``log1p``, an
-ulp off the C library's on 181 of 4,999 random-walk pairs. Tests pin each twin to the rule in its
-own library, bit for bit, and the twins to within an ulp of each other.
+ulp off the C library's on some pairs. Tests pin each twin to the rule in its own library, bit
+for bit, and the twins to within an ulp of each other.
 
-**The percent change.** ``num/den − 1`` rounds the quotient at the ulp of 1 before the exact
-subtraction, so a change under +100% carried an ABSOLUTE rounding of up to 2**-53 however small
-it was: 100 → 110 read 0.10000000000000009 and 100 → 90 −0.09999999999999998, so a rise and the
-mirror fall off one base averaged 5.6e-17 — a positive mean the support floor graded — and a
-rolling mean of such changes read ``> 0`` where exact arithmetic reads 0. :func:`pct_change` forms
-``(num − den) / den``: the difference is exact wherever ``den/2 ≤ num ≤ 2·den`` (Sterbenz — every
-move from −50% to +100%), so there the change is the correctly rounded quotient (``(110 − 100) /
-100`` is the double 0.1 and ``(90 − 100) / 100`` its negation, so the pair cancels exactly);
-beyond it, two roundings of RELATIVE size. Three moves off one base whose exact changes cancel
-(+10%, +20%, −30%) cancel only to rounding, as any sum of rounded terms does: their doubles sum
-exactly to ``2**-55``. On positive levels the difference cannot overflow, and the quotient leaves
-the double range exactly as the ratio did (an underflow still reads −1.0).
+**The percent change.** :func:`pct_change` forms ``(num − den) / den``, never ``num/den − 1``,
+which rounds the quotient at the ulp of 1 before the exact subtraction — an ABSOLUTE rounding of
+up to 2**-53 on a change under +100% however small it is, so a rise and the mirror fall off one
+base would average to a positive mean the support floor grades, and a rolling mean of such
+changes would read ``> 0`` where exact arithmetic reads 0. The difference is exact wherever
+``den/2 ≤ num ≤ 2·den`` (Sterbenz — every move from −50% to +100%), so there the change is the
+correctly rounded quotient (``(110 − 100) / 100`` is the double 0.1 and ``(90 − 100) / 100`` its
+negation, so the pair cancels exactly); beyond it, two roundings of RELATIVE size. Three moves
+off one base whose exact changes cancel (+10%, +20%, −30%) cancel only to rounding, as any sum of
+rounded terms does. On positive levels the difference cannot overflow, and the quotient leaves
+the double range exactly where ``num/den`` does (an underflow reads −1.0).
 
 Positive finite levels are the CALLERS' gate (both ratio algebras are positive-domain, and each
 caller already refuses or masks a non-positive endpoint); on them the log ratio is always finite,
@@ -81,7 +77,7 @@ def midrange(lo: float, hi: float) -> float:
     row by row (``compiler.nb._row_offset``). A value's deviation from it is exact wherever the
     values lie within a factor of two of it, so a spread at the level's ulp keeps its bits, where
     one about the ROUNDED raw mean carries that mean's rounding: ``[2**52, 2**52 + 1]``'s mean
-    rounds onto ``2**52``, and its ddof=1 std read 1.0 for 0.707."""
+    rounds onto ``2**52``, and a ddof=1 std about it reads 1.0 for 0.707."""
     return hi / 2.0 + lo / 2.0
 
 

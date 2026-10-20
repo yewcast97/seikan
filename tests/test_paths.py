@@ -70,8 +70,8 @@ def _excursion_by_definition(frame: np.ndarray, base: np.ndarray, h: int, which:
 def test_excursion_extremum_is_its_window_extremum_beside_any_hole():
     # Holes and ±inf anywhere in the H/L path and the exit print, in both directions: NaN wherever
     # a window member is not finite, and every window a hole is NOT in reads its own extremum.
-    # scipy's comparison-based filters carried a NaN's state past its window, so a fully observed
-    # window behind a hole read the wrong extremum (the reviewer's fixture is
+    # This guards against a comparison-based filter (scipy's) carrying a NaN's state past its
+    # window, where a fully observed window behind a hole reads the wrong extremum (end to end:
     # `test_mae_and_mfe_behind_a_hole_read_their_own_window`). The extremum and the trough index
     # come off one scan: the bar the trough indexes (the exit print at j = h) holds the extremum.
     rng = np.random.default_rng(29)
@@ -97,7 +97,7 @@ def test_excursion_extremum_is_its_window_extremum_beside_any_hole():
 
 
 def test_bars_to_trough_runs_in_memory_linear_in_the_frame():
-    # `argmin` over the non-contiguous `sliding_window_view` of the H/L windows copied the whole
+    # `argmin` over the non-contiguous `sliding_window_view` of the H/L windows copies the whole
     # (anchors × targets × h) stack: 170 MiB for this 0.73 MiB frame of 3,000 bars × 32 targets
     # at h = 252 (~4.5 GiB at 5,000 × 500), where the excursion extrema beside it are O(n) per
     # column. One scan per column keeps the frame's own scale. tracemalloc counts numpy's

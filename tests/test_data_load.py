@@ -352,10 +352,9 @@ def test_index_mismatch_listing_is_bounded(tmp_path):
 
 
 def test_target_clocks_compare_in_exact_ticks_past_the_nanosecond_range(tmp_path):
-    # The review's case: a nanosecond-stamped target beside one holding a 2500-01-01 bar (a
-    # microsecond clock). pandas' union promoted both to int64 nanoseconds and crashed the load
-    # (OutOfBoundsDatetime, exit 4) instead of naming the mismatch; in exact ticks it is the
-    # ordinary refusal, each target's missing stamp named.
+    # A nanosecond-stamped target beside one holding a 2500-01-01 bar (a microsecond clock):
+    # compared in exact ticks it is the ordinary refusal, each target's missing stamp named,
+    # where pandas' union promotes both to int64 nanoseconds and raises OutOfBoundsDatetime.
     a = tmp_path / "a.csv"
     a.write_text(
         "datetime,open,high,low,close\n"
@@ -425,10 +424,10 @@ def test_loaded_frames_are_read_only(tmp_path):
 
 def test_a_file_bound_under_several_keys_is_read_once(tmp_path, monkeypatch):
     # One file can answer several keys. Read once per binding, a file rewritten between those
-    # reads was measured as two different files under one path, while the run's data identity
-    # (one digest per path) named only the last. The load reads each distinct path once and every
-    # binding parses that snapshot: here the bytes on disk change right after the first read, and
-    # both targets still measure — and digest — the bytes that read returned.
+    # reads would be measured as two different files under one path, while the run's data
+    # identity (one digest per path) names only the last. The load reads each distinct path once
+    # and every binding parses that snapshot: here the bytes on disk change right after the first
+    # read, and both targets still measure — and digest — the bytes that read returned.
     px = _ohlcv(tmp_path / "px.csv", n=8)
     first = px.read_bytes()
     other = _ohlcv(tmp_path / "other.csv", n=8, closes=np.linspace(50.0, 60.0, 8)).read_bytes()
@@ -463,8 +462,7 @@ def test_a_file_bound_under_several_keys_is_read_once(tmp_path, monkeypatch):
 @pytest.mark.parametrize(
     ("last", "lag", "carried"),
     [
-        # a nanosecond clock at its last instant: no lag fits (pandas raised OverflowError — an
-        # exit 4 out of the load)
+        # a nanosecond clock at its last instant: no lag fits (pandas raises OverflowError there)
         ("2262-04-11T23:47:16.854775807", "1ns", None),
         # a microsecond stamp past 2262: a nanosecond lag promotes it out of the nanosecond range
         # (OutOfBoundsDatetime), while a lag at the stamp's own resolution carries it
@@ -532,9 +530,8 @@ def test_load_retains_native_prints_post_lag_shared_and_per_target(tmp_path):
 
 
 def test_feed_age_is_exact_tick_arithmetic_past_the_int64_nanosecond_span(tmp_path):
-    # The review's case: a feed stamped at a nanosecond past 1700 against bars in 2026. pandas
-    # formed the age as an int64 nanosecond difference, which overflowed past ~292 years and
-    # crashed the load (OverflowError); in exact ticks the age is defined.
+    # A feed stamped at a nanosecond past 1700 against bars in 2026: in exact ticks the age is
+    # defined, where an int64 nanosecond difference overflows past ~292 years (OverflowError).
     _ohlcv(tmp_path / "target.csv", n=3, start="2026-01-01")
     pd.DataFrame(
         {"v": [1.0]}, index=pd.Index(["1700-01-01T00:00:00.000000001"], name="datetime")
@@ -549,8 +546,8 @@ def test_feed_age_is_exact_tick_arithmetic_past_the_int64_nanosecond_span(tmp_pa
 def test_feed_age_is_the_exact_tick_quotient_rounded_once(units):
     # In any mix of clock resolutions the age is the exact difference over a day, rounded once —
     # a bar on a stamp reads 0.0, a bar before the first stamp NaN. pandas' Timedelta division
-    # (this test's former reference) casts a nanosecond difference past 2**53 (~104 days) to a
-    # double first, and so misses the correctly rounded age by an ulp on a fifth of those spans.
+    # casts a nanosecond difference past 2**53 (~104 days) to a double first, and so misses the
+    # correctly rounded age by an ulp on a fifth of those spans.
     from seikan.compiler.data import _feed_age_days
 
     rng = np.random.default_rng(len(units[0]) * 7 + len(units[1]))
@@ -571,9 +568,9 @@ def test_feed_age_is_the_exact_tick_quotient_rounded_once(units):
 
 
 def test_feed_age_rounds_once_at_a_freshness_boundary(tmp_path):
-    # The review's case: a print 120 days and 1 ns before the first bar. The tick difference was
-    # cast to a double (past 2**53 ns it rounds to even) before the division rounded again, so
-    # the age read 120.0; the exact quotient, rounded once, is the next double above 120.
+    # A print 120 days and 1 ns before the first bar: the exact quotient, rounded once, is the
+    # next double above 120 — guarding against a tick difference cast to a double (past 2**53 ns
+    # it rounds to even) before the division rounds again, which reads 120.0.
     _ohlcv(tmp_path / "target.csv", n=3, start="2024-01-01")
     stamp = pd.Timestamp("2024-01-01") - pd.Timedelta(days=120, nanoseconds=1)
     pd.DataFrame({"datetime": [stamp.isoformat()], "f": [1.0]}).to_csv(
@@ -589,12 +586,11 @@ def test_feed_age_rounds_once_at_a_freshness_boundary(tmp_path):
 
 
 def test_feed_anchoring_is_exact_tick_arithmetic_past_the_nanosecond_clock(tmp_path):
-    # The review's case: a feed holding a print at 2500-01-01 — a microsecond clock, past the
-    # nanosecond range — beside nanosecond bars in 2026. The asof anchor was pandas' reindex-ffill,
-    # which promoted the feed clock to nanoseconds and refused the load (OutOfBoundsDatetime, a
-    # ValueError, so spec_data_mismatch at exit 2) over a print no bar ever reads, after check-data
-    # had accepted both files; the feed age beside it was already exact ticks. In exact ticks
-    # every bar reads the 2026 print, and the age agrees with the position.
+    # A feed holding a print at 2500-01-01 — a microsecond clock, past the nanosecond range —
+    # beside nanosecond bars in 2026. In exact ticks every bar reads the 2026 print, and the age
+    # agrees with the position. This guards against an asof anchor by pandas' reindex-ffill,
+    # which promotes the feed clock to nanoseconds and refuses the load (OutOfBoundsDatetime)
+    # over a print no bar ever reads.
     from seikan.compiler.data import _feed_age_days, anchor_feed
 
     bars = pd.date_range("2026-01-01T00:00:00.000000001", periods=4, freq="1D")
@@ -604,7 +600,7 @@ def test_feed_anchoring_is_exact_tick_arithmetic_past_the_nanosecond_clock(tmp_p
     np.testing.assert_array_equal(anchored.to_numpy(), [2.0, 2.0, 2.0, 2.0])
     assert anchored.index.equals(bars) and anchored.name == "f"
     np.testing.assert_array_equal(np.floor(_feed_age_days(feed, bars).to_numpy()), [0, 1, 2, 3])
-    # through the loader, the thesis the review ran: the feed reads 2 on every bar
+    # through the loader: the feed reads 2 on every bar
     pd.DataFrame(
         {"open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": 1.0},
         index=pd.Index(bars, name="datetime"),
@@ -621,8 +617,8 @@ def test_feed_anchoring_is_exact_tick_arithmetic_past_the_nanosecond_clock(tmp_p
 
 @pytest.mark.parametrize("units", [("us", "us"), ("us", "ns"), ("ns", "us"), ("s", "ms")])
 def test_feed_anchoring_is_pandas_reindex_ffill_bit_for_bit_in_range(units):
-    # Wherever the int64 comparison held, the anchored value is the very one pandas' backward
-    # asof (reindex-ffill) gave: the latest print at or before each bar, NaN before the first —
+    # Wherever pandas' int64 comparison holds, the anchored value is the very one its backward
+    # asof (reindex-ffill) gives: the latest print at or before each bar, NaN before the first —
     # a bar ON a stamp reads that stamp's print, never the next.
     from seikan.compiler.data import anchor_feed
 
@@ -643,10 +639,10 @@ def test_feed_anchoring_is_pandas_reindex_ffill_bit_for_bit_in_range(units):
 
 
 def test_a_benchmark_bar_past_the_nanosecond_range_is_ignored_not_a_crash(tmp_path):
-    # The review's case: a benchmark holding a 2500-01-01 bar (a microsecond clock) beside a
-    # nanosecond target. pandas' reindex promoted it to int64 nanoseconds and crashed the load
-    # (OutOfBoundsDatetime, exit 4) over a bar no target reads; matched in exact ticks it is
-    # ignored, each bar reading the benchmark stamped at exactly its instant, NaN where none is.
+    # A benchmark holding a 2500-01-01 bar (a microsecond clock) beside a nanosecond target:
+    # matched in exact ticks that bar is ignored, each bar reading the benchmark stamped at
+    # exactly its instant, NaN where none is — where pandas' reindex promotes it to int64
+    # nanoseconds and raises OutOfBoundsDatetime over a bar no target reads.
     target = tmp_path / "target.csv"
     target.write_text(
         "datetime,open,high,low,close\n"
@@ -670,8 +666,8 @@ def test_a_benchmark_bar_past_the_nanosecond_range_is_ignored_not_a_crash(tmp_pa
 
 @pytest.mark.parametrize("units", [("us", "us"), ("us", "ns"), ("ns", "us"), ("s", "ms")])
 def test_benchmark_matching_is_pandas_reindex_bit_for_bit_in_range(units):
-    # Wherever the int64 comparison held, the matched value is the very one pandas' reindex (no
-    # fill) gave: the print stamped at exactly the bar's instant, NaN everywhere else.
+    # Wherever pandas' int64 comparison holds, the matched value is the very one its reindex (no
+    # fill) gives: the print stamped at exactly the bar's instant, NaN everywhere else.
     from seikan.compiler.data import _match_feed
 
     rng = np.random.default_rng(len(units[0]) * 11 + len(units[1]))

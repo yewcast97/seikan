@@ -99,7 +99,7 @@ def _run(
     The two channels are disjoint, so which one carries the document
     is decided by the exit code: a completed run writes the report to the nominated file and leaves
     stdout EMPTY (asserted here — every test in this suite would otherwise keep passing if the
-    report regressed back onto stdout), while a refusal writes only its envelope to stdout and no
+    report leaked onto stdout), while a refusal writes only its envelope to stdout and no
     file at all. The report path is always nominated: a run that nominates nothing is a usage error
     before the thesis is read, which would mask every manipulation this suite plants; ``argv`` may
     still carry further output flags, and the silence assertion then covers those files too.
@@ -338,17 +338,17 @@ def _first_true_cooldown(cooldown: int) -> dict:
 )
 def test_unexecutable_param_exits_3(golden, capsys, dsl):
     """A parameter outside the executable domain — an EW warmup or a window, cooldown or horizon
-    past the 2**31 − 1 bar-count ceiling — is invalid input, refused at parse. The first four used
-    to validate and crash (exit 4, the internal-bug tier, from caller input): the 2e19-bar span
-    alpha 1e-19 implies and the 10**20 bars are integers past 2**64, which no machine type a numba
-    kernel takes holds, and 5e-324 implies an infinite span ``math.ceil`` cannot convert. Just past
-    the ceiling they used to RUN — the alpha (9e-10, under the 2**-30 floor) and the window all
-    warmup, the cooldown firing its first edge into a measured report — and the horizon reached the
+    past the 2**31 − 1 bar-count ceiling — is invalid input, refused at parse, never a crash in the
+    internal-bug tier (exit 4) from caller input: the 2e19-bar span alpha 1e-19 implies and the
+    10**20 bars are integers past 2**64, which no machine type a numba kernel takes holds, and
+    5e-324 implies an infinite span ``math.ceil`` cannot convert. Just past the ceiling each would
+    otherwise RUN — the alpha (9e-10, under the 2**-30 floor) and the window all warmup, the
+    cooldown firing its first edge into a measured report — and the horizon would reach the
     data-sufficiency check (exit 2) as if the data were short. Between 2**63 and 2**64 the outcome
-    hung on evaluation order: numba typed such a value unsigned, so a 2**63 window ran all warmup
-    where it compiled the kernel first and crashed ("int too big to convert") once the signed kernel
-    existed — as it does after the 20 level of this sweep. One refusal now covers the whole range,
-    wherever the machine limit lies."""
+    would hang on evaluation order: numba types such a value unsigned, so a 2**63 window runs all
+    warmup where it compiles the kernel first and crashes ("int too big to convert") once the
+    signed kernel exists — as it does after the 20 level of this sweep. One refusal covers the
+    whole range, wherever the machine limit lies."""
     code, doc = _run(
         capsys,
         golden,
@@ -421,8 +421,8 @@ def test_the_complete_report_is_emitted_however_many_cells_are_unmet(golden, cap
 # The entry reads a per-member decision FEED (1.0 everywhere, 0.0 on event bars), which is what
 # makes the feed the decision leaf an attacker holes. Events are SPARSE (gaps 6–10 > h) on
 # purpose: a basket entry firing nearly every bar chains ALL observations into ONE merged
-# episode cluster and concentration refuses at max_cluster_share_abs=1.0 — correct pre-existing
-# doctrine, but it would make every fixture here fail for the wrong reason.
+# episode cluster and concentration refuses at max_cluster_share_abs=1.0 — correct doctrine,
+# but it would make every fixture here fail for the wrong reason.
 
 _POOLED_KEYS = {
     "n",
@@ -570,9 +570,9 @@ def test_reordering_the_basket_cannot_mint_a_cross_sectional_mean(tmp_path, caps
     """The order the targets are declared in is the caller's to choose, and no decision may hang
     on it. Every bar's cross-section is ``[1, −2**-54, −1, 2**-54, 0]``, whose exact mean is 0,
     so ``cross_agg(x, mean) > 0`` is false on every bar. Summed pairwise in floating point, the
-    declared order read 1.1e-17 — every member firing on every bar out of rounding — and a
-    permutation of it read 0. The mean is the exactly rounded sum over the count: neither order
-    fires."""
+    declared order reads 1.1e-17 — every member firing on every bar out of rounding — and a
+    permutation of it reads 0; the mean is the exactly rounded sum over the count, so neither
+    order fires."""
     e = 2.0**-54
     data: dict[str, Path] = {}
     for k, (target, value) in enumerate({"A": 1.0, "B": -e, "C": -1.0, "D": e, "E": 0.0}.items()):
