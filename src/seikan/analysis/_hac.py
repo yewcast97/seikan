@@ -38,24 +38,19 @@ def newey_west_mean(rets: np.ndarray, entry_bars: np.ndarray, h: int) -> tuple[f
     in that form — each bar's deviation sum about the pool's EXACT mean, exact and rounded once
     (:func:`_bar_deviation_sums`), then the quadratic form over bars, each lag's terms exactly
     summed (:func:`_hac_from_bar_sums`). Accumulated row by row, the squared deviations and the
-    cross terms that cancel them were summed apart, and their cancellation destroyed the
-    precision of a much smaller combined variance: ten members firing together whose deviations
-    cancel to ``(k − 2.5)·2**−24`` per bar read an SE of 3.73e-10 where the estimator's exact
-    value is 1.05e-9 (``t`` 40.0 for 14.12). Rows with the same per-bar sums give the same
+    cross terms that cancel them would be summed apart, their cancellation destroying the
+    precision of a much smaller combined variance. Rows with the same per-bar sums give the same
     estimate, no permutation of a bar's rows can move it (the basket pooled path), and a pool
     and its translate read the same sums; ``t`` is the reported mean — the pool's exactly rounded
     ``mean_ret`` (``_pools.exact_mean``) — over the SE.
 
     A (near-)constant pool (:func:`near_constant`) is ``(NaN, NaN)``, like any other pool
     without a positive long-run variance: its dispersion is rounding residue — the computed mean
-    of a constant DECIMAL pool is not the constant — and dividing by it minted ``|t| ≈ 1e16``.
-    So is a pool whose BARS all sit exactly at its mean, however its rows vary — every row on one
-    bar above all (:func:`_hac_from_bar_sums`); a pool whose mean's variance ``s/n`` is not a
-    normal double (``_pools.is_normal``): past the range (returns past ~1e154) ``mean / inf`` read
-    a finite ``t = 0.0`` beside an infinite SE; below it (returns under ~1e-154) the squared
-    deviations had lost their bits — a t off by 0.7 — or underflowed to an SE of 0.0, and
-    ``mean / 0.0`` raised ZeroDivisionError out of the run; and a pool with a deviation sum past
-    the double range, which no double holds.
+    of a constant DECIMAL pool is not the constant — and dividing by it would mint
+    ``|t| ≈ 1e16``. So is a pool whose BARS all sit exactly at its mean, however its rows vary —
+    every row on one bar above all — or whose mean's variance ``s/n`` is not a normal double
+    (returns past ~1e154 or under ~1e-154; :func:`_hac_from_bar_sums`), and a pool with a
+    deviation sum past the double range, which no double holds.
 
     No p-value is computed here: a consumer who wants one derives it from ``t_stat`` at
     ``df = n_nonoverlap − 1`` — the row count wildly overstates the information on an
@@ -117,13 +112,9 @@ def _exact_deviation_sums(
 def _bar_deviation_sums(rets: np.ndarray, bars: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """``(u, d_bar)`` of a finite pool: its distinct entry bars (ascending) and each bar's EXACT
     deviation sum ``D_a = Σ_{i∈a} r_i − k_a·μ`` about the pool's exact mean, correctly rounded
-    (:func:`_exact_deviation_sums`). Rounding each row's deviation before the bar summed it —
-    about the pool's range midpoint, the centre in those shifted coordinates — turned members
-    whose returns cancel within a bar into variation between bars: three members alternating
-    ``[0.8, −0.4, −0.4]`` and ``[0, 0, 0]`` beside a fourth at ``2**−52`` sit every bar exactly
-    at the mean, and read sums of ±5.6e-17, an SE of 1.6e-18 and ``t`` 35.7 where the estimator
-    has no variance at all; the fourth at ``2**−51`` on every other bar read an SE 27% high.
-    Raises ``OverflowError`` where a sum leaves the double range."""
+    (:func:`_exact_deviation_sums`). Rounding each row's deviation before its bar sums it would
+    turn members that cancel within a bar into variation between bars. Raises ``OverflowError``
+    where a sum leaves the double range."""
     u, group = np.unique(bars, return_inverse=True)
     return u, _exact_deviation_sums(rets.tolist(), group, np.bincount(group), 1)
 
@@ -178,8 +169,7 @@ def cross_mean_pooled_hac(
     count less its ``k_t`` closed rows' share of the exact mean, rounded once
     (:func:`_exact_deviation_sums`). Read off the rounded rows instead, a pool whose every bar's
     excess sum is 0 — every member firing together, or a firing subset whose excesses cancel on
-    each bar — divided the residue: a ``mean_ret`` of exactly 0 beside ``t_hac`` 5.43, its
-    ``hac_se`` 1.6e-19.
+    each bar — would divide by residue.
 
     ``t`` is computed here as ``mean / se``, so the panel's ``t_hac`` is its ``mean_ret`` over its
     ``hac_se`` on every pool. ``(NaN, NaN)`` under the same rules as :func:`newey_west_mean`: fewer

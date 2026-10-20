@@ -64,12 +64,7 @@ def episode_bootstrap_ci(
     integers over one power-of-two denominator (``_pools.integer_terms``), each episode's sum
     an integer, each draw's the sum of its episodes' and its mean one quotient of integers,
     correctly rounded — the rule ``mean_ret`` reads (``_pools.exact_mean``), so a draw whose
-    exact mean is the pool's reads ``mean_ret`` itself. Summed in floating point,
-    ``[1, −2**54, −1, 2**54]`` read 1 for its exact 0 and eight such episodes a zero-width
-    interval at 0.25 beside a ``mean_ret`` of 0; with each episode's sum exactly rounded but the
-    draw's sum and quotient rounded after it, seven episodes of the two doubles beside 0.1 —
-    every episode's exact mean 0.1's double, every draw's too — read a zero-width interval at
-    0.09999999999999999 beside a ``mean_ret`` of 0.1. Same keys always: ``{method, ci_level,
+    exact mean is the pool's reads ``mean_ret`` itself. Same keys always: ``{method, ci_level,
     n_boot, n_episodes, ci_lo, ci_hi, boot_se, reason}`` — an empty pool reports
     ``reason="no_observations"``, fewer than ``BOOT_MIN_EPISODES`` episodes reports the honest
     ``n_episodes`` with ``reason="insufficient_episodes"`` (a dense every-bar pool transitively
@@ -87,13 +82,13 @@ def episode_bootstrap_ci(
 
     ``rets_pool`` (row-aligned with ``rets``; default ``rets`` itself) is what the episode sums
     ADD, over ``pool_scale`` — a ``cross_mean`` basket's pooled panel hands in its bar
-    numerators, each bar's exact parts on its first closed row and zeros on the rest, over the
-    member count (``_pools.cross_mean_bar_numerators``; NaN where a bar's sum left the double
-    range, which nulls the interval like an overflowed episode sum). An episode holds each bar's
-    rows entirely (one bar, one window), so each episode sum is its bars' exact numerator sum,
-    and a draw divides the sum of its episodes' sums by ``pool_scale`` times its row count once.
-    Everything else stays on ``rets``: the canonical (bar, ret) order, the seed digest (so the
-    draw stream is the one ``rets`` alone would give) and the episodes.
+    numerators over the member count (``_pools.cross_mean_bar_numerators``; NaN where a bar's
+    sum left the double range, which nulls the interval like an overflowed episode sum). An
+    episode holds each bar's rows entirely (one bar, one window), so each episode sum is its
+    bars' exact numerator sum, and a draw divides the sum of its episodes' sums by
+    ``pool_scale`` times its row count once. Everything else stays on ``rets``: the canonical
+    (bar, ret) order, the seed digest (so the draw stream is the one ``rets`` alone would give)
+    and the episodes.
     """
     rets = np.asarray(rets, dtype=float)
     bars = np.asarray(entry_bars, dtype=np.int64)
@@ -129,10 +124,9 @@ def episode_bootstrap_ci(
     out["n_boot"] = BOOT_N
     if (pool == pool[0]).all():
         # Every row adds the same value, so every draw's mean is that value — the exact mean
-        # `_pools.exact_mean` reads (`mean_ret`), where a computed mean read an ulp off it (0.3
-        # as 0.29999999999999993) and an overflowed sum a null interval beside `boot_se` 0.0.
-        # Rows of parts whose exact sum has no double have no mean to read (`mean_ret` is null
-        # beside them): the block says so, as for an overflowed episode sum.
+        # `_pools.exact_mean` reads (`mean_ret`), never a computed mean an ulp off it. Rows of
+        # parts whose exact sum has no double have no mean to read (`mean_ret` is null beside
+        # them): the block says so, as for an overflowed episode sum.
         mean = exact_mean(pool, pool_scale)
         if math.isnan(mean):
             return _not_representable(out)

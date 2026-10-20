@@ -115,23 +115,18 @@ def _mixes_units(df: pd.DataFrame, commensurable: bool) -> bool:
 def _episode_means(pool: np.ndarray, clusters: list[list[int]], scale: int) -> np.ndarray:
     """Each episode's MEAN of its rows' pool values over ``scale`` — the per-episode read the
     ledger lists and the profile aggregates — as the exactly rounded sum over ``scale`` times the
-    row count (:func:`exact_mean`):
-    the exact sum's sign, and 0.0 exactly where it is 0, because the profile COUNTS those signs
-    (hit rate, streaks). Summed pairwise, eight episodes of ``[−0.5, −2**−55, 0.5, 2**−55]``
-    read a mean of 6.9e-18 each — a hit rate of 1 and a win streak of 8 beside a row
-    ``mean_ret`` of exactly 0. NaN where the rows' sum leaves the double range: the true mean of
-    finite returns is finite, but no computed one is, and an overflowed sum claims a sign the
-    episode does not have. No value, no sign: NaN → null."""
+    row count (:func:`exact_mean`): the exact sum's sign, and 0.0 exactly where it is 0, because
+    the profile COUNTS those signs (hit rate, streaks). NaN where the rows' sum leaves the double
+    range: the true mean of finite returns is finite, but no computed one is, and an overflowed
+    sum claims a sign the episode does not have. No value, no sign: NaN → null."""
     return np.array([exact_mean(pool[c], scale) for c in clusters])
 
 
 def _herfindahl(masses: list[Fraction]) -> tuple[float, float]:
     """``(mass_hhi, effective_n_clusters)`` of the clusters' exact |return| masses —
     ``Σ m² / (Σ m)²`` and its reciprocal, each the correctly rounded value of exact arithmetic,
-    so they hold the ranges ``[1/n, 1]`` and ``[1, n]`` the shares imply. Over rounded shares a
-    dominant cluster beside a zero-mass one read 1.0000000000000004 and 0.9999999999999996, and
-    five equal episodes of 0.3 an effective 5.000000000000001. Takes a positive total mass (the
-    shares' domain rule)."""
+    so they hold the ranges ``[1/n, 1]`` and ``[1, n]`` the shares imply, which sums over rounded
+    shares can leave. Takes a positive total mass (the shares' domain rule)."""
     total = sum(masses, Fraction(0))
     square = sum((m * m for m in masses), Fraction(0))
     return float(square / total**2), float(total**2 / square)
@@ -155,7 +150,8 @@ def episode_stats(trades: pd.DataFrame, *, commensurable: bool = True) -> Episod
     concentration checklist reads. ``mass_hhi`` (Σ share² over the clusters' |return|-mass
     shares) and ``effective_n_clusters`` (1/hhi ∈ [1, n_clusters]) are its SMOOTH companions:
     two episodes at 50% each clear a 0.60 ceiling while reading as exactly two effective
-    episodes here. The remaining keys are evidence; no check reads the hhi pair.
+    episodes here. ``cell_evidence`` reconciles ``n``, ``n_clusters`` and the ceiling read with
+    the largest-by-count share; the hhi pair is evidence no check reads.
 
     The rows are merged ACROSS targets, so a cluster is a market episode rather than a per-target
     one: an edge that is one crisis seen through three targets must not read as three episodes.
@@ -187,11 +183,9 @@ def episode_stats(trades: pd.DataFrame, *, commensurable: bool = True) -> Episod
     masses = [exact_mass(mag[c]) for c in clusters]
     total = sum(masses, Fraction(0))  # the clusters partition the rows: the pool's exact mass
     largest = max(range(len(clusters)), key=lambda i: len(clusters[i]))
-    # ONE set of cluster masses feeds the ceiling read AND its smooth Herfindahl companion — the
-    # ceiling sees only the LARGEST share, so two 50% episodes sail under 0.60 while hhi = 0.5
-    # says the pool is exactly two effective episodes. NaN on a zero- or overflowed-mass pool
-    # (`mass_share`'s domain rule) and on one summed across units (evidence-only for the hhi
-    # pair; max_cluster_share_abs is the gated read).
+    # ONE set of cluster masses feeds the ceiling read AND its smooth Herfindahl companion. NaN
+    # on a zero- or overflowed-mass pool (`mass_share`'s domain rule) and on one summed across
+    # units (evidence-only for the hhi pair; max_cluster_share_abs is the gated read).
     if _mixes_units(df, commensurable):
         share = max_share = mass_hhi = effective = _NAN
     else:
@@ -230,9 +224,7 @@ def episode_ledger(
     """TIME-ORDERED per-episode ledger of one cell's CLOSED rows — the narrative companion to
     :func:`episode_stats`, which reports only the extremes.
 
-    Same frozen pipeline as :func:`episode_stats`, step for step: rows drop NaN
-    ``entry_time`` / ``exit_time`` / ``ret``, sort by ``entry_time``, and merge through
-    :func:`overlap_clusters` — the half-open ``[entry, exit)`` greedy transitive merge, rows
+    Same frozen pipeline as :func:`episode_stats`, step for step (:func:`_episode_view`): rows
     merged ACROSS targets so one cluster is one market episode (which is why in basket mode
     this already IS the pooled ledger). ``n_total`` therefore equals
     ``episode_stats["n_clusters"]`` on the same rows BY CONSTRUCTION — a reconciliation a
@@ -251,8 +243,7 @@ def episode_ledger(
     ``episode_stats.max_cluster_share_abs``.
 
     ``mean_ret`` sums ``rets_pool`` (row-aligned with ``trades``; default the rows' ``ret``)
-    over ``pool_scale`` — a ``cross_mean`` basket's bar numerators, each bar's exact parts on its
-    first closed row and zeros on the rest, over the member count
+    over ``pool_scale`` — a ``cross_mean`` basket's bar numerators over the member count
     (``_pools.cross_mean_bar_numerators``); an episode holds each bar's rows entirely, so its
     mean is its bars' exact numerator sum, correctly rounded, over ``pool_scale`` times its row
     count (:func:`_episode_means`). It is NaN → null where that sum leaves the double range (the
@@ -321,9 +312,9 @@ def episode_profile(
     ``hit_rate``, and ``profit_factor``'s loss mass. The calibration for that is deliberately NOT
     a reweighting — a correction would embed a modeling choice about the exchangeable unit this
     reporter has no business making — but a second view: cluster the rows into episodes with the
-    SAME frozen pipeline as :func:`episode_stats` (dropna → sort by entry → cross-target
-    :func:`overlap_clusters` merge, so one crisis seen through three targets is ONE episode),
-    aggregate once per episode, and recompute the same statistics over the episodes.
+    SAME frozen pipeline as :func:`episode_stats` (:func:`_episode_view` — one crisis seen
+    through three targets is ONE episode), aggregate once per episode, and recompute the same
+    statistics over the episodes.
     Row-vs-episode divergence is then itself the visible cluster diagnostic — the ``n`` vs
     ``n_nonoverlap`` doctrine applied to every pool statistic. In basket mode the cross-target merge
     makes this the pooled episode read for free.
@@ -386,8 +377,8 @@ def episode_profile(
     )
     # EPISODE-ALIGNED excursion aggregates — one slot per cluster, NaN where the cluster carries
     # no finite value in that leg (or no unit to compare them in). The quantile blocks below read
-    # each leg's own finite subset (as ever), while `edge_ratio` reads the ALIGNED pair, so an
-    # episode censored on one side feeds its surviving leg's block but never the ratio.
+    # each leg's own finite subset, while `edge_ratio` reads the ALIGNED pair, so an episode
+    # censored on one side feeds its surviving leg's block but never the ratio.
     mae_by_episode = np.full(len(clusters), _NAN)
     mfe_by_episode = np.full(len(clusters), _NAN)
     for i, c in enumerate(clusters):

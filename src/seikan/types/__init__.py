@@ -18,8 +18,8 @@ Three reading rules, so an annotation here is never mistaken for a claim the eng
   still types the in-memory builder literals (a ``float`` write is compatible with
   ``float | None``). Whether a given ``None`` means "declined to compute" (the bootstrap's
   interval bounds, a refusal block's value, a ``reason``-paired field) or "computed as
-  undefined" (an empty pool's NaN) is stated in each class's own docstring — the type no longer
-  distinguishes them, the prose does.
+  undefined" (an empty pool's NaN) is stated in each class's own docstring — the type does not
+  distinguish them, the prose does.
 - **These describe the emitted dicts** the runner produces, the gate reads, and the seam
   validates.
 - **Optional means optional.** ``NotRequired`` marks a key that is genuinely absent in some legal

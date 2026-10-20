@@ -87,10 +87,9 @@ class SourceAvailability(TypedDict):
     is over: for a bar-clock leaf the first bar its value exists (so the count runs strictly
     after it), for a native leaf the bar the feed's first finite print arrives at (which can
     itself be missing). A leaf that merely starts late is warmup, and ``first_available`` reports
-    the late start as evidence. A NULL
-    ``first_available`` is the never-available marker: the ledger stays factual (zero post-warmup
-    holes, vacuously) and ``gate._check_source_coverage`` REFUSES it (policy v3) — warmup
-    requires a start to exist.
+    the late start as evidence. A NULL ``first_available`` is the never-available marker: the
+    ledger stays factual (zero post-warmup holes, vacuously) and ``gate._check_source_coverage``
+    REFUSES it — warmup requires a start to exist.
     """
 
     n_missing: int

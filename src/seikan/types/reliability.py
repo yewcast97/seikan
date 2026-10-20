@@ -39,10 +39,10 @@ class ReliabilityRead(TypedDict):
     Merged into each cell's per-target (or pooled) panel by ``compiler.runner``. The three
     estimators are known anti-conservative and read by NO check: evidence a reader weighs, never
     a certificate. ``rot_n_null`` is the number of DEFINED shifts the cell's null was formed
-    over — its own resolution floor is ``1/(1 + rot_n_null)``, which on a sparse mask sits
-    above the run-level ``rotation.p_resolution``. The transform runs in each forward column's
-    unit frame (``analysis._rotation._ffts_for``), so no shift's mean leaves the double range at
-    any input scale. ``rot_n_null`` is the mask's geometry: every defined shift.
+    over, the mask's geometry — its own resolution floor is ``1/(1 + rot_n_null)``, which on a
+    sparse mask sits above the run-level ``rotation.p_resolution``. The transform runs in each
+    forward column's unit frame (``analysis._rotation._ffts_for``), so no shift's mean leaves the
+    double range at any input scale.
     """
 
     rot_p: float

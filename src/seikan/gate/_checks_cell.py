@@ -84,8 +84,7 @@ def _grade_outcome_ledger(
         # it a ledger could claim more firings than the index can anchor, or more closed ones
         # than its horizon closes, and still reconcile internally — the counts inflate together,
         # and `n_nonoverlap <= n` only gets easier — so the impossibility would sail past every
-        # relative check: 30 closed observations of horizon 1 over 31 bars, where 29 close, met
-        # the support floor.
+        # relative check.
         if run_bars is not None and n_att > run_bars - 1:
             unmet.append(
                 f"outcome_coverage[{tgt}]: n_attempted={n_att} exceeds {run_bars - 1}, the "
@@ -101,8 +100,7 @@ def _grade_outcome_ledger(
         if openable is not None and ledger["open"] > openable:
             # The complement: only the last `horizon` anchor bars run past the index end, so a
             # ledger parking more firings under `open` — the one reason outcome_coverage allows
-            # — relabels deleted outcomes as the calendar: 100 open of horizon 21 over 600 bars
-            # met every check where 21 can be.
+            # — relabels deleted outcomes as the calendar.
             unmet.append(
                 f"outcome_coverage[{tgt}]: open={ledger['open']} exceeds {openable}, the most "
                 "firings whose window of the cell's horizon runs past the index end (a firing is "
@@ -116,9 +114,8 @@ def _grade_top_share(panel: dict[str, object], n: int, label: str, unmet: list[s
     pool it is read off: the largest ``k`` of ``n`` magnitudes carry at least ``k / n`` of their
     total mass, ``k`` the emission's own top count (:func:`top_share_count`). Exact: the share is
     the correctly rounded exact quotient of exact masses, ``k / n`` the correctly rounded
-    quotient of its integers, and rounding is monotone. The review's tamper: 0.0 beside 100
-    observations met the ceiling. A null share (a massless or overflowed pool) is
-    ``concentration``'s to refuse."""
+    quotient of its integers, and rounding is monotone. A null share (a massless or overflowed
+    pool) is ``concentration``'s to refuse."""
     share = _prob(_as_dict(panel.get("concentration")).get("top_share_abs"))
     if share is None or n < 1:
         return
@@ -134,8 +131,7 @@ def _grade_mean_range(panel: dict[str, object], label: str, unmet: list[str]) ->
     """A panel's ``mean_ret`` must lie within its pool's extrema, ``[worst_ret, best_ret]``. Exact:
     the mean is the pool's exact sum over its count, rounded once, the extrema are the same
     pool's rows, and rounding is monotone — on a ``cross_mean`` pool too, whose rows are their
-    exact excesses rounded once. The review's tamper: a mean of 0.02 beside a range of
-    [−0.2, −0.01] met every check. A null mean is ``support``'s to refuse."""
+    exact excesses rounded once. A null mean is ``support``'s to refuse."""
     mean = _num(panel.get("mean_ret"))
     if mean is None:
         return
@@ -250,13 +246,10 @@ def _grade_episode_stats(
     largest-BY-COUNT cluster's share, one of the shares it is the maximum of) and at least
     ``1 / n_clusters`` (the largest of ``n_clusters`` shares of one mass is at least their mean —
     exactly 1 with one cluster). Both rules are exact: every share is the correctly rounded exact
-    quotient of exact masses, as ``1 / n_clusters`` is of its integers, and rounding is monotone
-    — the quotient of two separately rounded masses was not (0.33333333333333326 for a third,
-    which this floor would have refused off an honest pool). The review's tampers: one cluster
-    at ``largest_cluster_share_abs`` 1.0 beside a ``max_cluster_share_abs`` of 0.5, and two
-    clusters at 0.30 each where the other holds 0.70. A null maximum (a pool with no mass, an
-    overflowed one, incommensurable units) is ``concentration``'s to refuse; the ``episodes``
-    ledger, evidence-only and truncated at its cap, is not read."""
+    quotient of exact masses, as ``1 / n_clusters`` is of its integers, and rounding is monotone,
+    so neither floor refuses an honest pool. A null maximum (a pool with no mass, an overflowed
+    one, incommensurable units) is ``concentration``'s to refuse; the ``episodes`` ledger,
+    evidence-only and truncated at its cap, is not read."""
     ep = cell.get("episode_stats")
     if not isinstance(ep, dict):
         unmet.append(
@@ -384,8 +377,7 @@ def _grade_pooled(
                 # Greedy earliest-start on equal windows is the largest disjoint set, so the
                 # pooled count lies between the members': a member's disjoint windows are a
                 # disjoint selection of the pool's, and a disjoint pooled selection splits into
-                # disjoint selections within its members. The review's 8 beside members at 1 and
-                # 1 — two pooled — met the support floor.
+                # disjoint selections within its members.
                 if member_windows and p_eff < max(member_windows):
                     unmet.append(
                         f"pooled.n_nonoverlap={p_eff} is below {max(member_windows)}, the largest "
@@ -412,9 +404,8 @@ def _grade_member_share(
     string-keyed over the targets exactly, and where ``max_member_share_abs`` is a share, every
     member's share is one, their maximum EQUALS it — the runner writes ``max(by_target.values())``
     — and they sum to 1 within rounding (:data:`_SHARE_SUM_TOLERANCE`; the runner divides each
-    member's exact |return| mass by the pool's). 0.5 beside ``{AAA: 0.5, BBB: 0.0}`` agreed with
-    its maximum and met every check with half the pool's mass gone from its own breakdown. A
-    missing panel or a null maximum (a pool with no mass) is ``concentration``'s to refuse."""
+    member's exact |return| mass by the pool's). A missing panel or a null maximum (a pool with
+    no mass) is ``concentration``'s to refuse."""
     shares = _str_keyed(member_share.get("by_target"))
     if shares is None:
         unmet.append(
@@ -463,31 +454,27 @@ def _check_cell_evidence(cell: object, s: Mapping[str, object], t: GateThreshold
     ``horizon`` bars later, so at most ``n_bars − 1`` firings anchor an observation (the final
     bar has no next open) and at most ``max(0, n_bars − 1 − horizon)`` of them close inside the
     index, while at most ``min(horizon, n_bars − 1)`` of them run past its end (``open``, the
-    last ``horizon`` anchor bars). Bounded by ``n_bars`` alone, 30 closed observations of
-    horizon 1 over 31 bars — where 29 close, and the run read 29 closed and one open —
-    reconciled everywhere and met the 30-observation support floor; with the closed count bounded
-    alone, 100 open observations of horizon 21 over 600 bars, beside 42 closed, met every check
-    where 21 can be open — the same 100 under ``no_outcome`` refuse.
+    last ``horizon`` anchor bars). Bounded by ``n_bars`` alone, a ledger still admits more closed
+    observations than the horizon closes; bounded on its closed count alone, it admits ``open``
+    firings past the anchor bars the calendar can censor — deleted outcomes relabelled as the
+    calendar.
 
     Reconciliation: the panels describe the SAME rows, so ``support`` reading ``by_target[t].n``
     and ``outcome_coverage`` counting the closed firings that produced it must agree (and that
     ``n`` is held to the same closed ceiling); ``n_nonoverlap <= n`` (non-overlapping windows
     cannot outnumber observations) and ``n_nonoverlap <= max(0, (n_bars − 2) // horizon)`` — the
-    greedy count's windows sit ``horizon`` bars apart among the closed observations: 40 windows
-    of 21 bars in a 600-bar index claimed more than the 28 that fit; each panel's
-    ``concentration.top_share_abs`` is at least ``k / n`` for its own ``n`` and the emission's
-    top count ``k = max(1, ⌈n / 20⌉)`` (:func:`_grade_top_share` — the largest ``k`` of ``n``
-    observations carry at least ``k / n`` of the mass; 0.0 beside 100 observations met the
-    ceiling); each panel's ``mean_ret`` lies within its ``[worst_ret, best_ret]``
-    (:func:`_grade_mean_range` — a mean is its pool's exact sum over its count, rounded once;
-    0.02 beside a range of [−0.2, −0.01] met every check); the cell's
-    ``episode_stats.n`` is the per-target total (the concentration panel and the support panel
-    must describe one pool), its ``n_clusters`` a count the pool can hold, and its
-    ``max_cluster_share_abs`` agrees with its own panel — at least ``largest_cluster_share_abs``
-    and at least ``1 / n_clusters`` (:func:`_grade_episode_stats`); and
-    ``signal_coverage[t].n_bars`` is the run's ``n_bars`` (the
-    decision ledger spans the whole index — pure geometry, not a property of the data). A summary
-    claiming 42 observations over a ledger holding one is internally impossible, and an
+    greedy count's windows sit ``horizon`` bars apart among the closed observations; each
+    panel's ``concentration.top_share_abs`` is at least ``k / n`` for its own ``n`` and the
+    emission's top count ``k = max(1, ⌈n / 20⌉)`` (:func:`_grade_top_share` — the largest ``k``
+    of ``n`` observations carry at least ``k / n`` of the mass); each panel's ``mean_ret`` lies
+    within its ``[worst_ret, best_ret]`` (:func:`_grade_mean_range` — a mean is its pool's exact
+    sum over its count, rounded once); the cell's ``episode_stats.n`` is the per-target total
+    (the concentration panel and the support panel must describe one pool), its ``n_clusters`` a
+    count the pool can hold, and its ``max_cluster_share_abs`` agrees with its own panel — at
+    least ``largest_cluster_share_abs`` and at least ``1 / n_clusters``
+    (:func:`_grade_episode_stats`); and ``signal_coverage[t].n_bars`` is the run's ``n_bars``
+    (the decision ledger spans the whole index — pure geometry, not a property of the data). A
+    summary claiming 42 observations over a ledger holding one is internally impossible, and an
     impossible summary is drifted input, not something to grade.
 
     Basket cells (``target_mode == "basket"``) additionally carry the ``pooled`` cross-target
@@ -497,24 +484,18 @@ def _check_cell_evidence(cell: object, s: Mapping[str, object], t: GateThreshold
     horizon)`` (the greedy non-overlapping count collapses same-bar cross-member firings, so the
     bar clock's windows bound it as they bound each target's), ``pooled.n_nonoverlap`` between
     the largest member's ``n_nonoverlap`` and the members' total (greedy earliest-start on equal
-    windows is the largest disjoint set: a member's disjoint windows are a disjoint selection of
-    the pool's, and a disjoint pooled selection splits into disjoint selections within its
-    members — the review's 8 beside members at 1 and 1, two pooled, met the support floor),
-    ``pooled.n <= len(targets) ×
+    windows is the largest disjoint set — :func:`_grade_pooled`), ``pooled.n <= len(targets) ×
     max(0, n_bars − 1 − horizon)`` (each member fires at most once per bar and closes at most
     that many), ``pooled.concentration.top_share_abs`` at least ``k / pooled.n`` (the same
     floor, over the pool the basket rubric grades), ``pooled.mean_ret`` within its pool's
-    extrema (the same range), and a ``member_share`` panel's
-    one-name read is the largest share of its ``by_target`` decomposition, string-keyed over the
-    targets exactly and summing to 1 within rounding (:func:`_grade_member_share` —
-    ``max_member_share_abs`` 0.5 beside shares ``{AAA: 1.0, BBB: 0.0}`` met every check, the
-    ceiling grading a number its own breakdown contradicts, and so did 0.5 beside
-    ``{AAA: 0.5, BBB: 0.0}``, half the mass gone from the breakdown). Conjunction
-    cells are graded by the per-target rules — and a ``pooled`` key under a conjunction stamp
-    REFUSES, because the runner writes pooled only in basket mode: the configuration is the
-    signature of a restamped basket, and refusing it costs zero honest refusals. A missing or
-    unreadable ``target_mode`` stamp refuses: whether a pooled panel is part of the cell's
-    evidence contract is then undeterminable."""
+    extrema (the same range), and a ``member_share`` panel's one-name read is the largest share
+    of its ``by_target`` decomposition, string-keyed over the targets exactly and summing to 1
+    within rounding (:func:`_grade_member_share` — the ceiling never grades a number its own
+    breakdown contradicts). Conjunction cells are graded by the per-target rules — and a
+    ``pooled`` key under a conjunction stamp REFUSES, because the runner writes pooled only in
+    basket mode: the configuration is the signature of a restamped basket, and refusing it
+    costs zero honest refusals. A missing or unreadable ``target_mode`` stamp refuses: whether a
+    pooled panel is part of the cell's evidence contract is then undeterminable."""
     run_bars = _int(s.get("n_bars"))
     mode = _mode(s)
     threshold = (
@@ -749,11 +730,8 @@ def _check_cell_signal_coverage(
 
     This is the POOLED layer — the root condition's decidability. The raw inputs underneath it are
     graded once, run-level, by ``source_coverage``, which catches the two hole classes this channel
-    cannot see: absorption (every completion of a hole decides the node the same way — a decisive
-    sibling settles the root while an operand is holed, or a ``first_true`` hole's completions
-    re-converge before they disagree on any fire, e.g. one on a cooldown bar other than the
-    cooldown's last) and a hole inside a windowed transform's warmup, which only delays its first
-    value.
+    cannot see: absorption and a hole inside a windowed transform's warmup
+    (:func:`~seikan.gate._checks_run._check_source_coverage`).
 
     ``n_bars`` is pure geometry (the joined index length), so ``n_undefined <= n_bars`` is
     verifiable arithmetic no property of the data can bend. Unconditional: there is no threshold
@@ -874,7 +852,6 @@ def _support_floors(
 def _support_conjunction(cell: object, s: Mapping[str, object], t: GateThresholds) -> GateCheck:
     """The conjunction support rubric: the same floors per target, the weakest deciding —
     targets are the thesis's regime, so one failing target sinks the cell."""
-    # conjunction — the per-target rubric: the weakest target decides.
     threshold = (
         f"per target: n>={t.thesis_min_trades} & n_nonoverlap>={t.thesis_min_n_nonoverlap} & "
         f"mean_ret>0 "
@@ -1041,7 +1018,6 @@ def _concentration_basket(cell: object, s: Mapping[str, object], max_conc: float
 def _concentration_conjunction(cell: object, s: Mapping[str, object], max_conc: float) -> GateCheck:
     """The conjunction concentration rubric: every regime target's top-share read plus the
     merged episode-cluster ceiling."""
-    # conjunction — the per-target layer plus the episode-cluster ceiling.
     unmet: list[str] = []
     by_target: dict[str, float | None] = {}
     observed: dict[str, object] = {"by_target": by_target, "max_cluster_share_abs": None}

@@ -76,11 +76,10 @@ def _stamp(value: object) -> pd.Timestamp | None:
 def _targets(s: Mapping[str, object]) -> list[str] | None:
     """The summary's target list, or None when it is missing/empty/not all strings.
 
-    Target names index every panel and are ``sorted()`` in half a dozen places to build stable
-    ``observed`` payloads and set differences. A drifted summary carrying a non-string name
-    (``["AAA", 3]``) would raise ``TypeError`` inside the comparison — a CRASH, when the
-    contract is that drifted input refuses with a detail. Type-checking once, here, keeps every
-    downstream sort total."""
+    Target names index every panel and are ``sorted()`` to build stable ``observed`` payloads
+    and set differences. A drifted summary carrying a non-string name (``["AAA", 3]``) would
+    raise ``TypeError`` inside the comparison — a CRASH, when the contract is that drifted input
+    refuses with a detail. Type-checking once, here, keeps every downstream sort total."""
     t = s.get("targets")
     if not isinstance(t, (list, tuple)) or not t:
         return None
@@ -131,7 +130,7 @@ def _int_ledger(
     """Parse an exit-reason dict into countable non-negative ints, or ``(None, bad_keys)``.
 
     The one place the ledger's numeric hygiene is established: past a ``None`` return every
-    reason count is a genuine int — the narrowing the two casts this replaces used to assert."""
+    reason count is a genuine int."""
     counts = {k: _int(reasons.get(k)) for k in EXIT_REASONS}
     bad = sorted(k for k, v in counts.items() if v is None or v < 0)
     if bad:

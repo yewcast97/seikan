@@ -26,9 +26,9 @@ def _assignment(params: dict[str, object]) -> tuple[tuple[str, object], ...]:
     """A parameter assignment's identity: its items in key order, each value read as this gate
     reads every number (:func:`_num` — ``1``, ``1.0`` and ``"1"`` are one horizon, as the DSL's
     sweep rule compares them) and otherwise by its repr. The keys are unique, so the sort never
-    compares two values. Rendered instead (``repr(sorted(params.items()))``), ``{"horizon": 1}``
-    and ``{"horizon": 1.0}`` were two assignments, and a declared cell copied over another under
-    that spelling kept the grid's apparent completeness."""
+    compares two values. A rendered identity (``repr(sorted(params.items()))``) would read
+    ``{"horizon": 1}`` and ``{"horizon": 1.0}`` as two assignments, and a declared cell copied
+    over another under that spelling would keep the grid's apparent completeness."""
     return tuple(
         sorted((k, n if (n := _num(v)) is not None else repr(v)) for k, v in params.items())
     )
@@ -130,12 +130,11 @@ def _check_evidence_complete(s: Mapping[str, object], t: GateThresholds) -> Gate
                 "have no common unit the engine can certify, and the combination is refused "
                 "at validation; a summary carrying it is drifted input"
             )
-    # Deliberately NOT collapsed into `elif mode == "conjunction" and s.get(...)` (ruff SIM102):
-    # `TargetMode` holds exactly two values, so after the two arms above a type checker proves the
-    # mode test always true and reports the collapsed form as a redundant expression. The arm has
-    # to keep NAMING its mode all the same — an `else` would hand this conjunction-specific
-    # refusal to any third mode added later, which is the ambient coupling this file exists to
-    # refuse.
+    # Not collapsed into `elif mode == "conjunction" and s.get(...)` (ruff SIM102): `TargetMode`
+    # holds exactly two values, so after the two arms above a type checker proves the mode test
+    # always true and reports the collapsed form as a redundant expression. The arm keeps NAMING
+    # its mode — an `else` would hand this conjunction-specific refusal to any third mode, the
+    # ambient coupling this file refuses.
     elif mode == "conjunction":  # noqa: SIM102
         # The mirror of the basket-side re-refusals: validation mode-gates cross_mean exactly
         # like basket+diff, so a conjunction-stamped summary claiming it can only be a
@@ -263,14 +262,13 @@ def _check_source_coverage(s: Mapping[str, object], t: GateThresholds) -> GateCh
     never became available at all, and every decision the run took was taken without an input
     the thesis declares it reads. Such a leaf decides nothing itself and so refuses nowhere
     downstream — a decisive sibling (``T∨U = T``) settles the root over it, ``support`` grades
-    the sibling's firings — which makes this branch the ONE place it can refuse (v3; it was the
-    one hole size that passed). A start that exists is the first bar the input was available
-    on, a bar of the run: a timezone-naive ISO-8601 timestamp inside ``[index_start,
-    index_end]`` (:func:`~seikan.gate._read._stamp`) — read as "a string is a start", ``""``,
-    ``"not-a-date"`` and a stamp years past the interval's end each met the check. ``n_bars`` is
-    pure geometry (the joined index length), so ``n_missing <= n_bars`` and "the union cannot
-    outnumber its parts" are verifiable arithmetic no property of the data can bend.
-    Unconditional: there is no threshold knob for how much of the thesis may be unevaluable."""
+    the sibling's firings — which makes this branch the ONE place it can refuse. A start that
+    exists is the first bar the input was available on, a bar of the run: a timezone-naive
+    ISO-8601 timestamp inside ``[index_start, index_end]`` (:func:`~seikan.gate._read._stamp`),
+    never merely a string. ``n_bars`` is pure geometry (the joined index length), so
+    ``n_missing <= n_bars`` and "the union cannot outnumber its parts" are verifiable arithmetic
+    no property of the data can bend. Unconditional: there is no threshold knob for how much of
+    the thesis may be unevaluable."""
     threshold = (
         "per target: sources.n_missing == 0 — every raw decision input the entry tree reads is "
         "available on every bar of the evaluated interval from its own first_available on (a "
@@ -354,7 +352,7 @@ def _check_source_coverage(s: Mapping[str, object], t: GateThresholds) -> GateCh
             n_miss = _int(leaf.get("n_missing"))
             first = leaf.get("first_available")
             per_by_source[label] = {"n_missing": n_miss, "first_available": first}
-            # The never-available branch (v3), fail-closed on garbage like every read here: a
+            # The never-available branch, fail-closed on garbage like every read here: a
             # missing key, or a start that is no bar of the run, is drifted input, an explicit
             # null is the runner's honest "no bar ever carried this input" — and the refusal,
             # not the ledger, is this check's to own.

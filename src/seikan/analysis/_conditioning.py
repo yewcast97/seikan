@@ -75,15 +75,14 @@ def _bucket_monotonicity(records: list[BucketRecord]) -> BucketMonotonicity | No
     ``None`` when fewer than 3 populated buckets or the means carry no rank signal (constant),
     and when a populated bucket's computed mean is not finite — its return sum overflowed
     (``inf``, or ``inf − inf``), though the true mean of finite returns is finite: its place in
-    the ranking is unknown, so the rank signal is too (``inf`` ranked it above every finite mean;
-    dropping it would rank the rest as if it were empty). Evidence-only — like the buckets
+    the ranking is unknown, so the rank signal is too (``inf`` would rank it above every finite
+    mean; dropping it would rank the rest as if it were empty). Evidence-only — like the buckets
     themselves, no checklist reads it.
 
     Over several targets it ranks the POOLED means, which weight the targets by the rows each
     puts in an ordinal — equal per-target bin counts do not equalize those proportions — so the
-    composition alone can reverse a trend every target shows: tied feature values fill two
-    targets' ordinals 50/25/25 and 25/25/50, and two members rising bucket by bucket read
-    ``rho`` −1. Each multi-target record's ``by_target`` is that composition read."""
+    composition alone can reverse a trend every target shows. Each multi-target record's
+    ``by_target`` is that composition read."""
     # NaN in memory, null once emitted: an overflowed mean either way
     means = [_NAN if (m := r.get("mean_ret")) is None else m for r in records if r.get("n", 0) > 0]
     # an overflowed mean → no rank signal; constant means → none either (undefined rho)
@@ -105,15 +104,15 @@ def _qcut_index(values: pd.Series) -> tuple[np.ndarray, np.ndarray | None]:
 
     pandas interpolates a quantile as ``a + (b − a)·t``, and ``b − a`` overflows between two
     adjacent order statistics ``a < 0 < b`` whose spread passes the double range (a feature
-    spanning ±1.7e308): the edge reads ``±inf`` or NaN, and the bins cut on it are no bins
-    (1/17/6 where 6/6/6/6 is true). So the qcut runs under errstate and its edges decide:
-    finite — every pool whose quantiles stay in range — and the bins are pandas' own, byte-
-    identical; otherwise the bins are those of the pool halved, which ARE the pool's: such
-    ``a`` and ``b`` lie past 2**970 (~1e292) in magnitude, and so does every value of the pool,
-    none lying between them — where the halving, the halves' interpolation (no term nears the
-    subnormal range) and every comparison are exact, the bins unbounded-exponent arithmetic
-    reads. Those edges print as no interval label (the pool's extreme edge is past ~9e307). The
-    values are finite: the loader refuses inf and every kernel is finite-or-NaN."""
+    spanning ±1.7e308): the edge reads ``±inf`` or NaN, and the bins cut on it are no bins. So
+    the qcut runs under errstate and its edges decide: finite — every pool whose quantiles stay
+    in range — and the bins are pandas' own, byte-identical; otherwise the bins are those of the
+    pool halved, which ARE the pool's: such ``a`` and ``b`` lie past 2**970 (~1e292) in magnitude,
+    and so does every value of the pool, none lying between them — where the halving, the halves'
+    interpolation (no term nears the subnormal range) and every comparison are exact, the bins
+    unbounded-exponent arithmetic reads. Those edges print as no interval label (the pool's
+    extreme edge is past ~9e307). The values are finite: the loader refuses inf and every kernel
+    is finite-or-NaN."""
     with np.errstate(over="ignore", invalid="ignore"):  # an overflowed quantile: judged below
         codes, edges = pd.qcut(values, q=BUCKET_Q, labels=False, retbins=True, duplicates="drop")
     if np.isfinite(edges).all():
@@ -130,12 +129,11 @@ def _qcut_buckets(values: pd.Series) -> pd.Categorical:
     edges through ``x·10**digits``, which leaves the double range for an edge past ~1.8e305 (the
     edge reads ``inf``) or under ~1e-306 in magnitude (NaN — no interval can even be built: a
     qcut ``ValueError``, or no category at all), and the categorical merges the bins whose
-    labels collided or drops the rows of an interval it could not build: three true bins
-    of 30/15/15 read "(-1.001, inf]" 30 / "(inf, inf]" 30. So the bins are read first, as
-    indices, and the labels rendered beside pandas' own edges are kept where they are distinct
-    and finite, every ordinary feature (the categorical itself, byte-identical); otherwise —
-    and always beside a halved pool's bins — each populated bin takes its ordinal, the multi-
-    target arm's label for an interval no string can print."""
+    labels collided or drops the rows of an interval it could not build. So the bins are read
+    first, as indices, and the labels rendered beside pandas' own edges are kept where they are
+    distinct and finite, every ordinary feature (the categorical itself, byte-identical);
+    otherwise — and always beside a halved pool's bins — each populated bin takes its ordinal,
+    the multi-target arm's label for an interval no string can print."""
     arr = values.to_numpy(dtype=float)
     index, edges = _qcut_index(values)
     if edges is not None:
@@ -255,12 +253,10 @@ def _aggregate_bucket_ordinals(
     bucket_counts: set[int] = set()
     for group in groups:
         try:
-            # The bin indices alone: nothing reads a label on this path, and pandas renders its
-            # interval labels by rounding every edge through x·10**precision — which leaves the
-            # range on a feature past ~1.8e305, where every edge read "(inf, inf]" and the
-            # categorical's codes merged the buckets those colliding labels named, and under
-            # ~1e-306 in magnitude, where a NaN break made the qcut raise (the panel refused).
-            # A feature spanning more than the double range reads the bins of its halved pool.
+            # The bin indices alone: nothing reads a label on this path, and pandas' interval
+            # labels leave the double range on a feature past ~1.8e305 or under ~1e-306 in
+            # magnitude (`_qcut_buckets`). A feature spanning more than the double range reads
+            # the bins of its halved pool (`_qcut_index`).
             cut, _edges = _qcut_index(group[name])
         except ValueError:
             return []
@@ -310,7 +306,7 @@ def cell_conditional_buckets(
     never absent); ``bucket_monotonicity`` carries only features that bucketed AND showed a rank
     signal (:func:`_bucket_monotonicity`'s ≥ 3-populated-buckets rule).
 
-    Edges are PER TARGET (v3) for the same reason :func:`feature_outcome_association` ranks per
+    Edges are PER TARGET for the same reason :func:`feature_outcome_association` ranks per
     target: one qcut over raw feature levels pooled across members conflates level differences
     BETWEEN members with variation over time — the top pooled bucket can simply BE the
     high-level member, a Simpson's inversion wearing a conditioning read's clothes. Each
@@ -332,22 +328,19 @@ def cell_conditional_buckets(
     never across cells. Evidence-only; overlap-inflated like every trades-pool statistic, and
     "associated in this sample" is the entire claim a bucket pattern supports.
 
-    ``rets_pool`` / ``pool_scale`` (a ``cross_mean`` basket's bar numerators, row-aligned with
-    ``trades`` — each bar's exact parts on its first closed member, zeros on the others, over the
-    member count: ``_pools.cross_mean_bar_numerators``, the runner's pool values) carry the exact
-    bar sums into the bucket MEANS: a bar's rounded per-row excesses miss its exact sum by
-    residue, so per feature a bar whose rows ALL land in ONE bucket — bucketed by a basket-wide
-    feature (a calendar field, a shared external feed), whose per-target edges agree where the
-    members fire on the same bars, or a one-row bar — adds its exact sum to that record's mean
-    (:func:`_bucket_sums`, in BOTH arms: with one participating target the only bar the cut can
-    hold whole is a one-row bar, the basket's other members' rows sitting unbucketed there, and
-    it enters at its exact numerator like any other — read off the rounded row, a one-member
-    pool's every bucket mean carried residue the pool's episode means and CSCV split means did
-    not). A bar split across buckets, or partly unbucketed, keeps each row's own return (no
-    record holds its whole sum); ``n`` and ``hit_rate`` stay on each row's return. On a pool
-    whose every bar is full, bucketed by a basket-wide feature, every mean is exactly 0.0 — no
-    rank signal, so no ``bucket_monotonicity`` entry, in any declaration order — where the
-    rounded rows ranked their residue.
+    ``rets_pool`` / ``pool_scale`` (a ``cross_mean`` basket's bar numerators over the member
+    count, row-aligned with ``trades`` — ``_pools.cross_mean_bar_numerators``, the runner's pool
+    values) carry the exact bar sums into the bucket MEANS, which a bar's rounded per-row
+    excesses miss by residue: per feature, a bar whose rows ALL land in ONE bucket — bucketed by
+    a basket-wide feature (a calendar field, a shared external feed), whose per-target edges
+    agree where the members fire on the same bars, or a one-row bar — adds its exact sum to that
+    record's mean (:func:`_bucket_sums`, in BOTH arms: with one participating target the only
+    bar the cut can hold whole is a one-row bar, the basket's other members' rows sitting
+    unbucketed there, and it enters at its exact numerator like any other, as in the pool's
+    episode and CSCV split means). A bar split across buckets, or partly unbucketed, keeps each
+    row's own return (no record holds its whole sum); ``n`` and ``hit_rate`` stay on each row's
+    return. On a pool whose every bar is full, bucketed by a basket-wide feature, every mean is
+    exactly 0.0 — no rank signal, so no ``bucket_monotonicity`` entry, in any declaration order.
 
     ``commensurable=False`` (a ``diff`` outcome, each target in its own level units) nulls the
     multi-target arm's ``mean_ret`` (:func:`_aggregate_bucket_ordinals`) — its records pool

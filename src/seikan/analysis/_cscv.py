@@ -135,38 +135,30 @@ def _split_score(col: _Column, blocks: Sequence[int]) -> _Score | None:
 
     A split's MEAN is its rows' exact sum over their count, rounded once — its blocks' part
     integers over ``den·scale`` times its row count, one quotient of integers — so it has the
-    exact sum's sign and is 0.0 exactly where the rows cancel, however they fall across blocks.
-    Rebuilt as the split's mean
-    shift plus the column's mean, an exact 0 read the shift's residue (−2.6e-18), and a split
-    whose block sums cancelled read the float sum over them (−0.25 for 0 off ``[2**54, 1, −2**54,
-    −1]``): two candidates cycling through ±0.3 read ``pbo`` 2/70 and ``prob_oos_loss`` 1/70
-    where no exact split mean was negative. On a ``cross_mean`` grid the parts are the rows' bar
-    numerators over the member count (:class:`~seikan.analysis._pools.BarNumerators`): a CSCV
-    block holds whole bars — its purge reads the bar and the cell's horizon alone, so a bar's rows
-    land in one block or are all purged — and a bar's rounded per-row excesses sum to residue
-    where its exact sum is 0 (every full bar; any bar whose selected excesses cancel), which the
-    rows ranked in the order the targets were declared: on a grid of all-full candidates every
-    split mean is exactly 0.0 and every scoreable candidate ties.
+    exact sum's sign and is 0.0 exactly where the rows cancel, however they fall across blocks;
+    a shift's mean plus the column's, or a float sum over the block sums, would read residue
+    there. On a ``cross_mean`` grid the parts are the rows' bar numerators over the member count
+    (:class:`~seikan.analysis._pools.BarNumerators`) — a CSCV block holds whole bars, its purge
+    reading the bar and the cell's horizon alone, so a bar's rows land in one block or are all
+    purged — so on a grid of all-full candidates every split mean is exactly 0.0 and every
+    scoreable candidate ties.
 
     A split's VARIANCE is exact arithmetic's, rounded once — ``(n·ΣP² − (ΣP)²) / (den²·n·(n −
     1))``, its blocks' integer moments merged exactly, one quotient of integers — so it is a
     function of the split's exact count, sum and sum of squares alone: at any level, in any row
-    order, whatever the held-out blocks hold. Merged
-    from the blocks' centered moments, ``Σ m2_b + Σ n_b·(m_b − m)²``, every row's squared
-    deviation was rounded on its own: two candidates holding ``α·[10, 13, 13, 16]`` and
-    ``α·[11, 11, 14, 16]`` in every block — the same count, sum and sum of squares, so the same
-    Sharpe on every split — scored apart in their last bits (16 of one grid's 70 splits), and 99
-    of 100 such grids read a nonzero ``pbo`` (up to 0.214) where every split is a full tie. The
-    second moments read the rows' own returns — a row's excess is its own, only its bar's SUM is
-    exact — so the Sharpe is the exact mean over the rows' sd.
+    order, whatever the held-out blocks hold. Merged from the blocks' centered moments,
+    ``Σ m2_b + Σ n_b·(m_b − m)²``, every row's squared deviation would round on its own, and
+    candidates with the same count, sum and sum of squares in every block — the same Sharpe on
+    every split — would score apart in their last bits. The second moments read the rows' own
+    returns — a row's excess is its own, only its bar's SUM is exact — so the Sharpe is the
+    exact mean over the rows' sd.
 
-    Candidates RANK by the Sharpe's exact value: the ``key`` ``sign(M)·M²·(n − 1) / (scale²·n·
-    (n·ΣP² − (ΣP)²))``, ``M`` the split's part integers, is its square with its sign, compared
-    as a rational. A quotient of the rounded mean and the root of the rounded variance parts
-    equal Sharpes in their last bits — the review's candidate holding three times another's
-    returns, the same Sharpe on every split, scored apart on 24 of 70 and read ``pbo`` 0.1 —
-    so two candidates whose exact Sharpes are equal tie, and any two others order as exact
-    arithmetic orders them.
+    Candidates RANK by the Sharpe's exact value — the ``key`` ``sign(M)·M²·(n − 1) /
+    (scale²·n·(n·ΣP² − (ΣP)²))``, ``M`` the split's part integers, its square with its sign,
+    compared as a rational; never the quotient of the rounded mean and the root of the rounded
+    variance, which parts equal Sharpes in their last bits (one candidate's returns a positive
+    multiple of another's) — so two candidates whose exact Sharpes are equal tie, and any two
+    others order as exact arithmetic orders them.
 
     A split pool with no usable dispersion scores None: one whose chosen blocks' min equals their
     max is EXACTLY constant, and one whose largest deviation from its mean is within
@@ -224,9 +216,8 @@ def _degradation_slope(
     The degeneracy test is SCALE-RELATIVE — the pools' zero-dispersion gate
     (``_pools.near_constant``: a spread within 10 ulps of the scores' exactly rounded mean) —
     not exact-zero: a grid of near-clones passes an exact-zero test into a rank-deficient fit
-    whose min-norm slope is an arbitrary number (numpy's polyfit additionally warned "poorly
-    conditioned" — ~0.5 on one probe). Nor absolute: floored at a magnitude of 1, it read train
-    scores spread from 0 to 3.5e-16 as degenerate and nulled an exact slope of −1. Their centered
+    whose min-norm slope is an arbitrary number. Nor absolute: a floor at a magnitude of 1 reads
+    tiny but genuinely spread train scores as degenerate and nulls a real slope. Their centered
     sum of squares must be a normal double too (``_pools.is_normal``): below it the fit divides by
     bits it has lost. The slope of an undefined regression is null with its reason said out
     loud, never a number. The well-conditioned path is the plain centered OLS identity
@@ -267,7 +258,7 @@ def cscv_pbo(
     "degenerate_train_scores" when the train scores carry no usable spread — see
     :func:`_degradation_slope`), and ``prob_oos_loss`` (fraction of splits whose winner scored
     below zero on test, read off its exact rank: as a double that Sharpe underflows to −0.0 off a
-    tiny negative mean over a huge sd, which ``< 0.0`` read as no loss). A split's mean and
+    tiny negative mean over a huge sd, which ``< 0.0`` would read as no loss). A split's mean and
     variance are exact arithmetic's, each rounded once (:func:`_split_score`), so a mean has its
     exact sign and level-heavy return columns score instead of cancelling to zero variance.
     Grid-level evidence — no cell's grade reads it.
@@ -286,11 +277,8 @@ def cscv_pbo(
     would hand the train winner the worst test rank purely for tying with itself. Test ranks
     are MIDRANKS (ties share their average rank; a full tie is λ = 0 — a split that cannot
     distinguish candidates is not evidence of overfitting), and the training winner's tie-break
-    is first-index / declaration order, deterministic by construction. A column's block moments
-    and sums are exact, the same in any row order, and candidates rank by their EXACT Sharpes
-    (:func:`_split_score`), so two candidates whose Sharpes are equal tie on every split — rows
-    with the same count, sum and sum of squares in every block, under basket however the
-    returns fall across members, or one candidate's returns a positive multiple of the other's.
+    is first-index / declaration order, deterministic by construction. Candidates rank by their
+    EXACT Sharpes (:func:`_split_score`), so two whose Sharpes are equal tie on every split.
 
     ``mode`` is the thesis's declared ``target_mode`` and sets the SPLIT SCORE — the score
     mirrors the statistic the caller of that mode selects on, because PBO describes the
@@ -299,25 +287,21 @@ def cscv_pbo(
     per-observation Sharpe — the weakest-target rule the conjunction implies.
     ``"basket"``: the members form ONE pool, so a combo is admissible with ≥ 1 member present —
     an absent member adds no rows, exactly a member that never fired — and its score is the
-    per-observation Sharpe of ONE column, its members' kept rows pooled (:func:`_column`). No
-    min: a basket caller selects on the pooled read. Scored off per-member moments, each member's
-    rows about its own mean and pooled through the cross-term expansion, two candidates holding
-    the same six returns in every block, split between the members differently, parted in their
-    last bits and a full tie read ``pbo`` 0.343.
+    per-observation Sharpe of ONE column, its members' kept rows pooled (:func:`_column`) before
+    any moment forms, so the score does not depend on how equal rows fall across members. No
+    min: a basket caller selects on the pooled read.
 
     ``bar_numerators`` (basket only; the runner's per-cell ``cross_mean`` bar numerators over
     ``targets``, keyed by the combo prefix — ``_pools.cross_mean_bar_numerators``; a candidate it
-    does not key sums its rows' own returns) carries each bar's exact numerator on its first
-    closed member, zeros on the others: every split's mean is their exact sum over the member
-    count times its row count, rounded once — the read the cell's pooled panel's mean takes —
-    so a split's mean is the exact sum of the excesses it holds, never rounding residue, and on
-    a grid of all-full candidates every scored split is a full tie (λ = 0, no test loss: a
-    scored block reads ``pbo``, ``lambda_mean`` and ``prob_oos_loss`` 0.0). Its tied train
-    winner is the FIRST-declared scoreable candidate (the tie rule above),
-    and a split whose winner holds no test pool is skipped, so a sparse such grid can score
-    fewer splits, fall back to a coarser S or decline ``insufficient_data`` — identically in
-    any target declaration order. Every other grid — conjunction, a market or unbenchmarked
-    basket — scores without it.
+    does not key sums its rows' own returns) makes every split's mean the exact sum of the
+    excesses it holds over its row count, rounded once (:func:`_split_score`) — the read the
+    cell's pooled panel's mean takes — so on a grid of all-full candidates every scored split is
+    a full tie (λ = 0, no test loss: a scored block reads ``pbo``, ``lambda_mean`` and
+    ``prob_oos_loss`` 0.0). Its tied train winner is the FIRST-declared scoreable candidate (the
+    tie rule above), and a split whose winner holds no test pool is skipped, so a sparse such
+    grid can score fewer splits, fall back to a coarser S or decline ``insufficient_data`` —
+    identically in any target declaration order. Every other grid — conjunction, a market or
+    unbenchmarked basket — scores without it.
     """
     targets = list(targets)  # one local copy; iterated many times below
 
@@ -345,8 +329,7 @@ def cscv_pbo(
     n_combos_scoreable = len(admissible)
     # Byte-identical candidates collapse to ONE (declaration-order representative): identity is
     # the full-resolution pool — per-member (target, h, mask, fwd) bytes — so a sweep axis that
-    # never moved the mask cannot mint candidates, and M clones cannot hand the train winner
-    # the worst test rank purely for tying with itself.
+    # never moved the mask cannot mint candidates.
     seen_fingerprints: set[tuple[tuple[str, int, bytes, bytes], ...]] = set()
     kept_cells: list[ReliabilityCell] = []
     n_distinct = 0
@@ -372,8 +355,7 @@ def cscv_pbo(
     # collapse read the cells alone, never a partition or the sample length — so EVERY declined
     # path (a sample under 4 bars, fewer than two distinct candidates, a sample no block
     # partition fits, too few scored splits at every S) reports the candidate population a
-    # scored block over these cells would. Zeros there claimed no candidate ever existed when
-    # the sample was merely too thin to split them.
+    # scored block over these cells would.
     empty: PboBlock = {
         "pbo": None,
         "reason": "insufficient_data",
@@ -403,12 +385,11 @@ def cscv_pbo(
     for s in block_candidates:
         edges = subperiod_edges(length, s)
         # Each candidate's kept rows per member — blocks, returns and the rows' exact parts:
-        # each row's own return or, on a `cross_mean` grid, its bar numerator (each bar's exact
-        # parts on its first closed member, zeros on the others; the purge keeps or drops a bar's
-        # rows together — it reads the bar and the cell's horizon alone — so each block holds
-        # whole bars). Per-S by necessity: the purge depends on this partition's edges. Every
-        # surviving cell belongs to an admissible, distinct candidate (filtered and collapsed
-        # above, S-independently).
+        # each row's own return or, on a `cross_mean` grid, its bar numerator (`BarNumerators.at`;
+        # the purge keeps or drops a bar's rows together, so each block holds whole bars).
+        # Per-S by necessity: the purge depends on this partition's edges. Every surviving cell
+        # belongs to an admissible, distinct candidate (filtered and collapsed above,
+        # S-independently).
         rows_by_combo: dict[CellKey, list[tuple[np.ndarray, np.ndarray, np.ndarray]]] = {}
         for cell in kept_cells:
             key = tuple(cell["key"])
@@ -419,7 +400,7 @@ def cscv_pbo(
             rows_by_combo.setdefault(key[:-1], []).append((b, r, parts))
         # The scored columns: a conjunction candidate's per target, a basket candidate's ONE —
         # its members' rows pooled, so its block sums are those of the pool its caller reads,
-        # the same doubles however the rows fall across members.
+        # the same exact integers however the rows fall across members.
         columns = [
             (
                 [
@@ -464,7 +445,7 @@ def cscv_pbo(
             # MIDRANK among the scored test candidates, rank 1 = worst: ties share their
             # average rank, so a full tie — every candidate's exact Sharpe equal on test — lands
             # at (N+1)/2, ω = 0.5, λ = 0: a split that cannot DISTINGUISH candidates is not
-            # evidence of overfitting. (Strict `<` + 1 handed the winner the WORST rank for
+            # evidence of overfitting. (Strict `<` + 1 would hand the winner the WORST rank for
             # tying, reading a grid of near-clones as maximal overfitting.) Untied scores
             # reproduce the classic count-strictly-worse + 1 exactly.
             worse = sum(k < te_best.key for k in keys)

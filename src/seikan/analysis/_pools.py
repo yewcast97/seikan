@@ -71,7 +71,7 @@ def near_constant(rets: np.ndarray, mean: float) -> bool:
 def is_normal(x: float) -> bool:
     """``x`` is a positive NORMAL double — a variance (or a power or product of variances) that
     carries its full precision. Past the range it is ``inf``, and every quotient by it a FINITE
-    0.0; below it the squared deviations it sums (deviations under ~1.5e-154) rounded to
+    0.0; below it the squared deviations it sums (deviations under ~1.5e-154) round to
     multiples of the smallest subnormal or to 0.0, so it has lost its significant bits — no
     estimate of a dispersion, and a varying pool's 0.0 is not zero dispersion either. A
     statistic read off such a variance is NaN → null. ``compiler.nb._normal`` is the kernels'
@@ -94,8 +94,7 @@ def ddof1_std(v: np.ndarray) -> float:
     The variance is the two-pass form about the pool's OWN offset, its range midpoint
     (:func:`~seikan.numeric.midrange` — the kernels' cross-section rule): ``np.var`` of ``v − c``,
     whose deviations are exact wherever the pool lies within a factor of two of ``c``. About the
-    rounded raw mean instead, a spread at the level's ulp lost its bits: ``[2**52, 2**52 + 1]``
-    read a std of 1.0 for 0.707 (and a bootstrap's draws, a baseline pool, the same)."""
+    rounded raw mean instead, a spread at the level's ulp loses its bits."""
     lo, hi = float(np.min(v)), float(np.max(v))
     if hi == lo:
         return 0.0
@@ -111,10 +110,9 @@ def exact_sum(values: np.ndarray | list[float]) -> float:
     :func:`exact_mean`'s, the exact sum of the rows' values times ``scale``) — ``math.fsum``, one
     double whatever order they come in. ``fsum`` accumulates in doubles and raises where a
     running partial leaves the range even when the exact sum has a double (``[1e308, 1e308,
-    −1e308, −1e308]`` raised, and read NaN, where the other order read 0.0): there the sum is
-    retaken as exact rationals and rounded once. NaN where the exact sum itself leaves the double
-    range, or meets a non-finite term (``inf − inf``) — a sum with no value, which every caller's
-    finiteness test decides."""
+    −1e308, −1e308]`` in that order): there the sum is retaken as exact rationals and rounded
+    once. NaN where the exact sum itself leaves the double range, or meets a non-finite term
+    (``inf − inf``) — a sum with no value, which every caller's finiteness test decides."""
     if isinstance(values, np.ndarray):
         values = values.ravel().tolist()
     try:
@@ -131,10 +129,9 @@ def exact_sum(values: np.ndarray | list[float]) -> float:
 def _exact_quotient(terms: list[float], count: int) -> float:
     """``Σterms / count`` correctly rounded — the EXACT sum (its exact parts,
     :func:`_exact_parts`, as rationals) over the integer ``count``, rounded ONCE. The exactly
-    rounded sum over the count rounds twice, which is no rounding of the mean: ``[x − ulp, x, x,
-    x, x]`` at ``x = 0.9757632206350922`` read an ulp above its maximum, where the mean rounds
-    to ``x`` itself. Rounded once, a mean never leaves its pool's range. NaN where the sum has no
-    double (:func:`exact_sum`'s rule)."""
+    rounded sum over the count rounds twice, which is no rounding of the mean and can leave the
+    pool's range; rounded once, a mean never leaves it. NaN where the sum has no double
+    (:func:`exact_sum`'s rule)."""
     parts = _exact_parts(terms)
     if parts is None:
         return _NAN
@@ -148,11 +145,10 @@ def exact_mean(v: np.ndarray, scale: int = 1) -> float:
     legs and the HAC's centre (so ``t_hac`` is that ``mean_ret`` over its SE).
 
     ``np.mean`` sums pairwise in floating point, and a large term swallows a small one before
-    its cancelling partner arrives: the 49 diff returns of ``[0, 2**54, 0, −1, 0] × 10`` sum to
-    exactly 0 and read a mean of 1/49 — a positive edge minted by rounding, which the support
-    floor's ``mean_ret > 0`` graded. The exact sum rounded once over ``n`` has the exact sum's
-    sign, is ``0.0`` exactly where it is 0 and never leaves the pool's range; an all-equal pool's
-    mean is its value. NaN on an empty pool, on a non-finite value, and where the exact sum
+    its cancelling partner arrives: an exactly zero sum can read a nonzero mean, a sign the
+    support floor's ``mean_ret > 0`` grades. The exact sum rounded once over ``n`` has the exact
+    sum's sign, is ``0.0`` exactly where it is 0 and never leaves the pool's range; an all-equal
+    pool's mean is its value. NaN on an empty pool, on a non-finite value, and where the exact sum
     leaves the double range (:func:`exact_sum`) — an overflowed mean is no evidence, as everywhere
     in this module.
 
@@ -203,12 +199,10 @@ def mass_share(part: Fraction, whole: Fraction) -> float:
     """``part / whole`` — the correctly rounded value of the EXACT quotient of two masses, the
     one share arithmetic (``top_share_abs``, the episode shares, ``member_share``). Rounded once,
     monotonically: no share passes 1 (``part <= whole``), one pool's shares are ordered as its
-    masses are, and the largest of ``k`` shares is at least the correctly rounded ``1/k`` — which
-    the quotient of two separately rounded masses was not: three clusters of ``1 + 2**-53 −
-    2**-60`` and twice ``1 + 2**-54 + 2**-60`` read 0.33333333333333326 for a share no smaller
-    than a third. NaN where ``whole`` is 0 or no double holds it (:data:`PAST_DOUBLE`): a zero
-    mass has no shares, and an overflowed one read ``x / inf = 0.0`` — a perfectly spread pool
-    the ceiling passes."""
+    masses are, and the largest of ``k`` shares is at least the correctly rounded ``1/k``, which
+    the quotient of two separately rounded masses does not guarantee. NaN where ``whole`` is 0 or
+    no double holds it (:data:`PAST_DOUBLE`): a zero mass has no shares, and an overflowed one
+    would read ``x / inf = 0.0`` — a perfectly spread pool the ceiling passes."""
     if whole <= 0 or whole >= PAST_DOUBLE:
         return _NAN
     return float(part / whole)
@@ -241,26 +235,22 @@ def pool_moments(rets: np.ndarray) -> PoolMoments:
     frequency; ``skewness``/``kurtosis`` are scipy's population (``bias=True``) moments,
     kurtosis PEARSON (normal = 3, not excess) — not pandas' unbiased G1/G2 — taken about the
     pool's offset (the :func:`ddof1_std` rule: the moments are shift-invariant, and deviations
-    at the level's ulp keep their bits — about scipy's own rounded mean the symmetric
-    ``1 + k·eps``, k = 0..21, read skewness 0.666 for 0), nulled on a near-constant pool
-    (:func:`near_constant`) and where the variance power they divide by leaves the normal
-    range (:func:`is_normal`); ``tail_ratio`` is ``|p95/p05|`` of the same
+    at the level's ulp keep their bits, which about scipy's own rounded mean they lose), nulled
+    on a near-constant pool (:func:`near_constant`) and where the variance power they divide by
+    leaves the normal range (:func:`is_normal`); ``tail_ratio`` is ``|p95/p05|`` of the same
     linear-interpolated percentiles :func:`pool_quantiles` reports (NaN when ``p05`` is zero,
     and a spread ratio rather than a tail read when both tails share a sign); ``cvar_5`` is the
     mean of the worst ``⌈n/20⌉`` observations (:func:`exact_mean`), the realized 5% expected
     shortfall beside its historical-VaR partner ``p05`` — the count :func:`concentration` takes,
-    so a tie at ``p05`` never dilutes it: the mean of every observation at or below ``p05`` read
-    99 zeros beside one −0.5 as −0.005 for −0.1.
+    so a tie at ``p05`` never dilutes it.
 
     Overlap caveat, shared with every row-level read: one market move enters ~h rows, so
     these describe the realized pool, never an estimated distribution. Evidence-only; the
     checklist reads ``n``, ``mean_ret`` (a ``cross_mean`` basket's pooled ``mean_ret`` is
     re-summed by :func:`cross_mean_pooled_mean` instead) and nothing else here. Every other
-    read here is ROW-level and reads each row's own rounded value, a ``cross_mean`` full bar's
-    nonzero excesses included — only the bar-closed SUMS (the pooled panel's mean, the
-    bootstrap's episode sums, the era and episode means, the HAC's per-bar deviation sums, the
-    CSCV split means, a bucket mean over a bar it holds whole) read each bar at its exact
-    excess sum (:func:`cross_mean_bar_numerators`) — a full bar at its exact 0.
+    read here is ROW-level, on each row's own rounded value (a ``cross_mean`` full bar's
+    nonzero excesses included); only the bar-closed SUMS read each bar at its exact excess sum
+    (:func:`cross_mean_bar_numerators`) — a full bar at its exact 0.
     """
     v = np.asarray(rets, dtype=float)
     v = v[np.isfinite(v)]
@@ -291,8 +281,8 @@ def pool_moments(rets: np.ndarray) -> PoolMoments:
     )
     # scipy's moments are ``m3 / m2**1.5`` and ``m4 / m2**2``: where that power of the variance
     # leaves the normal range (a dispersion below ~3e-103 / ~1.2e-77, or past ~5e102 / ~1.2e77)
-    # the moment it normalizes underflowed or overflowed with it — a kurtosis read 11.737849
-    # for 11.737878 at a 1e-80 scale. Null, never a finite number read off the lost bits.
+    # the moment it normalizes has underflowed or overflowed with it. Null, never a finite
+    # number read off the lost bits.
     skew = kurt = _NAN
     if n > 2 and not degenerate:
         d = v - midrange(float(np.min(v)), float(np.max(v)))
@@ -321,9 +311,8 @@ def concentration(rets: np.ndarray) -> ConcentrationBlock:
     checklist reads ``top_share_abs`` against a ceiling; an empty pool yields NaN, which that
     checklist refuses rather than waves through — and so does a pool whose total |return| mass
     leaves the double range (:func:`mass_share`). The share is the correctly rounded exact
-    quotient of exact masses, so it never exceeds 1 (summed in floating point, five masses among
-    95 zeros read 1.0000000000000002) and never falls below ``n_top / n``, the floor
-    ``cell_evidence`` holds it to."""
+    quotient of exact masses, so it never exceeds 1 and never falls below ``n_top / n``, the
+    floor ``cell_evidence`` holds it to."""
     rets = np.asarray(rets, dtype=float)
     rets = rets[np.isfinite(rets)]
     n = rets.shape[0]
@@ -407,7 +396,7 @@ def profit_factor(rets: np.ndarray) -> float:
     EITHER side is empty — the same no-ratio-to-form rule as ``win_loss_ratio``, and this engine
     never emits an infinity (the JSON layer refuses non-finite tokens): "no losses in sample" is
     a fact a reader takes from ``hit_rate``, not from an unbounded ratio. NaN too when either
-    mass leaves the double range (:func:`_finite_ratio` — an overflowed loss mass read 0.0).
+    mass leaves the double range (:func:`_finite_ratio` — an overflowed loss mass reads 0.0).
     Evidence-only, per pool; no check reads it."""
     v = np.asarray(rets, dtype=float)
     v = v[np.isfinite(v)]
@@ -470,26 +459,19 @@ def cross_mean_pooled_mean(raw: np.ndarray, closed: np.ndarray) -> float:
     an INTEGER-weighted sum of the legs, which is computed exactly: each leg is split into two
     halves whose products with its weight are exact doubles, and the products' exact sum over
     ``N·n`` is rounded once (:func:`_exact_quotient`). A bar on which every member closed weighs
-    every leg 0 (``S − 1.0·S``); a bar whose legs
-    are all the SAME value (a shared outcome feed broadcast to the basket) has weights that sum to
-    0 against it, whatever closed — each excess there is exactly zero. Rounding ``k_t/N`` first
-    did not cancel: a 22-member bar of 7 zeros, 7 twos and 8 ones whose 15 firing members (the
-    zeros, the twos, one of the ones) have excesses summing to exactly 0 read
-    ``15 − fl(15/22)·22 = 1.8e-15``, and the pool a positive ``mean_ret`` of 1.18e-16 that the
-    support floor passed. Summing the rounded per-row excesses instead left residue whose SIGN
-    depended on the members' declaration order; the exact sum depends on no order at all.
+    every leg 0 (``S − 1.0·S``); a bar whose legs are all the SAME value (a shared outcome feed
+    broadcast to the basket) has weights that sum to 0 against it, whatever closed — each excess
+    there is exactly zero. Rounding ``k_t/N`` first does not cancel, and summing the rounded
+    per-row excesses leaves residue whose SIGN depends on the members' declaration order; the
+    exact sum depends on no order at all.
 
     NaN on an empty pool. A bar with any closed member has every raw leg finite — a NaN leg voids
     the bar's whole cross-sectional mean, censoring every member there — so no NaN reaches the
     sum (a non-finite leg reads NaN regardless). Legs so large that a weighted product, or the
     exact total, leaves the double range have no finite pooled mean: NaN, which the gate refuses
-    as non-finite — never an exception out of the run. Every BAR's exact numerator, off the same
-    weighted terms (:func:`cross_mean_bar_numerators`), is what the pool's other bar-closed sums
-    read — the runner's ``rets_pool``: the bootstrap's episode sums, the eras, the episode means,
-    the CSCV split means (a block holds whole bars — :func:`~seikan.analysis.stats.cscv_pbo`'s
-    ``bar_numerators``) and a bucket's mean over a bar it holds whole
-    (:func:`~seikan.analysis.stats.cell_conditional_buckets`' ``rets_pool``) — and the pooled
-    HAC reads them about the pool's exact mean
+    as non-finite — never an exception out of the run. The pool's other bar-closed sums read
+    every BAR's exact numerator off the same weighted terms (:func:`cross_mean_bar_numerators`),
+    and the pooled HAC reads them about the pool's exact mean
     (:func:`~seikan.analysis.stats.cross_mean_pooled_hac`); the rotation null meets the
     identities only through its tie band."""
     c = np.asarray(closed, dtype=bool)
@@ -578,14 +560,12 @@ def cross_mean_bar_numerators(raw: np.ndarray, closed: np.ndarray) -> BarNumerat
     (:meth:`BarNumerators.at`), and a read that sums whole bars — the bootstrap's episode sums,
     the eras, the episode means, the CSCV split means, a bucket's mean over a bar it holds whole
     (the runner's ``rets_pool``, over ``pool_scale`` ``N``) — takes their parts' exact sum over
-    ``N`` times its row count, rounded once (:func:`exact_mean`): 0.0
-    exactly where the excesses it holds cancel, across bars too, and otherwise their exact sum's
-    sign. Each bar divided by ``N`` first rounded every bar apart: eight episodes of three bars
-    whose excesses −1/3, −2/3 and 1 cancel read 1.85e-17 each — a positive interval and an
-    episode hit rate of 1 beside a pooled ``mean_ret`` of 0 — and a numerator rounded once still
-    missed its cancelling partners wherever the legs span binades. NaN parts on a bar whose sum,
-    or one of its weighted products, leaves the double range: every read over it is null, never
-    a partial bar. Every row-level read keeps the row's own ``ret``."""
+    ``N`` times its row count, rounded once (:func:`exact_mean`): 0.0 exactly where the excesses
+    it holds cancel, across bars too, and otherwise their exact sum's sign. Dividing each bar by
+    ``N`` first would round every bar apart, and a numerator rounded once still misses its
+    cancelling partners wherever the legs span binades. NaN parts on a bar whose sum, or one of
+    its weighted products, leaves the double range: every read over it is null, never a partial
+    bar. Every row-level read keeps the row's own ``ret``."""
     c = np.asarray(closed, dtype=bool)
     rows, _k, wh, wl = _cross_mean_weighted_parts(raw, c)
     by_bar = parts_table([[*hi, *lo] for hi, lo in zip(wh.tolist(), wl.tolist(), strict=True)])
@@ -615,15 +595,13 @@ def benchmark_regression(raw: np.ndarray, bench: np.ndarray) -> BenchmarkRegress
     calendar-return framing — and ``r2 = cov² / (var_raw · var_bench)``. beta and r2 are the
     EXACT quotients of the legs' exact second moments (the values as integers over one
     power-of-two denominator, :func:`integer_terms`), each rounded once: the same double on
-    every platform at any scale, an exact line its exact slope, and r2 never past 1. ``np.cov``
-    (a BLAS sum times a rounded ``1/(n − 1)``) over ``np.var`` (a pairwise sum over ``n − 1``)
-    read identical legs at beta ≠ 1 on most pools, and legs whose exact slope sits 0.3125 ulp
-    below 5 at beta 5.0 under Accelerate's summation order, 5.000000000000001 under OpenBLAS's.
+    every platform at any scale, an exact line its exact slope, and r2 never past 1 — never
+    ``np.cov`` (a BLAS sum, in the platform's summation order, times a rounded ``1/(n − 1)``)
+    over ``np.var`` (a pairwise sum over ``n − 1``), which can read identical legs at beta ≠ 1.
     The means are the legs' exactly rounded ones (:func:`exact_mean`) — the ``mean_ret_raw`` /
     ``mean_ret_bench`` the panel reports beside the fit — so the identity ``alpha +
     beta·mean(bench) == mean(raw)`` holds to the rounding of one product and one difference, a
-    reader's to re-check. On the pairwise means it did not: legs at ``2**50`` whose raw leg is
-    the bench leg plus 1 read alpha 0.75 beside leg means 1 apart.
+    reader's to re-check.
 
     The two arrays must be ROW-ALIGNED (the same closed rows, in the same order): pairing is the
     whole point, which is why this takes the raw columns and filters PAIRS — a pre-filtered
@@ -633,15 +611,13 @@ def benchmark_regression(raw: np.ndarray, bench: np.ndarray) -> BenchmarkRegress
     authoritative "was there a benchmark"), ``insufficient_observations`` below n=3 (two points
     fit a line exactly — r² ≡ 1 vacuously), ``no_benchmark_variation`` on a (near-)constant bench
     leg (:func:`near_constant` — a constant DECIMAL leg's spread is the rounding of its level,
-    and dividing by it minted an arbitrary beta), ``not_representable`` when beta or alpha
+    and dividing by it would mint an arbitrary beta), ``not_representable`` when beta or alpha
     leaves the double range. ``r2`` alone is NaN → null when the raw leg is constant — nothing
     to explain, while beta = 0 (exactly: the leg co-varies with nothing) and alpha = mean(raw)
     are still real numbers. A VARYING raw leg is fitted however small its spread: the
-    near-constant gate guards the divisor, the bench leg, and on the raw leg it read ``raw = 1 +
-    bench`` over ``bench = eps·[−4, −2, 0, 2, 4]`` as beta 0 for an exact slope of 1. No moment
-    is a double, so none leaves the range: a varying leg whose variance overflowed or fell below
-    the normal range as a double — which declined ``not_representable``, its fit unreadable off
-    ``cov / inf`` or lost bits — is fitted exactly. On overlapping pools the fit is inflated
+    near-constant gate guards the divisor, the bench leg, never the raw leg. No moment is a
+    double, so none leaves the range: a varying leg whose variance as a double would overflow or
+    fall below the normal range is fitted exactly. On overlapping pools the fit is inflated
     exactly as every row-level read is — the caveat, not a correction, covers it. Evidence only,
     read by no check; a one-regressor attribution, not a factor model."""
     r = np.asarray(raw, dtype=float)

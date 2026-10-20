@@ -41,11 +41,12 @@ class CellTargetPanel(TypedDict):
     evidence blocks carrying their ``reason``): an OMITTED target would read as "not applicable
     here" when what happened is "this cell produced no evidence for a target it claims to hold
     across" — which is why every statistical field here admits ``None``.
-    ``gate._check_cell_evidence`` reconciles ``n``/``n_nonoverlap`` against the coverage ledger, and
-    ``support``/``concentration`` read ``n``/``n_nonoverlap``/``mean_ret`` and ``concentration``
-    under
-    the CONJUNCTION rubric; everything else here is evidence. ``mean_ret_bench`` is null on every
-    unbenchmarked run ("no benchmark leg", never a measured zero). The shape/dispersion reads
+    ``cell_evidence`` reconciles ``n``/``n_nonoverlap`` with the coverage ledger and holds
+    ``mean_ret`` within ``[worst_ret, best_ret]`` and ``concentration.top_share_abs`` at or above
+    its count's floor; ``support``/``concentration`` read ``n``/``n_nonoverlap``/``mean_ret`` and
+    ``concentration`` under the CONJUNCTION rubric; everything else here is evidence.
+    ``mean_ret_bench`` is null on every unbenchmarked run ("no benchmark leg", never a measured
+    zero). The shape/dispersion reads
     (``win_loss_ratio``/``std_ret``/``skewness``/``kurtosis``/``tail_ratio``/``cvar_5``) are
     ``pool_moments`` over the same closed pool; ``tail_ratio ≡ |p95/p05|`` of ``ret_quantiles``
     and rides as the same derivable-convenience class as ``profit_factor``. ``rot_n_null`` is

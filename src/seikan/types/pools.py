@@ -7,9 +7,10 @@ from typing import Literal, NotRequired, TypedDict
 
 # ---- pool-level statistical blocks --------------------------------------------------------
 #
-# The blocks ``analysis.stats`` computes over ONE observation pool. The runner mounts them under
-# each cell's per-target panel and (in basket mode) under its pooled panel, so every one of them
-# appears twice in a report and has exactly one shape.
+# The blocks ``analysis.stats`` computes over ONE observation pool, each with exactly one shape
+# wherever it is mounted: most under every cell's per-target panel and, in basket mode, its pooled
+# panel; the episode, bucket and association blocks once per cell; the member-mass decomposition
+# on the pooled panel alone.
 
 
 class PoolQuantiles(TypedDict):
@@ -192,11 +193,12 @@ class SubperiodEntry(SubperiodCounts):
 class EpisodeStatsBlock(TypedDict):
     """One cell's cross-target episode clustering — ``analysis.stats.episode_stats``.
 
-    Produced over the cell's CLOSED rows and mounted as ``episode_stats``. The checklist reads
-    exactly two fields: ``n`` (``cell_evidence`` reconciles it against the per-target total) and
-    ``max_cluster_share_abs`` (the one-episode ceiling in ``concentration``); the rest is
-    evidence. ``mass_hhi`` (Σ share² over the clusters' |return|-mass shares) and
-    ``effective_n_clusters`` (1/hhi ∈ [1, n_clusters]) are the ceiling's SMOOTH companions —
+    Produced over the cell's CLOSED rows and mounted as ``episode_stats``. ``concentration``
+    grades ``max_cluster_share_abs`` (the one-episode ceiling); ``cell_evidence`` reconciles ``n``
+    with the per-target total, ``n_clusters`` with ``n``, and the ceiling read with
+    ``largest_cluster_share_abs`` and ``1 / n_clusters``; the rest is evidence. ``mass_hhi``
+    (Σ share² over the clusters' |return|-mass shares) and ``effective_n_clusters``
+    (1/hhi ∈ [1, n_clusters]) are the ceiling's SMOOTH companions —
     two episodes at 50% each clear a 0.60 ceiling while reading as exactly two effective
     episodes — and the gate reads neither. An empty or zero-mass pool reports zero counts with
     NaN → null shares, hhi pair included, and a null start; a ``diff`` outcome's rows of several
@@ -332,8 +334,8 @@ class BucketRecord(TypedDict):
     (:class:`BucketMemberRecord`) — present exactly on the records that pooled several targets'
     rows by ordinal and absent on a single-target record (as ``pooled`` is on a conjunction
     cell). The pooled ``mean_ret`` weights the targets by the rows each puts in the ordinal,
-    which equal per-target bin counts do not equalize: tied feature values fill two targets'
-    ordinals 50/25/25 and 25/25/50, and the pooled means fall while both targets' own rise."""
+    which equal per-target bin counts do not equalize, so the pooled means can fall while every
+    target's own rise."""
 
     bucket: str
     n: int
@@ -408,10 +410,12 @@ class MemberShareBlock(TypedDict):
     and mounted on the pooled panel.
 
     ``by_target`` covers EVERY declared member (NaN → null shares on a zero-mass pool) and is
-    attribution, never a ranking; the checklist reads only ``max_member_share_abs``, the
-    one-name-basket detector in ``concentration``. ``Mapping`` rather than ``dict`` because the
-    value type must admit the emitted null while the runner builds a plain ``dict[str, float]``
-    (NaN, not None, in memory) — covariance is exactly the seam being described.
+    attribution, never a ranking: ``concentration`` grades ``max_member_share_abs``, the
+    one-name-basket detector, and ``cell_evidence`` holds it to ``by_target`` (every member
+    covered, the maximum its largest share, the shares summing to 1). ``Mapping`` rather than
+    ``dict`` because the value type must admit the emitted null while the runner builds a plain
+    ``dict[str, float]`` (NaN, not None, in memory) — covariance is exactly the seam being
+    described.
     """
 
     by_target: Mapping[str, float | None]

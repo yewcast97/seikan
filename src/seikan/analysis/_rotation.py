@@ -46,9 +46,8 @@ def _fwd_ffts(fwd: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """``(rfft(zero-filled fwd), rfft(finite indicator))`` — the two forward-side spectra of the
     circular cross-correlations in :func:`_rotation_num_den`.
 
-    A function of the forward column ALONE, so cells sharing a (horizon, target) share it —
-    :func:`reliability_summary` memoizes it per distinct ``fwd`` content instead of recomputing
-    both FFTs for every combo sibling.
+    A function of the forward column ALONE, so cells sharing a (horizon, target) share it
+    (:func:`_ffts_for`'s content-keyed memo).
     """
     fwd = np.asarray(fwd, dtype=float)
     finite = np.isfinite(fwd)
@@ -88,12 +87,11 @@ def _ffts_for(fwd: np.ndarray, memo: dict[bytes, _Spectra]) -> _Spectra:
     of its largest finite magnitude (0 for a column of zeros), so that magnitude lies in
     ``[0.5, 1)``. The FFT is bit-exactly equivariant under a power-of-two scaling that leaves its
     arithmetic in range, so every column the raw transform could carry reads the same comparisons
-    in the frame, while the rest no longer leave the range: a column near the double ceiling
-    overflowed its partial sums (its ``rot_p`` was null), and a SUBNORMAL one ran the transform on
-    values of a few bits — every rotation of ``1e-323`` returns is a tie, yet their means came out
-    as rounding noise and ``rot_p`` read 0.05 where unit-scale returns read 1.0. Scaling up never
-    rounds; scaling down drops only bits far inside the transform's own error. Returns the two
-    spectra of the framed column, its 2-norm (the scale of their rounding error) and ``e``."""
+    in the frame, and the rest stay in range: raw, a column near the double ceiling overflows its
+    partial sums, and a SUBNORMAL one runs the transform on values of a few bits, its ties read
+    as rounding noise. Scaling up never rounds; scaling down drops only bits far inside the
+    transform's own error. Returns the two spectra of the framed column, its 2-norm (the scale of
+    their rounding error) and ``e``."""
     fkey = fwd.tobytes()
     ffts = memo.get(fkey)
     if ffts is None:
@@ -248,11 +246,8 @@ def reliability_summary(cells: list[ReliabilityCell], length: int) -> Reliabilit
     n_shifts = shifts.shape[0]
 
     per_cell: dict[CellKey, ReliabilityRead] = {}
-    # The forward-side FFTs are a function of `fwd_col` alone, which combo siblings sharing a
-    # (horizon, target) pass in with identical content — memoized by content (bytes) so the O(T
-    # log T) transforms run once per distinct forward series, not once per cell. Content-keyed
-    # rather than (h, target)-keyed on purpose: it is immune to synthetic inputs whose key fields
-    # do not determine the column, and the O(T) hash is cheap beside the FFT it saves.
+    # One transform per distinct forward series (`_ffts_for`'s content key): combo siblings
+    # sharing a (horizon, target) pass in identical `fwd_col` content.
     fft_memo: dict[bytes, _Spectra] = {}
     for cell in cells:
         per_cell[tuple(cell["key"])] = _reliability_read([cell], length, shifts, fft_memo)
@@ -295,10 +290,10 @@ def pooled_reliability_summary(cells: list[ReliabilityCell], length: int) -> Rel
     Bartlett weight ``max(0, 1 − 0/h) = 1``: one market move seen through several members is
     ONE cluster, priced at full covariance, never counted as independent evidence — the
     cluster-robust treatment for free, the kernel stays PSD under ties, and its exactly rounded
-    per-bar deviation sums make the estimate bit-identical under any tied-row input order — the
-    same-bar covariance is order-symmetric, so only the fp accumulation sequence was ever at
-    stake. Performance note: the kernel's lag loop runs over the distinct entry bars, ~h lags
-    before its no-overlap break — trivial beside the FFTs.
+    per-bar deviation sums make the estimate bit-identical under any tied-row input order (the
+    same-bar covariance is order-symmetric; only an fp accumulation order could move it).
+    Performance note: the kernel's lag loop runs over the distinct entry bars, ~h lags before its
+    no-overlap break — trivial beside the FFTs.
 
     ``n_nonoverlap`` — :func:`nonoverlap_count` over the concatenated entry bars: the SAME greedy
     non-overlapping kernel as everywhere else in the engine, deliberately NOT the episode
