@@ -4,11 +4,13 @@ reference series (``tests/_reference_nb.py``) exactly.
 
 from __future__ import annotations
 
+import decimal
 import functools
 import itertools
 import math
 import time
 import tracemalloc
+from decimal import Decimal
 from fractions import Fraction
 
 import numpy as np
@@ -246,34 +248,86 @@ def test_change_log_past_the_double_range_is_finite():
     np.testing.assert_array_equal(ref.change(sub, 1, "log"), [np.nan, math_exact])
 
 
-def test_log_ratio_is_the_signed_direct_form_bit_for_bit_on_ordinary_levels():
-    # The difference of logs rounds differently from ln(b/a) on almost every ordinary pair, so
-    # the fallback must never fire there: on a random walk both twins — and the change kernel
-    # reading through them — equal the direct form of the larger level over the smaller, negated
-    # where the level fell, bit for bit.
+def test_log_ratio_is_log1p_of_the_excess_bit_for_bit_on_ordinary_levels():
+    # Neither ln of the quotient nor the difference of logs is the rule: each rounds differently
+    # from it on almost every ordinary pair, so on a random walk both twins — and the change
+    # kernel reading through them — equal log1p of the larger level's relative excess over the
+    # smaller, negated where the level fell, bit for bit.
     rng = np.random.RandomState(7)
     walk = 100.0 * np.exp(np.cumsum(rng.normal(0.0, 0.02, 5000)))
     num, den = walk[1:], walk[:-1]
-    direct = np.where(num >= den, np.log(num / den), -np.log(den / num))
-    assert (direct != np.log(num) - np.log(den)).mean() > 0.5  # the fallback WOULD move bits
-    np.testing.assert_array_equal(log_ratio_array(num, den), direct)
+    want = np.where(num >= den, np.log1p((num - den) / den), -np.log1p((den - num) / num))
+    quotient = np.where(num >= den, np.log(num / den), -np.log(den / num))
+    assert (want != quotient).mean() > 0.5  # the quotient's rounding at 1's ulp moves bits
+    assert (want != np.log(num) - np.log(den)).mean() > 0.5  # the fallback WOULD move bits
+    np.testing.assert_array_equal(log_ratio_array(num, den), want)
     scalar = [log_ratio(float(b), float(a)) for b, a in zip(num, den, strict=True)]
-    np.testing.assert_array_equal(scalar, direct)
-    np.testing.assert_array_equal(change_1d(walk, 1, "log")[1:], direct)
+    np.testing.assert_array_equal(scalar, want)
+    np.testing.assert_array_equal(change_1d(walk, 1, "log")[1:], want)
     # ...so a move's reverse reads its exact negation: read in its own direction each quotient
     # rounded on its own, and ln(fl(110/100)) + ln(fl(100/110)) was 4.2e-17
-    np.testing.assert_array_equal(log_ratio_array(den, num), -direct)
+    np.testing.assert_array_equal(log_ratio_array(den, num), -want)
     assert math.log(110.0 / 100.0) + math.log(100.0 / 110.0) != 0.0  # the premise
     assert log_ratio(110.0, 100.0) + log_ratio(100.0, 110.0) == 0.0
 
 
+def test_log_ratio_of_a_small_move_carries_a_relative_rounding():
+    # ln(fl(hi/lo)) rounded the quotient at 1's ulp first, an ABSOLUTE rounding of up to 2**-53
+    # under every move: the review's 100 → 100.00000001 read 1.000000082690371e-10 for
+    # 9.999993721476353e-11 — ABOVE its own pct change, where ln(1 + r) ≤ r for every r > −1 —
+    # and two adjacent doubles near 100 read 2.2e-16 for 1.4e-16. log1p of the relative excess
+    # reads the move itself.
+    a, b = 100.0, 100.00000001
+    pct = float(pct_change(b, a))
+    assert pct == 9.999993721976352e-11
+    assert math.log(b / a) == 1.000000082690371e-10 > pct  # the premise
+    for got in (log_ratio(b, a), log_ratio_array(b, a), change_1d(np.array([a, b]), 1, "log")[1]):
+        assert got == 9.999993721476353e-11 < pct
+    assert log_ratio(a, b) == -9.999993721476353e-11
+    up = math.nextafter(100.0, math.inf)
+    assert math.log(up / 100.0) == 2.2204460492503128e-16  # the premise: ln(1 + 2**-52)
+    assert log_ratio(up, 100.0) == 1.4210854715202004e-16 == pct_change(up, 100.0)
+    # Across every binade, against a 60-digit reference: within 2 ulps of exact (the excess
+    # rounds once within a factor of two, twice beyond, and log1p passes no more than its
+    # relative rounding through) and never above the pct change, which the quotient's log
+    # exceeds on a visible share of these pairs.
+    rng = np.random.default_rng(23)
+    pairs = []
+    for e, move, steps in zip(
+        rng.integers(-1070, 1020, 3000),
+        10.0 ** rng.uniform(-17, 2, 3000),
+        rng.integers(0, 4, 3000),
+        strict=True,
+    ):
+        lo = float(rng.uniform(1.0, 2.0)) * 2.0 ** int(e)
+        hi = lo
+        for _ in range(steps):  # adjacent doubles, or a move
+            hi = math.nextafter(hi, math.inf)
+        hi = hi if steps else lo * (1.0 + move)
+        if 0.0 < lo < hi < math.inf:
+            pairs.append((hi, lo))
+    assert len(pairs) > 2500
+    n_quotient_above = 0
+    with decimal.localcontext() as ctx:
+        ctx.prec = 60
+        for hi, lo in pairs:
+            exact = Decimal(hi).ln() - Decimal(lo).ln()
+            for num, den, ref_log in ((hi, lo, exact), (lo, hi, -exact)):
+                got = log_ratio(num, den)
+                assert abs(Decimal(got) - ref_log) <= 2 * Decimal(math.ulp(got)), (num, den)
+                assert got <= pct_change(num, den), (num, den)
+            n_quotient_above += math.log(hi / lo) > pct_change(hi, lo)
+    assert n_quotient_above > len(pairs) / 4  # the premise
+
+
 def test_log_ratio_twins_share_one_rule_at_the_range_edges():
-    # The scalar (math.log) and array (np.log) twins take the SAME branch on every class of
-    # positive pair — the larger level over the smaller, its direct log where that quotient is
+    # The scalar (math) and array (numpy) twins take the SAME branch on every class of positive
+    # pair — log1p of the larger level's relative excess over the smaller where that excess is
     # finite and the difference of logs where it overflows, negated where the level fell — and
-    # each equals its own log's formula for that branch exactly. The quotient is at least 1, so
-    # it never underflows. The two logs need not agree to the last bit across platforms (numpy's
-    # SIMD log is not libm's), so between the twins only an ulp is allowed; every value is finite.
+    # each equals its own library's formula for that branch exactly. The excess is 0 or at least
+    # 2**-53, so it never underflows. The two libraries' logs need not agree to the last bit
+    # across platforms (numpy's SIMD log is not libm's), so between the twins only an ulp is
+    # allowed; every value is finite.
     tiny = np.finfo(np.float64).tiny  # the smallest positive NORMAL double
     pairs = [
         (3.0, 2.0, False),
@@ -282,7 +336,7 @@ def test_log_ratio_twins_share_one_rule_at_the_range_edges():
         (1e-200, 1e200, True),  # the fall across it (read in its own direction, 1e-400 → 0.0)
         (1e-300, 3e20, True),  # in its own direction a subnormal 3.3e-321, precision lost
         (5e-324, 1.0, True),  # the smallest subnormal as a level
-        (tiny, 1.0, False),  # the reciprocal of the smallest normal: the direct form
+        (tiny, 1.0, False),  # the reciprocal of the smallest normal: an excess of 2**1022
         (1.7976931348623157e308, 5e-324, True),
     ]
     num = np.array([p[0] for p in pairs])
@@ -290,16 +344,21 @@ def test_log_ratio_twins_share_one_rule_at_the_range_edges():
     fallback = np.array([p[2] for p in pairs])
     hi, lo = np.maximum(num, den), np.minimum(num, den)
     sign = np.where(num < den, -1.0, 1.0)
-    q = np.array([max(a, b) / min(a, b) for a, b, _ in pairs])  # Python floats: overflow silently
-    np.testing.assert_array_equal(fallback, q == np.inf)  # the rule's branch
+    # Python floats: the excess overflows silently
+    r = np.array([(max(a, b) - min(a, b)) / min(a, b) for a, b, _ in pairs])
+    np.testing.assert_array_equal(fallback, r == np.inf)  # the rule's branch
     arr = log_ratio_array(num, den)
     np.testing.assert_array_equal(
-        arr, sign * np.where(fallback, np.log(hi) - np.log(lo), np.log(q))
+        arr, sign * np.where(fallback, np.log(hi) - np.log(lo), np.log1p(r))
     )
     scalar = np.array([log_ratio(a, b) for a, b, _ in pairs])
     scalar_want = [
         (-1.0 if a < b else 1.0)
-        * (math.log(max(a, b)) - math.log(min(a, b)) if off else math.log(max(a, b) / min(a, b)))
+        * (
+            math.log(max(a, b)) - math.log(min(a, b))
+            if off
+            else math.log1p((max(a, b) - min(a, b)) / min(a, b))
+        )
         for a, b, off in pairs
     ]
     np.testing.assert_array_equal(scalar, scalar_want)
@@ -314,13 +373,13 @@ def test_log_ratio_twins_share_one_rule_at_the_range_edges():
     # 0-d operands broadcast like any others, the fallback included: always an array back.
     zero_d = log_ratio_array(np.float64(1e200), 1e-200)
     assert zero_d.shape == () and zero_d == np.log(1e200) - np.log(1e-200)
-    assert log_ratio_array(3.0, 2.0) == np.log(3.0 / 2.0)
+    assert log_ratio_array(3.0, 2.0) == np.log1p(0.5)
     # The scalar twin takes numpy scalars — an element read straight off an array — without the
     # overflow warning np.float64 division raises (an error under -W error), and their bits.
     levels = np.array([1e-200, 1e200, 3.0, 2.0])
     assert log_ratio(levels[1], levels[0]) == 921.0340371976183
     assert log_ratio(levels[0], levels[1]) == -921.0340371976183
-    assert log_ratio(levels[2], levels[3]) == math.log(3.0 / 2.0)
+    assert log_ratio(levels[2], levels[3]) == math.log1p(0.5)
 
 
 def test_pct_change_is_the_difference_over_its_base():

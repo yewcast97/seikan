@@ -891,14 +891,20 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   −0.3, whose doubles sum exactly to `2**-55`. The observation is that double, and every pool read
   is exact arithmetic over the observations, never re-derived from the levels. The LOG ratio is
   scale-safe, one rule for `change(kind="log")`, the `log` outcome (benchmark leg, `pre_ret`,
-  excursions included) and `describe`'s `log` reads (`seikan.numeric`). It is SIGNED: `ln(hi/lo)`
-  of the larger level over the smaller, negated where the level fell, so `ln(a/b)` is `−ln(b/a)`
-  bit for bit and a move and its reverse cancel exactly (a cycle through three or more levels only
-  to rounding, as any floating-point sum) — read in its own direction, each quotient rounded on
-  its own, and 100 → 110 → 100 summed to 2e-17, a positive `mean_ret` that met the support floor.
-  `ln(b/a)` of two positive finite levels is always representable even where the quotient is not,
-  so it reads `ln hi − ln lo` exactly where that quotient overflowed (1e200 →
-  1e-200 is −921.03…, never `ln(0)`), and the direct form — bit for bit — everywhere else. A
+  excursions included) and `describe`'s `log` reads (`seikan.numeric`). It is SIGNED: the log of
+  the larger level over the smaller, negated where the level fell, so `ln(a/b)` is `−ln(b/a)` bit
+  for bit and a move and its reverse cancel exactly (a cycle through three or more levels only to
+  rounding, as any floating-point sum) — read in its own direction, each quotient rounded on its
+  own, and 100 → 110 → 100 summed to 2e-17, a positive `mean_ret` that met the support floor. It
+  is `log1p` of the larger level's relative excess over the smaller, `(hi − lo)/lo` — the `pct`
+  rule's own read — so a small move carries a relative rounding, never the quotient's: read as
+  `ln(hi/lo)`, the quotient rounded at the ulp of 1 first, 100 → 100.00000001 measured
+  1.000000082690371e-10 for 9.999993721476353e-11, above its own `pct` change
+  (9.999993721976352e-11) where `ln(1 + r) ≤ r` for every `r > −1`, and `change(close, log) >
+  change(close, pct)` fired on 60 of 120 bars alternating the two levels. `ln(b/a)` of two
+  positive finite levels is always representable even where that excess is not, so it reads
+  `ln hi − ln lo` exactly where the excess overflowed (1e200 → 1e-200 is −921.03…, never
+  `ln(0)`), and `log1p` — bit for bit — everywhere else. A
   `pct` (or `diff`) past the double range has no representable value: NaN (a `no_outcome`
   observation, a NaN decision operand as above); a `describe` `pct` past the range (for a dispersion
   std, any one 1-bar ratio past it) is null with `ratio_reason: "not_representable"`, and a

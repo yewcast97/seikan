@@ -266,6 +266,27 @@ def test_list_entries_subnormal_cycle_reads_its_mad_and_never_fires_above_it(tmp
     assert set(report.root_series["rolling_agg(close,4,mad)"].dropna()) == {u}
 
 
+def test_list_entries_log_change_never_exceeds_the_pct_change(tmp_path):
+    # The review's read: closes alternating 100 and 100.00000001. ln(1 + r) ≤ r for every r > −1,
+    # so `change(close, log) > change(close, pct)` holds on no bar — it fired on all 60 rises,
+    # the log of the quotient rounded at 1's ulp reading 1.000000082690371e-10 above the pct
+    # change's 9.999993721976352e-11 (exact: 9.999993721476353e-11).
+    path = _bars(tmp_path / "alt.csv", [100.0, 100.00000001] * 60)
+    close = {"type": "field", "column": "close"}
+    entry = {
+        "type": "threshold",
+        "left": {"type": "change", "input": close, "kind": "log"},
+        "op": ">",
+        "right": {"type": "change", "input": close, "kind": "pct"},
+    }
+    report = _list(path, entry)
+    assert report.entries[0]["timestamps"] == []
+    log = report.root_series["change(close,1,log)"].to_numpy()[1:]
+    pct = report.root_series["change(close,1)"].to_numpy()[1:]
+    assert (log <= pct).all()
+    assert set(log[::2]) == {9.999993721476353e-11} and set(log[1::2]) == {-9.999993721476353e-11}
+
+
 # ---- render_series (the value-column labels) ------------------------------------------------
 
 

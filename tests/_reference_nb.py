@@ -389,13 +389,14 @@ def change(arr: np.ndarray, periods: int, kind: str = "pct") -> np.ndarray:
         elif kind == "log":
             if prev <= 0.0 or cur <= 0.0:
                 continue
-            # Signed and scale-safe: ln of the larger level over the smaller, negated where the
-            # level fell, and the difference of logs where that quotient overflowed (1e200 →
-            # 1e-200 is −921.03…, never ln(0)). Python floats, so the quotient cannot warn.
+            # Signed and scale-safe: log1p of the larger level's relative excess over the
+            # smaller, negated where the level fell, and the difference of logs where that excess
+            # overflowed (1e200 → 1e-200 is −921.03…, never ln(0)). Never ln of the quotient,
+            # which rounds at 1's ulp first. Python floats, so the quotient cannot warn.
             hi, lo = max(float(cur), float(prev)), min(float(cur), float(prev))
-            q = hi / lo
-            r = math.log(q) if q < math.inf else math.log(hi) - math.log(lo)
-            out[i] = -r if cur < prev else r
+            r = (hi - lo) / lo
+            v = math.log1p(r) if r < math.inf else math.log(hi) - math.log(lo)
+            out[i] = -v if cur < prev else v
         else:  # diff
             out[i] = cur - prev
     return out

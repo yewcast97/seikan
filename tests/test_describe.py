@@ -34,6 +34,15 @@ def _offset_std(values) -> float:
     return float(np.std(v - midrange(float(v.min()), float(v.max())), ddof=1))
 
 
+def _log_changes(num, den) -> np.ndarray:
+    """The log ratio's rule written out with numpy, as the array twin reads it: log1p of the
+    larger level's relative excess over the smaller, negated where the level fell (no pair here
+    leaves the double range)."""
+    num, den = np.asarray(num, dtype=float), np.asarray(den, dtype=float)
+    hi, lo = np.maximum(num, den), np.minimum(num, den)
+    return np.where(num < den, -1.0, 1.0) * np.log1p((hi - lo) / lo)
+
+
 def _write_series(path, values, columns=("y",)):
     """A literal series-shaped CSV: one row per element of ``values`` (a scalar for one column,
     a tuple for several), None → empty cell (a NaN hole)."""
@@ -368,8 +377,9 @@ def test_quotient_past_the_double_range_reads_the_exact_log_and_names_the_pct_re
 def test_subnormal_quotient_reads_the_exact_log_not_its_rounded_one(tmp_path, capsys):
     # 3e20 → 1e-300 is a quotient of 3.3e-321 — SUBNORMAL, so ln of it was finite and read
     # without complaint, but rounding to the subnormal grid had already cost it ~5e-4:
-    # −737.92536 where ln(b) − ln(a) is −737.92584. The rule reads the exact value wherever the
-    # quotient is not a normal double, the subnormal band included — changes and dispersion.
+    # −737.92536 where ln(b) − ln(a) is −737.92584. Read as the larger level over the smaller the
+    # excess (3e20 over 1e-300) overflows, so the rule reads the difference of logs there, the
+    # exact value — changes and dispersion.
     y = _write_series(tmp_path / "y.csv", [3e20, 1e-300, 1e-300])
     code, doc = _run(capsys, ["describe", str(y), "--windows", "2"])
     assert code == 0
@@ -438,7 +448,7 @@ def test_dispersion_pct_std_keeps_its_value_where_its_squares_leave_the_range(tm
         dw = blocks["dispersion"][str(w)]
         assert dw["pct"] == pytest.approx(want, rel=1e-15), name
         assert dw["reason"] is None and dw["ratio_reason"] is None
-        assert dw["log"] == _offset_std(np.log(np.divide(levels[1:], levels[:-1])))
+        assert dw["log"] == _offset_std(_log_changes(levels[1:], levels[:-1]))
 
 
 def test_levels_farther_apart_than_the_double_range_refuse_their_blocks_by_name(tmp_path, capsys):
@@ -585,12 +595,13 @@ def test_exact_values_including_the_most_recent_tie_rule(tmp_path, capsys):
     assert blocks["missingness"]["n_missing"] == 0
 
 
-def test_ordinary_log_reads_are_the_signed_direct_form_bit_for_bit(tmp_path, capsys):
-    # The scale-safe log reads ln(hi) − ln(lo) ONLY where the quotient left the double range:
-    # that form rounds differently from ln(hi/lo) on almost every ordinary pair, so on a random
-    # walk every changes[N].log and dispersion[N].log carries the exact bits of the larger level
-    # over the smaller, negated where the level fell — and the difference of logs must visibly
-    # disagree with them, or this pins nothing.
+def test_ordinary_log_reads_are_log1p_of_the_excess_bit_for_bit(tmp_path, capsys):
+    # The scale-safe log reads ln(hi) − ln(lo) ONLY where the excess left the double range, and
+    # never ln of the quotient, which rounds at 1's ulp first: both forms round differently from
+    # log1p of the larger level's relative excess over the smaller on almost every ordinary pair,
+    # so on a random walk every changes[N].log and dispersion[N].log carries that rule's exact
+    # bits, negated where the level fell — and both other forms must visibly disagree with them,
+    # or this pins nothing.
     rng = np.random.default_rng(11)
     walk = 100.0 * np.exp(np.cumsum(rng.normal(0.0, 0.02, 300)))
     y = _write_series(tmp_path / "y.csv", walk)
@@ -601,17 +612,19 @@ def test_ordinary_log_reads_are_the_signed_direct_form_bit_for_bit(tmp_path, cap
     frame, _report = read_strict_csv(str(y))  # the levels describe read, bit for bit
     assert frame is not None
     x = frame["y"].to_numpy()
-    n_change_moves = n_dispersion_moves = 0
+    n_diff_change = n_quot_change = n_diff_std = n_quot_std = 0
     for w in windows:
         a, b, tail = float(x[-1 - w]), float(x[-1]), x[-(w + 1) :]
         log = blocks["changes"][str(w)]["log"]
-        assert log == (math.log(b / a) if b >= a else -math.log(a / b))
-        n_change_moves += log != math.log(b) - math.log(a)
+        assert log == (math.log1p((b - a) / a) if b >= a else -math.log1p((a - b) / b))
+        n_diff_change += log != math.log(b) - math.log(a)
+        n_quot_change += log != (math.log(b / a) if b >= a else -math.log(a / b))
         std = blocks["dispersion"][str(w)]["log"]
         up, dn = tail[1:], tail[:-1]
-        assert std == _offset_std(np.where(up >= dn, np.log(up / dn), -np.log(dn / up)))
-        n_dispersion_moves += std != _offset_std(np.log(tail[1:]) - np.log(tail[:-1]))
-    assert n_change_moves > 0 and n_dispersion_moves > 0
+        assert std == _offset_std(_log_changes(up, dn))
+        n_diff_std += std != _offset_std(np.log(up) - np.log(dn))
+        n_quot_std += std != _offset_std(np.where(up >= dn, np.log(up / dn), -np.log(dn / up)))
+    assert min(n_diff_change, n_quot_change, n_diff_std, n_quot_std) > 0
 
 
 def test_pct_reads_are_the_difference_over_the_base(tmp_path, capsys):
@@ -808,8 +821,8 @@ def test_describe_shares_the_log_ratio_rule_through_a_leaf_never_the_engine():
 
 
 def test_the_normal_range_edge_has_one_definition():
-    # The smallest normal double decides every out-of-range rule — the log ratio's quotient, the
-    # kernels' variance tests, the pool statistics', CSCV's split variances, describe's std — and
+    # The smallest normal double decides every out-of-range rule — the kernels' variance tests,
+    # the pool statistics', CSCV's split variances, describe's std — and
     # it is DEFINED once, in the leaf: each layer reads the same object, so no copy can drift.
     import sys
 

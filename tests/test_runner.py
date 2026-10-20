@@ -3207,7 +3207,7 @@ def test_log_benchmark_leg_past_the_double_range_closes_instead_of_no_benchmark(
         row = by_bar[bar]
         assert row.exit_reason == "horizon"
         assert row.ret_bench == ret_bench
-        assert row.ret_raw == np.log(tgt[bar + 2] / tgt[bar + 1])
+        assert row.ret_raw == np.log1p((tgt[bar + 2] - tgt[bar + 1]) / tgt[bar + 1])
         assert row.ret == row.ret_raw - row.ret_bench
     cov = res.summary["cells"][0]["outcome_coverage"]["target"]
     assert cov["exit_reasons"]["no_benchmark"] == 0
@@ -3478,12 +3478,13 @@ def test_log_outcome_past_the_double_range_closes_with_the_exact_log(tmp_path):
     assert math.isclose(row.ret, -737.9258420467627, rel_tol=1e-15)
 
 
-def test_log_outcome_keeps_the_signed_direct_form_bit_for_bit_on_ordinary_levels(tmp_path):
-    """The difference of logs rounds differently from ln(b/a) on almost every ordinary pair, so
-    the scale-safe fallback may fire only where the quotient left the double range: on a random
-    walk every closed `ret` carries the exact bits of the larger level over the smaller, negated
-    where the level fell, over the very `entry_px` / `exit_px` floats the window measured — and
-    the fallback visibly disagrees."""
+def test_log_outcome_is_log1p_of_the_excess_bit_for_bit_on_ordinary_levels(tmp_path):
+    """Neither ln of the quotient (rounded at 1's ulp first) nor the difference of logs is the
+    rule: each rounds differently from log1p of the larger level's relative excess over the
+    smaller on almost every ordinary pair, so the scale-safe fallback may fire only where that
+    excess left the double range — on a random walk every closed `ret` carries the rule's exact
+    bits, negated where the level fell, over the very `entry_px` / `exit_px` floats the window
+    measured, and both other forms visibly disagree."""
     rng = np.random.default_rng(5)
     walk = 100.0 * np.exp(np.cumsum(rng.normal(0.0, 0.02, 300)))
     trades = _measured(tmp_path, list(walk), "log")
@@ -3491,7 +3492,9 @@ def test_log_outcome_keeps_the_signed_direct_form_bit_for_bit_on_ordinary_levels
     assert len(closed) > 250
     ret = closed["ret"].to_numpy()
     num, den = closed["exit_px"].to_numpy(), closed["entry_px"].to_numpy()
-    np.testing.assert_array_equal(ret, np.where(num >= den, np.log(num / den), -np.log(den / num)))
+    want = np.where(num >= den, np.log1p((num - den) / den), -np.log1p((den - num) / num))
+    np.testing.assert_array_equal(ret, want)
+    assert (ret != np.where(num >= den, np.log(num / den), -np.log(den / num))).mean() > 0.5
     assert (ret != np.log(num) - np.log(den)).mean() > 0.5
 
 
@@ -5609,7 +5612,7 @@ def test_cross_mean_log_leg_past_the_double_range_no_longer_censors_the_bar(tmp_
         a_row, b_row = rows["A"].loc[bar], rows["B"].loc[bar]
         assert a_row["exit_reason"] == b_row["exit_reason"] == "horizon"
         assert b_row["ret_raw"] == b_leg
-        assert a_row["ret_raw"] == np.log(a[bar + 2] / a[bar + 1])
+        assert a_row["ret_raw"] == np.log1p((a[bar + 2] - a[bar + 1]) / a[bar + 1])
         assert a_row["ret_bench"] == b_row["ret_bench"]
         assert a_row["ret_bench"] == pytest.approx((a_row["ret_raw"] + b_leg) / 2, rel=1e-15)
         assert a_row["ret"] == pytest.approx(a_row["ret_raw"] - a_row["ret_bench"], abs=2e-13)
