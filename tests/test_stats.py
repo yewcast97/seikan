@@ -1478,7 +1478,7 @@ def test_rotation_null_near_the_ceiling_reads_its_exact_p_in_the_unit_frame():
     mask[8] = 1.0
     for column in (fwd, fwd * 1e-300):
         read = reliability_summary(
-            [{"key": ("t",), "mask_col": mask, "fwd_col": column, "h": 1}], 9, ["t"]
+            [{"key": ("t",), "mask_col": mask, "fwd_col": column, "h": 1}], 9
         )["per_cell"][("t",)]
         assert read["rot_p"] == 2 / 9 and read["rot_n_null"] == 8
 
@@ -1524,7 +1524,7 @@ def test_constant_return_pool_rotation_p_is_one(c):
         mask = np.zeros(T)
         mask[rng.choice(T, int(rng.randint(5, 30)), replace=False)] = 1.0
         cells = [{"key": ("k", "t"), "mask_col": mask, "fwd_col": fwd, "h": 1}]
-        read = reliability_summary(cells, T, ["t"])["per_cell"][("k", "t")]
+        read = reliability_summary(cells, T)["per_cell"][("k", "t")]
         assert read["rot_p"] == 1.0 and read["rot_n_null"] == T - 1
         pooled = pooled_reliability_summary(
             [*cells, {"key": ("k", "u"), "mask_col": np.roll(mask, 3), "fwd_col": fwd, "h": 1}], T
@@ -1535,7 +1535,7 @@ def test_constant_return_pool_rotation_p_is_one(c):
 def _one_cell_read(mask, fwd):
     T = fwd.shape[0]
     cells = [{"key": ("k", "t"), "mask_col": mask, "fwd_col": fwd, "h": 1}]
-    return reliability_summary(cells, T, ["t"])["per_cell"][("k", "t")]
+    return reliability_summary(cells, T)["per_cell"][("k", "t")]
 
 
 def _exact_corr(members, weights=None):
@@ -1700,9 +1700,8 @@ def test_rotation_tie_band_leaves_real_dispersion_untouched():
     mask = np.zeros(T)
     mask[rng.choice(T, 40, replace=False)] = 1.0
     brute = np.array([fwd[np.roll(mask > 0, tau)].mean() for tau in range(T)])
-    read = reliability_summary(
-        [{"key": ("k", "t"), "mask_col": mask, "fwd_col": fwd, "h": 1}], T, ["t"]
-    )["per_cell"][("k", "t")]
+    cells = [{"key": ("k", "t"), "mask_col": mask, "fwd_col": fwd, "h": 1}]
+    read = reliability_summary(cells, T)["per_cell"][("k", "t")]
     assert read["rot_p"] == _tail_p(brute[0], brute[1:])[0]
 
 
@@ -1740,7 +1739,7 @@ def test_reliability_summary_returns_only_per_cell_nominal_reads():
         m = np.zeros(T)
         m[rng.choice(T, 30, replace=False)] = 1.0
         cells.append({"key": (k, "t"), "mask_col": m, "fwd_col": fwd, "h": 1})
-    rel = reliability_summary(cells, T, ["t"])
+    rel = reliability_summary(cells, T)
     assert set(rel) == {"per_cell", "n_shifts"}
     assert set(rel["per_cell"]) == {(0, "t"), (1, "t"), (2, "t")}
     for read in rel["per_cell"].values():
@@ -1750,13 +1749,12 @@ def test_reliability_summary_returns_only_per_cell_nominal_reads():
 
 
 def test_reliability_summary_empty_grid_is_the_zero_shape():
-    assert reliability_summary([], 400, ["t"]) == {"per_cell": {}, "n_shifts": 0}
+    assert reliability_summary([], 400) == {"per_cell": {}, "n_shifts": 0}
     # too short to rotate against: same total, no exception
     m = np.array([1.0, 0.0])
     fwd = np.array([0.01, 0.02])
-    assert reliability_summary(
-        [{"key": ("c", "t"), "mask_col": m, "fwd_col": fwd, "h": 1}], 2, ["t"]
-    ) == {"per_cell": {}, "n_shifts": 0}
+    cells = [{"key": ("c", "t"), "mask_col": m, "fwd_col": fwd, "h": 1}]
+    assert reliability_summary(cells, 2) == {"per_cell": {}, "n_shifts": 0}
 
 
 def test_rotation_null_detects_edge_and_clears_noise():
@@ -1773,7 +1771,7 @@ def test_rotation_null_detects_edge_and_clears_noise():
         {"key": ("edge", "t"), "mask_col": edge, "fwd_col": fwd, "h": 1},
         {"key": ("noise", "t"), "mask_col": noise, "fwd_col": fwd, "h": 1},
     ]
-    rel = reliability_summary(cells, T, ["t"])
+    rel = reliability_summary(cells, T)
     assert rel["per_cell"][("edge", "t")]["rot_p"] < 0.05
     assert rel["per_cell"][("edge", "t")]["rot_p"] < rel["per_cell"][("noise", "t")]["rot_p"]
     # Resolution transparency: the shift count actually used is reported (min achievable
@@ -1791,7 +1789,7 @@ def test_rotation_grid_uses_every_shift_no_periodic_aliasing():
     mask = (np.arange(T) % 5 == 0).astype(float)
     fwd = np.where(np.arange(T) % 5 == 0, 1.0, -0.25)  # circular-stationary, period 5
     rel = reliability_summary(
-        [{"key": ("periodic", "t"), "mask_col": mask, "fwd_col": fwd, "h": 1}], T, ["t"]
+        [{"key": ("periodic", "t"), "mask_col": mask, "fwd_col": fwd, "h": 1}], T
     )
     assert rel["n_shifts"] == T - 1
     rot_p = rel["per_cell"][("periodic", "t")]["rot_p"]
@@ -1808,12 +1806,12 @@ def test_per_cell_reads_do_not_depend_on_the_rest_of_the_grid():
     lone = np.zeros(T)
     lone[rng.choice(T, 40, replace=False)] = 1.0
     cells = [{"key": ("a", "t"), "mask_col": lone, "fwd_col": fwd, "h": 5}]
-    alone = reliability_summary(cells, T, ["t"])["per_cell"][("a", "t")]
+    alone = reliability_summary(cells, T)["per_cell"][("a", "t")]
     for k in range(10):
         m = np.zeros(T)
         m[rng.choice(T, 40, replace=False)] = 1.0
         cells.append({"key": (f"n{k}", "t"), "mask_col": m, "fwd_col": fwd, "h": 5})
-    crowded = reliability_summary(cells, T, ["t"])["per_cell"][("a", "t")]
+    crowded = reliability_summary(cells, T)["per_cell"][("a", "t")]
     assert crowded == alone
 
 
@@ -1826,9 +1824,7 @@ def test_per_cell_n_nonoverlap_and_hac_match_direct_recomputation():
     fwd[-h:] = np.nan  # trailing windows run past the data end
     mask = np.zeros(T)
     mask[rng.choice(T, 60, replace=False)] = 1.0
-    rel = reliability_summary(
-        [{"key": ("c", "t"), "mask_col": mask, "fwd_col": fwd, "h": h}], T, ["t"]
-    )
+    rel = reliability_summary([{"key": ("c", "t"), "mask_col": mask, "fwd_col": fwd, "h": h}], T)
     read = rel["per_cell"][("c", "t")]
     closed = np.flatnonzero((mask > 0) & np.isfinite(fwd))
     assert read["n_nonoverlap"] == nonoverlap_count(closed, h)
@@ -1988,7 +1984,7 @@ def test_pooled_g1_reduces_exactly_to_the_per_target_read():
     mask = np.zeros(T)
     mask[rng.choice(T - h, 35, replace=False)] = 1.0
     cells = [{"key": ("k", "t"), "mask_col": mask, "fwd_col": fwd, "h": h}]
-    per_target = reliability_summary(cells, T, ["t"])["per_cell"][("k", "t")]
+    per_target = reliability_summary(cells, T)["per_cell"][("k", "t")]
     pooled = pooled_reliability_summary(cells, T)["per_cell"][("k",)]
     assert pooled == per_target
 

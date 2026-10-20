@@ -1326,7 +1326,6 @@ def run_backtest(thesis: Thesis, md: MarketData) -> EventStudyResult:
     sign, basket, off = cfg.sign, cfg.basket, cfg.off
     outcome_kind = cfg.outcome_kind
     custom_outcome, base_np, n_bars = cfg.custom_outcome, cfg.base_np, cfg.n_bars
-    targets = cfg.targets
     feature_names = cfg.feature_names
     horizon_values = cfg.horizon_values
     bench_mode, bench_col = cfg.bench_mode, cfg.bench_col
@@ -1512,7 +1511,7 @@ def run_backtest(thesis: Thesis, md: MarketData) -> EventStudyResult:
     # measured. The per-cell reads (`rot_p`, `t_hac`/`hac_se`, `n_nonoverlap`) are mounted into
     # each cell's per-target panel below; they are EVIDENCE (both estimators are known
     # anti-conservative — see analysis.stats), never a certificate.
-    rel = reliability_summary(rel_cells, n_bars, targets)
+    rel = reliability_summary(rel_cells, n_bars)
     # The basket's pooled reliability reads, derived from the basket's OWN `pooled_cells` roster
     # (every FIRED member's complete mask — a superset of the members `rel_cells` holds, see
     # `_measure_grid`) — one pooled entry per combo × horizon: the common-shift rotation null (one

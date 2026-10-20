@@ -203,9 +203,7 @@ def _reliability_read(
     }
 
 
-def reliability_summary(
-    cells: list[ReliabilityCell], length: int, targets: list[str]
-) -> ReliabilitySummary:
+def reliability_summary(cells: list[ReliabilityCell], length: int) -> ReliabilitySummary:
     """Per-cell overlap-aware inference over the declared grid — one independent descriptive read
     per (param combo × horizon × target). Not a selector: nothing here compares cells.
 
@@ -213,9 +211,9 @@ def reliability_summary(
     "h": horizon}`` — the LAST key element is the target. Every cell is measured on its OWN firing
     mask against its OWN circular-shift null, so two cells' numbers are directly comparable
     precisely because neither has been conditioned on the other, and adding a cell to the grid
-    changes no other cell's numbers. ``targets`` names the regime the cells span; no cross-target
-    statistic is formed from it here — the conjunction is reported target by target and the reader
-    (or the per-cell checklist) applies the weakest-target rule.
+    changes no other cell's numbers. No cross-target statistic is formed here — the conjunction is
+    reported target by target and the reader (or the per-cell checklist) applies the
+    weakest-target rule.
 
     Per cell: ``rot_p`` — the one-sided right-tail p of the observed conditional mean against the
     circular-shift null, where the forward-return series is FIXED and only the firing mask rotates,
