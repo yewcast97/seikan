@@ -1,35 +1,53 @@
-# seikan
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/seikan-lockup-white.svg">
+    <img src="assets/seikan-lockup.svg" alt="seikan" width="320">
+  </picture>
+</p>
 
-A **stateless CLI forward-return event-study engine and per-hypothesis reporter** for
-trading/investment theses, built to be driven by other agents (or humans). You bring a thesis
-DSL (JSON) and time series (strict CSV); seikan runs an observer-pure forward-return event
-study — entry condition + measurement horizon, no exit rule, no portfolio simulation — over
-**every parameter × horizon cell your sweep declares**, and writes one complete JSON report.
+seikan is a stateless command-line engine for forward-return event studies of trading and
+investment theses, built to be driven by agents or humans. A thesis (JSON) declares an entry
+condition, the parameters it sweeps and the horizons to measure — no exit rule, no portfolio
+simulation; seikan measures every declared cell over strict CSV data and writes one JSON report.
 
-## What makes it different
+## Key features
 
-- **The full grid, always.** Every declared hypothesis is measured on the full sample and
-  reported — including combos that never fired. `len(summary.cells) == n_hypotheses_attempted`
-  holds by construction, so a surviving cell can never look inevitable by its siblings' absence.
-- **No winner.** seikan does not select, rank, or crown a best cell: no headline scalar, no
-  verdict, no search-adjusted statistic. Selection — and the multiplicity cost of having
-  looked — stays with the caller, priced against the stamped grid size.
-- **A checklist, not a test.** Each cell gets a completeness / support / concentration checklist
-  with no significance claim and no positive-expected-return certification; `met` states that a
-  neutral threshold comparison held, and the judgement stays the caller's.
-- **Observer purity, honestly scoped.** The engine enforces its as-of convention computationally
-  (feed timestamps are availability times; `lag` models publication delay) and is explicit about
-  what it cannot verify: that your timestamps, vintages and universe are honest arrives with the
-  data and stays the caller's burden.
-- **Fail-closed ledgers on both sides of every firing.** A missing outcome refuses; undecidable
-  decision bars and unavailable raw inputs are counted and refuse — deleting data can only ever
-  leave a cell unmet, never improve it.
-- **Overlap-honest evidence.** Event-time HAC, a rotation null, an episode bootstrap, CSCV PBO,
-  episode clustering and an episode-deduplicated twin view ride every cell as evidence — each
-  tagged in the report's machine-readable `metric_roles.metric_classes` with a per-metric caveat —
-  and none of them gates anything.
-- **Deterministic and stateless.** No database, no network, no home directory; identical inputs
-  produce byte-identical reports.
+### Every cell, always
+
+Every declared parameter × horizon cell is measured on the full sample and reported, combos that
+never fired included: `len(summary.cells) == n_hypotheses_attempted` holds by construction.
+
+### No winner
+
+seikan selects, ranks and crowns nothing — no headline scalar, no verdict. Choosing among the
+cells, and pricing the multiplicity of having declared them, stays with the caller, against the
+stamped grid size.
+
+### A checklist, not a test
+
+Each cell gets a completeness, support and concentration checklist. It makes no significance claim
+and certifies no positive expected return.
+
+### Observer-pure measurement
+
+A firing fills at the next bar's open; feed timestamps are availability times, and `lag` models
+publication delay. What the engine cannot verify — that timestamps, vintages and universes are
+honest — arrives with the data and stays the caller's.
+
+### Fail-closed ledgers
+
+A missing outcome, an undecidable decision bar and an unavailable raw input are each counted, and
+each refuses the cell: deleting data can only leave a cell unmet, never improve it.
+
+### Overlap-honest evidence
+
+An event-time HAC, a rotation null, an episode bootstrap and an episode-deduplicated profile ride
+every cell, and CSCV PBO the grid, as evidence — each classed in the report's `metric_roles` beside
+its caveat; none of them gates anything.
+
+### Deterministic and stateless
+
+No database, no network, no home directory: identical inputs produce byte-identical reports.
 
 ## Install
 
@@ -37,13 +55,13 @@ study — entry condition + measurement horizon, no exit rule, no portfolio simu
 uv sync            # or: uv tool install .   (Python >= 3.13)
 ```
 
-## Use
+## Quick start
 
 ```bash
-seikan schema                      # machine-readable self-description of the whole contract
-seikan hash thesis.json            # canonical identity + the exact data keys a run must bind
+seikan schema                      # the whole contract, machine-readable
+seikan hash thesis.json            # canonical identity + the data keys a run must bind
 seikan check-data px.csv           # pre-flight a CSV against the strict data contract
-seikan describe px.csv             # pure data profiling — measures nothing
+seikan describe px.csv             # profile data files; measures nothing
 seikan run thesis.json --data PX=px.csv --report-out report.json
 ```
 
@@ -69,39 +87,40 @@ A minimal thesis:
 }
 ```
 
-Exit codes describe how far the RUN got, never how the evidence looked:
+Its two horizons make two cells, each graded on its own. It names two data keys — the target `PX`
+and the `benchmark` that `"market"` asks for — and the invocation binds them to files, so the
+paths are stamped into the report rather than written into the thesis:
+
+```bash
+seikan run thesis.json --data PX=px.csv --data benchmark=spy.csv --report-out report.json
+```
+
+Exit codes describe how far the run got, never how the evidence looked:
 
 | code | meaning |
 |---|---|
-| 0 | the command completed — for `run`, every nominated output was written (the per-cell results live inside `gate.cells`; exit 0 is not a verdict) |
+| 0 | completed — for `run`, every nominated output was written; per-cell results live in `gate.cells` |
 | 2 | input data failed strict validation (see `data_report`) |
-| 3 | invalid request — a usage error, an unreadable or invalid thesis or threshold set, or an unusable output path |
+| 3 | invalid request — a usage error, an invalid thesis or threshold set, or an unusable output path |
 | 4 | internal error |
-
-It declares two data keys — the target `PX`, and `benchmark`, which `params.benchmark: "market"`
-brings in — so it runs as
-`seikan run thesis.json --data PX=px.csv --data benchmark=spy.csv --report-out report.json`.
-The document names its series and never locates them: paths and column bindings belong to the
-invocation and are stamped into the report, so re-pulled or re-shaped data next month re-runs the
-same exam under the same identity. This thesis declares a two-cell grid (one entry combo × two
-horizons), so the report carries two entries in `summary.cells`, each graded on its own.
 
 ## Development
 
 ```bash
-uv run ruff format --check src tests   # formatting is enforced
-uv run ruff check src tests            # lint
-uv run mypy                            # strict, over the whole package
-uv run pytest                          # the whole suite, zero skips
+uv run ruff format --check src tests
+uv run ruff check src tests
+uv run mypy
+uv run pytest
 ```
 
-CI (`.github/workflows/ci.yml`) runs these four checks on every push to `main` and every pull
-request, plus a wheel build. `pre-commit install` runs the two ruff checks at commit time
-(`.pre-commit-config.yaml`).
+CI (`.github/workflows/ci.yml`) runs these on every push to `main` and every pull request, then
+builds the wheel and checks it ships its package data. `pre-commit install` runs the ruff checks at
+commit time.
 
-## Where the depth lives
+## Documentation
 
-`CONTRACT.md` (repo root) is the working contract: the CLI and data-binding semantics, the
-report layout, the per-cell checklist, the frozen statistical mechanics and the strict-CSV
-doctrine. `seikan schema` emits the same contract machine-readably — the DSL JSON Schema,
-thresholds, CSV contracts, exit codes and field dictionaries.
+- [`CONTRACT.md`](CONTRACT.md) — the working contract: the CLI and data binding, the report
+  layout, the checklist, the statistical mechanics and the strict-CSV rules.
+- `seikan schema` — the same contract, machine-readable: the DSL JSON Schema, the thresholds, the
+  CSV contracts, the exit codes and the field dictionaries.
+- `seikan schema --markdown` — the DSL guide.
