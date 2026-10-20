@@ -92,10 +92,10 @@ def zscore_sma(arr: np.ndarray, window: int) -> np.ndarray:
         # at large input levels, and the raw mean's rounding loses an ulp-scale spread. The
         # numerator is the last value's exact deviation from the exact mean, rounded once.
         vals = [float(v) for v in arr[i - window + 1 : i + 1]]
-        var, _ = _shifted_moments(vals)
+        var = _shifted_variance(vals)
         dev = float(exact_deviation(vals))
         if var < _MIN_NORMAL:  # a VARYING window whose squared deviations underflowed: lift it
-            var, _ = _shifted_moments([math.ldexp(v, _LIFT) for v in vals])
+            var = _shifted_variance([math.ldexp(v, _LIFT) for v in vals])
             dev = float(exact_deviation(vals) * 2**_LIFT)
         if not (_MIN_NORMAL <= var < math.inf):
             continue  # an overflowed variance
@@ -127,12 +127,12 @@ def exact_deviation(vals: list[float]) -> Fraction:
     return Fraction(vals[-1]) - sum(map(Fraction, vals)) / len(vals)
 
 
-def _shifted_moments(vals: list[float]) -> tuple[float, float]:
-    """``(population variance, last value's deviation)`` of a window, about its first value."""
+def _shifted_variance(vals: list[float]) -> float:
+    """The population variance of a window, about its first value."""
     with np.errstate(over="ignore", invalid="ignore"):
         y = np.asarray(vals, dtype=np.float64) - vals[0]
         d = y - y.mean()
-        return float(np.mean(d * d)), float(d[-1])
+        return float(np.mean(d * d))
 
 
 def zscore_ema(arr: np.ndarray, window: int) -> np.ndarray:
@@ -273,11 +273,11 @@ def rolling_agg(arr: np.ndarray, window: int, agg: str) -> np.ndarray:
         elif agg == "mean":
             out[i] = vals[0] if constant else _exact_mean(vals.tolist())
         else:  # std, population, about the window's first value
-            var, _ = _shifted_moments(vals.tolist())
+            var = _shifted_variance(vals.tolist())
             if constant:
                 out[i] = 0.0
             elif var < _MIN_NORMAL:  # VARYING, its squared deviations underflowed: lift it
-                lvar, _ = _shifted_moments(np.ldexp(vals, _LIFT).tolist())
+                lvar = _shifted_variance(np.ldexp(vals, _LIFT).tolist())
                 out[i] = max(math.ldexp(math.sqrt(lvar), -_LIFT), 5e-324)
             elif var < math.inf:
                 out[i] = math.sqrt(var)

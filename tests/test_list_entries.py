@@ -48,9 +48,8 @@ from seikan.dsl.schema import (
 )
 from seikan.serialize import write_indexed_csv
 from tests._helpers import bars as _bars
+from tests._helpers import load
 from tests._helpers import lt as _lt
-
-from ._helpers import load
 
 
 def _thesis(entry, **params) -> Thesis:

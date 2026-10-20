@@ -33,10 +33,9 @@ from seikan.dsl.schema import Thesis
 from seikan.gate import GateThresholds, evaluate_gate
 from seikan.serialize import json_safe
 from tests._helpers import keys_deep as _keys_deep
+from tests._helpers import load
 from tests._helpers import unmet_cell_report as _unmet_cell
 from tests._helpers import unmet_run_report as _unmet_run
-
-from ._helpers import load
 
 # ---- planted series ---------------------------------------------------------------------------
 

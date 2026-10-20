@@ -34,6 +34,7 @@ import pandas as pd
 import pytest
 
 from seikan.cli import REPORT_SCHEMA_VERSION, main
+from tests._helpers import load
 from tests._helpers import unmet_checks as _unmet_cell_checks
 from tests._helpers import unmet_run_doc as _unmet_run_checks
 from tests._helpers import write_ohlcv as _write_ohlcv
@@ -1129,8 +1130,6 @@ def test_a_final_bar_firing_rides_the_entry_flags_csv(tmp_path, capsys, mask):
     # quietly degenerating.
     from seikan.api import list_entries
     from seikan.dsl.schema import Thesis
-
-    from ._helpers import load
 
     n = 120
     fired = _scattered_with_final_bar(n) if mask == "sparse" else list(range(n))
@@ -2847,8 +2846,6 @@ def test_entry_flags_csv_header_is_the_library_frames_columns(tmp_path, capsys, 
     from seikan import dataio
     from seikan.api import list_entries
     from seikan.dsl.schema import Thesis
-
-    from ._helpers import load
 
     thesis, mapping = build(tmp_path)
     out = tmp_path / "ef.csv"

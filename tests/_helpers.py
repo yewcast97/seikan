@@ -28,7 +28,6 @@ from seikan.dsl.schema import Thesis
 from seikan.gate import CellReport, GateReport
 
 __all__ = [
-    "DataFiles",
     "bars",
     "files_for",
     "keys_deep",

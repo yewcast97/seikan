@@ -33,10 +33,9 @@ import pandas as pd
 import pytest
 
 from seikan.cli import REPORT_SCHEMA_VERSION, main
+from tests._helpers import load
 from tests._helpers import unmet_cell_doc as _unmet_cell
 from tests._helpers import unmet_run_doc as _unmet_run
-
-from ._helpers import load
 
 # ---- the golden run ----------------------------------------------------------------------
 

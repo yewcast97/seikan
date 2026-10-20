@@ -40,9 +40,8 @@ from seikan.dsl.schema import Thesis
 from seikan.emitted import validate_summary
 from seikan.serialize import json_safe
 from tests._helpers import bars as _bars
+from tests._helpers import load
 from tests._helpers import lt as _lt
-
-from ._helpers import load
 
 _SAMPLE = Path(__file__).resolve().parents[1] / "data" / "sample.csv"
 

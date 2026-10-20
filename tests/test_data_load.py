@@ -15,8 +15,7 @@ from seikan import dataio
 from seikan.compiler import vectorize
 from seikan.dataio import DataError
 from seikan.dsl.schema import Thesis
-
-from ._helpers import files_for, load
+from tests._helpers import files_for, load
 
 
 def _ohlcv(path: Path, n: int = 10, start: str = "2021-01-01", *, closes=None) -> Path:
