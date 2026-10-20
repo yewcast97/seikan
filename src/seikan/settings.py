@@ -21,9 +21,8 @@ Four sealing rules (the policy is stamped AND bounded):
   instead of silently falling back to defaults, in any letter case, since the knobs themselves
   are read in any (``seikan_thesis_min_trades`` sets ``thesis_min_trades``).
 - **The instance is FROZEN**: the floors above are constructor-time validation, so a mutable
-  settings object would let a library caller loosen the exam after it had been checked. Assignment
-  raises, and ``gate.evaluate_gate`` additionally reconstructs the object it is handed — the
-  snapshot stamped into a report is always the exam that actually ran.
+  settings object would let a library caller loosen the exam after it had been checked.
+  Assignment raises.
 
 There is exactly ONE checklist, applied identically to every declared cell: no profiles, no
 per-cell exemptions, nothing the caller can select into. What a passing cell asserts is
@@ -35,21 +34,43 @@ from __future__ import annotations
 
 import os
 
-from pydantic import Field, TypeAdapter, model_validator
+from pydantic import ConfigDict, Field, TypeAdapter, model_validator, with_config
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from seikan.constants import MAX_DECLARED_GRID
 from seikan.types import ThresholdsSnapshot
 
+#: The environment namespace the knobs are read from. pydantic-settings matches a variable's
+#: name in any letter case, by lower-casing it; :func:`env_var_is_set` and the namespace check
+#: below compare the same way.
+ENV_PREFIX = "SEIKAN_"
+
+
+def env_var(field: str) -> str:
+    """A knob's environment variable, as the docs and ``seikan schema`` spell it."""
+    return f"{ENV_PREFIX}{field.upper()}"
+
+
+def env_var_is_set(field: str) -> bool:
+    """True when the knob's variable is set, in any letter case."""
+    name = env_var(field).lower()
+    return any(k.lower() == name for k in os.environ)
+
+
+@with_config(ConfigDict(extra="forbid"))
+class _SealedSnapshot(ThresholdsSnapshot):
+    """``ThresholdsSnapshot`` with an extra key refused (a plain TypedDict drops it)."""
+
+
 #: The snapshot shape's validator — the seam between the settings model and the emitted
 #: ``identity.thresholds`` stamp, checked at every ``snapshot()``.
-_SNAPSHOT: TypeAdapter[ThresholdsSnapshot] = TypeAdapter(ThresholdsSnapshot)
+_SNAPSHOT: TypeAdapter[_SealedSnapshot] = TypeAdapter(_SealedSnapshot)
 
 
 class GateThresholds(BaseSettings):
-    """The per-cell checklist's knobs (see ``gate.py`` for what each check does)."""
+    """The per-cell checklist's knobs (see ``seikan.gate`` for what each check does)."""
 
-    model_config = SettingsConfigDict(env_prefix="SEIKAN_", extra="forbid", frozen=True)
+    model_config = SettingsConfigDict(env_prefix=ENV_PREFIX, extra="forbid", frozen=True)
 
     #: Floor on a target's raw (overlapping) closed-observation count within a cell. Canonical
     #: floor: only equal-or-higher constructs.
@@ -76,27 +97,22 @@ class GateThresholds(BaseSettings):
     @model_validator(mode="after")
     def _reject_unknown_env(self) -> GateThresholds:
         # The SEIKAN_ namespace is owned: pydantic-settings only READS declared fields from the
-        # environment, so ``extra="forbid"`` alone never sees a typo'd var — enforce ownership
-        # explicitly. A caller exporting e.g. SEIKAN_MAX_P_VALUE (missing THESIS_) believes a
-        # different exam is active than the one that runs; refuse loudly instead. The known set
-        # is derived from `model_fields`, so any SEIKAN_* name that is not a live knob —
-        # SEIKAN_THESIS_MIN_OOS_N_EFF, SEIKAN_THESIS_OOS_ALPHA, SEIKAN_GATE_PROFILE, and, since
-        # the schema-v3 rename, the retired SEIKAN_THESIS_MIN_N_EFF — lands here as a hard
-        # error: a caller exporting one is asking for an exam this build does not run, which is
-        # exactly what must not pass silently. Names compare lowercased, as pydantic-settings
-        # reads them (``case_sensitive`` is off): ``seikan_thesis_min_trades`` sets the knob, so
-        # ``seikan_thesis_min_trade`` is a typo'd var like its upper-case spelling.
-        prefix = self.model_config.get("env_prefix", "")
-        known = {(prefix + name).lower() for name in type(self).model_fields}
+        # environment, so ``extra="forbid"`` alone never sees a typo'd var (SEIKAN_MAX_P_VALUE,
+        # missing THESIS_), whose caller believes a different exam is active than the one that
+        # runs — refuse it. ``seikan_thesis_min_trade`` is as typo'd as its upper-case spelling.
+        known = {env_var(name) for name in type(self).model_fields}
+        known_lower = {name.lower() for name in known}
         unknown = sorted(
-            k for k in os.environ if k.lower().startswith(prefix.lower()) and k.lower() not in known
+            k
+            for k in os.environ
+            if k.lower().startswith(ENV_PREFIX.lower()) and k.lower() not in known_lower
         )
         if unknown:
             raise ValueError(
-                f"unknown {prefix}* environment variable(s): {', '.join(unknown)} — the "
-                f"{prefix} namespace belongs to the gate thresholds (a typo'd var would "
+                f"unknown {ENV_PREFIX}* environment variable(s): {', '.join(unknown)} — the "
+                f"{ENV_PREFIX} namespace belongs to the gate thresholds (a typo'd var would "
                 "silently run a different exam than intended); known vars: "
-                + ", ".join(sorted(n.upper() for n in known))
+                + ", ".join(sorted(known))
             )
         return self
 
@@ -105,8 +121,8 @@ class GateThresholds(BaseSettings):
         reconstructible config: ``GateThresholds(**snapshot())`` round-trips."""
         # The dump is DERIVED from the model rather than written out field by field, so a knob
         # can never be added to the exam and left out of the stamp — and it is VALIDATED against
-        # the snapshot shape rather than cast to it, so a knob added here without its twin in
-        # ``ThresholdsSnapshot`` (or the reverse) refuses instead of drifting.
+        # the sealed snapshot shape rather than cast to it, so a knob added here without its twin
+        # in ``ThresholdsSnapshot`` (or the reverse) refuses instead of drifting.
         return _SNAPSHOT.validate_python(self.model_dump(), strict=True)
 
     def is_canonical(self) -> bool:

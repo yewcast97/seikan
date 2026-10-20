@@ -66,7 +66,7 @@ class CellReport:
         }
 
 
-@dataclass
+@dataclass(frozen=True)
 class GateReport:
     """The whole gate section: the run-level checks once, then every graded cell in panel order.
 

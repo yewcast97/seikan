@@ -11,7 +11,9 @@ from seikan.gate._read import (
     _detail,
     _int,
     _mode,
+    _no_target_list,
     _num,
+    _regime_mismatch,
     _stamp,
     _str_keyed,
     _targets,
@@ -175,11 +177,7 @@ def _check_evidence_complete(s: Mapping[str, object], t: GateThresholds) -> Gate
             "suppressed at the source cannot be ruled out"
         )
     elif src is not None and targets and set(src) != set(targets):
-        missing = sorted(set(targets) - set(src))
-        extra = sorted(set(src) - set(targets))
-        unmet.append(
-            f"sources does not cover the regime exactly (missing={missing}, unexpected={extra})"
-        )
+        unmet.append(_regime_mismatch("sources", src, targets))
     if not isinstance(cells, list):
         unmet.append(
             f"summary carries no cells panel (cells={type(cells).__name__}) — the per-cell "
@@ -289,10 +287,7 @@ def _check_source_coverage(s: Mapping[str, object], t: GateThresholds) -> GateCh
     run_bars = _int(s.get("n_bars"))
     unmet: list[str] = []
     if tset is None:
-        unmet.append(
-            "summary lacks a usable target list (non-empty, all strings) — source coverage "
-            "cannot be verified"
-        )
+        unmet.append(_no_target_list("source coverage cannot be verified"))
     elif not sources:
         unmet.append(
             "summary lacks a sources panel — without per-source availability, firings "

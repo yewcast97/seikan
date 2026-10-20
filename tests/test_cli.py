@@ -2656,43 +2656,6 @@ def test_looser_than_canonical_threshold_exits_3(tmp_path, capsys, flags):
     assert doc["error"]["type"] == "thresholds_invalid"
 
 
-def test_in_gate_threshold_revalidation_maps_to_exit_3(tmp_path, capsys):
-    # evaluate_gate revalidates the thresholds it is handed. That is unreachable through the
-    # CLI — `_thresholds` built them through the same constructor — but if it ever fires it is
-    # a thresholds problem, so it must land on the tiered exit-3 envelope rather than main()'s
-    # generic ValidationError → dsl_invalid branch.
-    from pydantic import ValidationError
-
-    import seikan.cli as cli_mod
-
-    px = _write_ohlcv(tmp_path / "px.csv")
-    thesis = _write_thesis(tmp_path / "t.json")
-    out = tmp_path / "r.json"
-
-    def _boom(_summary, _thresholds=None):
-        raise ValidationError.from_exception_data(
-            "GateThresholds",
-            [
-                {
-                    "type": "less_than_equal",
-                    "loc": ("thesis_max_concentration",),
-                    "input": 0.9,
-                    "ctx": {"le": 0.6},
-                }
-            ],
-        )
-
-    monkey = pytest.MonkeyPatch()
-    monkey.setattr(cli_mod, "evaluate_gate", _boom)
-    try:
-        code, doc = _run(capsys, ["run", str(thesis), *_target(px), "--report-out", str(out)])
-    finally:
-        monkey.undo()
-    assert code == 3
-    assert doc["error"]["type"] == "thresholds_invalid"
-    assert not out.exists()  # nothing is published before the report: a failed grading writes none
-
-
 def test_non_canonical_thresholds_stamped(tmp_path, capsys):
     px = _write_ohlcv(tmp_path / "px.csv")
     thesis = _write_thesis(tmp_path / "t.json")

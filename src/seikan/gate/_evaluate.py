@@ -44,19 +44,11 @@ def evaluate_gate(
     unmet ``cell_evidence`` while its siblings grade normally. Drifted input refuses with a
     detail — this function does not raise on it.
 
-    Raises ``pydantic.ValidationError`` when the supplied thresholds do not survive revalidation
-    (below) — a loosened exam is an error, not a result.
+    ``thresholds`` omitted, the exam is ``GateThresholds()``: the canonical one, tightened by
+    any ``SEIKAN_*`` variable — an unknown or out-of-domain one raises
+    ``pydantic.ValidationError``.
     """
     t = thresholds if thresholds is not None else GateThresholds()
-    # Revalidate at the trust boundary. The canonical floor is enforced at construction, so an
-    # object mutated afterwards — or a subclass that un-freezes and loosens itself — could bend
-    # the exam it is graded by at the library boundary (the CLI constructs its own, so this is
-    # defence for direct API callers). Reconstructing through the sealed constructor re-runs
-    # every domain bound and the SEIKAN_* namespace check; whatever `snapshot()` returns IS the
-    # exam that then runs, and it has just passed base-class validation. Explicit kwargs beat the
-    # environment in pydantic-settings, so passing every field cannot be perturbed by a polluted
-    # environment.
-    t = GateThresholds(**t.snapshot())
     s = summary or {}
     run_checks = [check(s, t) for check in _RUN_CHECKS]
     run_all_met = all(c.met for c in run_checks)

@@ -86,7 +86,7 @@ import traceback
 from collections.abc import Callable
 from importlib.resources import files
 from pathlib import Path
-from typing import Final, NamedTuple, NoReturn
+from typing import Final, NamedTuple, NoReturn, cast
 
 from pydantic import ValidationError
 
@@ -125,7 +125,7 @@ from seikan.serialize import (
     write_root_series_csv,
     write_trades_csv,
 )
-from seikan.settings import GateThresholds
+from seikan.settings import ENV_PREFIX, GateThresholds, env_var, env_var_is_set
 from seikan.types import (
     DataReport,
     DslDocument,
@@ -178,14 +178,12 @@ class _ThresholdFlag(NamedTuple):
     type: type
 
 
-#: CLI flag → GateThresholds field (flags override SEIKAN_* env vars, which override defaults).
-#: One entry per knob the checklist has; ``seikan schema`` renders this map directly, so a field
-#: the settings model drops disappears from the flags, the env-var listing and the docs at once.
+#: CLI flag → GateThresholds field, one per knob: the field minus its ``thesis_`` prefix (flags
+#: override SEIKAN_* env vars, which override defaults). ``seikan schema`` renders this map, so the
+#: flags, the env-var listing and the docs follow the settings model.
 _THRESHOLD_FLAGS: dict[str, _ThresholdFlag] = {
-    "min_trades": _ThresholdFlag("thesis_min_trades", int),
-    "min_n_nonoverlap": _ThresholdFlag("thesis_min_n_nonoverlap", int),
-    "max_concentration": _ThresholdFlag("thesis_max_concentration", float),
-    "max_hypotheses": _ThresholdFlag("thesis_max_hypotheses", int),
+    name.removeprefix("thesis_"): _ThresholdFlag(name, cast("type", info.annotation))
+    for name, info in GateThresholds.model_fields.items()
 }
 
 
@@ -302,15 +300,12 @@ def _thresholds_provenance(args: argparse.Namespace) -> dict[str, ThresholdProve
     function of the ambient ``SEIKAN_*`` environment too."""
     prov: dict[str, ThresholdProvenance] = {}
     for flag, spec in _THRESHOLD_FLAGS.items():
-        field = spec.field
-        env_var = f"SEIKAN_{field.upper()}"
         if getattr(args, flag, None) is not None:
-            prov[field] = "cli"
-        # settings reads SEIKAN_* case-insensitively
-        elif any(k.upper() == env_var for k in os.environ):
-            prov[field] = "env"
+            prov[spec.field] = "cli"
+        elif env_var_is_set(spec.field):
+            prov[spec.field] = "env"
         else:
-            prov[field] = "default"
+            prov[spec.field] = "default"
     return prov
 
 
@@ -596,14 +591,14 @@ def _load_thesis(path: str) -> tuple[DslDocument, Thesis]:
 
 
 def _add_threshold_flags(p: argparse.ArgumentParser) -> None:
-    group = p.add_argument_group("gate thresholds (override SEIKAN_* env vars)")
+    group = p.add_argument_group(f"gate thresholds (override {ENV_PREFIX}* env vars)")
     for flag, spec in _THRESHOLD_FLAGS.items():
         group.add_argument(
             f"--{flag.replace('_', '-')}",
             type=spec.type,
             default=None,
             dest=flag,
-            help=f"override {spec.field} (env SEIKAN_{spec.field.upper()})",
+            help=f"override {spec.field} (env {env_var(spec.field)})",
         )
 
 
@@ -807,14 +802,7 @@ def _report_text(
     # either: `_cmd_run` returns EXIT_OK unconditionally, so the only thing a checklist result
     # moves is the content of `gate`. Reporting and grading stay strictly separable.
     doc["summary"] = payload["summary"]
-    try:
-        # The checklist revalidates the thresholds it is handed. Unreachable from
-        # here — `_thresholds` built them through the same constructor — but a loosened exam is
-        # a thresholds problem, not a DSL one, so keep it off main()'s generic dsl_invalid
-        # branch.
-        doc["gate"] = evaluate_gate(result.summary, thresholds).to_dict()
-    except ValidationError as exc:
-        raise _thresholds_invalid(exc) from exc
+    doc["gate"] = evaluate_gate(result.summary, thresholds).to_dict()
     doc["metric_roles"] = METRIC_ROLES
     return _dumps(doc, args.pretty, validate_as="run")
 
@@ -963,7 +951,7 @@ def _cmd_schema(args: argparse.Namespace) -> int:
         {
             "field": spec.field,
             "default": fields[spec.field].default,
-            "env_var": f"SEIKAN_{spec.field.upper()}",
+            "env_var": env_var(spec.field),
             "cli_flag": f"--{flag.replace('_', '-')}",
         }
         for flag, spec in _THRESHOLD_FLAGS.items()

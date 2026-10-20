@@ -25,7 +25,6 @@ import math
 
 import pytest
 from pydantic import ValidationError
-from pydantic_settings import SettingsConfigDict
 
 from seikan.analysis.stats import STATISTICS_VERSION
 from seikan.gate import POLICY_VERSION, GateThresholds, canonical_dsl_hash, evaluate_gate
@@ -2400,24 +2399,19 @@ def test_thresholds_are_frozen():
         t.thesis_min_trades = 99
 
 
-def test_evaluate_gate_revalidates_a_loosened_subclass():
-    # The party being graded cannot bend the checklist even at the Python boundary: a subclass
-    # that un-freezes itself and loosens every knob is reconstructed through the sealed
-    # constructor at `evaluate_gate` entry.
-    class Loosened(GateThresholds):
-        model_config = SettingsConfigDict(env_prefix="SEIKAN_", extra="forbid", frozen=False)
+def test_snapshot_refuses_a_knob_without_its_stamp_twin():
+    # A knob added to the exam but not to ThresholdsSnapshot refuses at snapshot(), where a plain
+    # TypedDict validation would drop it from the stamp.
+    class WithExtraKnob(GateThresholds):
+        thesis_min_extra: int = 1
 
-    t = Loosened()
-    object.__setattr__(t, "thesis_min_trades", 0)
-    object.__setattr__(t, "thesis_max_concentration", 0.99)
-    assert t.thesis_min_trades == 0  # the mutation "worked" on the object…
-    with pytest.raises(ValidationError):  # …and buys nothing at the gate
-        evaluate_gate(_summary(), t)
+    with pytest.raises(ValidationError, match="thesis_min_extra"):
+        WithExtraKnob().snapshot()
 
 
-def test_revalidation_prefers_explicit_fields_over_the_environment(monkeypatch):
-    # Reconstruction passes every field explicitly, so a polluted environment cannot perturb the
-    # checklist that was actually stamped into the report.
+def test_the_exam_handed_in_is_the_exam_that_runs(monkeypatch):
+    # The environment is read at construction only: a variable set afterwards cannot perturb the
+    # checklist that was stamped into the report.
     t = GateThresholds(thesis_min_trades=45)
     monkeypatch.setenv("SEIKAN_THESIS_MIN_TRADES", "30")
     report = evaluate_gate(_summary(), t)

@@ -14,8 +14,10 @@ from seikan.gate._read import (
     _int,
     _int_ledger,
     _mode,
+    _no_target_list,
     _num,
     _prob,
+    _regime_mismatch,
     _str_keyed,
     _targets,
 )
@@ -28,19 +30,6 @@ from seikan.types import EXIT_REASONS, top_share_count
 #: within 2**-53 of 1 whatever the member count; ``math.fsum`` rounds it once more. 2**-50 holds
 #: all of it.
 _SHARE_SUM_TOLERANCE = 2.0**-50
-
-
-def _cell_panels(
-    cell: Mapping[str, object],
-) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
-    """``(by_target, outcome_coverage, signal_coverage)`` as string-keyed dicts, empty when
-    unreadable — the shared reader every per-cell check uses, so a malformed panel produces the
-    same refusal in each of them instead of a different exception in one."""
-    return (
-        _str_keyed(cell.get("by_target")) or {},
-        _str_keyed(cell.get("outcome_coverage")) or {},
-        _str_keyed(cell.get("signal_coverage")) or {},
-    )
 
 
 def _grade_outcome_ledger(
@@ -122,7 +111,7 @@ def _grade_outcome_ledger(
     return readable
 
 
-def _grade_top_share(panel: dict[str, object], n: int | None, label: str, unmet: list[str]) -> None:
+def _grade_top_share(panel: dict[str, object], n: int, label: str, unmet: list[str]) -> None:
     """A panel's ``concentration.top_share_abs`` must be at least its own count's share of the
     pool it is read off: the largest ``k`` of ``n`` magnitudes carry at least ``k / n`` of their
     total mass, ``k`` the emission's own top count (:func:`top_share_count`). Exact: the share is
@@ -131,7 +120,7 @@ def _grade_top_share(panel: dict[str, object], n: int | None, label: str, unmet:
     observations met the ceiling. A null share (a massless or overflowed pool) is
     ``concentration``'s to refuse."""
     share = _prob(_as_dict(panel.get("concentration")).get("top_share_abs"))
-    if share is None or n is None or n < 1:
+    if share is None or n < 1:
         return
     k = top_share_count(n)
     if share < k / n:
@@ -434,11 +423,7 @@ def _grade_member_share(
         )
         return
     if targets is not None and set(shares) != set(targets):
-        unmet.append(
-            "pooled.member_share.by_target does not cover the regime exactly "
-            f"(missing={sorted(set(targets) - set(shares))}, "
-            f"unexpected={sorted(set(shares) - set(targets))})"
-        )
+        unmet.append(_regime_mismatch("pooled.member_share.by_target", shares, targets))
         return
     top = _prob(member_share.get("max_member_share_abs"))
     if top is None:
@@ -609,12 +594,11 @@ def _check_cell_evidence(cell: object, s: Mapping[str, object], t: GateThreshold
         openable = run_bars - 1 - closable
     targets = _targets(s)
     tset = set(targets) if targets else None
-    by_tgt, cov, sig = _cell_panels(cell)
+    by_tgt, cov, sig = (
+        _cell_panel(cell, key) for key in ("by_target", "outcome_coverage", "signal_coverage")
+    )
     if tset is None:
-        unmet.append(
-            "summary lacks a usable target list (non-empty, all strings) — the cell's panels "
-            "cannot be verified against a regime"
-        )
+        unmet.append(_no_target_list("the cell's panels cannot be verified against a regime"))
     if mode is None:
         unmet.append(
             "summary carries no readable target_mode stamp — whether this cell's evidence "
@@ -639,11 +623,7 @@ def _check_cell_evidence(cell: object, s: Mapping[str, object], t: GateThreshold
             )
             continue
         if tset is not None and set(panel) != tset:
-            missing = sorted(tset - set(panel))
-            extra = sorted(set(panel) - tset)
-            unmet.append(
-                f"{pname} does not cover the regime exactly (missing={missing}, unexpected={extra})"
-            )
+            unmet.append(_regime_mismatch(pname, panel, tset))
     # The five graded sections below share the unmet list, in this order — append order is
     # emitted text.
     readable_cov = _grade_outcome_ledger(cov, run_bars, closable, openable, unmet)
@@ -710,22 +690,14 @@ def _check_cell_outcome_coverage(
     cov = _cell_panel(cell, "outcome_coverage")
     unmet: list[str] = []
     if tset is None:
-        unmet.append(
-            "summary lacks a usable target list (non-empty, all strings) — outcome coverage "
-            "cannot be verified"
-        )
+        unmet.append(_no_target_list("outcome coverage cannot be verified"))
     elif not cov:
         unmet.append(
             "cell lacks outcome_coverage — without the censoring ledger, deleted or unmeasured "
             "outcomes cannot be ruled out"
         )
     elif set(cov) != tset:
-        missing = sorted(tset - set(cov))
-        extra = sorted(set(cov) - tset)
-        unmet.append(
-            f"outcome_coverage does not cover the regime exactly "
-            f"(missing={missing}, unexpected={extra})"
-        )
+        unmet.append(_regime_mismatch("outcome_coverage", cov, tset))
     by_target: dict[str, dict[str, int | None]] = {}
     observed: dict[str, object] = {"by_target": by_target}
     for tgt in sorted(tset or set(cov)):
@@ -797,22 +769,14 @@ def _check_cell_signal_coverage(
     sig = _cell_panel(cell, "signal_coverage")
     unmet: list[str] = []
     if tset is None:
-        unmet.append(
-            "summary lacks a usable target list (non-empty, all strings) — signal coverage "
-            "cannot be verified"
-        )
+        unmet.append(_no_target_list("signal coverage cannot be verified"))
     elif not sig:
         unmet.append(
             "cell lacks signal_coverage — without the undefined-decision ledger, firings "
             "suppressed by missing inputs cannot be ruled out"
         )
     elif set(sig) != tset:
-        missing = sorted(tset - set(sig))
-        extra = sorted(set(sig) - tset)
-        unmet.append(
-            f"signal_coverage does not cover the regime exactly "
-            f"(missing={missing}, unexpected={extra})"
-        )
+        unmet.append(_regime_mismatch("signal_coverage", sig, tset))
     by_target: dict[str, dict[str, int | None]] = {}
     observed: dict[str, object] = {"by_target": by_target}
     for tgt in sorted(tset or set(sig)):
@@ -871,21 +835,9 @@ def _support_basket(cell: object, t: GateThresholds) -> GateCheck:
                 "carries no gradable support"
             ),
         )
-    n, n_nonoverlap = _int(pooled.get("n")), _int(pooled.get("n_nonoverlap"))
-    mean_ret = _num(pooled.get("mean_ret"))
-    p_observed: dict[str, dict[str, int | float | None]] = {
-        "pooled": {"n": n, "n_nonoverlap": n_nonoverlap, "mean_ret": mean_ret}
-    }
-    p_unmet: list[str] = []
-    if n is None or n < t.thesis_min_trades:
-        p_unmet.append(f"pooled: n={n} (<{t.thesis_min_trades} observations)")
-    elif n_nonoverlap is None or n_nonoverlap < t.thesis_min_n_nonoverlap:
-        p_unmet.append(
-            f"pooled: n_nonoverlap={n_nonoverlap} "
-            f"(<{t.thesis_min_n_nonoverlap} non-overlapping episodes)"
-        )
-    elif mean_ret is None or mean_ret <= 0:
-        p_unmet.append(f"pooled: mean_ret={mean_ret} (<=0 or missing)")
+    observed, miss = _support_floors("pooled", pooled, t)
+    p_observed = {"pooled": observed}
+    p_unmet = [] if miss is None else [miss]
     return GateCheck(
         name="support",
         met=not p_unmet,
@@ -893,6 +845,30 @@ def _support_basket(cell: object, t: GateThresholds) -> GateCheck:
         threshold=threshold,
         detail=(_detail("the pooled panel carries readable support", p_unmet)),
     )
+
+
+def _support_floors(
+    label: str, panel: dict[str, object], t: GateThresholds
+) -> tuple[dict[str, int | float | None], str | None]:
+    """One panel's support read — its ``{n, n_nonoverlap, mean_ret}`` and the first of the three
+    sealed floors it misses (labelled), or None: the same floors for a pool and a target."""
+    n, n_nonoverlap = _int(panel.get("n")), _int(panel.get("n_nonoverlap"))
+    mean_ret = _num(panel.get("mean_ret"))
+    observed: dict[str, int | float | None] = {
+        "n": n,
+        "n_nonoverlap": n_nonoverlap,
+        "mean_ret": mean_ret,
+    }
+    if n is None or n < t.thesis_min_trades:
+        return observed, f"{label}: n={n} (<{t.thesis_min_trades} observations)"
+    if n_nonoverlap is None or n_nonoverlap < t.thesis_min_n_nonoverlap:
+        return observed, (
+            f"{label}: n_nonoverlap={n_nonoverlap} "
+            f"(<{t.thesis_min_n_nonoverlap} non-overlapping episodes)"
+        )
+    if mean_ret is None or mean_ret <= 0:
+        return observed, f"{label}: mean_ret={mean_ret} (<=0 or missing)"
+    return observed, None
 
 
 def _support_conjunction(cell: object, s: Mapping[str, object], t: GateThresholds) -> GateCheck:
@@ -925,20 +901,9 @@ def _support_conjunction(cell: object, s: Mapping[str, object], t: GateThreshold
     # missing target reads as an absent entry below and goes unmet on an uncountable ``n``,
     # which is the fail-closed direction: deleting evidence can only ever refuse.
     for tgt in sorted(_targets(s) or by_tgt):
-        st = by_tgt.get(tgt)
-        st = _as_dict(st)
-        n, n_nonoverlap = _int(st.get("n")), _int(st.get("n_nonoverlap"))
-        mean_ret = _num(st.get("mean_ret"))
-        observed[tgt] = {"n": n, "n_nonoverlap": n_nonoverlap, "mean_ret": mean_ret}
-        if n is None or n < t.thesis_min_trades:
-            unmet.append(f"{tgt}: n={n} (<{t.thesis_min_trades} observations)")
-        elif n_nonoverlap is None or n_nonoverlap < t.thesis_min_n_nonoverlap:
-            unmet.append(
-                f"{tgt}: n_nonoverlap={n_nonoverlap} "
-                f"(<{t.thesis_min_n_nonoverlap} non-overlapping episodes)"
-            )
-        elif mean_ret is None or mean_ret <= 0:
-            unmet.append(f"{tgt}: mean_ret={mean_ret} (<=0 or missing)")
+        observed[tgt], miss = _support_floors(tgt, _as_dict(by_tgt.get(tgt)), t)
+        if miss is not None:
+            unmet.append(miss)
     return GateCheck(
         name="support",
         met=not unmet,
@@ -998,6 +963,31 @@ def _check_cell_support(cell: object, s: Mapping[str, object], t: GateThresholds
     return _support_conjunction(cell, s, t)
 
 
+def _grade_cluster_ceiling(
+    cell: object, s: Mapping[str, object], max_conc: float, unmet: list[str]
+) -> float | None:
+    """The merged episode-cluster ceiling both rubrics share: an incommensurable pool refuses it
+    outright, otherwise the cell's ``episode_stats.max_cluster_share_abs`` must be readable and
+    at most ``max_conc``. Returns the share read (None when refused or unreadable)."""
+    incommensurable, reason = _incommensurable_pool(s)
+    if incommensurable:
+        unmet.append(reason)
+        return None
+    ep = _as_dict(cell.get("episode_stats") if isinstance(cell, dict) else None)
+    cluster_share = _prob(ep.get("max_cluster_share_abs"))
+    if cluster_share is None:
+        unmet.append(
+            "episode_stats.max_cluster_share_abs missing or out of [0,1] — cross-target "
+            "episode-cluster concentration cannot be certified"
+        )
+    elif cluster_share > max_conc:
+        unmet.append(
+            f"max_cluster_share_abs={cluster_share:.2f} — one merged episode cluster carries "
+            "the mass"
+        )
+    return cluster_share
+
+
 def _concentration_basket(cell: object, s: Mapping[str, object], max_conc: float) -> GateCheck:
     """The basket concentration rubric: the pooled top-share read replaces the per-target
     layer, the member-mass ceiling joins it (the one-name-basket detector), and the
@@ -1032,24 +1022,7 @@ def _concentration_basket(cell: object, s: Mapping[str, object], max_conc: float
             f"max_member_share_abs={m_share:.2f} — one member carries the basket's mass; "
             "the basket claim is mostly one name"
         )
-    incommensurable, reason = _incommensurable_pool(s)
-    if incommensurable:
-        p_unmet.append(reason)
-    else:
-        ep = cell.get("episode_stats") if isinstance(cell, dict) else None
-        ep = _as_dict(ep)
-        cluster_share = _prob(ep.get("max_cluster_share_abs"))
-        p_observed["max_cluster_share_abs"] = cluster_share
-        if cluster_share is None:
-            p_unmet.append(
-                "episode_stats.max_cluster_share_abs missing or out of [0,1] — "
-                "cross-target episode-cluster concentration cannot be certified"
-            )
-        elif cluster_share > max_conc:
-            p_unmet.append(
-                f"max_cluster_share_abs={cluster_share:.2f} — one merged episode cluster "
-                "carries the mass"
-            )
+    p_observed["max_cluster_share_abs"] = _grade_cluster_ceiling(cell, s, max_conc, p_unmet)
     return GateCheck(
         name="concentration",
         met=not p_unmet,
@@ -1091,24 +1064,7 @@ def _concentration_conjunction(cell: object, s: Mapping[str, object], max_conc: 
             unmet.append(f"{tgt}: per-target concentration missing or out of [0,1]")
         elif share_t > max_conc:
             unmet.append(f"{tgt}: top_share_abs={share_t:.2f} — this target's edge is one episode")
-    incommensurable, reason = _incommensurable_pool(s)
-    if incommensurable:
-        unmet.append(reason)
-    else:
-        ep = cell.get("episode_stats") if isinstance(cell, dict) else None
-        ep = _as_dict(ep)
-        cluster_share = _prob(ep.get("max_cluster_share_abs"))
-        observed["max_cluster_share_abs"] = cluster_share
-        if cluster_share is None:
-            unmet.append(
-                "episode_stats.max_cluster_share_abs missing or out of [0,1] — cross-target "
-                "episode-cluster concentration cannot be certified"
-            )
-        elif cluster_share > max_conc:
-            unmet.append(
-                f"max_cluster_share_abs={cluster_share:.2f} — one merged episode cluster carries "
-                "the mass"
-            )
+    observed["max_cluster_share_abs"] = _grade_cluster_ceiling(cell, s, max_conc, unmet)
     return GateCheck(
         name="concentration",
         met=not unmet,

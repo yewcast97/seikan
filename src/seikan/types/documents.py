@@ -40,8 +40,7 @@ class ThresholdsSnapshot(TypedDict):
     """The four checklist knobs actually used — ``settings.GateThresholds.snapshot``.
 
     Stamped into every run report's identity layer and reconstructible:
-    ``GateThresholds(**snapshot())`` round-trips, which is how ``gate.evaluate_gate`` re-seals the
-    exam it was handed at the trust boundary.
+    ``GateThresholds(**snapshot())`` round-trips.
     """
 
     thesis_min_trades: int

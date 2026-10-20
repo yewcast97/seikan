@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import math
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from typing import SupportsFloat, cast
 
 import pandas as pd
@@ -46,14 +46,7 @@ def _int(value: object) -> int | None:
     A count of 1.9 is drifted input, not "1": truncation would certify a search size the summary
     never actually recorded."""
     v = _num(value)
-    if v is None:
-        return None
-    try:
-        if v != int(v):
-            return None
-        return int(v)
-    except (OverflowError, ValueError):  # _num already blocks inf and huge ints; belt-and-braces
-        return None
+    return int(v) if v is not None and v.is_integer() else None
 
 
 def _prob(value: object) -> float | None:
@@ -111,10 +104,25 @@ def _mode(s: Mapping[str, object]) -> TargetMode | None:
 
 def _cell_panel(cell: object, key: str) -> dict[str, object]:
     """A string-keyed panel off a cell entry — ``{}`` when the entry is not a dict or the panel
-    is missing/non-string-keyed. The four per-cell checks read their panels through this."""
+    is missing/non-string-keyed. Every per-cell check reads its panels through this, so a
+    malformed panel produces the same refusal in each of them."""
     if not isinstance(cell, dict):
         return {}
     return _str_keyed(cell.get(key)) or {}
+
+
+def _regime_mismatch(name: str, keys: Iterable[str], targets: Iterable[str]) -> str:
+    """The refusal of a panel whose keys are not exactly the regime's targets."""
+    have, want = set(keys), set(targets)
+    return (
+        f"{name} does not cover the regime exactly "
+        f"(missing={sorted(want - have)}, unexpected={sorted(have - want)})"
+    )
+
+
+def _no_target_list(consequence: str) -> str:
+    """The refusal of a check that needs the summary's target list and cannot read one."""
+    return f"summary lacks a usable target list (non-empty, all strings) — {consequence}"
 
 
 def _int_ledger(
