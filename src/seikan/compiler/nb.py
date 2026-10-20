@@ -1745,8 +1745,7 @@ def _sqrt_product(a: float, b: float) -> float:
     made even so the root halves it exactly) and put back after the root (``ldexp``). Power-of-two
     scaling of a normal factor never rounds, so the result is EXACTLY the direct form's value in
     an unbounded exponent range — not ``sqrt(a)·sqrt(b)``, which rounds twice and read
-    ``corr(x, x)`` one ulp off 1.0 on about half of all scales. ``analysis._pools._r2`` is the
-    scalar twin (r²'s variance product) — a change to the rule changes both."""
+    ``corr(x, x)`` one ulp off 1.0 on about half of all scales."""
     p = a * b
     if MIN_NORMAL <= p < math.inf:
         return math.sqrt(p)

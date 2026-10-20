@@ -3411,9 +3411,9 @@ def test_benchmark_regression_constant_decimal_legs_are_degenerate_exactly():
 def test_benchmark_regression_variance_product_out_of_range_is_exact(k):
     # Both legs scaled by 2**k: every moment scales exactly, so beta and r2 keep their bits and
     # alpha scales exactly — while the variance PRODUCT under r2 sits near 2**(4k), outside the
-    # double range. The direct form read r2 = NaN above it (inf / inf), an r2 off in its 9th
-    # digit in the subnormal range (k = -262), and raised ZeroDivisionError out of the run once
-    # the product underflowed to 0.0 (k = -500).
+    # double range. As a double product it read r2 = NaN above it (inf / inf), an r2 off in its
+    # 9th digit in the subnormal range (k = -262), and raised ZeroDivisionError out of the run
+    # once the product underflowed to 0.0 (k = -500).
     rng = np.random.RandomState(4)
     raw = rng.randn(30)
     bench = 0.5 * raw + rng.randn(30)
@@ -3423,43 +3423,80 @@ def test_benchmark_regression_variance_product_out_of_range_is_exact(k):
     assert benchmark_regression(raw * s, bench * s) == {**base, "alpha": base["alpha"] * s}
 
 
-def test_benchmark_regression_out_of_range_moments_decline_never_a_false_fit():
-    # A bench leg past ~1e154 overflows its variance: `beta = cov / inf` read a FINITE 0.0 — a
-    # fit that never happened, the raw mean as alpha beside it. A beta past the double range (a
-    # wide raw leg on a narrow bench) read inf with reason None. Both decline, saying why.
+def _exact_fit(raw, bench):
+    """beta and r2 of the paired legs in exact rationals, each rounded once."""
+    r, b = [Fraction(x) for x in raw], [Fraction(y) for y in bench]
+    mr, mb = sum(r) / len(r), sum(b) / len(b)
+    cov = sum((x - mr) * (y - mb) for x, y in zip(r, b, strict=True))
+    var_r, var_b = sum((x - mr) ** 2 for x in r), sum((y - mb) ** 2 for y in b)
+    return float(cov / var_b), float(cov * cov / (var_r * var_b))
+
+
+def test_benchmark_regression_is_its_exact_moments_quotient_rounded_once():
+    # beta and r2 are the exact moments' quotients, rounded once: one double on every platform.
+    # `np.cov` (a BLAS sum times a rounded 1/(n − 1)) over `np.var` (a pairwise sum over n − 1)
+    # read identical legs at beta ≠ 1 on most pools, and these legs — an exact slope 0.3125 ulp
+    # below 5 — at beta 5.0 under Accelerate's summation order, 5.000000000000001 under OpenBLAS's
+    # (CI's), alpha −2.5e-32 beside it.
+    raw, bench = np.resize([0.0, 2.0**-52], 40), np.resize([0.0, 2.0**-52 / 5.0], 40)
+    assert benchmark_regression(raw, bench) == {
+        "n": 40,
+        "beta": 5.0,
+        "alpha": 0.0,
+        "r2": 1.0,
+        "reason": None,
+    }
+    rng = np.random.RandomState(20)
+    for _ in range(200):
+        b = rng.randn(int(rng.randint(3, 60))) * 0.02
+        for r, slope in ((b, 1.0), (-b, -1.0), (2.0 * b, 2.0)):
+            blk = benchmark_regression(r, b)
+            assert (blk["beta"], blk["r2"]) == (slope, 1.0)
+        r = 0.002 + 1.3 * b + rng.randn(b.size) * 0.01
+        blk = benchmark_regression(r, b)
+        assert (blk["beta"], blk["r2"]) == _exact_fit(r, b)
+
+
+def test_benchmark_regression_moments_past_the_range_fit_exactly_beta_past_it_declines():
+    # A bench leg past ~1e154 overflowed its variance as a double: `beta = cov / inf` read a
+    # FINITE 0.0 — a fit that never happened — and then declined. Its exact moments have no range
+    # to leave: scaled by 2**532 it fits as the unscaled leg does, beta scaled by 2**-532 and
+    # alpha and r2 kept. A beta past the double range (a wide raw leg on a narrow bench) read inf
+    # with reason None, and declines, saying why.
     rng = np.random.RandomState(4)
     raw = rng.randn(30)
     bench = 0.5 * raw + rng.randn(30)
-    for r, b in ((raw, bench * 1e160), (raw * 1e300, bench * 1e-10)):
-        assert benchmark_regression(r, b) == {
-            "n": 30,
-            "beta": None,
-            "alpha": None,
-            "r2": None,
-            "reason": "not_representable",
-        }
+    base = benchmark_regression(raw, bench)
+    s = 2.0**532
+    assert benchmark_regression(raw, bench * s) == {**base, "beta": base["beta"] / s}
+    assert benchmark_regression(raw * 1e300, bench * 1e-10) == {
+        "n": 30,
+        "beta": None,
+        "alpha": None,
+        "r2": None,
+        "reason": "not_representable",
+    }
 
 
-def test_benchmark_regression_subnormal_variances_decline_never_a_false_fit():
-    # Legs of ~1e-161 square into the SUBNORMAL range: the variance product underflowed to 0.0
-    # and r2 raised ZeroDivisionError out of the run — and taken in an unbounded exponent range
-    # instead, the lost bits would read r2 = 2.0 for 0.99. A bench variance not a normal double
-    # (subnormal, or 0.0 off a VARYING leg — which read as "no_benchmark_variation") is no
-    # divisor: not_representable. A raw leg's alone nulls r2, while beta and alpha — never
-    # divided by it — keep their exactly scaled bits.
+def test_benchmark_regression_subnormal_variances_fit_exactly():
+    # Legs of ~1e-161 square into the SUBNORMAL range as doubles: the variance product underflowed
+    # to 0.0 and r2 raised ZeroDivisionError out of the run, the lost bits read r2 = 2.0 for 0.99
+    # in an unbounded exponent range, and then such legs declined `not_representable` — a bench
+    # variance of 0.0 off a VARYING leg had read as "no_benchmark_variation". Exact moments lose
+    # no bits: legs scaled by 2**-536 fit as the unscaled legs do (alpha scaled exactly), a bench
+    # leg at 1e-170 is fitted, and a raw leg at 2**-536 keeps its r2.
     rng = np.random.RandomState(152)
     raw = rng.randn(8)
     bench = 0.99 * raw + 0.05 * rng.randn(8)
-    declined = {"n": 8, "beta": None, "alpha": None, "r2": None, "reason": "not_representable"}
-    s = 2.0**-536
-    assert benchmark_regression(raw * s, bench * s) == declined
-    vanishing = np.array([0.0, 1.0, 2.0, 0.0, 1.0, 2.0, 0.0, 3.0]) * 1e-170
-    assert benchmark_regression(raw, vanishing) == declined
     fit = benchmark_regression(raw, bench)
     assert 0.99 < fit["r2"] < 1.0
+    s = 2.0**-536
+    assert benchmark_regression(raw * s, bench * s) == {**fit, "alpha": fit["alpha"] * s}
+    vanishing = np.array([0.0, 1.0, 2.0, 0.0, 1.0, 2.0, 0.0, 3.0]) * 1e-170
+    blk = benchmark_regression(raw, vanishing)
+    assert blk["reason"] is None and (blk["beta"], blk["r2"]) == _exact_fit(raw, vanishing)
     tiny_raw = benchmark_regression(raw * s, bench)
-    assert np.isnan(tiny_raw["r2"]) and tiny_raw["reason"] is None
-    assert (tiny_raw["beta"], tiny_raw["alpha"]) == (fit["beta"] * s, fit["alpha"] * s)
+    assert tiny_raw == {**fit, "beta": fit["beta"] * s, "alpha": fit["alpha"] * s}
 
 
 # ---- timing_summary: path-timing medians (evidence-only) ---------------------
@@ -3666,11 +3703,11 @@ def test_pool_std_is_taken_about_the_pools_own_offset():
     assert _ddof1_std(clustered) == pytest.approx(math.sqrt(1.0 / 48.0), rel=1e-15)
 
 
-def test_benchmark_regression_moments_are_taken_about_each_legs_offset():
+def test_benchmark_regression_clustered_legs_read_their_exact_line():
     # Legs clustered at 2**40 (spreads of 31 and 62 ulps, past the near-constant gate): about
     # their rounded raw means the deviations carried each mean's rounding and the fit read beta
-    # 1.9984 and r2 0.9988 for an exact line of slope 2. About each leg's range midpoint the fit
-    # is the exact-rational one; alpha stays on the raw means.
+    # 1.9984 and r2 0.9988 for an exact line of slope 2. The exact moments read the exact line;
+    # alpha stays on the raw means.
     level = 2.0**40
     ulp = float(np.spacing(level))
     bench = level + ulp * np.array([0.0, 31.0, 31.0])
@@ -3697,7 +3734,8 @@ def test_benchmark_regression_alpha_reads_the_exact_leg_means():
 def test_benchmark_regression_r2_never_exceeds_one():
     # An exactly linear pair explains all of its variance, and the computed ratio's rounding read
     # an r2 past 1 (by up to 8.9e-16) on about a third of `raw = k·bench + c` pools — a share of
-    # the variance explained that no fit has. Clipped to 1, the `rolling_corr` rule.
+    # the variance explained that no fit has. The exact moments' quotient is at most 1
+    # (Cauchy–Schwarz, exactly), and rounding is monotone.
     rng = np.random.RandomState(18)
     on_bound = 0
     for _ in range(300):
@@ -3724,14 +3762,8 @@ def test_benchmark_regression_near_constant_bench_declines_a_varying_raw_leg_is_
     line = benchmark_regression(1.0 + bench, bench)
     assert line == {"n": 5, "beta": 1.0, "alpha": 1.0, "r2": 1.0, "reason": None}
     # the near-constant raw leg reads the exact-rational fit
-    r, b = [Fraction(x) for x in near], [Fraction(x) for x in other]
-    mr, mb = sum(r) / 5, sum(b) / 5
-    cov = sum((x - mr) * (y - mb) for x, y in zip(r, b, strict=True))
-    var_r, var_b = sum((x - mr) ** 2 for x in r), sum((y - mb) ** 2 for y in b)
     fit = benchmark_regression(near, other)
-    assert fit["reason"] is None
-    assert fit["beta"] == pytest.approx(float(cov / var_b), rel=1e-14)
-    assert fit["r2"] == pytest.approx(float(cov * cov / (var_r * var_b)), rel=1e-14)
+    assert fit["reason"] is None and (fit["beta"], fit["r2"]) == _exact_fit(near, other)
 
 
 @pytest.mark.parametrize("c", [0.1, 0.007, 0.3])

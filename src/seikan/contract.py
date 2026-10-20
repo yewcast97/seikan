@@ -1069,11 +1069,11 @@ METRIC_ROLES_DOC: dict[str, JsonValue] = {
             "to the regression — it is attribution, not inference), so r2 and beta are "
             "descriptions of this pool, never factor loadings; null fields with n and a reason "
             "when unbenchmarked, below three pairs, over a (near-)constant bench leg, or when "
-            "the bench variance is not a normal double or beta or alpha leaves the double range "
-            "(not_representable); over a constant raw leg beta is exactly 0.0, alpha the raw "
-            "leg's mean and r2 null (nothing to explain), and r2 alone is null off a raw "
-            "variance that is not a normal double. A raw leg that varies is fitted however "
-            "small its spread."
+            "beta or alpha leaves the double range (not_representable); over a constant raw leg "
+            "beta is exactly 0.0, alpha the raw leg's mean and r2 null (nothing to explain). "
+            "beta and r2 are the exact quotients of the legs' exact moments, rounded once — an "
+            "exact line reads its exact slope and r2 1, at any scale. A raw leg that varies is "
+            "fitted however small its spread."
         ),
         "episode_profile": (
             "The episode-deduplicated TWIN of the row-level statistics: the same frozen "

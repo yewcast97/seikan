@@ -616,14 +616,20 @@ def benchmark_regression(raw: np.ndarray, bench: np.ndarray) -> BenchmarkRegress
     """Per-window OLS attribution of the raw leg on the benchmark leg, over PAIRED rows.
 
     The leg-attribution question the two means alone cannot answer: is the excess mean alpha, or
-    beta ≠ 1 riding market drift? ``beta = cov(raw, bench) / var(bench)`` (both ddof=1),
-    ``alpha = mean(raw) − beta·mean(bench)`` — per h-bar window, NEVER annualized, this engine
-    carrying no calendar-return framing — and ``r2 = cov² / (var_raw · var_bench)``, at most 1
-    (:func:`_r2`). The means are the legs' exactly rounded ones (:func:`exact_mean`) — the
-    ``mean_ret_raw`` / ``mean_ret_bench`` the panel reports beside the fit — so the identity
-    ``alpha + beta·mean(bench) == mean(raw)`` holds to the rounding of one product and one
-    difference, a reader's to re-check. On the pairwise means it did not: legs at ``2**50``
-    whose raw leg is the bench leg plus 1 read alpha 0.75 beside leg means 1 apart.
+    beta ≠ 1 riding market drift? ``beta = cov(raw, bench) / var(bench)``, ``alpha = mean(raw) −
+    beta·mean(bench)`` — per h-bar window, NEVER annualized, this engine carrying no
+    calendar-return framing — and ``r2 = cov² / (var_raw · var_bench)``. beta and r2 are the
+    EXACT quotients of the legs' exact second moments (the values as integers over one
+    power-of-two denominator, :func:`integer_terms`), each rounded once: the same double on
+    every platform at any scale, an exact line its exact slope, and r2 never past 1. ``np.cov``
+    (a BLAS sum times a rounded ``1/(n − 1)``) over ``np.var`` (a pairwise sum over ``n − 1``)
+    read identical legs at beta ≠ 1 on most pools, and legs whose exact slope sits 0.3125 ulp
+    below 5 at beta 5.0 under Accelerate's summation order, 5.000000000000001 under OpenBLAS's.
+    The means are the legs' exactly rounded ones (:func:`exact_mean`) — the ``mean_ret_raw`` /
+    ``mean_ret_bench`` the panel reports beside the fit — so the identity ``alpha +
+    beta·mean(bench) == mean(raw)`` holds to the rounding of one product and one difference, a
+    reader's to re-check. On the pairwise means it did not: legs at ``2**50`` whose raw leg is
+    the bench leg plus 1 read alpha 0.75 beside leg means 1 apart.
 
     The two arrays must be ROW-ALIGNED (the same closed rows, in the same order): pairing is the
     whole point, which is why this takes the raw columns and filters PAIRS — a pre-filtered
@@ -632,22 +638,18 @@ def benchmark_regression(raw: np.ndarray, bench: np.ndarray) -> BenchmarkRegress
     is all-NaN there — and every empty pool; the run-level ``benchmark`` stamp stays the
     authoritative "was there a benchmark"), ``insufficient_observations`` below n=3 (two points
     fit a line exactly — r² ≡ 1 vacuously), ``no_benchmark_variation`` on a (near-)constant bench
-    leg (:func:`_near_constant` — a constant DECIMAL leg's computed variance is rounding residue,
-    and dividing by it minted an arbitrary beta), ``not_representable`` when a VARYING bench
-    leg's variance is not a normal double (:func:`_normal` — an overflowed one read ``beta = cov
-    / inf = 0.0``, a fit that never happened; an underflowed one divided by its lost bits, or
-    read as no variation at 0.0) or beta or alpha leaves the double range. ``r2`` alone is NaN
-    → null when the raw leg is constant — nothing to explain, while beta = 0 (exactly: every
-    deviation about the leg's offset is 0) and alpha = mean(raw) are still real numbers — and
-    when the raw variance is not a normal double. A VARYING raw leg is fitted however small its
-    spread, its deviations about its offset being exact: the near-constant gate guards the
-    divisor, the bench leg, and on the raw leg it read ``raw = 1 + bench`` over ``bench =
-    eps·[−4, −2, 0, 2, 4]`` as beta 0 for an exact slope of 1. The variance PRODUCT under ``r2``
-    of two normal variances is taken in an unbounded exponent range (:func:`_r2`): past the
-    ceiling it read ``inf / inf`` (a representable r2 lost), in the subnormal range it shed
-    precision, and underflowed to 0.0 it raised ZeroDivisionError out of the run. On overlapping
-    pools the fit is inflated exactly as every row-level read is — the caveat, not a correction,
-    covers it. Evidence only, read by no check; a one-regressor attribution, not a factor model."""
+    leg (:func:`_near_constant` — a constant DECIMAL leg's spread is the rounding of its level,
+    and dividing by it minted an arbitrary beta), ``not_representable`` when beta or alpha
+    leaves the double range. ``r2`` alone is NaN → null when the raw leg is constant — nothing
+    to explain, while beta = 0 (exactly: the leg co-varies with nothing) and alpha = mean(raw)
+    are still real numbers. A VARYING raw leg is fitted however small its spread: the
+    near-constant gate guards the divisor, the bench leg, and on the raw leg it read ``raw = 1 +
+    bench`` over ``bench = eps·[−4, −2, 0, 2, 4]`` as beta 0 for an exact slope of 1. No moment
+    is a double, so none leaves the range: a varying leg whose variance overflowed or fell below
+    the normal range as a double — which declined ``not_representable``, its fit unreadable off
+    ``cov / inf`` or lost bits — is fitted exactly. On overlapping pools the fit is inflated
+    exactly as every row-level read is — the caveat, not a correction, covers it. Evidence only,
+    read by no check; a one-regressor attribution, not a factor model."""
     r = np.asarray(raw, dtype=float)
     b = np.asarray(bench, dtype=float)
     keep = np.isfinite(r) & np.isfinite(b)
@@ -661,51 +663,27 @@ def benchmark_regression(raw: np.ndarray, bench: np.ndarray) -> BenchmarkRegress
         return _declined("no_paired_observations")
     if n < 3:
         return _declined("insufficient_observations")
-    # The second moments are taken about each leg's OWN offset (:func:`_ddof1_std`'s rule): beta
-    # and r2 are shift-invariant, and a leg's spread at its level's ulp keeps its bits — about the
-    # rounded raw means it read 1 where it is 1/3. alpha reads the legs' exactly rounded means.
-    rc = r - midrange(float(np.min(r)), float(np.max(r)))
-    bc = b - midrange(float(np.min(b)), float(np.max(b)))
-    var_b = float(np.var(bc, ddof=1))
     mean_b = exact_mean(b)
     if _near_constant(b, mean_b):
         return _declined("no_benchmark_variation")
-    if not _normal(var_b):
-        # a VARYING leg (a constant one is near-constant, above) whose variance left the range:
-        # no zero variation, and no divisor either
+    # Each moment is n·Σxy − Σx·Σy over the legs' integers: n·(n − 1)·den² times the ddof=1
+    # (co)variance, a scale both quotients cancel. Past the gate the bench leg varies, so
+    # `var_b > 0`; Python's true division rounds once and raises past the double range.
+    nums, _ = integer_terms(r.tolist() + b.tolist())
+    xr, xb = nums[:n], nums[n:]
+    sr, sb = sum(xr), sum(xb)
+    cov = n * math.sumprod(xr, xb) - sr * sb
+    var_b = n * math.sumprod(xb, xb) - sb * sb
+    var_r = n * math.sumprod(xr, xr) - sr * sr
+    try:
+        beta = cov / var_b
+    except OverflowError:
         return _declined("not_representable")
-    cv = float(np.cov(rc, bc, ddof=1)[0, 1])
-    beta = cv / var_b
     alpha = exact_mean(r) - beta * mean_b
-    if not (math.isfinite(beta) and math.isfinite(alpha)):
+    if not math.isfinite(alpha):
         return _declined("not_representable")
-    var_r = float(np.var(rc, ddof=1))
-    r2 = _r2(cv, var_r, var_b) if _normal(var_r) else _NAN
-    return {"n": n, "beta": float(beta), "alpha": float(alpha), "r2": float(r2), "reason": None}
-
-
-def _r2(cv: float, var_r: float, var_b: float) -> float:
-    """``cv² / (var_r · var_b)`` for two NORMAL variances (the caller's :func:`_normal` gate),
-    exponent-safe: the direct form wherever the variance product is a normal double (bit for
-    bit); elsewhere each variance's exponent is taken out first (made even, ``cv`` scaled by the
-    half-sum) — power-of-two scaling of a normal double never rounds, so the ratio is EXACTLY the
-    direct form's value in an unbounded exponent range. Only because the variances are normal: a
-    subnormal one has already lost its bits (r2 read 2.0 for 0.99 off two of them). The scalar
-    twin of ``compiler.nb._sqrt_product`` (the rolling correlation's denominator) — a change to
-    the rule changes both.
-
-    Clipped to 1, the ``rolling_corr`` rule: an exactly linear pair's rounding carries the ratio
-    an ulp or two past its bound (``raw = 3·bench + 7`` read an r2 above 1 on about a third of
-    such pools) — a share of the variance explained that no fit has."""
-    prod = var_r * var_b
-    if MIN_NORMAL <= prod < math.inf:
-        return min((cv * cv) / prod, 1.0)
-    m_r, e_r = math.frexp(var_r)
-    m_b, e_b = math.frexp(var_b)
-    m_r, e_r = math.ldexp(m_r, e_r & 1), e_r - (e_r & 1)
-    m_b, e_b = math.ldexp(m_b, e_b & 1), e_b - (e_b & 1)
-    c = math.ldexp(cv, -((e_r + e_b) // 2))
-    return min((c * c) / (m_r * m_b), 1.0)
+    r2 = cov * cov / (var_r * var_b) if var_r else _NAN
+    return {"n": n, "beta": beta, "alpha": alpha, "r2": r2, "reason": None}
 
 
 def timing_summary(bars_to_positive: np.ndarray, bars_to_trough: np.ndarray) -> TimingBlock:

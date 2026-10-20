@@ -967,7 +967,7 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   the pool's offset, translation-invariant — about scipy's own rounded mean the symmetric `1 + k·eps`,
   k = 0..21, read skewness 0.666 for 0), the benchmark regression declines a (near-)constant
   bench leg (and fits `beta` exactly 0 on a constant raw leg, while a raw leg that varies is
-  fitted however small its spread — its deviations about its offset are exact), and a CSCV
+  fitted however small its spread — its moments are exact), and a CSCV
   split scores NaN when its pool is exactly constant (the per-block extrema) or within the HAC's
   ~10 ulps. The pool MEANS the checklist grades, and their direct twins — the legs,
   the eras, the baseline, the HAC's `t` numerator — are the exact sum over `n` of the observations
@@ -1058,15 +1058,20 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   spread built from decimal levels moving in lockstep carries residue at the operands' scale,
   which no kernel can tell from variation. Every window, cross-section and pool that varies is
   the direct two-pass form about its OWN offset — the window's first value, a cross-section's or a
-  pool's range midpoint (`numeric.midrange`: the pools' `std_ret`, `boot_se` and baseline std, the
-  benchmark regression's second moments, `describe`'s dispersion stds)
+  pool's range midpoint (`numeric.midrange`: the pools' `std_ret`, `boot_se` and baseline std,
+  `describe`'s dispersion stds)
   — bit for bit (the SMA z-score over its exact numerator, above), while its
   variance is a normal double (the next bullet): centered
   on the rounded mean of the raw values, a spread at its level's ulp was lost to that mean's
   rounding (`[2**52, 2**52 + 1]` read a window std of 0.707 for 0.5, a two-point z-score of
   1.414, past its bound of 1, and a ddof=1 `std_ret` of 1.0 for 0.707; legs clustered 31 and 62
-  ulps apart read a regression beta of 1.9984 for 2). The pool means stay the exactly rounded
-  sum, and `alpha` stays `mean_raw − beta·mean_bench` on them. A `cross_mean` excess is the
+  ulps apart read a regression beta of 1.9984 for 2). The benchmark regression's moments are
+  exact, `rolling_corr`'s rule over the whole pool: `n·Σxy − ΣxΣy` over the legs as integers over
+  one power-of-two denominator, beta and `r2` their quotients rounded once — the same double on
+  every platform, an exact line its exact slope and `r2` 1 at any scale (through `np.cov` over
+  `np.var`, identical legs read beta ≠ 1 on most pools, and a slope 0.3125 ulp below 5 read 5.0
+  or 5.000000000000001 by the BLAS library's summation order). The pool means stay the exactly
+  rounded sum, and `alpha` stays `mean_raw − beta·mean_bench` on them. A `cross_mean` excess is the
   member's exact deviation, `cross_demean`'s (above): legs `[2**52, 2**52 + 1, 2**52 + 1]` read
   excesses `[0, 1, 1]` for `[−2/3, 1/3, 1/3]` about their rounded mean, two selected rows
   "beating the basket" by 1 beside an exact pooled mean of 1/3; its bench leg is the bar's exactly
@@ -1102,8 +1107,9 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   subnormal values included, and a collinear window's correlation is exactly ±1 (tested in exact
   arithmetic where the ratio lands within `2**-48` of it: `rolling_corr(X, 3X, 5)` read
   0.9999999999999998 on 38 of 396 windows, and `< 1` fired); and a correlation is clipped to
-  `[−1, 1]`, the regression's `r2` to at most 1 — an exactly linear window's or pool's rounding
-  read 1.0000000000000002 (`rolling_corr(x, 3x + 7, 3) > 1` fired on it) — and the SMA `zscore`
+  `[−1, 1]` — an exactly linear window's rounding read 1.0000000000000002 (`rolling_corr(x, 3x +
+  7, 3) > 1` fired on it), where the regression's `r2`, its exact moments' quotient, never passes
+  1 — and the SMA `zscore`
   to its population bound `±√(w−1)`, which a window of `w − 1` equal
   values beside one other sits ON: the ratio's rounding read 2.0000000000000004 for the exact 2 of
   `[100, 100, 100, 100, 100.3]`, and `zscore(close, 5) > 2` fired on every such window. The
@@ -1127,10 +1133,12 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   measured returns, which reach that range only off input data at that scale, and hold the
   undecidable line on both sides: a share, ratio, `t_hac`, CSCV split Sharpe, episode-mean read,
   regression read or `cvar_5` read off a sum, mean, quantile or variance that overflowed, and a
-  `std_ret`, `boot_se`, `t_hac`, skewness/kurtosis, split Sharpe or `r2`/beta read off a variance
-  (or the power of it a moment divides by) outside the normal range, is null —
-  `benchmark_regression` declines with reason `not_representable`, an overflowed |return| mass
-  fails the concentration check instead of passing it on 0.0 shares, an episode's or a bucket's
+  `std_ret`, `boot_se`, `t_hac`, skewness/kurtosis or split Sharpe read off a variance (or the
+  power of it a moment divides by) outside the normal range, is null —
+  `benchmark_regression` declines with reason `not_representable` (its beta and `r2` read exact
+  moments, never a double variance, so only beta or alpha past the range declines), an
+  overflowed |return| mass fails the concentration check instead of passing it on 0.0 shares,
+  an episode's or a bucket's
   mean whose sum overflowed is null itself (the `episodes` ledger entry, the conditional bucket —
   which leaves `bucket_monotonicity` null), and an episode sum that overflowed (or a constant
   `cross_mean` pool's whole sum, its `mean_ret` null) nulls both `boot` bounds with `boot_se`,
