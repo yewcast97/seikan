@@ -959,6 +959,47 @@ def test_cross_agg_init_gates_on_the_members_own_input():
     assert init[["A", "B"]].all().all()
 
 
+def test_weighted_cross_mean_averages_both_aggregates_over_one_population():
+    # The guide's weighted mean, cross_agg(x·w, mean) / cross_agg(w + 0·x, mean): each cross_agg
+    # averages over its own entering members, so the denominator must enter exactly the members
+    # whose product did — 0·x is NaN wherever x is. With the plain cross_agg(w, mean) a member
+    # whose weight exists before its x does dilutes every sibling's reading.
+    K = 5
+    idx = pd.date_range("2020-01-01", periods=12, freq="1D")
+    close = pd.DataFrame({"A": 10.0, "B": 20.0, "C": 30.0, "D": 40.0}, index=idx)
+    close.iloc[:K, close.columns.get_loc("D")] = np.nan  # D's x starts K bars late
+    w = pd.DataFrame({"A": 1.0, "B": 1.0, "C": 1.0, "D": 100.0}, index=idx)
+    md = MarketData(
+        close=close,
+        open=close,
+        high=close,
+        low=close,
+        volume=None,
+        externals={"w": w},
+        targets=["A", "B", "C", "D"],
+    )
+    x, wt = Field(column="close"), External(name="w")
+    num = CrossAgg(input=BinaryOp(left=x, right=wt, op="*"), agg="mean")
+
+    def ratio(denominator_input):
+        den = CrossAgg(input=denominator_input, agg="mean")
+        return vz.build_series(BinaryOp(left=num, right=den, op="/"), md)
+
+    pinned, pinned_init = ratio(
+        BinaryOp(left=wt, right=BinaryOp(left=Constant(value=0.0), right=x, op="*"), op="+")
+    )
+    plain, plain_init = ratio(wt)
+    # warmup: A, B, C are live and read the weighted mean of 10/20/30 at unit weights
+    assert (pinned.iloc[:K][["A", "B", "C"]] == 20.0).all().all()
+    assert (plain.iloc[:K][["A", "B", "C"]] < 10.0).all().all()  # below every available x
+    # once D lists, both populations are the four members
+    assert (pinned.iloc[K:] == (60 + 4000) / 103).all().all()
+    pd.testing.assert_frame_equal(pinned.iloc[K:], plain.iloc[K:])
+    pd.testing.assert_frame_equal(pinned_init, plain_init)
+    assert pinned_init[["A", "B", "C"]].all().all()
+    assert not pinned_init.iloc[:K]["D"].any()
+
+
 # ---- parameter sweeps ------------------------------------------------------
 
 

@@ -1417,7 +1417,8 @@ honest workaround today:
   out of the cross-section, and its hole is reported, never absorbed.
 - **Reference universes and member weights.** A cross-section is always the declared targets:
   a rank against an OUTSIDE universe is supplied as a feed of breakpoints; a weighted mean is
-  the exact composition `cross_agg(x·w, mean) / cross_agg(w, mean)`.
+  the composition `cross_agg(x·w, mean) / cross_agg(w + 0·x, mean)`, where `0·x` is NaN wherever
+  `x` is, so the weights are averaged over the members whose products were.
 
 Two pieces of CALLER discipline worth naming without legislating: a report is a FILE artifact —
 reference it by path and identity (`dsl_hash`, `data_digests`), never re-type its numbers through

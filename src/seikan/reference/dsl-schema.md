@@ -603,10 +603,9 @@ with a filter bolted on afterwards:
   is each group on its own, summed across groups; a bar voided by an undefined eligibility, or
   whose every group sat below the floor, has `k = 0` and is not evaluated.
 - Deferred, by decision: a reference universe OUTSIDE the targets (supply the breakpoints as a
-  feed and threshold against them), member weights (`cross_agg(x·w, mean) / cross_agg(w, mean)`
-  is the exact weighted mean), and "applicability vs missing data" — a member that leaves the
-  universe and stops trading is still a raw-source hole, and telling the two apart is a
-  versioned ledger change.
+  feed and threshold against them), member weights (the weighted mean is a composition, below),
+  and "applicability vs missing data" — a member that leaves the universe and stops trading is
+  still a raw-source hole, and telling the two apart is a versioned ledger change.
 
 Combinators:
 - `{"type": "binary_op", "left": <Series>, "right": <Series>, "op": "+|-|*|/"}` — element-wise
@@ -752,7 +751,10 @@ axis carries the identity that matters), and a looser `rolling(any)` over undeci
 operator of its own: a rolling SUM is `N · rolling_agg(x, N, mean)`; a binary MAX / MIN is
 `(a + b + |a − b|) / 2` / `(a + b − |a − b|) / 2`; a value-valued QUANTILE is not needed because
 `percentile(x, N) >= q` already answers "is x above its own trailing q-quantile"; a weighted
-cross-sectional mean is `cross_agg(x · w, mean) / cross_agg(w, mean)`; a rolling beta is
+cross-sectional mean is `cross_agg(x · w, mean) / cross_agg(w + 0 · x, mean)` — `0 · x` is NaN
+exactly where `x` is, so both means average over the same members (a plain `cross_agg(w, mean)`
+also counts a member whose `x` has not started, and reads below every available `x`), each mean
+exactly rounded and the quotient rounded once more; a rolling beta is
 `rolling_corr(a, b, N) · rolling_agg(a, N, std) / rolling_agg(b, N, std)` (tie the three windows
 with a shared axis, see below).
 
