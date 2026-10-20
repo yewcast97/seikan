@@ -1003,7 +1003,10 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   EXACT Sharpes — the square with its sign, a rational of the split's exact moments — so equal
   Sharpes tie: as the quotient of the rounded mean and the root of the rounded variance, a
   candidate holding three times another's returns (the same Sharpe on every split) scored apart
-  in its last bits and twenty such grids read `pbo` 0.19 to 0.36 for full ties. Merged from the blocks' centered moments, every row's
+  in its last bits and twenty such grids read `pbo` 0.19 to 0.36 for full ties. `prob_oos_loss`
+  reads a winner's test loss off that exact rank too, whose sign is the split mean's: as a
+  double, a tiny negative mean over a huge sd (`[1e150, −1e150, −1e-200]` in every block)
+  rounds the Sharpe to −0.0, and such a grid read `prob_oos_loss` 0.0 for 1.0. Merged from the blocks' centered moments, every row's
   squared deviation rounded on its own, two candidates holding `α·[10, 13, 13, 16]` and
   `α·[11, 11, 14, 16]` in every block — other returns with the same count, sum and sum of
   squares, a full tie on every split — read a nonzero `pbo` on 99 of 100 such grids (up to

@@ -4241,6 +4241,32 @@ def test_cscv_pbo_scores_returns_whose_squares_overflow_while_their_variance_is_
     assert {k: out[k] for k in keys} == {k: base[k] for k in keys}
 
 
+def test_cscv_prob_oos_loss_reads_the_exact_rank_where_the_sharpe_underflows():
+    # The review's grid: candidate A holds [1e150, −1e150, −1e-200] in each of 8 blocks and B
+    # twice that — a positive multiple, so every split ties (pbo and lambda_mean 0.0) — and every
+    # split's mean is negative. As a double that Sharpe, ~−3e-201 over an sd of ~8.5e149,
+    # underflows to −0.0, and `< 0.0` counted no loss on any of the 70 splits; the loss is read
+    # off the exact rank, whose sign is the mean's.
+    n, s = 192, 8
+    w = n // s
+    mask = np.zeros(n, dtype=bool)
+    fa, fb = np.full(n, np.nan), np.full(n, np.nan)
+    for g in range(s):
+        for j, v in enumerate((1e150, -1e150, -1e-200)):
+            mask[g * w + j] = True
+            fa[g * w + j], fb[g * w + j] = v, 2.0 * v
+    t = np.flatnonzero(mask)
+    (score,) = _split_scores(_split_columns(fa[t], t // w, s), [0, 1, 2, 3])
+    assert score.key < 0 and score.value == 0.0 and math.copysign(1.0, score.value) < 0
+    cells = [
+        {"key": (name, "t"), "mask_col": mask, "fwd_col": f, "h": 1}
+        for name, f in (("A", fa), ("B", fb))
+    ]
+    out = cscv_pbo(cells, n, ["t"], n_combos_declared=2)
+    assert out["n_splits"] == 70 and out["pbo"] == out["lambda_mean"] == 0.0
+    assert out["prob_oos_loss"] == 1.0
+
+
 def test_cscv_split_score_of_a_subnormal_variance_is_nan_never_a_sharpe():
     # Returns of ~1e-161 have a SUBNORMAL variance, which holds fewer bits than the Sharpe divides
     # by (read off one, the score was 0.13804 for 0.13853): NaN. While the variance stays normal

@@ -66,7 +66,9 @@ class _Column(NamedTuple):
 class _Score(NamedTuple):
     """A split's per-observation Sharpe (:func:`_split_score`): ``key`` its EXACT rank — the
     Sharpe's square with its sign, a rational of the split's exact moments, strictly increasing
-    in the Sharpe — and ``value`` the Sharpe as a double, the read the degradation fit takes."""
+    in the Sharpe, so its sign is the split mean's: the ranks and the loss count read it — and
+    ``value`` the Sharpe as a double, the read the degradation fit takes (a tiny negative mean
+    over a huge sd rounds it to −0.0)."""
 
     key: Fraction
     value: float
@@ -263,9 +265,11 @@ def cscv_pbo(
     < 0 flags inverse transfer; null with ``oos_degradation_slope_reason`` =
     "degenerate_train_scores" when the train scores carry no usable spread — see
     :func:`_degradation_slope`), and ``prob_oos_loss`` (fraction of splits whose winner scored
-    below zero on test). A split's mean and variance are exact arithmetic's, each rounded once
-    (:func:`_split_score`), so a mean has its exact sign and level-heavy return columns score
-    instead of cancelling to zero variance. Grid-level evidence — no cell's grade reads it.
+    below zero on test, read off its exact rank: as a double that Sharpe underflows to −0.0 off a
+    tiny negative mean over a huge sd, which ``< 0.0`` read as no loss). A split's mean and
+    variance are exact arithmetic's, each rounded once (:func:`_split_score`), so a mean has its
+    exact sign and level-heavy return columns score instead of cancelling to zero variance.
+    Grid-level evidence — no cell's grade reads it.
 
     The population is ledgered, never assumed: ``n_combos <= n_combos_scoreable <=
     n_combos_declared`` — the DISTINCT candidates entering CSCV (the population a scored block
@@ -453,6 +457,7 @@ def cscv_pbo(
         # candidate count any scored split ranked over — rather than averaged away silently.
         n_splits_attempted = 0
         n_candidates_min = n_combos
+        n_loss = 0
         for train in combinations(range(s), s // 2):
             n_splits_attempted += 1
             tr = {q: sc for q, sc in enumerate(_split_scores(columns, train)) if sc is not None}
@@ -478,6 +483,7 @@ def cscv_pbo(
             omega = rank / (len(keys) + 1.0)
             lambdas.append(math.log(omega / (1.0 - omega)))
             pairs.append((tr[bi].value, te_best.value))
+            n_loss += te_best.key < 0
 
         if len(lambdas) < _PBO_MIN_SPLITS:
             # `empty` already carries the population ledger (`n_combos` IS `n_distinct`: every
@@ -507,7 +513,7 @@ def cscv_pbo(
             "lambda_mean": float(np.mean(lam)),
             "oos_degradation_slope": slope,
             "oos_degradation_slope_reason": slope_reason,
-            "prob_oos_loss": float(np.mean(te_a < 0.0)),
+            "prob_oos_loss": n_loss / len(lambdas),
         }
 
     return last_empty
