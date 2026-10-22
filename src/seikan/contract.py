@@ -400,9 +400,9 @@ METRIC_ROLES: dict[str, JsonValue] = {
         ),
         "cvar_5": (
             "mean of the worst ⌈n/20⌉ observations (the expected shortfall beside its "
-            "historical-VaR partner ret_quantiles.p05, never diluted by ties at p05); at "
-            "n <= 20 the 'tail' is a single observation, and overlap makes tail rows the same "
-            "market move"
+            "historical-VaR partner ret_quantiles.p05, never diluted by ties at p05), in whole "
+            "rows — 5% of the pool where 20 divides n, up to a row more elsewhere (two of 21); "
+            "overlap makes tail rows the same market move"
         ),
         "benchmark_regression": (
             "per-window OLS attribution of the raw leg on the bench leg — beta unitless, alpha "
@@ -735,10 +735,14 @@ METRIC_ROLES_DOC: dict[str, JsonValue] = {
             "its VaR partner ret_quantiles.p05, adding what the quantile alone cannot say: how "
             "bad the tail is INSIDE the 5% cut. A count, never a threshold, so ties at p05 "
             "never dilute it: 99 zeros beside one −0.5 read −0.1, where the mean of every "
-            "observation at or below p05 read −0.005. In-sample, gross of costs, and at "
-            "n <= 20 the 'tail' is a single observation; overlap makes tail rows the same "
-            "market move, so this describes the realized worst stretch, never a loss "
-            "distribution."
+            "observation at or below p05 read −0.005. The count is whole rows, so the tail it "
+            "averages is ⌈n/20⌉/n of the pool — 5% only where 20 divides n, up to one row more "
+            "elsewhere (a single observation through n = 20, two of 21) — and on a small pool "
+            "that is a wider tail than the exact 5% expected shortfall's, which counts its "
+            "boundary row only for the share of it inside 5%: one −0.8 among 20 zeros reads "
+            "−0.4, that shortfall −0.76, and the read steps as n crosses a multiple of 20. "
+            "In-sample and gross of costs; overlap makes tail rows the same market move, so this "
+            "describes the realized worst stretch, never a loss distribution."
         ),
         "benchmark_regression": (
             "Per-window OLS of the raw leg on the bench leg over PAIRED closed rows — the "

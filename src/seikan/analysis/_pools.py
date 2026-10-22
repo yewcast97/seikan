@@ -240,9 +240,9 @@ def pool_moments(rets: np.ndarray) -> PoolMoments:
     leaves the normal range (:func:`is_normal`); ``tail_ratio`` is ``|p95/p05|`` of the same
     linear-interpolated percentiles :func:`pool_quantiles` reports (NaN when ``p05`` is zero,
     and a spread ratio rather than a tail read when both tails share a sign); ``cvar_5`` is the
-    mean of the worst ``⌈n/20⌉`` observations (:func:`exact_mean`), the realized 5% expected
-    shortfall beside its historical-VaR partner ``p05`` — the count :func:`concentration` takes,
-    so a tie at ``p05`` never dilutes it.
+    mean of the worst ``⌈n/20⌉`` observations (:func:`exact_mean`) — whole rows, at least 5% of
+    the pool — the realized expected shortfall beside its historical-VaR partner ``p05``, the
+    count :func:`concentration` takes, so a tie at ``p05`` never dilutes it.
 
     Overlap caveat, shared with every row-level read: one market move enters ~h rows, so
     these describe the realized pool, never an estimated distribution. Evidence-only; the
