@@ -662,6 +662,11 @@ def test_report_metric_roles_compact_with_claim(tmp_path, capsys):
     boot = roles["caveats"]["boot"]
     assert "INDEPENDENCE" in boot and "undercovers on few" in boot
     assert "anti-conservative" not in boot
+    # overlap makes the rows dependent without narrowing their spread: the mean's uncertainty is
+    # hac_se's to read, and the caveat ties no shrinkage of the dispersion to n_nonoverlap
+    std_ret = roles["caveats"]["std_ret"]
+    assert "no standard error" in std_ret and "hac_se" in std_ret
+    assert "n_nonoverlap" not in std_ret
     assert "gross of costs" in roles["caveats"]["mean_ret"]
     assert set(roles["cell_checks"]) == {
         "cell_evidence",

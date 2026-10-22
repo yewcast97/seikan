@@ -384,9 +384,9 @@ METRIC_ROLES: dict[str, JsonValue] = {
             "of the ratio"
         ),
         "std_ret": (
-            "dispersion of OVERLAPPING rows — understates independent-information dispersion "
-            "exactly as n overstates n_nonoverlap; a description of this pool, never a risk "
-            "estimate"
+            "dispersion (ddof=1) of the closed rows — overlap keeps each row's spread and makes "
+            "the rows dependent, so std_ret/√n is no standard error (read hac_se) and few "
+            "episodes read it low; a description of this pool, never a risk estimate"
         ),
         "skewness": (
             "(and kurtosis — Pearson, normal = 3) scipy's POPULATION moments (bias=True, not "
@@ -705,11 +705,15 @@ METRIC_ROLES_DOC: dict[str, JsonValue] = {
             "is a description of this pool, not an estimate of a payoff distribution."
         ),
         "std_ret": (
-            "Sample dispersion (ddof=1) of OVERLAPPING rows: ~h rows share each move, so this "
-            "understates the dispersion of the independent information exactly as n overstates "
-            "n_nonoverlap — the same inflation read from the other side. A description of the "
-            "realized "
-            "pool, never a risk estimate, and never annualized."
+            "Sample dispersion (ddof=1) of the closed rows — the realized spread of one h-bar "
+            "outcome. Overlap does not narrow it: ~h rows share each move, and each carries the "
+            "move's full size. What overlap changes is the rows' DEPENDENCE, which widens the "
+            "uncertainty of their MEAN — std_ret/√n is no standard error on an overlapping pool "
+            "(hac_se is the overlap-aware read) — and leaves a pool of few episodes reading its "
+            "spread low, taken about a mean that shares their moves: the expected variance falls "
+            "short by about the mean's own variance — on a contiguous pool of several episodes, "
+            "roughly 1/n_nonoverlap of the variance. A description of the realized pool, never "
+            "a risk estimate, and never annualized."
         ),
         "skewness": (
             "(and kurtosis — PEARSON kurtosis, normal = 3, not excess) The shape moments that "
