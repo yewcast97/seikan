@@ -265,8 +265,9 @@ LAST, after every other nominated output has landed (staged outputs, below), so 
 enumerating files that never appeared is not a state this CLI can reach. There is no top-level `n`: a scalar observation count
 would have to be some cell's, and naming one cell is the selection this engine does not perform.
 `policy_version` (**4** — v4: a cell names its horizon, which bounds its non-overlapping
-counts, no two cells name one assignment, a basket's one-name read is the largest share of
-its member decomposition, a mean lies within its pool's extrema, and a source's start is a
+counts, and they bound its episode count, no two cells name one assignment, a basket's
+one-name read is the largest share of its member decomposition, a mean lies within its pool's
+extrema, and a source's start is a
 timestamp inside the evaluated interval; v3: a never-available source refuses, and the support floor reads the renamed
 `n_nonoverlap`) names the checklist semantics (two cell results compare only
 under the same version); `summary.statistics_version` (**5** — v2 ADDED evidence: the p05/p95
@@ -556,7 +557,11 @@ mean is its pool's exact sum over its count, rounded once, the extrema the same 
 rounding is monotone — the review's mean of 0.02 beside a range of `[−0.2, −0.01]` met every
 check), `episode_stats.n` == the per-target total,
 `episode_stats.n_clusters` a count in `0..n` (0 iff `n == 0`: every closed row lies in one
-cluster), `episode_stats.max_cluster_share_abs ≥ largest_cluster_share_abs` and `≥ 1/n_clusters`
+cluster) and at most `max(0, ⌊(n_bars − 2) / horizon⌋)` and `Σ by_target.n_nonoverlap` (each
+cluster opens with a window disjoint from every other cluster's, so a pool clusters into no more
+episodes than it holds disjoint windows: 57 episodes beside 19 non-overlapping windows of 21
+bars in a 600-bar index, where 28 fit, met every check),
+`episode_stats.max_cluster_share_abs ≥ largest_cluster_share_abs` and `≥ 1/n_clusters`
 — exactly 1 with one cluster (the ceiling read agrees with its own panel; every share is the
 correctly rounded exact quotient of exact masses, so both rules are exact — the quotient of two
 separately rounded masses read 0.33333333333333326 for a third, which the floor would have refused
@@ -571,6 +576,7 @@ bound it), `max(by_target.n_nonoverlap) ≤ pooled.n_nonoverlap ≤ Σ by_target
 earliest-start on equal windows is the largest disjoint set, so a member's disjoint windows are a
 disjoint selection of the pool's and a disjoint pooled selection splits into disjoint selections
 within its members; the review's 8 beside members at 1 and 1, two pooled, met the support floor),
+`episode_stats.n_clusters ≤ pooled.n_nonoverlap` (the greedy count over the same pool),
 `pooled.n ≤ len(targets) × max(0, n_bars − 1 − horizon)` (each member fires at most once
 per bar and closes at most that many), `pooled.concentration.top_share_abs ≥ k / pooled.n` (the
 same floor, over the pool the basket rubric grades), a numeric `pooled.mean_ret` within

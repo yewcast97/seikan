@@ -212,9 +212,11 @@ _BEFORE_ALL_BARS = -(10**18)
 
 def nonoverlap_count(entry_idx: np.ndarray, horizon: int) -> int:
     """Greedy count of non-overlapping ``horizon``-bar windows among (sorted) entry bars —
-    ``n_nonoverlap``: a lower bound on distinct market episodes and the overlap-honest sample
-    size every df in the layer derives from. Deliberately NOT an independence certificate —
-    non-overlapping windows still share regimes, factors and volatility clusters."""
+    ``n_nonoverlap``: the most pairwise disjoint windows the bars hold (earliest-start greedy is
+    optimal on equal windows), so never fewer than the overlap episodes the same windows merge
+    into (``_episodes.overlap_clusters``), and the overlap-honest sample size every df in the
+    layer derives from. Deliberately NOT an independence certificate — non-overlapping windows
+    still share regimes, factors and volatility clusters."""
     idx = np.sort(np.asarray(entry_idx, dtype=int))
     if idx.shape[0] == 0:
         return 0

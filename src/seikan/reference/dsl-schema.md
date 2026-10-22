@@ -1325,7 +1325,7 @@ and int64 nanosecond counts silently round in IEEE-754 consumers.)
     ROW COUNT (its size, its mass share, its earliest entry) — a different "largest", so the
     two shares need not agree, though the ceiling read is never below the by-count share nor
     below `1/n_clusters`, exactly 1 with one cluster (`cell_evidence` holds it to its panel, and
-    `n_clusters` to a count in `0..n`) — and `mass_hhi` /
+    `n_clusters` to a count in `0..n` within the pool's disjoint windows) — and `mass_hhi` /
     `effective_n_clusters` are the ceiling's
     smooth companions. Every mass is an exactly rounded sum, so no share passes 1, and the hhi
     pair is exact (`effective_n_clusters` within `[1, n_clusters]`). (In basket mode the same
@@ -1469,7 +1469,9 @@ complete statistics are still in `summary.cells[i]` — a checklist result never
   within `[worst_ret, best_ret]` — a mean is its pool's exact sum over its count, rounded once,
   which never leaves the pool's range; `episode_stats.n` == the per-target total, its
   `n_clusters` a count in
-  `0..n` (0 iff `n == 0`) and its `max_cluster_share_abs` at least `largest_cluster_share_abs`
+  `0..n` (0 iff `n == 0`) and at most `max(0, (n_bars − 2) // horizon)` and
+  `sum(by_target.n_nonoverlap)` — each cluster opens with a window disjoint from every other
+  cluster's — and its `max_cluster_share_abs` at least `largest_cluster_share_abs`
   and at least `1/n_clusters` — exactly 1 where `n_clusters == 1`;
   `signal_coverage.n_bars == summary.n_bars`). Basket
   cells must ADDITIONALLY carry the `pooled` dict their own rubric grades, reconciling with the
@@ -1479,6 +1481,7 @@ complete statistics are still in `summary.cells[i]` — a checklist result never
   `max(by_target.n_nonoverlap) <= pooled.n_nonoverlap <= sum(by_target.n_nonoverlap)` (a member's
   disjoint windows are a disjoint selection of the pool's, and a disjoint pooled selection splits
   into disjoint selections within its members — the greedy count on equal windows is the largest),
+  `episode_stats.n_clusters <= pooled.n_nonoverlap` (the greedy count over the same pool),
   `pooled.n <= len(targets) × max(0, n_bars − 1 − horizon)` (each member fires at most once per bar
   and closes at most that many), `pooled.concentration.top_share_abs >= k / pooled.n` (the same
   floor over the pool the basket rubric grades), a numeric `pooled.mean_ret` within

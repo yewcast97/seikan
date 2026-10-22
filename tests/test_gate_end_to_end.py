@@ -524,6 +524,44 @@ def test_a_constant_decimal_feed_mints_no_firings(tmp_path, left, op, right, lev
     assert cell["signal_coverage"]["target"]["n_undefined"] == 0
 
 
+def test_an_episode_count_past_its_disjoint_windows_refuses(tmp_path):
+    # Three consecutive firing bars every 30 over 600 bars at horizon 21: 60 closed rows in 20
+    # episodes, 20 non-overlapping windows, and room for 28 on the bar clock. Each cluster opens
+    # with a window disjoint from every other cluster's, so a summary raising the count to 60 —
+    # a count any 60 rows admit — is drifted input, refused by both bounds.
+    n_bars = 600
+    path, feed = tmp_path / "px.csv", tmp_path / "feed.csv"
+    _write_px(path, 100.0 + 0.1 * np.arange(n_bars))
+    _write_feed(feed, (np.arange(n_bars) % 30 < 3).astype(float), n_bars)
+    thesis = Thesis.model_validate(
+        {
+            "name": "bursts",
+            "data": {"targets": ["target"], "external": {"px": {}}},
+            "entry": {
+                "type": "threshold",
+                "left": _FEED,
+                "op": ">",
+                "right": {"type": "constant", "value": 0.5},
+            },
+            "params": {"horizon": 21},
+        }
+    )
+    summary = run_backtest(thesis, load(thesis, {"target": path, "px": feed})).summary
+    cell = summary["cells"][0]
+    assert (cell["by_target"]["target"]["n"], cell["by_target"]["target"]["n_nonoverlap"]) == (
+        60,
+        20,
+    )
+    assert cell["episode_stats"]["n_clusters"] == 20
+    assert evaluate_gate(summary, GateThresholds()).cells[0].met is True
+    tampered = copy.deepcopy(summary)
+    tampered["cells"][0]["episode_stats"]["n_clusters"] = 60
+    graded = evaluate_gate(tampered, GateThresholds()).cells[0]
+    assert _unmet_cell(graded) == ["cell_evidence"]
+    detail = _check(graded, "cell_evidence").detail
+    assert "n_clusters=60 exceeds 28, " in detail and "n_clusters=60 exceeds 20, " in detail
+
+
 def _feed_thesis(name, entry):
     return Thesis.model_validate(
         {

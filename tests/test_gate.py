@@ -130,9 +130,9 @@ def _cell(
     """One declared parameter × horizon cell whose panels reconcile by construction.
 
     ``n`` drives the graded count, the ledger's attempted/closed counts and the episode panel's
-    per-target total (and the cluster count a pool that size can hold) together — the
-    reconciliation ``cell_evidence`` enforces — so a test that wants to break ONE check moves
-    that check's own field and nothing else.
+    per-target total (and, with ``n_nonoverlap``, the cluster count a pool that size and those
+    windows can hold) together — the reconciliation ``cell_evidence`` enforces — so a test that
+    wants to break ONE check moves that check's own field and nothing else.
     """
     tg = list(targets)
     n_nonoverlap = min(14, n) if n_nonoverlap is None else n_nonoverlap
@@ -150,7 +150,7 @@ def _cell(
         },
         "episode_stats": {
             "n": n * len(tg),
-            "n_clusters": min(12, n * len(tg)),
+            "n_clusters": min(12, n * len(tg), n_nonoverlap * len(tg)),
             "largest_cluster_n": min(5, n * len(tg)),
             "largest_cluster_share_abs": cluster_share,
             "largest_cluster_start": None,
@@ -1324,15 +1324,46 @@ def test_the_episode_cluster_count_is_a_count_the_pool_can_hold(bad):
     assert not check.met
     assert "n_clusters" in check.detail
     assert ("not a count" in check.detail) == (not isinstance(bad, int) or bad < 0)
-    # every count up to n is legal, and an empty pool clusters into nothing
-    full = _cell()
-    full["episode_stats"]["n_clusters"] = 42
+    # n rows whose windows are pairwise disjoint form n clusters, and an empty pool none
+    full = _cell(n=14)  # n_nonoverlap = 14
+    full["episode_stats"]["n_clusters"] = 14
     assert _cell_checks(evaluate_gate(_summary(cells=[full])))["cell_evidence"].met
     empty = _cell(n=0)
     empty["episode_stats"].update(
         {"n_clusters": 0, "largest_cluster_share_abs": None, "max_cluster_share_abs": None}
     )
     assert _cell_checks(evaluate_gate(_summary(cells=[empty])))["cell_evidence"].met
+
+
+def test_the_episode_cluster_count_fits_the_pools_disjoint_windows():
+    # Each cluster opens with a window disjoint from every other cluster's, so a pool clusters
+    # into no more episodes than it holds disjoint windows: at most the bar clock's
+    # max(0, (n_bars − 2) // horizon) = 28 here, the targets' total n_nonoverlap and, in a
+    # basket, pooled.n_nonoverlap. Each bound meets exactly and refuses one past it.
+    cases = [
+        (_summary, _cell(), 14, "the targets' total n_nonoverlap"),
+        (
+            _two_targets,
+            _cell(targets=("AAA", "BBB"), n_nonoverlap=20),
+            28,
+            "the most non-overlapping windows of the cell's horizon that close inside the index",
+        ),
+        (
+            _basket,
+            _basket_cell(pooled=_pooled(n_nonoverlap=20)),
+            20,
+            "pooled.n_nonoverlap, the greedy count over its pool",
+        ),
+    ]
+    for summary, cell, ceiling, what in cases:
+        cell["episode_stats"]["n_clusters"] = ceiling
+        assert _cell_checks(evaluate_gate(summary(cells=[cell])))["cell_evidence"].met, what
+        cell["episode_stats"]["n_clusters"] = ceiling + 1
+        check = _cell_checks(evaluate_gate(summary(cells=[cell])))["cell_evidence"]
+        assert not check.met, what
+        assert (
+            f"episode_stats.n_clusters={ceiling + 1} exceeds {ceiling}, {what} — " in check.detail
+        )
 
 
 def test_cell_evidence_requires_an_episode_panel():
@@ -2024,7 +2055,10 @@ def test_pooled_n_nonoverlap_lies_between_the_members_largest_and_their_total():
     # pooled selection splits into disjoint selections within its members (pooled <= their
     # total).
     def basket(pooled_windows, members=(1, 1)):
-        cell = _basket_cell(n=20, pooled=_pooled(n=40, n_nonoverlap=pooled_windows))
+        # one episode carrying the whole mass: a count every pool below holds
+        pooled = _pooled(n=40, n_nonoverlap=pooled_windows)
+        cell = _basket_cell(n=20, pooled=pooled, cluster_share=1.0)
+        cell["episode_stats"]["n_clusters"] = 1
         for tgt, k in zip(("AAA", "BBB"), members, strict=True):
             cell["by_target"][tgt]["n_nonoverlap"] = k
         return _cell_checks(evaluate_gate(_basket(cells=[cell])))["cell_evidence"]

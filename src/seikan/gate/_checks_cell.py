@@ -231,32 +231,49 @@ def _grade_signal_geometry(sig: dict[str, object], run_bars: int | None, unmet: 
             )
 
 
+def _too_many_clusters(n_clusters: int, bound: int, what: str) -> str:
+    """The refusal of an episode count above ``bound``, the most disjoint windows its pool can
+    hold by the count ``what`` names. The greedy merge opens a cluster only at or past the end
+    of every earlier window, so the clusters' first windows are pairwise disjoint: no pool
+    clusters into more episodes than it holds disjoint windows."""
+    return (
+        f"episode_stats.n_clusters={n_clusters} exceeds {bound}, {what} — each cluster opens "
+        "with a window disjoint from every other cluster's; drifted input"
+    )
+
+
 def _grade_episode_stats(
     cell: dict[str, object],
     by_target_n_total: int,
     n_total_readable: bool,
+    windows: int | None,
+    member_windows: list[int] | None,
     observed: dict[str, object],
     unmet: list[str],
-) -> None:
+) -> int | None:
     """``episode_stats.n`` must equal the per-target total — the concentration panel and the
     support panel must describe ONE pool — ``n_clusters`` must be a count the pool can hold (at
-    most ``n``, and 0 exactly on an empty pool: every closed row lies in one cluster), and the
-    ceiling read ``max_cluster_share_abs``, the largest |return|-mass share held by any cluster,
-    must agree with its own panel: it is at least ``largest_cluster_share_abs`` (the
-    largest-BY-COUNT cluster's share, one of the shares it is the maximum of) and at least
-    ``1 / n_clusters`` (the largest of ``n_clusters`` shares of one mass is at least their mean —
-    exactly 1 with one cluster). Both rules are exact: every share is the correctly rounded exact
-    quotient of exact masses, as ``1 / n_clusters`` is of its integers, and rounding is monotone,
-    so neither floor refuses an honest pool. A null maximum (a pool with no mass, an overflowed
-    one, incommensurable units) is ``concentration``'s to refuse; the ``episodes`` ledger,
-    evidence-only and truncated at its cap, is not read."""
+    most ``n``, and 0 exactly on an empty pool: every closed row lies in one cluster) and no more
+    than its disjoint windows (:func:`_too_many_clusters`): at most ``windows`` close inside the
+    index, and at most the targets' total ``n_nonoverlap`` (``member_windows``) — a disjoint
+    selection splits into disjoint selections within its targets, none larger than the target's
+    greedy count, the largest on equal windows. The ceiling read ``max_cluster_share_abs``, the
+    largest |return|-mass share held by any cluster, must agree with its own panel: it is at
+    least ``largest_cluster_share_abs`` (the largest-BY-COUNT cluster's share, one of the shares
+    it is the maximum of) and at least ``1 / n_clusters`` (the largest of ``n_clusters`` shares
+    of one mass is at least their mean — exactly 1 with one cluster). Both rules are exact:
+    every share is the correctly rounded exact quotient of exact masses, as ``1 / n_clusters`` is
+    of its integers, and rounding is monotone, so neither floor refuses an honest pool. A null
+    maximum (a pool with no mass, an overflowed one, incommensurable units) is
+    ``concentration``'s to refuse; the ``episodes`` ledger, evidence-only and truncated at its
+    cap, is not read. Returns ``n_clusters`` where it is a count, for the pooled panel's bound."""
     ep = cell.get("episode_stats")
     if not isinstance(ep, dict):
         unmet.append(
             "cell lacks an episode_stats panel — the cross-target episode-cluster read cannot "
             "be verified; drifted input"
         )
-        return
+        return None
     ep_n = _int(ep.get("n"))
     observed["episode_stats_n"] = ep_n
     if ep_n is None or ep_n < 0:
@@ -271,15 +288,22 @@ def _grade_episode_stats(
         unmet.append(
             f"episode_stats.n_clusters={ep.get('n_clusters')!r} is not a count — drifted input"
         )
+        n_clusters = None
     elif ep_n is not None and ep_n >= 0 and (n_clusters > ep_n or (n_clusters == 0) != (ep_n == 0)):
         unmet.append(
             f"episode_stats.n_clusters={n_clusters} beside n={ep_n} — every closed row lies in "
             "exactly one cluster, so a pool of n rows holds between 1 and n clusters (none when "
             "empty); drifted input"
         )
+    if n_clusters is not None and windows is not None and n_clusters > windows:
+        what = "the most non-overlapping windows of the cell's horizon that close inside the index"
+        unmet.append(_too_many_clusters(n_clusters, windows, what))
+    if n_clusters is not None and member_windows and n_clusters > sum(member_windows):
+        what = "the targets' total n_nonoverlap"
+        unmet.append(_too_many_clusters(n_clusters, sum(member_windows), what))
     top = _prob(ep.get("max_cluster_share_abs"))
     if top is None:
-        return
+        return n_clusters
     largest = _prob(ep.get("largest_cluster_share_abs"))
     if largest is not None and largest > top:
         unmet.append(
@@ -293,6 +317,7 @@ def _grade_episode_stats(
             f"— the largest of {n_clusters} share(s) of one mass is at least their mean (exactly "
             "1 with one cluster); drifted input"
         )
+    return n_clusters
 
 
 def _grade_pooled(
@@ -304,15 +329,18 @@ def _grade_pooled(
     by_target_n_total: int,
     n_total_readable: bool,
     member_windows: list[int] | None,
+    n_clusters: int | None,
     observed: dict[str, object],
     unmet: list[str],
 ) -> None:
     """The mode-dispatched pooled-panel contract: a basket cell must carry one that reconciles
     with the member panels — their total ``n``, and their ``n_nonoverlap`` counts
-    (``member_windows``), between whose largest and whose total the pooled count lies — and the
-    bar clock (``closable``, the most observations of the cell's horizon that close inside the
-    index per member; ``windows``, the most non-overlapping windows among them); a conjunction
-    cell carrying one is the signature of a restamped basket and refuses."""
+    (``member_windows``), between whose largest and whose total the pooled count lies — with
+    the bar clock (``closable``, the most observations of the cell's horizon that close inside
+    the index per member; ``windows``, the most non-overlapping windows among them) and with the
+    episode panel over the same pool, whose ``n_clusters`` the pooled greedy count bounds
+    (:func:`_too_many_clusters`); a conjunction cell carrying one is the signature of a
+    restamped basket and refuses."""
     if mode == "conjunction" and "pooled" in cell:
         # The runner writes `pooled` ONLY in basket mode — absent, not null, on
         # conjunction cells — so a conjunction-stamped cell carrying one is not stray noise but
@@ -391,6 +419,9 @@ def _grade_pooled(
                         "within its members, and the greedy count on equal windows is the "
                         "largest; drifted input"
                     )
+                if n_clusters is not None and n_clusters > p_eff:
+                    what = "pooled.n_nonoverlap, the greedy count over its pool"
+                    unmet.append(_too_many_clusters(n_clusters, p_eff, what))
             member_share = pooled.get("member_share")
             if isinstance(member_share, dict):
                 _grade_member_share(member_share, targets, unmet)
@@ -470,8 +501,10 @@ def _check_cell_evidence(cell: object, s: Mapping[str, object], t: GateThreshold
     within its ``[worst_ret, best_ret]`` (:func:`_grade_mean_range` — a mean is its pool's exact
     sum over its count, rounded once); the cell's ``episode_stats.n`` is the per-target total
     (the concentration panel and the support panel must describe one pool), its ``n_clusters`` a
-    count the pool can hold, and its ``max_cluster_share_abs`` agrees with its own panel — at
-    least ``largest_cluster_share_abs`` and at least ``1 / n_clusters``
+    count the pool can hold and no more than its disjoint windows — at most ``max(0, (n_bars −
+    2) // horizon)`` and the targets' total ``n_nonoverlap``, since each cluster opens with a
+    window disjoint from every other cluster's — and its ``max_cluster_share_abs`` agrees with
+    its own panel — at least ``largest_cluster_share_abs`` and at least ``1 / n_clusters``
     (:func:`_grade_episode_stats`); and ``signal_coverage[t].n_bars`` is the run's ``n_bars``
     (the decision ledger spans the whole index — pure geometry, not a property of the data). A
     summary claiming 42 observations over a ledger holding one is internally impossible, and an
@@ -484,13 +517,14 @@ def _check_cell_evidence(cell: object, s: Mapping[str, object], t: GateThreshold
     horizon)`` (the greedy non-overlapping count collapses same-bar cross-member firings, so the
     bar clock's windows bound it as they bound each target's), ``pooled.n_nonoverlap`` between
     the largest member's ``n_nonoverlap`` and the members' total (greedy earliest-start on equal
-    windows is the largest disjoint set — :func:`_grade_pooled`), ``pooled.n <= len(targets) ×
-    max(0, n_bars − 1 − horizon)`` (each member fires at most once per bar and closes at most
-    that many), ``pooled.concentration.top_share_abs`` at least ``k / pooled.n`` (the same
-    floor, over the pool the basket rubric grades), ``pooled.mean_ret`` within its pool's
-    extrema (the same range), and a ``member_share`` panel's one-name read is the largest share
-    of its ``by_target`` decomposition, string-keyed over the targets exactly and summing to 1
-    within rounding (:func:`_grade_member_share` — the ceiling never grades a number its own
+    windows is the largest disjoint set — :func:`_grade_pooled`) and at least
+    ``episode_stats.n_clusters`` (the greedy count over the same pool), ``pooled.n <=
+    len(targets) × max(0, n_bars − 1 − horizon)`` (each member fires at most once per bar and
+    closes at most that many), ``pooled.concentration.top_share_abs`` at least ``k / pooled.n``
+    (the same floor, over the pool the basket rubric grades), ``pooled.mean_ret`` within its
+    pool's extrema (the same range), and a ``member_share`` panel's one-name read is the largest
+    share of its ``by_target`` decomposition, string-keyed over the targets exactly and summing
+    to 1 within rounding (:func:`_grade_member_share` — the ceiling never grades a number its own
     breakdown contradicts). Conjunction cells are graded by the per-target rules — and a
     ``pooled`` key under a conjunction stamp REFUSES, because the runner writes pooled only in
     basket mode: the configuration is the signature of a restamped basket, and refusing it
@@ -512,13 +546,16 @@ def _check_cell_evidence(cell: object, s: Mapping[str, object], t: GateThreshold
         "observations carry at least k/n of the mass), worst_ret<=mean_ret<=best_ret (a mean "
         "is its pool's exact sum over its count, rounded once), "
         "episode_stats.n==sum of by_target.n, episode_stats.n_clusters a count in 0..n (0 iff "
-        "n==0), episode_stats.max_cluster_share_abs>=largest_cluster_share_abs and "
+        "n==0), <=max(0,(n_bars-2)//horizon) and <=sum(by_target.n_nonoverlap) (each cluster "
+        "opens with a window disjoint from every other cluster's), "
+        "episode_stats.max_cluster_share_abs>=largest_cluster_share_abs and "
         ">=1/n_clusters (==1 with one cluster), signal_coverage.n_bars==summary.n_bars); "
         "target_mode readable (the stamp says whether a pooled panel is part of the cell's "
         "contract); basket cells additionally carry a pooled dict that reconciles "
         "(pooled.n==sum of by_target.n, pooled.n_nonoverlap<=pooled.n, "
         "pooled.n_nonoverlap<=max(0,(n_bars-2)//horizon), "
         "max(by_target.n_nonoverlap)<=pooled.n_nonoverlap<=sum(by_target.n_nonoverlap), "
+        "episode_stats.n_clusters<=pooled.n_nonoverlap, "
         "pooled.n<=len(targets)×max(0,n_bars-1-horizon), "
         "pooled.concentration.top_share_abs>=k/pooled.n, "
         "pooled.worst_ret<=pooled.mean_ret<=pooled.best_ret, member_share.by_target string-keyed "
@@ -612,8 +649,11 @@ def _check_cell_evidence(cell: object, s: Mapping[str, object], t: GateThreshold
         by_tgt, cov, closable, windows, by_target_n, unmet
     )
     n_total_readable = bool(cov) and bool(by_tgt) and readable_cov and readable_bt
+    member_windows = member_windows if n_total_readable else None
     _grade_signal_geometry(sig, run_bars, unmet)
-    _grade_episode_stats(cell, by_target_n_total, n_total_readable, observed, unmet)
+    n_clusters = _grade_episode_stats(
+        cell, by_target_n_total, n_total_readable, windows, member_windows, observed, unmet
+    )
     _grade_pooled(
         cell,
         mode,
@@ -622,7 +662,8 @@ def _check_cell_evidence(cell: object, s: Mapping[str, object], t: GateThreshold
         windows,
         by_target_n_total,
         n_total_readable,
-        member_windows if n_total_readable else None,
+        member_windows,
+        n_clusters,
         observed,
         unmet,
     )

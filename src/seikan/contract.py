@@ -71,9 +71,11 @@ METRIC_ROLES: dict[str, JsonValue] = {
             "max(0, n_bars − 1 − horizon), exit_reasons.open <= min(horizon, n_bars − 1))",
             "cells[*].signal_coverage[*].n_bars",
             "cells[*].episode_stats.{n,n_clusters,largest_cluster_share_abs,max_cluster_share_abs} "
-            "(n == the per-target total; n_clusters a count in 0..n, 0 iff n == 0; the ceiling "
-            "read is at least the largest-by-count cluster's share and at least 1/n_clusters — "
-            "exactly 1 with one cluster)",
+            "(n == the per-target total; n_clusters a count in 0..n, 0 iff n == 0, and at most "
+            "max(0, (n_bars − 2) // horizon), sum(by_target.n_nonoverlap) and, in a basket, "
+            "pooled.n_nonoverlap — each cluster opens with a window disjoint from every other "
+            "cluster's; the ceiling read is at least the largest-by-count cluster's share and at "
+            "least 1/n_clusters — exactly 1 with one cluster)",
             "cells[*].pooled.{n,n_nonoverlap,concentration.top_share_abs} (basket only — "
             "pooled.n == sum of by_target.n, "
             "pooled.n_nonoverlap <= pooled.n, pooled.n_nonoverlap <= max(0, (n_bars − 2) // "
@@ -168,7 +170,7 @@ METRIC_ROLES: dict[str, JsonValue] = {
         "basket)",
         "episode_stats beyond the two fields the checklist grades (n, max_cluster_share_abs; "
         "cell_evidence reads n_clusters and largest_cluster_share_abs only to reconcile the "
-        "ceiling read)",
+        "ceiling read, and n_clusters with the pool's disjoint windows)",
         "summary.baseline (run-level unconditional base rate per horizon × target — plus a "
         "pooled row in basket; the conditional-vs-base-rate comparison is the caller's, and "
         "no uplift field ever exists)",
@@ -1050,7 +1052,8 @@ REPORT_FIELDS: dict[str, JsonValue] = {
             "max_cluster_share_abs, mass_hhi, effective_n_clusters} — the checklist grades only "
             "n and max_cluster_share_abs (cell_evidence reads n_clusters and "
             "largest_cluster_share_abs to reconcile the ceiling read: at least that share and "
-            "at least 1/n_clusters, exactly 1 with one cluster, over an n_clusters in 0..n); the "
+            "at least 1/n_clusters, exactly 1 with one cluster, over an n_clusters in 0..n and "
+            "within the pool's disjoint windows); the "
             "hhi pair is the smooth evidence-only companion; "
             "every share is null over a diff outcome's rows of several targets, each in its own "
             "level units"
@@ -1325,7 +1328,9 @@ GATE_CONTRACT_DOC: dict[str, JsonValue] = {
             "n_nonoverlap <= max(0, (n_bars − 2) // horizon), concentration.top_share_abs >= k/n "
             "for k = max(1, ceil(n/20)), worst_ret <= mean_ret <= best_ret for a numeric "
             "mean_ret, episode_stats.n == the per-target "
-            "total, episode_stats.n_clusters a count in 0..n (0 iff n == 0), "
+            "total, episode_stats.n_clusters a count in 0..n (0 iff n == 0) and at most "
+            "max(0, (n_bars − 2) // horizon) and sum(by_target.n_nonoverlap) (each cluster opens "
+            "with a window disjoint from every other cluster's), "
             "episode_stats.max_cluster_share_abs >= largest_cluster_share_abs and >= "
             "1/n_clusters (== 1 with one cluster), signal_coverage.n_bars == summary.n_bars. "
             "Basket cells additionally "
@@ -1333,7 +1338,8 @@ GATE_CONTRACT_DOC: dict[str, JsonValue] = {
             "the pooled dict their rubric grades, reconciling with the member panels (pooled.n "
             "== the per-target total, pooled.n_nonoverlap <= pooled.n, pooled.n_nonoverlap <= "
             "max(0, (n_bars − 2) // horizon), max(by_target.n_nonoverlap) <= "
-            "pooled.n_nonoverlap <= sum(by_target.n_nonoverlap), pooled.n "
+            "pooled.n_nonoverlap <= sum(by_target.n_nonoverlap), episode_stats.n_clusters <= "
+            "pooled.n_nonoverlap, pooled.n "
             "<= len(targets) × max(0, n_bars − 1 − horizon), pooled.concentration.top_share_abs "
             ">= k/pooled.n, pooled.worst_ret <= pooled.mean_ret <= pooled.best_ret, and a "
             "max_member_share_abs that "
@@ -1397,7 +1403,8 @@ GATE_CONTRACT_DOC: dict[str, JsonValue] = {
         "episode-bootstrap CI and subperiods era panel, the run-level bar_spacing stamp and "
         "baseline panel, the "
         "episode_stats panel beyond the two fields the checklist grades (n_clusters and "
-        "largest_cluster_share_abs read only to reconcile the ceiling read), the per-cell episodes "
+        "largest_cluster_share_abs read only to reconcile the ceiling read, and n_clusters with "
+        "the pool's disjoint windows), the per-cell episodes "
         "ledger, conditional_buckets/bucket_monotonicity and feature_association, and — in "
         "basket — every pooled field beyond {n, n_nonoverlap, mean_ret, "
         "concentration.top_share_abs, member_share} (member_share.by_target read only to "
