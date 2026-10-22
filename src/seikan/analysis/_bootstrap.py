@@ -22,11 +22,11 @@ _NAN = float("nan")
 
 #: Fixed base entropy word for the bootstrap seed — never the clock, never a cell label. Combined
 #: with a sha256 of the POOL CONTENT (horizon, then entry bars and returns in the CANONICAL
-#: lexsort order (bar, ret) — a bars-only stable sort would let tied-bar row order leak into the
-#: digest), so two identical runs draw identically, row order is genuinely irrelevant, and adding
-#: a cell to the grid changes no other cell's draws (positional seeding would couple sibling
-#: cells' Monte Carlo jitter to grid composition — the one doctrine content-keying preserves and
-#: index-keying breaks).
+#: lexsort order (bar, ret, sign) — a bars-only stable sort would let tied-bar row order leak
+#: into the digest), so two identical runs draw identically, row order is genuinely irrelevant,
+#: and adding a cell to the grid changes no other cell's draws (positional seeding would couple
+#: sibling cells' Monte Carlo jitter to grid composition — the one doctrine content-keying
+#: preserves and index-keying breaks).
 _BOOT_SEED = 0x5E1CA10
 
 BOOT_N = 2000
@@ -110,10 +110,11 @@ def episode_bootstrap_ci(
         return out
     # lexsort, not a stable bars-only sort: the seed digest below hashes the sorted BYTES, so
     # tied-bar rows (the basket pooled pool) must land in one canonical order or the caller's
-    # row order would pick the draw stream. (rets, bars) is canonical: within a bar, rows sort
-    # by return. `pool` rides the same permutation; rows tied on (bar, ret) may still carry
-    # different pool values in the caller's order, which no episode sum sees (each one exact).
-    order = np.lexsort((rets, bars))
+    # row order would pick the draw stream. (bar, ret, sign) is canonical: within a bar, rows
+    # sort by return, and +0.0 before -0.0, which compare equal in different bytes. `pool` rides
+    # the same permutation; rows tied on (bar, ret) may still carry different pool values in the
+    # caller's order, which no episode sum sees (each one exact).
+    order = np.lexsort((np.signbit(rets), rets, bars))
     bars, rets, pool = bars[order], rets[order], pool[order]
     clusters = overlap_clusters(bars, bars + int(h))
     n_ep = len(clusters)

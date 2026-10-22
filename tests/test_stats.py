@@ -3612,6 +3612,16 @@ def test_episode_bootstrap_tied_bar_order_invariance():
     assert a == b
 
 
+def test_episode_bootstrap_signed_zeros_on_one_bar_are_one_canonical_order():
+    # +0.0 and -0.0 compare equal, so a (bar, ret) sort leaves them in the caller's order while
+    # the seed digest reads their bytes: the sign breaks the tie, and swapping the two rows moves
+    # neither the interval nor boot_se.
+    bars = np.array([0, 0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20])
+    rets = np.array([0.0, -0.0, 0.02, -0.01, 0.09, -0.02, 0.15, -0.03, 0.01, 0.05, -0.08, 0.03])
+    swapped = rets[[1, 0, *range(2, rets.size)]]
+    assert episode_bootstrap_ci(rets, bars, 1) == episode_bootstrap_ci(swapped, bars, 1)
+
+
 def test_episode_panels_canonical_under_tied_row_order():
     # Three same-bar rows across two targets with fp-noncommutative returns: every permutation
     # of the frame's rows must yield identical episode_stats / episode_ledger / episode_profile
