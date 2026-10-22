@@ -1110,7 +1110,8 @@ REPORT_FIELDS: dict[str, JsonValue] = {
         ),
         "pooled.t_hac / hac_se": (
             "event-time overlap HAC over the pooled rows, df = pooled.n_nonoverlap - 1 — same-bar "
-            "cross-member pairs enter at full Bartlett weight (cluster-robust for free), same "
+            "cross-member pairs enter at full Bartlett weight and the small-sample factor counts "
+            "bars, not rows (cluster-robust: members repeating one another add no precision), same "
             "anti-conservative caveat. The long-run variance reads the rows only through their "
             "per-bar deviation sums, and is computed that way: each bar's deviation sum about the "
             "pool's exact mean, exact and rounded once, then the weighted quadratic form over "

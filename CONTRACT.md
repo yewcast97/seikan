@@ -299,16 +299,17 @@ the bootstrap, era, episode and HAC reads beside it keep its zero-excess identit
 corrected more — among them correctly rounded CSV values, exactly rounded graded means and the
 decision-side means beside them (`rolling_agg` / `cross_agg` `mean` and the cross-section
 centre), exact per-episode means, each cross-section member's exact deviation (`cross_demean`,
-the `cross_mean` excess), a HAC summed per bar about the pool's offset, exact `cross_mean` and
-`event_agg` sums (every `cross_mean` bar-closed sum the bar's exact excess sum), window and pool
-moments — the shape moments included — about their own offset, a `cvar_5` over the worst
-⌈n/20⌉ observations, a signed log ratio (`ln(a/b)` is `−ln(b/a)` bit for bit), the regression's
-alpha on the exact leg means and a fit of every varying raw leg, an EW z-score on a compensated
-mean, correlations clipped to their range, warmup that follows the bars a lagged or snapshot
-operand reads, cross-sections that enter only initialized inputs and labels, cross-target value
-reads withheld where a `diff` outcome's level units differ, a rotation transform run in a unit
-frame, an overflow-safe median, and clock arithmetic in exact ticks, a feed age rounded once
-from them) names the engine's estimator revision the same way.
+the `cross_mean` excess), a HAC summed per bar about the pool's offset whose small-sample factor
+counts its bars, exact `cross_mean` and `event_agg` sums (every `cross_mean` bar-closed sum the
+bar's exact excess sum), window and pool moments — the shape moments included — about their own
+offset, a `cvar_5` over the worst ⌈n/20⌉ observations, a signed log ratio (`ln(a/b)` is
+`−ln(b/a)` bit for bit), the regression's alpha on the exact leg means and a fit of every
+varying raw leg, an EW z-score on a compensated mean, correlations clipped to their range,
+warmup that follows the bars a lagged or snapshot operand reads, cross-sections that enter only
+initialized inputs and labels, cross-target value reads withheld where a `diff` outcome's level
+units differ, a rotation transform run in a unit frame, an overflow-safe median, and clock
+arithmetic in exact ticks, a feed age rounded once from them) names the engine's estimator
+revision the same way.
 
 The summary is a GRID, not a headline. Run-level keys are geometry and provenance only —
 `n_bars`, `index_start`/`index_end`, `bar_spacing` ({min,median,max}_seconds between consecutive
@@ -438,7 +439,7 @@ at weight 1), and under `cross_mean` each bar's is its closed members' EXACT exc
 exact `mean_ret`, on every pool — so `t_hac` is `mean_ret` over `hac_se` on every pool, and a
 pool whose every bar's excess sum is exactly 0 (every bar full at a zero mean, or a firing subset
 whose excesses cancel on each bar, where the rounded rows' bar sums are residue — a `t_hac` of
-5.43 beside a `mean_ret` of exactly 0) has no long-run variance: `t_hac` / `hac_se` null, as on
+5.39 beside a `mean_ret` of exactly 0) has no long-run variance: `t_hac` / `hac_se` null, as on
 identical legs; the grid-level CSCV reads them too — a block holds whole bars (its purge reads
 the bar and the cell's horizon alone), so every split's MEAN is the exact sum of its rows' bar
 numerators over `N` times its row count, rounded once, over the rows' own sd, and every split a grid of all-full cells scores is a full tie (`pbo`,
@@ -1021,7 +1022,7 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   one power-of-two denominator), so a bar at the mean reads 0 and a pool and its translate read
   one `hac_se`: rounded per row about the pool's range midpoint, three members alternating
   `[0.8, −0.4, −0.4]` and `[0, 0, 0]` beside a fourth at `2**-52` — every bar exactly at the
-  mean — read a `t_hac` of 35.7, and about the reported mean returns at `1 + k·2**-52` read an SE
+  mean — read a `t_hac` of 35.3, and about the reported mean returns at `1 + k·2**-52` read an SE
   30% high. The |return|-mass shares (`top_share_abs`, the episode shares, `member_share`) are
   the correctly rounded exact quotients of exact masses, so no share passes 1, one pool's shares
   are ordered as its masses are, and the largest of `k` is at least the rounded `1/k` — which the

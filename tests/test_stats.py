@@ -1175,9 +1175,10 @@ def test_newey_west_unsorted_bars_are_sorted_internally():
 
 def _hac_exact(rets: np.ndarray, bars: np.ndarray, h: int) -> tuple[float, float]:
     """``(t, se)`` of the event-time HAC in exact rational arithmetic — the estimator's own
-    definition, ``Σ_i Σ_j w(|b_i − b_j|)·dev_i·dev_j / (n − 1) / n`` about the exact mean, with
-    only the final square root and quotient rounded."""
+    definition, ``g/(g − 1)·Σ_i Σ_j w(|b_i − b_j|)·dev_i·dev_j / n²`` over the ``g`` distinct bars,
+    about the exact mean, with only the final square root and quotient rounded."""
     n = rets.size
+    g = len(set(bars.tolist()))
     q = [Fraction(r) for r in rets.tolist()]
     mean = sum(q) / n
     dev = [x - mean for x in q]
@@ -1187,7 +1188,7 @@ def _hac_exact(rets: np.ndarray, bars: np.ndarray, h: int) -> tuple[float, float
             w = 1 - Fraction(abs(int(bars[i]) - int(bars[j])), h)
             if w > 0:
                 s += w * dev[i] * dev[j]
-    se = math.sqrt(s / (n - 1) / n)
+    se = math.sqrt(s * g / (g - 1) / n / n)
     return float(mean) / se, se
 
 
@@ -1195,9 +1196,9 @@ def test_newey_west_sums_each_bar_before_the_quadratic_form():
     # Ten members fire together on 40 bars, two apart, at h = 1: five rows of +0.5, four of −0.5
     # and one of −0.5 + k·2**−24 (k cycling 1..4), so each bar's deviations cancel to
     # (k − 2.5)·2**−24. The rows enter through their per-bar sums, exactly rounded: the
-    # estimator's exact value, SE 1.05499077648638e-9 and t 14.124446891825533. Accumulated row
-    # by row, the squared deviations (~0.25 each) and the same-bar cross terms that cancel them
-    # sum apart, and the cancellation destroys the combined variance.
+    # estimator's exact value to rounding, SE 1.06709431713735e-9 and t 13.964240043768939.
+    # Accumulated row by row, the squared deviations (~0.25 each) and the same-bar cross terms
+    # that cancel them sum apart, and the cancellation destroys the combined variance.
     rets, bars = [], []
     for b in range(40):
         rets += [0.5] * 5 + [-0.5] * 4 + [-0.5 + (b % 4 + 1) * 2.0**-24]
@@ -1205,23 +1206,46 @@ def test_newey_west_sums_each_bar_before_the_quadratic_form():
     rets_a, bars_a = np.array(rets), np.array(bars)
     t, se = newey_west_mean(rets_a, bars_a, 1)
     t_exact, se_exact = _hac_exact(rets_a, bars_a, 1)
-    assert (t, se) == (t_exact, se_exact) == (14.124446891825533, 1.05499077648638e-9)
+    assert (t, se) == (13.964240043768939, 1.06709431713735e-9)
+    assert t == pytest.approx(t_exact, rel=1e-15, abs=0)
+    assert se == pytest.approx(se_exact, rel=1e-15, abs=0)
     # an ordinary overlapping basket pool agrees with the exact estimator to rounding
     rng = np.random.RandomState(9)
     bars_b = np.sort(rng.randint(0, 60, 90))
     rets_b = rng.normal(0.001, 0.02, 90)
     t, se = newey_west_mean(rets_b, bars_b, 7)
     t_exact, se_exact = _hac_exact(rets_b, bars_b, 7)
-    assert t == pytest.approx(t_exact, rel=1e-13) and se == pytest.approx(se_exact, rel=1e-13)
+    assert t == pytest.approx(t_exact, rel=1e-13, abs=0)
+    assert se == pytest.approx(se_exact, rel=1e-13, abs=0)
+
+
+def test_newey_west_repeated_rows_add_no_precision():
+    # The small-sample factor g/(g − 1) counts the distinct bars — the clusters same-bar rows
+    # form — never the rows: a pool and its every row repeated read one (t, se), sparse or
+    # overlapping, bit for bit where the repeat count is a power of two. A row count would
+    # shrink the factor with every repeat, precision no new observation brought.
+    rng = np.random.RandomState(4)
+    for h, gap in ((1, 5), (10, 3)):  # sparse events, then overlapping windows
+        rets = rng.normal(0.001, 0.02, 60)
+        bars = gap * np.arange(60)
+        t, se = newey_west_mean(rets, bars, h)
+        for g in (2, 4):
+            assert newey_west_mean(np.repeat(rets, g), np.repeat(bars, g), h) == (t, se)
+        t10, se10 = newey_west_mean(np.repeat(rets, 10), np.repeat(bars, 10), h)
+        assert t10 == pytest.approx(t, rel=1e-15, abs=0)
+        assert se10 == pytest.approx(se, rel=1e-15, abs=0)
 
 
 def test_newey_west_same_bar_sum_keeps_the_centre_a_rounded_deviation_lost():
     # mean = 2**-53 / 5. Each row's `r − mean` rounds to ±0.5, so two-row bars of rounded
-    # deviations sum to 0 for their exact −2·mean. One fsum over a bar's raw returns and its
-    # copies of −mean keeps it: the estimator's exact value, an SE of 2.432e-17.
+    # deviations sum to 0 for their exact −2·mean. The bar's exact deviation sum keeps it: the
+    # estimator's exact value to rounding, an SE of 2.665e-17.
     rets, bars = np.array([0.5, -0.5, 0.5, -0.5, 2.0**-53]), np.array([0, 0, 3, 3, 6])
     t, se = newey_west_mean(rets, bars, 1)
-    assert (t, se) == _hac_exact(rets, bars, 1) == (0.9128709291752769, 2.432376777795247e-17)
+    assert (t, se) == (0.8333333333333333, 2.664535259100376e-17)
+    t_exact, se_exact = _hac_exact(rets, bars, 1)
+    assert t == pytest.approx(t_exact, rel=1e-15, abs=0)
+    assert se == pytest.approx(se_exact, rel=1e-15, abs=0)
     # the bar's rows enter in any order
     assert newey_west_mean(rets[[1, 0, 3, 2, 4]], bars, 1) == (t, se)
 
@@ -1278,7 +1302,7 @@ def test_newey_west_members_cancelling_within_each_bar_have_no_long_run_variance
         cols[:40, 3] = np.where(np.arange(40) % 2 == 0, 2.0**-52, odd)
         return cols
 
-    for odd, exact_t in ((2.0**-52, None), (2.0**-51, 18.914280319377735)):
+    for odd, exact_t in ((2.0**-52, None), (2.0**-51, 18.734993995195193)):
         cols = basket(odd)
         rets, bars = cols[:40].ravel(), np.repeat(np.arange(40), 4)
         t, se = newey_west_mean(rets, bars, 1)
@@ -1294,7 +1318,7 @@ def test_newey_west_members_cancelling_within_each_bar_have_no_long_run_variance
         else:
             t_exact, se_exact = _hac_exact(rets, bars, 1)
             assert t_exact == exact_t
-            assert se == pytest.approx(se_exact, rel=1e-13) and t == exact_mean(rets) / se
+            assert se == pytest.approx(se_exact, rel=1e-13, abs=0) and t == exact_mean(rets) / se
             assert (read["t_hac"], read["hac_se"]) == (t, se)
 
 
@@ -1877,10 +1901,11 @@ def test_pooled_same_bar_cross_member_firings_collapse_to_one_n_nonoverlap():
 
 
 def test_pooled_same_bar_hac_pair_enters_at_bartlett_weight_one():
-    # Three pooled rows: members A and B both fire at bar 0 (d=0 → weight exactly 1), A fires
-    # again at bar 100 (d=100 ≥ h → weight 0). Long-run variance = gamma_0 + 2·1·dev_i·dev_j/n
-    # — the same-bar cross term at FULL weight: one market move seen through two members is one
-    # cluster, priced at full covariance.
+    # Three pooled rows on two bars: members A and B both fire at bar 0 (d=0 → weight exactly 1),
+    # A fires again at bar 100 (d=100 ≥ h → weight 0). The quadratic form is
+    # gamma_0 + 2·1·dev_i·dev_j — the same-bar cross term at FULL weight: one market move seen
+    # through two members is one cluster, priced at full covariance and counted once in the
+    # small-sample factor g/(g − 1).
     T, h = 200, 5
     a0, a1, b0 = 0.02, -0.01, 0.03
     fwd_a = np.zeros(T)
@@ -1899,12 +1924,12 @@ def test_pooled_same_bar_hac_pair_enters_at_bartlett_weight_one():
     rets = np.array([a0, b0, a1])  # canonical (bar, ret) order: bar-0 ties sort by return
     mean = rets.mean()
     dev = rets - mean
-    n = 3
-    s = float(dev @ dev) / (n - 1) + 2.0 * 1.0 * dev[0] * dev[1] / (n - 1)
-    se = np.sqrt(s / n)
+    n, g = 3, 2
+    s = float(dev @ dev) + 2.0 * 1.0 * dev[0] * dev[1]
+    se = np.sqrt(g / (g - 1) * s / n**2)
     assert read["n_nonoverlap"] == 2  # bars {0, 100}: the same-bar duplicate collapses
-    assert read["hac_se"] == pytest.approx(se, rel=1e-12)
-    assert read["t_hac"] == pytest.approx(mean / se, rel=1e-12)
+    assert read["hac_se"] == pytest.approx(se, rel=1e-12, abs=0)
+    assert read["t_hac"] == pytest.approx(mean / se, rel=1e-12, abs=0)
 
 
 def test_pooled_common_shift_rotation_matches_brute_force_roll_of_every_member():
@@ -3199,7 +3224,8 @@ def _pooled_hac(excess, raw, closed, mean, h):
 def _cross_mean_hac_se_exact(raw, closed, h):
     """The pooled ``cross_mean`` HAC's SE in exact arithmetic: the Bartlett form over each bar's
     exact excess deviation sum ``Σ_{closed g} e_tg − k_t·μ`` about the exact pooled mean ``μ``,
-    over ``(n − 1)·n``, only the root rounded."""
+    times ``b/(b − 1)`` over ``n²`` for the ``b`` bars holding the ``n`` rows, only the root
+    rounded."""
     n_members = raw.shape[1]
     sums, ks = {}, {}
     for t in np.flatnonzero(closed.any(axis=1)).tolist():
@@ -3212,13 +3238,14 @@ def _cross_mean_hac_se_exact(raw, closed, h):
     s = sum(
         (1 - Fraction(abs(a - b), h)) * dev[a] * dev[b] for a in dev for b in dev if abs(a - b) < h
     )
-    return math.sqrt(s / (n - 1) / n)
+    n_bars = len(dev)
+    return math.sqrt(s * n_bars / (n_bars - 1) / n**2)
 
 
 def test_cross_mean_pooled_hac_reads_the_exact_bar_deviation_sums():
     # Each bar's deviation sum is its exact numerator over N less its closed rows' share of the
-    # exact pooled mean, rounded once: the SE is the estimator's exact value to rounding, and no
-    # member order moves a bit of it.
+    # exact pooled mean, rounded once: the SE is the estimator's exact value to rounding, no
+    # member order moves a bit of it, and members repeated add no bars to its small-sample factor.
     rng = np.random.RandomState(18)
     raw = rng.normal(0.0, 0.02, (120, 5)) * 10.0 ** rng.randint(-3, 4, (120, 5))
     closed = rng.rand(120, 5) < 0.4
@@ -3227,11 +3254,12 @@ def test_cross_mean_pooled_hac_reads_the_exact_bar_deviation_sums():
     mean = cross_mean_pooled_mean(raw, closed)
     for h in (1, 4):
         t, se = _pooled_hac(excess, raw, closed, mean, h)
-        assert se == pytest.approx(_cross_mean_hac_se_exact(raw, closed, h), rel=1e-14)
+        assert se == pytest.approx(_cross_mean_hac_se_exact(raw, closed, h), rel=1e-14, abs=0)
         assert t == mean / se
         for perm in ([4, 2, 0, 3, 1], [1, 0, 4, 3, 2]):
             moved = _pooled_hac(excess[:, perm], raw[:, perm], closed[:, perm], mean, h)
             assert moved == (t, se)
+        assert _pooled_hac(*(np.tile(a, (1, 2)) for a in (excess, raw, closed)), mean, h) == (t, se)
     # a bar whose numerator leaves the double range: no estimate
     big = raw.copy()
     big[50] = [1e308, -1e308, 1e308, 0.0, 0.0]

@@ -26,16 +26,19 @@ def newey_west_mean(rets: np.ndarray, entry_bars: np.ndarray, h: int) -> tuple[f
     and ``h`` the measurement horizon in bars. A pair of observations whose entry bars sit ``d``
     bars apart shares ``h − d`` bars of measurement window, so its covariance enters with the
     Bartlett weight ``max(0, 1 − d/h)`` (Conley-style distance kernel — PSD in one dimension, so
-    the variance stays nonnegative). Covariance terms carry the ``n − 1`` divisor (the HC1-style
-    small-sample correction), so for a sparse pool whose neighboring events are ≥ ``h`` bars
-    apart every cross term drops and the estimator reduces to the iid SE EXACTLY
-    (``std(ddof=1)/√n``) at every n, not just asymptotically. For a contiguous every-bar pool
-    (``d = k`` at event lag ``k``) it reproduces the classic overlap HAC with truncation lag
-    ``h − 1`` under the same divisor — event ORDER is never mistaken for bar TIME (an ordinal-lag
-    Bartlett with lag ≈ n drives the long-run variance toward 0 and fabricates significance).
-    Same-bar pairs sit at weight 1 (``w(0) = 1``), so the long-run variance reads the rows only
-    through their per-BAR deviation sums ``D_a``: ``Σ_a Σ_b w(|a−b|)·D_a·D_b``. It is computed
-    in that form — each bar's deviation sum about the pool's EXACT mean, exact and rounded once
+    the variance stays nonnegative). The small-sample factor is ``g/(g − 1)`` over the pool's
+    ``g`` distinct entry bars — the clusters its same-bar rows form (CR1) — so a pool and its
+    every row repeated read one SE, where a row count would shrink the factor with each repeat
+    (a basket of identical members reading a smaller SE than its one member). On one row per
+    bar it is the ``n − 1`` divisor (HC1): a sparse pool whose neighboring events are ≥ ``h``
+    bars apart drops every cross term and reduces to the iid SE EXACTLY (``std(ddof=1)/√n``) at
+    every n, not just asymptotically, and a contiguous every-bar pool (``d = k`` at event lag
+    ``k``) reproduces the classic overlap HAC with truncation lag ``h − 1`` under the same
+    divisor — event ORDER is never mistaken for bar TIME (an ordinal-lag Bartlett with lag ≈ n
+    drives the long-run variance toward 0 and fabricates significance). Same-bar pairs sit at
+    weight 1 (``w(0) = 1``), so the long-run variance reads the rows only through their per-BAR
+    deviation sums ``D_a``: ``Σ_a Σ_b w(|a−b|)·D_a·D_b``. It is computed in that form — each
+    bar's deviation sum about the pool's EXACT mean, exact and rounded once
     (:func:`_bar_deviation_sums`), then the quadratic form over bars, each lag's terms exactly
     summed (:func:`_hac_from_bar_sums`). Accumulated row by row, the squared deviations and the
     cross terms that cancel them would be summed apart, their cancellation destroying the
@@ -48,7 +51,7 @@ def newey_west_mean(rets: np.ndarray, entry_bars: np.ndarray, h: int) -> tuple[f
     without a positive long-run variance: its dispersion is rounding residue — the computed mean
     of a constant DECIMAL pool is not the constant — and dividing by it would mint
     ``|t| ≈ 1e16``. So is a pool whose BARS all sit exactly at its mean, however its rows vary —
-    every row on one bar above all — or whose mean's variance ``s/n`` is not a normal double
+    every row on one bar above all — or whose mean's variance is not a normal double
     (returns past ~1e154 or under ~1e-154; :func:`_hac_from_bar_sums`), and a pool with a
     deviation sum past the double range, which no double holds.
 
@@ -123,14 +126,15 @@ def _hac_from_bar_sums(
     mean: float, u: np.ndarray, d_bar: np.ndarray, h: int, n: int
 ) -> tuple[float, float]:
     """``(mean / se, se)`` of a pool of ``n`` rows reported at ``mean``, read off its EXACT
-    per-bar deviation sums ``d_bar`` at the distinct sorted bars ``u``: the Bartlett quadratic
-    form ``Σ_a Σ_b w(|a−b|)·D_a·D_b``, each lag's terms exactly summed, over ``(n − 1)·n``
-    (ddof=1).
+    per-bar deviation sums ``d_bar`` at the ``g`` distinct sorted bars ``u``: the Bartlett
+    quadratic form ``s = Σ_a Σ_b w(|a−b|)·D_a·D_b``, each lag's terms exactly summed, read as the
+    variance ``g/(g − 1)·s/n²`` — the small-sample factor over the bars (:func:`newey_west_mean`),
+    computed as ``s/(n − 1)/n`` where each bar holds one row.
 
     ``(NaN, NaN)`` — no estimate — wherever the pool has no positive long-run variance to read:
     every bar exactly at the mean (one bar above all, whose sum ``Σr − n·μ`` is 0 whatever its
     rows), a quadratic form past the double range (NaN — :func:`exact_sum`), or a variance
-    ``s/n`` that is not a normal double (:func:`is_normal`): past the range ``mean / inf`` is a
+    that is not a normal double (:func:`is_normal`): past the range ``mean / inf`` is a
     FINITE t of 0.0 — an overflow must read as no estimate, never as "no edge" — and below
     ~1e-154 the products underflow, into lost bits or an SE of exactly 0.0.
     """
@@ -146,7 +150,8 @@ def _hac_from_bar_sums(
                 break
             lags.append(2.0 * exact_sum(w[m] * d_bar[k:][m] * d_bar[:-k][m]))
         s = exact_sum(lags)
-    v = s / (n - 1.0) / n
+    g = u.shape[0]
+    v = s / (g - 1.0) / (n * n / g)
     if not is_normal(v):
         return (_NAN, _NAN)
     se = math.sqrt(v)

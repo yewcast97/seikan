@@ -1307,7 +1307,8 @@ and int64 nanosecond counts silently round in IEEE-754 consumers.)
     `profit_factor`, `t_hac` /
     `hac_se` (the same event-time HAC on the pooled rows;
     same-bar pairs enter at Bartlett weight 1, so one market move seen through several members is
-    one cluster), `rot_p` / `rot_n_null` (a COMMON-SHIFT rotation null — one shift rotates every
+    one cluster, counted once in the small-sample factor), `rot_p` / `rot_n_null` (a COMMON-SHIFT
+    rotation null — one shift rotates every
     FIRED member's complete mask as a block, closed rows or not, so a member whose every firing
     was censored, or whose only firing is the final bar, still moves it while adding no row),
     `concentration`, `member_share` (`by_target` — each member's share of the pooled
@@ -1604,7 +1605,7 @@ open to quote a statistic honestly.
   variance (summed row by row, ten members netting to `(k − 2.5)·2**−24` per bar read an SE 65%
   low), members whose returns cancel within every bar read none (rounded per row about the pool's
   range midpoint, three alternating `[0.8, −0.4, −0.4]` and `[0, 0, 0]` beside a fourth at
-  `2**−52` read a `t_hac` of 35.7), and a pool and its translate read the same `hac_se` (about the
+  `2**−52` read a `t_hac` of 35.3), and a pool and its translate read the same `hac_se` (about the
   reported mean, whose rounding is the level's ulp, returns at `1 + k·2**-52` read an SE 30% high).
   Null on a (near-)constant pool — its spread is rounding residue, not dispersion — on a pool
   whose every bar sits exactly at its mean (every row on one bar among them), and where the
@@ -1618,7 +1619,9 @@ open to quote a statistic honestly.
   pooled `n` overstates the non-overlapping information TWICE; quote `pooled.n_nonoverlap` beside it, never
   a member count summed as if independent. (2) Same-bar firings across members are ONE market
   event: the greedy `n_nonoverlap` kernel collapses them to one window, and the pooled HAC prices their
-  cross terms at Bartlett weight 1 — full covariance, never independent evidence. (3)
+  cross terms at Bartlett weight 1 and counts their bar once in its small-sample factor — full
+  covariance, never independent evidence (a basket of identical members reads its one member's
+  SE). (3)
   `pooled.member_share.by_target` is ATTRIBUTION — a full decomposition of the pooled |return|
   mass, never a ranking, and graded by no check (only `max_member_share_abs` gates, and
   `cell_evidence` reads `by_target` only to reconcile that maximum); a 2-member

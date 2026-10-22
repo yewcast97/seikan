@@ -288,10 +288,11 @@ def pooled_reliability_summary(cells: list[ReliabilityCell], length: int) -> Rel
     :func:`~seikan.analysis._hac.cross_mean_pooled_hac`, the same estimator over every bar's exact
     excess sum. Two same-bar observations sit ``d = 0`` apart, so their cross term enters at
     Bartlett weight ``max(0, 1 − 0/h) = 1``: one market move seen through several members is
-    ONE cluster, priced at full covariance, never counted as independent evidence — the
-    cluster-robust treatment for free, the kernel stays PSD under ties, and its exactly rounded
-    per-bar deviation sums make the estimate bit-identical under any tied-row input order (the
-    same-bar covariance is order-symmetric; only an fp accumulation order could move it).
+    ONE cluster, priced at full covariance and counted once in the small-sample factor, never
+    counted as independent evidence — the cluster-robust treatment, the kernel stays PSD under
+    ties, and its exactly rounded per-bar deviation sums make the estimate bit-identical under any
+    tied-row input order (the same-bar covariance is order-symmetric; only an fp accumulation
+    order could move it).
     Performance note: the kernel's lag loop runs over the distinct entry bars, ~h lags before its
     no-overlap break — trivial beside the FFTs.
 

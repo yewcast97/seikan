@@ -5708,6 +5708,33 @@ def test_basket_pooled_block_is_horizon_composition_independent(tmp_path):
     assert json_safe(c1["pooled"]) == json_safe(c2["pooled"])
 
 
+def test_basket_of_identical_members_reads_its_members_hac(tmp_path):
+    # Members bound to one file repeat one another's every row: the pooled panel holds g·n rows on
+    # the member's own bars, and the pooled HAC's small-sample factor counts bars, so it reads the
+    # member's t_hac and hac_se — two events at −10% and +30% (h = 1): an SE of 0.2 at every g.
+    closes = [100.0] * 40
+    closes[5] = closes[20] = 200.0  # the two firings (close > 150), 15 bars apart
+    closes[7], closes[22] = 90.0, 130.0  # next open to the open after: −10%, +30%
+    path = str(_bars(tmp_path / "m.csv", closes))
+    for g in (2, 10):
+        members = [f"M{i}" for i in range(g)]
+        thesis = Thesis.model_validate(
+            {
+                "name": "twins",
+                "target_mode": "basket",
+                "data": {"targets": members},
+                "entry": _gt(150.0),
+                "params": {"horizon": 1},
+            }
+        )
+        cell = run_backtest(thesis, load(thesis, dict.fromkeys(members, path))).summary["cells"][0]
+        member, pooled = cell["by_target"]["M0"], cell["pooled"]
+        assert (member["n"], member["n_nonoverlap"], member["hac_se"]) == (2, 2, 0.2)
+        assert (pooled["n"], pooled["n_nonoverlap"]) == (2 * g, 2)
+        assert pooled["hac_se"] == pytest.approx(member["hac_se"], rel=1e-15, abs=0), g
+        assert pooled["t_hac"] == pytest.approx(member["t_hac"], rel=1e-15, abs=0), g
+
+
 def test_basket_run_is_deterministic(tmp_path):
     # Two identical basket runs emit deep-equal summaries: the pooled additions (member_share,
     # the pooled rotation null, the cross-member-merged bootstrap) introduce no positional or
