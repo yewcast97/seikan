@@ -27,8 +27,10 @@ import hashlib
 import io
 import itertools
 import re
+import threading
 from collections import Counter
 from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from dataclasses import field as dc_field
 from fractions import Fraction
@@ -63,6 +65,9 @@ _MIN_COMFORT_ANCHORS = 8
 #: library caller or a co-imported package (scipy's ARFF reader lifts it to the C long's maximum)
 #: would otherwise decide whether the same bytes refuse or load.
 _CSV_FIELD_LIMIT = 131072
+#: Held from a strict read's pin to its restore (:func:`_pinned_field_limit`): a read hands back
+#: the limit it found, which is the caller's only when no other read pinned or restored between.
+_FIELD_LIMIT_TURN = threading.Lock()
 #: Two of the four places pandas' tokenizer can read a record differently from ``csv.reader``
 #: (:func:`_records`; a NUL byte and a byte-order mark past the file's start are the others), so
 #: its frame is cross-checked: a carriage return that is not half of a ``\r\n``, and a line led by
@@ -258,8 +263,10 @@ def read_strict_csv(
     raised through: a field longer than 131072 characters refuses as ``unreadable`` (unless an
     earlier stage refused first — a duplicate header name is decided off the first record alone)
     whatever else in the process set the limit. The pin is a set-and-restore of process state, so
-    it is NOT thread-safe: a thread using ``csv`` while a read is inside those stages reads under
-    the pin, and a limit it sets meanwhile is overwritten by the restore.
+    strict reads take turns at it: reads in several threads each run those stages under the pin
+    and hand back the limit they found. The stdlib keeps one limit per interpreter, so other code
+    that sets it from another thread while a read is inside those stages is the exception: that
+    read scans on under the limit it set, and the restore overwrites it.
     """
     return StrictCsvReader().read(path, expected_shape=expected_shape)
 
@@ -315,8 +322,8 @@ class StrictCsvReader:
         if blob is None:
             return None, rep
         rep.sha256 = snap.sha256
-        ambient = csv.field_size_limit(_CSV_FIELD_LIMIT)  # set, returning the limit it replaces
-        try:
+        # here, never in the _records generator, whose cleanup waits on garbage collection
+        with _pinned_field_limit():
             header = _header_columns(path, blob, rep)
             lines = None if header is None else _record_shape(path, blob, len(header[1]), rep)
             if header is None or lines is None:
@@ -324,8 +331,6 @@ class StrictCsvReader:
             raw = _parse_frame(path, blob, header, rep)
             if raw is None or not _tokenizer_parity(path, blob, raw, rep):
                 return None, rep
-        finally:  # here, never in the _records generator, whose cleanup waits on garbage collection
-            csv.field_size_limit(ambient)
         ts_col = "datetime" if "datetime" in raw.columns else raw.columns[0]
         ts = _parse_timestamps(path, raw, ts_col, lines, rep)
         data = _parse_value_columns(path, raw, ts_col, lines, rep)
@@ -337,6 +342,19 @@ class StrictCsvReader:
             return None, rep
         _descriptive_warnings(path, df, detected, lines, rep)
         return df, rep
+
+
+@contextmanager
+def _pinned_field_limit() -> Iterator[None]:
+    """``csv.field_size_limit()`` at ``_CSV_FIELD_LIMIT`` for the block, and the limit it replaced
+    handed back on every exit — one read at a time (``_FIELD_LIMIT_TURN``), so each restores the
+    limit it found, never another read's pin."""
+    with _FIELD_LIMIT_TURN:
+        ambient = csv.field_size_limit(_CSV_FIELD_LIMIT)  # set, returning the limit it replaces
+        try:
+            yield
+        finally:
+            csv.field_size_limit(ambient)
 
 
 def _read_blob(path: str, rep: FileReport) -> bytes | None:

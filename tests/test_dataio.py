@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import csv
 import io
+import threading
 
 import numpy as np
 import pandas as pd
@@ -560,6 +561,43 @@ def test_the_field_limit_is_pinned_not_read_from_the_process(tmp_path, monkeypat
         assert csv.field_size_limit() == 4
     finally:
         csv.field_size_limit(ambient)
+
+
+def test_overlapping_reads_take_turns_at_the_pinned_limit(tmp_path, monkeypatch):
+    # The pin saves the limit it replaces and restores it on exit. Reads overlapping in threads
+    # that did not take turns would run as the hooks below force: B pins while A holds the pin,
+    # A hands back the caller's 64 while B still scans — B's clean 100-character header refuses
+    # — and B's restore leaves A's pin behind. Taking turns, B waits for A.
+    a = _write(tmp_path, "datetime,close\n2021-01-01,1\n2021-01-02,2\n", "a.csv")
+    b = _write(tmp_path, f"datetime,{'c' * 100}\n2021-01-01,1\n2021-01-02,2\n", "b.csv")
+    a_pinned, b_pinned, a_done = threading.Event(), threading.Event(), threading.Event()
+    header = dataio._header_columns
+
+    def forced(path, blob, rep):
+        if path == a:
+            a_pinned.set()
+            b_pinned.wait(0.2)  # B cannot pin while A has its turn
+        else:
+            b_pinned.set()
+            a_done.wait(5)
+        return header(path, blob, rep)
+
+    def read_a():
+        read_strict_csv(a)
+        a_done.set()
+
+    monkeypatch.setattr(dataio, "_header_columns", forced)
+    ambient = csv.field_size_limit(64)
+    try:
+        first = threading.Thread(target=read_a)
+        first.start()
+        a_pinned.wait(5)
+        _, rep = read_strict_csv(b)
+        first.join()
+        assert csv.field_size_limit() == 64
+    finally:
+        csv.field_size_limit(ambient)
+    assert rep.ok, rep.errors
 
 
 def test_a_doubled_bom_is_dropped_as_pandas_drops_it(tmp_path):
