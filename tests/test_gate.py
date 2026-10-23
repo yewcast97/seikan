@@ -2276,6 +2276,15 @@ def test_a_baskets_member_shares_conserve_the_pools_mass():
     assert not _cell_checks(evaluate_gate(_with({"AAA": 0.6, "BBB": 0.6})))["cell_evidence"].met
 
 
+def _split(cell: dict, shares: dict) -> dict:
+    """The basket checks with the cell's member shares rewritten."""
+    cell["pooled"]["member_share"] = {
+        "by_target": shares,
+        "max_member_share_abs": max(shares.values()),
+    }
+    return _cell_checks(evaluate_gate(_basket(cells=[cell])))
+
+
 def test_a_member_with_no_observation_holds_no_share():
     # The tamper: BBB closed nothing, so AAA's 42 rows are the whole pool and carry all its mass;
     # the shares rewritten to an even split put the one-name read under the ceiling. A member
@@ -2287,22 +2296,33 @@ def test_a_member_with_no_observation_holds_no_share():
     cell["outcome_coverage"]["BBB"] = _cov(0)
     cell["episode_stats"]["n"] = 42
     cell["pooled"].update(n=42, n_nonoverlap=14)
-    cell["pooled"]["member_share"] = {
-        "by_target": {"AAA": 1.0, "BBB": 0.0},
-        "max_member_share_abs": 1.0,
-    }
-    checks = _cell_checks(evaluate_gate(_basket(cells=[cell])))
+    checks = _split(cell, {"AAA": 1.0, "BBB": 0.0})
     assert checks["cell_evidence"].met and not checks["concentration"].met
-    cell["pooled"]["member_share"] = {
-        "by_target": {"AAA": 0.5, "BBB": 0.5},
-        "max_member_share_abs": 0.5,
-    }
-    checks = _cell_checks(evaluate_gate(_basket(cells=[cell])))
+    checks = _split(cell, {"AAA": 0.5, "BBB": 0.5})
     assert checks["concentration"].met
     assert not checks["cell_evidence"].met
-    assert "gives |return| mass to ['BBB'], member(s) with no observation" in (
+    assert "gives |return| mass to ['BBB'], member(s) holding none" in (
         checks["cell_evidence"].detail
     )
+
+
+def test_a_member_whose_every_row_is_zero_holds_no_share():
+    # The tamper: BBB closed 42 rows, every one 0 — its worst and best rows both 0 — so AAA
+    # carries the pool's whole |return| mass, and the even split hid the one name.
+    cell = _basket_cell()
+    cell["by_target"]["BBB"].update(mean_ret=0.0, worst_ret=0.0, best_ret=0.0)
+    cell["pooled"]["mean_ret"] = 0.025  # (42·0.05 + 42·0.0) / 84
+    checks = _split(cell, {"AAA": 1.0, "BBB": 0.0})
+    assert checks["cell_evidence"].met and not checks["concentration"].met
+    checks = _split(cell, {"AAA": 0.5, "BBB": 0.5})
+    assert checks["concentration"].met
+    assert not checks["cell_evidence"].met
+    assert "gives |return| mass to ['BBB'], member(s) holding none" in (
+        checks["cell_evidence"].detail
+    )
+    # a zero mean alone shows no massless member: its opposite rows cancel and carry mass
+    cell["by_target"]["BBB"].update(worst_ret=-0.18, best_ret=0.31)
+    assert _split(cell, {"AAA": 0.5, "BBB": 0.5})["cell_evidence"].met
 
 
 def test_a_massless_member_share_is_left_to_concentration():

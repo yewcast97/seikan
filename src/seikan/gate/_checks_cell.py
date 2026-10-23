@@ -444,6 +444,7 @@ def _grade_pooled(
                 "carries no gradable evidence; drifted input"
             )
         else:
+            by_tgt = _cell_panel(cell, "by_target")
             p_n = _int(pooled.get("n"))
             p_eff = _int(pooled.get("n_nonoverlap"))
             observed["pooled"] = {"n": p_n, "n_nonoverlap": p_eff}
@@ -466,7 +467,6 @@ def _grade_pooled(
                 _grade_top_share(pooled, p_n, "pooled", unmet)
                 _grade_mean_range(pooled, "pooled", unmet)
                 if n_total_readable:
-                    by_tgt = _cell_panel(cell, "by_target")
                     _grade_pooled_mean(pooled, by_tgt, by_target_n, cross_mean, unmet)
             if p_eff is None or p_eff < 0:
                 unmet.append("pooled.n_nonoverlap is not a count — drifted input")
@@ -505,12 +505,13 @@ def _grade_pooled(
                     unmet.append(_too_many_clusters(n_clusters, p_eff, what))
             member_share = pooled.get("member_share")
             if isinstance(member_share, dict):
-                _grade_member_share(member_share, targets, by_target_n, unmet)
+                _grade_member_share(member_share, targets, by_tgt, by_target_n, unmet)
 
 
 def _grade_member_share(
     member_share: dict[str, object],
     targets: list[str] | None,
+    by_tgt: dict[str, object],
     by_target_n: dict[str, int | None],
     unmet: list[str],
 ) -> None:
@@ -519,9 +520,9 @@ def _grade_member_share(
     string-keyed over the targets exactly, and where ``max_member_share_abs`` is a share, every
     member's share is one, their maximum EQUALS it — the runner writes ``max(by_target.values())``
     — they sum to 1 within rounding (:data:`_SHARE_SUM_TOLERANCE`; the runner divides each
-    member's exact |return| mass by the pool's), and a member with no observation
-    (``by_target.n == 0``) holds none of it: its mass is 0, its share exactly 0.0. A missing
-    panel or a null maximum (a pool with no mass) is ``concentration``'s to refuse."""
+    member's exact |return| mass by the pool's), and a member whose panel shows no |return| mass
+    (:func:`_massless`) holds none of it: its share is exactly 0.0. A missing panel or a null
+    maximum (a pool with no mass) is ``concentration``'s to refuse."""
     shares = _str_keyed(member_share.get("by_target"))
     if shares is None:
         unmet.append(
@@ -553,13 +554,24 @@ def _grade_member_share(
             "decomposition does not conserve the pool's mass (each share is one rounded quotient "
             "of exact masses, so they sum to 1 within rounding); drifted input"
         )
-    hollow = sorted(t for t, v in shares.items() if by_target_n.get(t) == 0 and _prob(v) != 0)
+    hollow = sorted(
+        t
+        for t, v in shares.items()
+        if _prob(v) != 0 and _massless(_as_dict(by_tgt.get(t)), by_target_n.get(t))
+    )
     if hollow:
         unmet.append(
-            f"pooled.member_share.by_target gives |return| mass to {hollow}, member(s) with no "
-            "observation (by_target.n == 0) — a member without a closed row carries none of the "
-            "pool's mass; drifted input"
+            f"pooled.member_share.by_target gives |return| mass to {hollow}, member(s) holding "
+            "none — no closed row (by_target.n == 0) or every row 0 (worst_ret == best_ret == "
+            "0); drifted input"
         )
+
+
+def _massless(panel: dict[str, object], n: int | None) -> bool:
+    """Whether a member's panel shows it holds no |return| mass: it closed no row, or its worst
+    and best rows are both 0, so every row is. A zero mean alone shows nothing — opposite rows
+    cancel in it and still carry mass."""
+    return n == 0 or (_num(panel.get("worst_ret")) == 0 and _num(panel.get("best_ret")) == 0)
 
 
 def _check_cell_evidence(cell: object, s: Mapping[str, object], t: GateThresholds) -> GateCheck:
@@ -618,9 +630,10 @@ def _check_cell_evidence(cell: object, s: Mapping[str, object], t: GateThreshold
     their counts (the pool's rows are theirs; ``ulp/2`` of its largest |row| wider under
     ``cross_mean`` — :func:`_grade_pooled_mean`), and a ``member_share`` panel's one-name read is
     the largest share of its ``by_target`` decomposition, string-keyed over the targets exactly,
-    summing to 1 within rounding and giving a member with no observation none of the mass
-    (:func:`_grade_member_share` — the ceiling never grades a number its own breakdown
-    contradicts). Conjunction cells are graded by the per-target rules — and a
+    summing to 1 within rounding and giving a member whose panel shows no |return| mass — no
+    closed row, or every row 0 — none of it (:func:`_grade_member_share` — the ceiling never
+    grades a number its own breakdown contradicts). Conjunction cells are graded by the
+    per-target rules — and a
     ``pooled`` key under a conjunction stamp REFUSES, because the runner writes pooled only in
     basket mode: the configuration is the signature of a restamped basket, and refusing it
     costs zero honest refusals. A missing or unreadable ``target_mode`` stamp refuses: whether a
@@ -659,8 +672,8 @@ def _check_cell_evidence(cell: object, s: Mapping[str, object], t: GateThreshold
         "wider), member_share.by_target "
         "string-keyed over the targets exactly and, where max_member_share_abs is a share, "
         "every share in [0,1] with max==max_member_share_abs and sum==1 within 2**-50, and 0 "
-        "for a member with by_target.n==0); a pooled key on a conjunction cell refuses (a "
-        "restamped basket)"
+        "for a member with no |return| mass, by_target.n==0 or worst_ret==best_ret==0); a "
+        "pooled key on a conjunction cell refuses (a restamped basket)"
     )
     unmet: list[str] = []
     by_target_n: dict[str, int | None] = {}

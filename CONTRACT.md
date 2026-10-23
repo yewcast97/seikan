@@ -266,8 +266,8 @@ enumerating files that never appeared is not a state this CLI can reach. There i
 would have to be some cell's, and naming one cell is the selection this engine does not perform.
 `policy_version` (**4** — v4: a cell names its horizon, which bounds its non-overlapping
 counts, and they bound its episode count, no two cells name one assignment, a basket's
-one-name read is the largest share of its member decomposition, which gives an empty member
-none, a mean lies within its pool's extrema and a basket's rounds from its members' means
+one-name read is the largest share of its member decomposition, which gives a massless
+member none, a mean lies within its pool's extrema and a basket's rounds from its members' means
 weighted by their counts, a source's start is a timestamp inside the evaluated interval, and a
 count is an integer, read exactly; v3: a never-available source refuses, and the support floor reads the renamed
 `n_nonoverlap`) names the checklist semantics (two cell results compare only
@@ -594,8 +594,10 @@ that is a share is the largest of its `by_target` shares, string-keyed over the 
 and summing to 1 within rounding — each share the correctly rounded exact quotient of exact masses, so within
 2**-50 (0.5 beside shares `{AAA: 1.0, BBB: 0.0}` met every check, and so did 0.5 beside
 `{AAA: 0.5, BBB: 0.0}`, half the pool's mass gone from its own breakdown) and holding exactly 0
-for a member with no observation (`by_target.n == 0`), whose mass is 0 (an even split beside a
-member with no closed row met every check); a `pooled` key on a conjunction cell
+for a member with no |return| mass, one with no closed row (`by_target.n == 0`) or whose every
+row is 0 (`worst_ret == best_ret == 0`; a zero mean alone is not, its opposite rows cancelling)
+(an even split beside a member with no closed row met every check, and so did one beside a member
+whose 80 rows were all 0); a `pooled` key on a conjunction cell
 REFUSES — the runner writes pooled only in basket mode (absent, not null, on conjunction
 cells), so the configuration is the signature of a RESTAMPED basket and refusing it costs zero
 honest refusals (`evidence_complete` re-refuses `benchmark='cross_mean'` under a conjunction
@@ -697,7 +699,7 @@ hit_rate, win_loss_ratio, profit_factor, the shape reads, t_hac/hac_se, rot_p, b
 subperiods, the quantile blocks with worst/best, edge_ratio, timing), and
 `pooled.member_share.by_target` (the full member-mass decomposition —
 attribution, never a ranking; only `max_member_share_abs` gates, and `cell_evidence` reads
-`by_target` only to reconcile that maximum and the members' counts) — all ride in the summary and no check grades them — `metric_roles` says so explicitly, and
+`by_target` only to reconcile that maximum and the members' masses) — all ride in the summary and no check grades them — `metric_roles` says so explicitly, and
 its `caveats` map states each one's failure mode in the report itself. Cross-target STATISTICS
 exist ONLY in basket mode, as the declared, graded `pooled` block — conjunction forms none — and
 NEITHER mode selects among members: nothing anywhere in the report ranks the targets or crowns
