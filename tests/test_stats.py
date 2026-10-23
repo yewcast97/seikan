@@ -176,6 +176,37 @@ def test_profit_factor_arithmetic_and_refusals():
     assert profit_factor(np.array([0.01, np.nan, -0.02])) == pytest.approx(0.5)
 
 
+def test_profit_factor_is_its_exact_masses_quotient_rounded_once():
+    # Nine returns whose exact sum is −2.8e-17: the quotient of their rounded masses reads
+    # 1.0000000000000002, past 1 beside a negative mean. The exact masses' quotient, rounded once,
+    # sits on the side of 1 the sum puts it.
+    rets = np.array(
+        [
+            0.028408462293114133,
+            0.07739510886991913,
+            0.07656624475599082,
+            0.08805988400815379,
+            0.025543498396728936,
+            0.016732727754582327,
+            0.08970918504613687,
+            0.07976675618001478,
+            -0.4821818673046408,
+        ]
+    )
+    assert exact_mean(rets) < 0
+    assert profit_factor(rets) == 0.9999999999999999
+    rng = np.random.default_rng(27)
+    for _ in range(500):
+        size = int(rng.integers(2, 30))
+        v = np.ldexp(rng.uniform(-1, 1, size), rng.integers(-40, 40, size))
+        wins = sum(map(Fraction, v[v > 0].tolist()), Fraction(0))
+        losses = -sum(map(Fraction, v[v < 0].tolist()), Fraction(0))
+        if wins and losses:
+            assert profit_factor(v) == float(wins / losses)
+    # an exact sum of 0 reads 1 exactly, whatever order rounds the two sides' sums
+    assert profit_factor(np.array([0.1, 0.2, 0.3, -0.3, -0.2, -0.1])) == 1.0
+
+
 def test_edge_ratio_arithmetic_and_refusals():
     # mean RAW MFE over |mean RAW MAE| over PAIRED rows — mae is sign-negative, hence the abs;
     # no surviving pair or a zero paired adverse mean refuses as NaN (an unbounded ratio is

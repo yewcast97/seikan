@@ -386,7 +386,6 @@ def mfe_block(vals: np.ndarray) -> MfeQuantiles:
     }
 
 
-@np.errstate(over="ignore", invalid="ignore")
 def profit_factor(rets: np.ndarray) -> float:
     """Gross win mass over gross loss mass — ``Σ(wins) / |Σ(losses)|`` over a pool's finite
     returns. The MASS-weighted asymmetry partnering ``win_loss_ratio`` (which compares the
@@ -395,16 +394,23 @@ def profit_factor(rets: np.ndarray) -> float:
     convenience read, never as independent evidence. Zero returns join neither side. NaN when
     EITHER side is empty — the same no-ratio-to-form rule as ``win_loss_ratio``, and this engine
     never emits an infinity (the JSON layer refuses non-finite tokens): "no losses in sample" is
-    a fact a reader takes from ``hit_rate``, not from an unbounded ratio. NaN too when either
-    mass leaves the double range (:func:`_finite_ratio` — an overflowed loss mass reads 0.0).
-    Evidence-only, per pool; no check reads it."""
+    a fact a reader takes from ``hit_rate``, not from an unbounded ratio.
+
+    The masses are EXACT and their quotient is rounded once (:func:`exact_mass`, the arithmetic
+    of :func:`mass_share`), so the read sits on the side of 1 the returns' exact sum puts it:
+    never above 1 beside a negative sum, never below it beside a positive one, and exactly 1
+    where the sum is 0. A quotient of two rounded sums can cross 1 against the sum's sign. NaN
+    where either mass or the quotient has no double (:data:`PAST_DOUBLE`) — an overflowed loss
+    mass would read ``x / inf = 0.0``. Evidence-only, per pool; no check reads it."""
     v = np.asarray(rets, dtype=float)
     v = v[np.isfinite(v)]
     wins = v[v > 0]
     losses = v[v < 0]
     if wins.size == 0 or losses.size == 0:
         return _NAN
-    return _finite_ratio(float(wins.sum()), abs(float(losses.sum())))
+    win_mass, loss_mass = exact_mass(wins), exact_mass(losses)
+    ratio = win_mass / loss_mass
+    return float(ratio) if max(win_mass, loss_mass, ratio) < PAST_DOUBLE else _NAN
 
 
 @np.errstate(over="ignore", invalid="ignore")
