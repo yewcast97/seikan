@@ -478,19 +478,23 @@ def _grade_pooled(
                     unmet.append(_too_many_clusters(n_clusters, p_eff, what))
             member_share = pooled.get("member_share")
             if isinstance(member_share, dict):
-                _grade_member_share(member_share, targets, unmet)
+                _grade_member_share(member_share, targets, by_target_n, unmet)
 
 
 def _grade_member_share(
-    member_share: dict[str, object], targets: list[str] | None, unmet: list[str]
+    member_share: dict[str, object],
+    targets: list[str] | None,
+    by_target_n: dict[str, int | None],
+    unmet: list[str],
 ) -> None:
     """``pooled.member_share``'s one-name read must be the maximum of the decomposition it is
     read off, and the decomposition must conserve the mass it attributes: ``by_target`` is
     string-keyed over the targets exactly, and where ``max_member_share_abs`` is a share, every
     member's share is one, their maximum EQUALS it — the runner writes ``max(by_target.values())``
-    — and they sum to 1 within rounding (:data:`_SHARE_SUM_TOLERANCE`; the runner divides each
-    member's exact |return| mass by the pool's). A missing panel or a null maximum (a pool with
-    no mass) is ``concentration``'s to refuse."""
+    — they sum to 1 within rounding (:data:`_SHARE_SUM_TOLERANCE`; the runner divides each
+    member's exact |return| mass by the pool's), and a member with no observation
+    (``by_target.n == 0``) holds none of it: its mass is 0, its share exactly 0.0. A missing
+    panel or a null maximum (a pool with no mass) is ``concentration``'s to refuse."""
     shares = _str_keyed(member_share.get("by_target"))
     if shares is None:
         unmet.append(
@@ -521,6 +525,13 @@ def _grade_member_share(
             f"pooled.member_share.by_target shares sum to {math.fsum(readable)} — the "
             "decomposition does not conserve the pool's mass (each share is one rounded quotient "
             "of exact masses, so they sum to 1 within rounding); drifted input"
+        )
+    hollow = sorted(t for t, v in shares.items() if by_target_n.get(t) == 0 and _prob(v) != 0)
+    if hollow:
+        unmet.append(
+            f"pooled.member_share.by_target gives |return| mass to {hollow}, member(s) with no "
+            "observation (by_target.n == 0) — a member without a closed row carries none of the "
+            "pool's mass; drifted input"
         )
 
 
@@ -579,9 +590,10 @@ def _check_cell_evidence(cell: object, s: Mapping[str, object], t: GateThreshold
     pool's extrema (the same range) and within its populated members' means (the pool's rows are
     theirs; ``2·ulp`` of its largest |row| wider under ``cross_mean`` —
     :func:`_grade_pooled_mean`), and a ``member_share`` panel's one-name read is the largest
-    share of its ``by_target`` decomposition, string-keyed over the targets exactly and summing
-    to 1 within rounding (:func:`_grade_member_share` — the ceiling never grades a number its own
-    breakdown contradicts). Conjunction cells are graded by the per-target rules — and a
+    share of its ``by_target`` decomposition, string-keyed over the targets exactly, summing to 1
+    within rounding and giving a member with no observation none of the mass
+    (:func:`_grade_member_share` — the ceiling never grades a number its own breakdown
+    contradicts). Conjunction cells are graded by the per-target rules — and a
     ``pooled`` key under a conjunction stamp REFUSES, because the runner writes pooled only in
     basket mode: the configuration is the signature of a restamped basket, and refusing it
     costs zero honest refusals. A missing or unreadable ``target_mode`` stamp refuses: whether a
@@ -618,8 +630,9 @@ def _check_cell_evidence(cell: object, s: Mapping[str, object], t: GateThreshold
         "populated members' by_target.mean_ret (the pool's rows are theirs; under cross_mean "
         "2·ulp(max(|pooled.worst_ret|,|pooled.best_ret|)) wider), member_share.by_target "
         "string-keyed over the targets exactly and, where max_member_share_abs is a share, "
-        "every share in [0,1] with max==max_member_share_abs and sum==1 within 2**-50); a "
-        "pooled key on a conjunction cell refuses (a restamped basket)"
+        "every share in [0,1] with max==max_member_share_abs and sum==1 within 2**-50, and 0 "
+        "for a member with by_target.n==0); a pooled key on a conjunction cell refuses (a "
+        "restamped basket)"
     )
     unmet: list[str] = []
     by_target_n: dict[str, int | None] = {}

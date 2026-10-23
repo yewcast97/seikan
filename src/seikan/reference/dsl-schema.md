@@ -1490,8 +1490,9 @@ complete statistics are still in `summary.cells[i]` — a checklist result never
   (the pool's rows are theirs, so its mean is theirs weighted by their counts — `2·ulp` of the
   pool's largest |ret| wider under `cross_mean`, whose pooled mean is the rows' exact excess sum),
   and a `member_share.max_member_share_abs` that is a share is the largest of its `by_target` shares,
-  string-keyed over the targets exactly and summing to 1 within rounding (each the correctly
-  rounded exact quotient of exact masses). A `pooled` key on a conjunction cell
+  string-keyed over the targets exactly, summing to 1 within rounding (each the correctly
+  rounded exact quotient of exact masses) and exactly 0 for a member with no observation, whose
+  mass is 0. A `pooled` key on a conjunction cell
   REFUSES: the engine writes `pooled` only in basket mode, so a conjunction-stamped report
   carrying one can only be a basket report whose mode stamp was rewritten — the checklist reads
   it as drifted input rather than quietly grading the friendlier rubric (a conjunction stamp
@@ -1630,7 +1631,8 @@ open to quote a statistic honestly.
   SE). (3)
   `pooled.member_share.by_target` is ATTRIBUTION — a full decomposition of the pooled |return|
   mass, never a ranking, and graded by no check (only `max_member_share_abs` gates, and
-  `cell_evidence` reads `by_target` only to reconcile that maximum); a 2-member
+  `cell_evidence` reads `by_target` only to reconcile that maximum and the members' counts); a
+  2-member
   basket reads structurally elevated, its larger member always carrying ≥ 0.5. The pooled
   `rot_p` is a COMMON-SHIFT null — one shift rotates every FIRED member's complete mask as a block,
   closed rows or not, preserving per-member counts AND the per-bar cross-sectional pattern a rank

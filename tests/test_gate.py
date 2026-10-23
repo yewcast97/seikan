@@ -2247,6 +2247,35 @@ def test_a_baskets_member_shares_conserve_the_pools_mass():
     assert not _cell_checks(evaluate_gate(_with({"AAA": 0.6, "BBB": 0.6})))["cell_evidence"].met
 
 
+def test_a_member_with_no_observation_holds_no_share():
+    # The tamper: BBB closed nothing, so AAA's 42 rows are the whole pool and carry all its mass;
+    # the shares rewritten to an even split put the one-name read under the ceiling. A member
+    # with no closed row has no mass, so its share is exactly 0.
+    cell = _basket_cell()
+    cell["by_target"]["BBB"] = _tgt_cell(
+        n=0, n_nonoverlap=0, mean_ret=None, worst_ret=None, best_ret=None
+    )
+    cell["outcome_coverage"]["BBB"] = _cov(0)
+    cell["episode_stats"]["n"] = 42
+    cell["pooled"].update(n=42, n_nonoverlap=14)
+    cell["pooled"]["member_share"] = {
+        "by_target": {"AAA": 1.0, "BBB": 0.0},
+        "max_member_share_abs": 1.0,
+    }
+    checks = _cell_checks(evaluate_gate(_basket(cells=[cell])))
+    assert checks["cell_evidence"].met and not checks["concentration"].met
+    cell["pooled"]["member_share"] = {
+        "by_target": {"AAA": 0.5, "BBB": 0.5},
+        "max_member_share_abs": 0.5,
+    }
+    checks = _cell_checks(evaluate_gate(_basket(cells=[cell])))
+    assert checks["concentration"].met
+    assert not checks["cell_evidence"].met
+    assert "gives |return| mass to ['BBB'], member(s) with no observation" in (
+        checks["cell_evidence"].detail
+    )
+
+
 def test_a_massless_member_share_is_left_to_concentration():
     # A pool with no |return| mass carries null shares and a null maximum (the runner's zero-mass
     # rule): no breakdown contradicts the read, and concentration refuses it.

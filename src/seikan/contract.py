@@ -88,7 +88,8 @@ METRIC_ROLES: dict[str, JsonValue] = {
             "a pooled key on a conjunction cell REFUSES as a restamped basket)",
             "cells[*].pooled.member_share.{by_target,max_member_share_abs} (basket only — "
             "by_target string-keyed over the targets exactly; a max_member_share_abs that is a "
-            "share is the largest by_target share, and the shares sum to 1 within 2**-50)",
+            "share is the largest by_target share, the shares sum to 1 within 2**-50, and a "
+            "member with no observation, by_target.n == 0, holds 0)",
             "targets + n_bars + target_mode (the cross-panel reconciliation references)",
         ],
         "outcome_coverage": [
@@ -208,7 +209,7 @@ METRIC_ROLES: dict[str, JsonValue] = {
         "attribute: mean_ret_bench ≈ mean_ret_raw is the basket's own drift)",
         "per-cell pooled.member_share.by_target (the full member-mass decomposition — "
         "attribution, never a ranking; only max_member_share_abs gates, and cell_evidence "
-        "reads by_target only to reconcile that maximum)",
+        "reads by_target only to reconcile that maximum and the members' counts)",
     ],
     # ONE machine-readable class per reported metric; the three classes and their rules (a block
     # classes as a whole, the class is orthogonal to gating) are stated once, in
@@ -697,8 +698,8 @@ METRIC_ROLES_DOC: dict[str, JsonValue] = {
             "larger member always carries >= 0.5, so small baskets read structurally elevated "
             "against the same sealed ceiling — exactly as thin pools do under concentration. "
             "Only max_member_share_abs gates — cell_evidence refuses one that is not the "
-            "largest by_target share, and a by_target whose shares do not sum to 1; by_target "
-            "is attribution."
+            "largest by_target share, a by_target whose shares do not sum to 1, and a share on "
+            "a member with no observation; by_target is attribution."
         ),
         "win_loss_ratio": (
             "Average win over average |loss| — the payoff-asymmetry partner of hit_rate's "
@@ -1151,7 +1152,8 @@ REPORT_FIELDS: dict[str, JsonValue] = {
             "{by_target, max_member_share_abs} — each member's share of the pooled |return| "
             "mass; the checklist grades ONLY max_member_share_abs (the one-name-basket "
             "detector), which cell_evidence reconciles as the largest by_target share of a "
-            "decomposition summing to 1; by_target is attribution and never a ranking"
+            "decomposition summing to 1 that gives a member with no observation none; by_target "
+            "is attribution and never a ranking"
         ),
         "pooled.mean_ret_raw / mean_ret_bench / profit_factor / boot / subperiods / "
         "ret_quantiles / worst_ret / best_ret / mae_quantiles / mfe_quantiles / edge_ratio": (
@@ -1350,7 +1352,8 @@ GATE_CONTRACT_DOC: dict[str, JsonValue] = {
             "a max_member_share_abs that "
             "is a share is the "
             "largest of member_share.by_target's shares, string-keyed over the targets "
-            "exactly and summing to 1 within rounding); a pooled key on a conjunction cell "
+            "exactly, summing to 1 within rounding and 0 on a member with no observation, "
+            "whose mass is 0); a pooled key on a conjunction cell "
             "REFUSES as a "
             "restamped basket (the runner writes pooled only in basket mode), and a "
             "missing target_mode stamp refuses. An internally impossible summary is "
@@ -1413,7 +1416,8 @@ GATE_CONTRACT_DOC: dict[str, JsonValue] = {
         "ledger, conditional_buckets/bucket_monotonicity and feature_association, and — in "
         "basket — every pooled field beyond {n, n_nonoverlap, mean_ret, "
         "concentration.top_share_abs, member_share} (member_share.by_target read only to "
-        "reconcile max_member_share_abs — attribution, never a ranking; worst_ret / best_ret, "
+        "reconcile max_member_share_abs and the members' counts — attribution, never a ranking; "
+        "worst_ret / best_ret, "
         "here and per target, only to reconcile mean_ret) all ride in the "
         "summary as EVIDENCE and no check reads them — see metric_roles (and its caveats "
         "map) for why"
