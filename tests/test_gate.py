@@ -22,7 +22,10 @@ from __future__ import annotations
 
 import json
 import math
+from decimal import Decimal
+from fractions import Fraction
 
+import numpy as np
 import pytest
 from pydantic import ValidationError
 
@@ -989,6 +992,33 @@ def test_per_source_counts_must_be_counts_within_the_interval(bad):
         }
     )
     assert not _run(evaluate_gate(s))["source_coverage"].met
+
+
+@pytest.mark.parametrize("count", ["1e-400", "-1e-400", "0", "0.0", Decimal(0), Fraction(0)])
+def test_a_count_is_an_integer_never_a_parse(count):
+    # float() rounds "1e-400" to 0.0, a source missing that many bars is no hole: a count is an
+    # integer or a float holding one, and any other spelling refuses whatever it rounds to.
+    s = _summary()
+    s["sources"]["AAA"]["n_missing"] = count
+    s["sources"]["AAA"]["by_source"]["field:close"]["n_missing"] = count
+    assert not _run(evaluate_gate(s))["source_coverage"].met
+
+
+@pytest.mark.parametrize("count", [0, 0.0, -0.0, np.int64(0)])
+def test_an_integer_or_a_float_holding_one_is_a_count(count):
+    s = _summary()
+    s["sources"]["AAA"]["n_missing"] = count
+    s["sources"]["AAA"]["by_source"]["field:close"]["n_missing"] = count
+    assert _run(evaluate_gate(s))["source_coverage"].met
+
+
+def test_a_count_keeps_every_digit():
+    # A ledger whose reasons sum one short of its attempted firings, at 2**53 + 1: read through a
+    # double, both sides round to 2**53 and the arithmetic reconciles.
+    cell = _cell()
+    cell["outcome_coverage"]["AAA"] = _cov(2**53, n_attempted=2**53 + 1)
+    check = _cell_checks(evaluate_gate(_summary(cells=[cell])))["cell_evidence"]
+    assert f"exit reasons sum to {2**53} but n_attempted={2**53 + 1}" in check.detail
 
 
 def test_source_coverage_needs_the_runs_geometry():

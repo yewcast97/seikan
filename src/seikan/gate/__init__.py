@@ -62,7 +62,8 @@ The checks read the engine summary directly (the dict ``compile_thesis`` produce
   the episode panel's ``n`` is the per-target total, and the signal ledger spans the whole index.
   An internally impossible summary is drifted input, not something to grade.
 - **Strict numeric hygiene**: every read collapses NaN, ±inf, and non-integral counts to a
-  refusal — drifted input can never sail past a comparison or crash the gate.
+  refusal — drifted input can never sail past a comparison or crash the gate — and a count is
+  read exactly, an integer or a float holding one: a string is no count, whatever it parses to.
 - **Commensurability guard**: a ``diff``-outcome, multi-target run refuses the cross-target
   cluster-mass read — level-unit returns from different series cannot be mass-compared.
 - **Fail closed, never crash.** An unreadable ``cells`` panel leaves ``evidence_complete`` unmet

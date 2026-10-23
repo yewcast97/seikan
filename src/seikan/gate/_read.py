@@ -5,6 +5,7 @@ funnels, refusing rather than crashing.
 from __future__ import annotations
 
 import math
+import numbers
 import re
 from collections.abc import Iterable, Mapping
 from typing import SupportsFloat, cast
@@ -42,11 +43,17 @@ def _num(value: object) -> float | None:
 
 
 def _int(value: object) -> int | None:
-    """The integer twin of :func:`_num` — None on missing/non-finite/garbage/NON-INTEGRAL input.
-    A count of 1.9 is drifted input, not "1": truncation would certify a search size the summary
-    never actually recorded."""
-    v = _num(value)
-    return int(v) if v is not None and v.is_integer() else None
+    """The integer twin of :func:`_num` — None on missing/non-finite/garbage/NON-INTEGRAL input,
+    else the count EXACTLY: an integer within :func:`_num`'s range, or a float holding one.
+    Integrality is decided before anything rounds: ``float()`` reads the string ``"1e-400"`` as
+    0.0 and the integer ``2**53 + 1`` as ``2**53``, so a string — or any number type but an
+    integer or a float — is no count, and an integer keeps every digit. A count of 1.9 is drifted
+    input, not "1": truncation would certify a search size the summary never actually recorded."""
+    if isinstance(value, float):
+        return int(value) if value.is_integer() else None
+    if isinstance(value, numbers.Integral) and _num(value) is not None:  # a bool is no count
+        return int(value)
+    return None
 
 
 def _prob(value: object) -> float | None:

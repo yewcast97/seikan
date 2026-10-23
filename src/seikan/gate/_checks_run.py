@@ -24,7 +24,7 @@ from seikan.types import OUTCOME_KINDS, TARGET_MODES
 
 def _assignment(params: dict[str, object]) -> tuple[tuple[str, object], ...]:
     """A parameter assignment's identity: its items in key order, each value read as this gate
-    reads every number (:func:`_num` — ``1``, ``1.0`` and ``"1"`` are one horizon, as the DSL's
+    reads every number (:func:`_num` — ``1``, ``1.0`` and ``"1"`` are one value, as the DSL's
     sweep rule compares them) and otherwise by its repr. The keys are unique, so the sort never
     compares two values. A rendered identity (``repr(sorted(params.items()))``) would read
     ``{"horizon": 1}`` and ``{"horizon": 1.0}`` as two assignments, and a declared cell copied

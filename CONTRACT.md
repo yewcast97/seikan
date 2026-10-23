@@ -267,8 +267,8 @@ would have to be some cell's, and naming one cell is the selection this engine d
 `policy_version` (**4** — v4: a cell names its horizon, which bounds its non-overlapping
 counts, and they bound its episode count, no two cells name one assignment, a basket's
 one-name read is the largest share of its member decomposition, a mean lies within its pool's
-extrema, and a source's start is a
-timestamp inside the evaluated interval; v3: a never-available source refuses, and the support floor reads the renamed
+extrema, a source's start is a timestamp inside the evaluated interval, and a count is an
+integer, read exactly; v3: a never-available source refuses, and the support floor reads the renamed
 `n_nonoverlap`) names the checklist semantics (two cell results compare only
 under the same version); `summary.statistics_version` (**5** — v2 ADDED evidence: the p05/p95
 quantile tails, the promoted per-cell shape reads, `benchmark_regression`, `timing` and the
@@ -644,8 +644,9 @@ same bypass one spelling over — retained in basket as defense-in-depth even th
 Fail-closed, never crash: an unreadable `cells` panel leaves `evidence_complete` unmet and yields
 `n_cells` 0 / `n_met` 0 / `gate.cells == []` — and the CLI still exits 0; a malformed
 INDIVIDUAL cell entry gets an unmet `cell_evidence` with a detail while its siblings grade
-normally; NaN / ±inf / non-integral reads refuse per read. Nothing short-circuits: every check is
-always evaluated and always reported.
+normally; NaN / ±inf / non-integral reads refuse per read, and a count is read exactly — an
+integer, or a float holding one, never a string, which `float()` would round (`"1e-400"` to a
+count of 0). Nothing short-circuits: every check is always evaluated and always reported.
 
 The uncalibrated statistics are EVIDENCE, never inputs: `rot_p` (the rotation null over-certifies
 under signal-aligned volatility regimes), `t_hac`/`hac_se` (the overlap HAC understates its SE),
