@@ -12,9 +12,10 @@ Containment, by construction:
   ``analysis/`` or ``gate/``: the one thing it shares with the run summary is the clock
   geometry stamp, :func:`seikan.dataio.bar_spacing`, which lives with the data layer so both
   emit it in one vocabulary, and the rules it shares with the engine — the ``pct`` algebra's
-  percent change, the ``log`` algebra's log ratio and where the normal range begins
-  (:data:`~seikan.numeric.MIN_NORMAL`, its std's edge) — live in the leaf :mod:`seikan.numeric`
-  for the same reason;
+  percent change, the ``log`` algebra's log ratio, where the normal range begins
+  (:data:`~seikan.numeric.MIN_NORMAL`, its std's edge) and the exact integer terms its volume
+  mean is summed in (:func:`~seikan.numeric.integer_terms`) — live in the leaf
+  :mod:`seikan.numeric` for the same reason;
 - admission is :func:`seikan.dataio.read_strict_csv` — the SAME strict reader ``check-data``
   runs, called identically, so the ``data_report`` this module builds is byte-equal to
   ``check-data``'s over the same files (a refused file is refused for the same reason by both,
@@ -48,7 +49,14 @@ import numpy as np
 import pandas as pd
 
 from seikan.dataio import FileReport, bar_spacing, build_data_report, read_strict_csv
-from seikan.numeric import MIN_NORMAL, log_ratio, log_ratio_array, midrange, pct_change
+from seikan.numeric import (
+    MIN_NORMAL,
+    integer_terms,
+    log_ratio,
+    log_ratio_array,
+    midrange,
+    pct_change,
+)
 from seikan.types import (
     ChangeBlock,
     DescribeResult,
@@ -303,25 +311,15 @@ def _missingness_block(s: pd.Series) -> MissingnessBlock:
 
 
 def _mean(vals: np.ndarray) -> float:
-    """The arithmetic mean of finite values, overflow-safe: the direct ``vals.mean()`` wherever
-    its sum stays in range, bit for bit — save an all-equal window, whose mean IS its value (the
-    rounded sum of bit-identical values, divided back, carries the sum's rounding, so a held
-    volume's ``last_to_mean`` would miss an exact 1). Where the sum overflows — the mean itself
-    never does, lying between the values' extremes — the values are pre-scaled by the power of
-    two ``2**-c`` (``2**c ≥ 2n``, which keeps every partial sum in range), the mean is scaled back
-    and held in ``[min, max]`` like any convex combination. Read off the overflowed ``inf``
-    instead, the mean would be null and a ratio over it a FINITE 0.0."""
-    lo, hi = float(vals.min()), float(vals.max())
-    if lo == hi:
-        return lo
-    with np.errstate(over="ignore", invalid="ignore"):
-        m = float(vals.mean())
-    if _finite(m):
-        return m
-    c = (2 * vals.size).bit_length()
-    with np.errstate(over="ignore"):  # a rounding past DBL_MAX is clamped back to the max below
-        m = float(np.ldexp(np.ldexp(vals, -c).mean(), c))
-    return min(max(m, lo), hi)
+    """The arithmetic mean of finite values — their EXACT sum over the count, rounded once: the
+    values are integers over one power-of-two denominator (:func:`~seikan.numeric.integer_terms`),
+    and Python's true division rounds the quotient of two integers correctly. The mean of finite
+    values lies between their extremes, so, rounding being monotone, this read never leaves them:
+    an all-equal window reads its value (a held volume's ``last_to_mean`` is exactly 1) and no
+    sum overflows. A sum rounded before its division can read past the largest value, and an
+    overflowed one would null the mean beside a FINITE ``last_to_mean`` of 0.0."""
+    nums, den = integer_terms(vals.tolist())
+    return sum(nums) / (den * len(nums))
 
 
 def _std(vals: np.ndarray) -> float:
@@ -366,8 +364,8 @@ def _volume_block(v: np.ndarray, windows: Sequence[int]) -> VolumeBlock:
     """Last volume, trailing mean and ``last_to_mean`` per window. The ratio carries NO
     'unusual' flag — what counts as elevated is the caller's judgment, not a property of the
     file. A non-positive trailing mean refuses the ratio (``non_positive_endpoint`` — the
-    denominator is an endpoint of the ratio), never divides through zero; the mean itself is
-    overflow-safe (:func:`_mean`), so the ratio is never read off an overflowed sum."""
+    denominator is an endpoint of the ratio), never divides through zero; the mean is exact
+    (:func:`_mean`), so the ratio is never read off an overflowed sum."""
     vals = np.asarray(v, dtype=float)
     last = float(vals[-1]) if _finite(float(vals[-1])) else None
     by_window: dict[str, VolumeWindow] = {}

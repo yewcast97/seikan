@@ -17,11 +17,11 @@ from seikan.analysis._pools import (
     NEAR_CONSTANT_ULPS,
     BarNumerators,
     exact_mean,
-    integer_terms,
     is_normal,
     near_constant,
 )
 from seikan.constants import NEXT_OPEN_OFFSET
+from seikan.numeric import integer_terms
 from seikan.types import (
     CellKey,
     DegradationSlopeReason,
@@ -48,7 +48,7 @@ class _Column(NamedTuple):
     """One scored column's per-block reads over its kept rows, one entry per block: ``counts``
     the row counts; ``lo`` / ``hi`` the extrema (``+inf`` / ``-inf`` on an empty block: a split's
     pool is EXACTLY constant iff its chosen blocks' min equals their max); and EXACT integers
-    over the column's one power-of-two denominator ``den`` (``_pools.integer_terms``), which
+    over the column's one power-of-two denominator ``den`` (``numeric.integer_terms``), which
     reads every return as ``P / den`` — ``first[g] = ΣP`` and ``second[g] = ΣP²`` over block
     ``g``'s rows, and ``sums[g]`` the sum of their parts' integers, ``den·scale`` times the rows'
     exact sum. ``known[g]`` is False where a row's parts are not finite (a ``cross_mean`` bar

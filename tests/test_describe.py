@@ -14,6 +14,7 @@ from __future__ import annotations
 import ast
 import json
 import math
+from fractions import Fraction
 from pathlib import Path
 
 import numpy as np
@@ -746,20 +747,18 @@ def test_volume_block_hand_computed_and_absent_without_volume(tmp_path, capsys):
 def test_volume_mean_of_an_overflowing_window_is_exact_never_a_zero_ratio(tmp_path, capsys):
     # Volumes alternating 1.7e308 / 1.0e308: the trailing SUM overflows, so a mean read off it is
     # inf — null, beside a `last_to_mean` of exactly 0.0 (last / inf) and no reason at all. The
-    # mean of finite volumes lies between their extremes; summed pre-scaled it is exact, and so
-    # the ratio.
+    # mean of finite volumes lies between their extremes; their exact sum over the count, rounded
+    # once, is the double nearest it, and the ratio is read over that.
     path = _write_flat_ohlcv(
         tmp_path / "v.csv", [10.0 + i for i in range(30)], volumes=[1.7e308, 1.0e308] * 15
     )
     code, doc = _run(capsys, ["describe", str(path), "--windows", "5"])
     assert code == 0
     w5 = doc["profiles"][0]["volume"]["windows"]["5"]
-    assert w5["mean"] == pytest.approx(1.28e308, rel=1e-15)  # (3·1.0 + 2·1.7)e308 / 5
-    assert w5["last_to_mean"] == pytest.approx(1.0 / 1.28, rel=1e-15)
+    assert w5["mean"] == float((3 * Fraction(1.0e308) + 2 * Fraction(1.7e308)) / 5)
+    assert w5["last_to_mean"] == 1.0e308 / w5["mean"]
     assert w5["reason"] is None and w5["ratio_reason"] is None
-    # A CONSTANT overflowing window's mean IS its value: the pre-scaled mean of seven 1.7e308s
-    # rounds an ulp off it on the way back (1.7000000000000001e308, a ratio of 0.999…), and is
-    # held in [min, max] like any convex combination — exact, and the ratio exactly 1.0.
+    # A CONSTANT overflowing window's mean IS its value, and the ratio exactly 1.0.
     path = _write_flat_ohlcv(tmp_path / "c.csv", [10.0 + i for i in range(30)], [1.7e308] * 30)
     code, doc = _run(capsys, ["describe", str(path), "--windows", "7"])
     assert code == 0
@@ -768,11 +767,12 @@ def test_volume_mean_of_an_overflowing_window_is_exact_never_a_zero_ratio(tmp_pa
 
 
 def test_an_all_equal_window_reads_its_own_mean_and_an_exact_zero_std(tmp_path, capsys):
-    # The computed mean of bit-identical values carries its sum's rounding — 21 copies of
+    # The rounded mean of bit-identical values carries its sum's rounding — 21 copies of
     # 1234.56, summed and divided back, read 1234.5600000000002 — so a held volume's ratio would
     # read 0.9999999999999998, and the direct variance of identical changes is that residue, not
-    # zero: the 63 log changes of 2**0..2**63 (ln 2 each) read a std of 2.238e-16. Constancy is
-    # decided before either is computed; a varying window keeps the direct form's bits.
+    # zero: the 63 log changes of 2**0..2**63 (ln 2 each) read a std of 2.238e-16. The mean is
+    # the exact sum over the count, the value itself; the std decides constancy before any
+    # variance is formed, and a varying window keeps the direct form's bits.
     from seikan.describe import _dispersion_block
 
     path = _write_flat_ohlcv(tmp_path / "v.csv", [10.0 + i for i in range(30)], [1234.56] * 30)
@@ -793,6 +793,27 @@ def test_an_all_equal_window_reads_its_own_mean_and_an_exact_zero_std(tmp_path, 
     assert code == 0
     d30 = _series_profile(doc)["dispersion"]["30"]
     assert d30["log"] == 0.0 and d30["pct"] == 0.0 and d30["reason"] is None
+
+
+def test_a_volume_mean_never_leaves_its_windows_range(tmp_path, capsys):
+    # [x − ulp, x, x, x, x]: the sum rounds up and its fifth again, a mean read that way sits an
+    # ulp ABOVE every volume of the window, beside a last_to_mean below 1 for a last volume at
+    # the maximum. The exact sum over the count, rounded once, is the double nearest the mean.
+    x = 0.9792911430546236
+    vols = [math.nextafter(x, 0.0), x, x, x, x]
+    path = _write_flat_ohlcv(tmp_path / "v.csv", [10.0 + i for i in range(5)], vols)
+    code, doc = _run(capsys, ["describe", str(path), "--windows", "5"])
+    assert code == 0
+    w5 = doc["profiles"][0]["volume"]["windows"]["5"]
+    assert w5["mean"] == x and w5["last_to_mean"] == 1.0
+    from seikan.describe import _mean
+
+    rng = np.random.default_rng(27)
+    for _ in range(2000):  # windows of near-equal volumes, a few ulps apart, across binades
+        base = x * 2.0 ** int(rng.integers(-60, 60))
+        v = base + math.ulp(base) * rng.integers(-3, 4, int(rng.integers(1, 12)))
+        assert _mean(v) == float(sum(map(Fraction, v.tolist())) / v.size)
+        assert v.min() <= _mean(v) <= v.max()
 
 
 def test_dispersion_diff_std_keeps_its_value_where_its_squares_leave_the_range(tmp_path, capsys):

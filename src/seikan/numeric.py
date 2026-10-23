@@ -81,6 +81,20 @@ def midrange(lo: float, hi: float) -> float:
     return hi / 2.0 + lo / 2.0
 
 
+def integer_terms(values: list[float]) -> tuple[list[int], int]:
+    """``(nums, den)``: each finite double ``values[i]`` as the integer ``nums[i]`` over ONE
+    power-of-two denominator ``den`` — ``float.as_integer_ratio`` reads every double as ``p/q``
+    with ``q`` a power of two, and ``den`` is the largest ``q`` (1 on no values). Sums, squares
+    and products of the values are then integer arithmetic, exact at any magnitude, and a
+    quotient of two such integers is correctly rounded by Python's true division, which raises
+    ``OverflowError`` past the double range — the exact moments the HAC's per-bar deviation sums,
+    CSCV's split variances, the bootstrap's draw means and the legs' regression read
+    (``analysis``), and ``describe``'s volume mean."""
+    ratios = [v.as_integer_ratio() for v in values]
+    den = max((q for _, q in ratios), default=1)
+    return [p * (den // q) for p, q in ratios], den
+
+
 def log_ratio(num: float, den: float) -> float:
     """``ln(num/den)`` by ``math.log1p``, signed — ``ln(1 + (hi − lo)/lo)`` of the larger level
     over the smaller, negated where ``num < den``, so ``log_ratio(a, b) == −log_ratio(b, a)`` bit

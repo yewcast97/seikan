@@ -10,10 +10,10 @@ from seikan.analysis._pools import (
     BarNumerators,
     exact_mean,
     exact_sum,
-    integer_terms,
     is_normal,
     near_constant,
 )
+from seikan.numeric import integer_terms
 
 _NAN = float("nan")
 
@@ -94,7 +94,7 @@ def _exact_deviation_sums(
     mean ``μ = Σ_g S_g / (scale·n)``, correctly rounded — ``S_g`` the sum of the group's
     ``values`` (``groups[i]`` is value ``i``'s group), ``k_g = counts[g]`` the rows it stands for
     and ``n`` their total. The values are read as integers over one power-of-two denominator
-    (:func:`~seikan.analysis._pools.integer_terms`), so ``(n·S_g − k_g·Σ S) / (scale·n·den)``
+    (:func:`~seikan.numeric.integer_terms`), so ``(n·S_g − k_g·Σ S) / (scale·n·den)``
     is a quotient of integers, rounded once by Python's true division: 0.0 exactly where the
     group sits at the mean, and no row's deviation rounded before its group sums it. Raises
     ``OverflowError`` where a sum leaves the double range."""

@@ -12,7 +12,8 @@ from itertools import pairwise
 import numpy as np
 
 from seikan.analysis._episodes import overlap_clusters
-from seikan.analysis._pools import PAST_DOUBLE, ddof1_std, exact_mean, integer_terms
+from seikan.analysis._pools import PAST_DOUBLE, ddof1_std, exact_mean
+from seikan.numeric import integer_terms
 from seikan.types import (
     EpisodeBootstrapCI,
 )
@@ -61,7 +62,7 @@ def episode_bootstrap_ci(
     greedy merge, applied per target here). Each draw resamples ``n_episodes`` episodes with
     replacement; the draw's statistic is the pooled mean over the resampled observations
     (Σ episode return-sums / Σ episode counts), EXACT and rounded once: the values read as
-    integers over one power-of-two denominator (``_pools.integer_terms``), each episode's sum
+    integers over one power-of-two denominator (``numeric.integer_terms``), each episode's sum
     an integer, each draw's the sum of its episodes' and its mean one quotient of integers,
     correctly rounded — the rule ``mean_ret`` reads (``_pools.exact_mean``), so a draw whose
     exact mean is the pool's reads ``mean_ret`` itself. Same keys always: ``{method, ci_level,

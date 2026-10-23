@@ -25,7 +25,7 @@ from typing import NamedTuple
 import numpy as np
 from scipy import stats as sps
 
-from seikan.numeric import MIN_NORMAL, midrange
+from seikan.numeric import MIN_NORMAL, integer_terms, midrange
 from seikan.types import (
     TOP_SHARE_FRAC,
     BenchmarkRegressionBlock,
@@ -166,19 +166,6 @@ def exact_mean(v: np.ndarray, scale: int = 1) -> float:
     if lo == hi:
         return lo / scale
     return _exact_quotient(v.ravel().tolist(), scale * n)
-
-
-def integer_terms(values: list[float]) -> tuple[list[int], int]:
-    """``(nums, den)``: each finite double ``values[i]`` as the integer ``nums[i]`` over ONE
-    power-of-two denominator ``den`` — ``float.as_integer_ratio`` reads every double as ``p/q``
-    with ``q`` a power of two, and ``den`` is the largest ``q`` (1 on no values). Sums, squares
-    and products of the values are then integer arithmetic, exact at any magnitude, and a
-    quotient of two such integers is correctly rounded by Python's true division, which raises
-    ``OverflowError`` past the double range — the exact moments the HAC's per-bar deviation sums,
-    CSCV's split variances and the bootstrap's draw means read."""
-    ratios = [v.as_integer_ratio() for v in values]
-    den = max((q for _, q in ratios), default=1)
-    return [p * (den // q) for p, q in ratios], den
 
 
 #: The least mass no double holds — the largest double plus half its ulp, where an exact sum rounds
@@ -600,9 +587,9 @@ def benchmark_regression(raw: np.ndarray, bench: np.ndarray) -> BenchmarkRegress
     beta·mean(bench)`` — per h-bar window, NEVER annualized, this engine carrying no
     calendar-return framing — and ``r2 = cov² / (var_raw · var_bench)``. beta and r2 are the
     EXACT quotients of the legs' exact second moments (the values as integers over one
-    power-of-two denominator, :func:`integer_terms`), each rounded once: the same double on
-    every platform at any scale, an exact line its exact slope, and r2 never past 1 — never
-    ``np.cov`` (a BLAS sum, in the platform's summation order, times a rounded ``1/(n − 1)``)
+    power-of-two denominator, :func:`~seikan.numeric.integer_terms`), each rounded once: the same
+    double on every platform at any scale, an exact line its exact slope, and r2 never past 1 —
+    never ``np.cov`` (a BLAS sum, in the platform's summation order, times a rounded ``1/(n − 1)``)
     over ``np.var`` (a pairwise sum over ``n − 1``), which can read identical legs at beta ≠ 1.
     The means are the legs' exactly rounded ones (:func:`exact_mean`) — the ``mean_ret_raw`` /
     ``mean_ret_bench`` the panel reports beside the fit — so the identity ``alpha +
