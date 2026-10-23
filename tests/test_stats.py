@@ -41,6 +41,8 @@ from seikan.analysis.stats import (
     exact_mean,
     exact_sum,
     feature_outcome_association,
+    mae_block,
+    mfe_block,
     newey_west_mean,
     nonoverlap_count,
     overlap_clusters,
@@ -207,6 +209,24 @@ def test_profit_factor_is_its_exact_masses_quotient_rounded_once():
     assert profit_factor(np.array([0.1, 0.2, 0.3, -0.3, -0.2, -0.1])) == 1.0
 
 
+def test_an_excursion_blocks_mean_never_passes_its_extremum():
+    # [x − ulp, x, x, x, x]: a sum rounded before its division reads a mean an ulp past every
+    # value, above the MFE block's own best (and below the MAE block's worst, negated). The exact
+    # mean, rounded once, stays inside, and the edge ratio divides the same two means.
+    x = 0.9792911430546236
+    fav = np.array([math.nextafter(x, 0.0), x, x, x, x])
+    mfe, mae = mfe_block(fav), mae_block(-fav)
+    assert mfe["mean"] == mfe["best"] == x and mae["mean"] == mae["worst"] == -x
+    assert edge_ratio(-fav, fav) == 1.0
+    rng = np.random.default_rng(27)
+    for _ in range(2000):  # near-equal excursions, a few ulps apart, across binades
+        base = x * 2.0 ** int(rng.integers(-60, 60))
+        v = base + math.ulp(base) * rng.integers(-3, 4, int(rng.integers(1, 12)))
+        exact = float(sum(map(Fraction, v.tolist())) / v.size)
+        assert mfe_block(v)["mean"] == exact <= mfe_block(v)["best"]
+        assert mae_block(-v)["mean"] == -exact >= mae_block(-v)["worst"]
+
+
 def test_edge_ratio_arithmetic_and_refusals():
     # mean RAW MFE over |mean RAW MAE| over PAIRED rows — mae is sign-negative, hence the abs;
     # no surviving pair or a zero paired adverse mean refuses as NaN (an unbounded ratio is
@@ -234,7 +254,9 @@ def test_ratio_reads_refuse_an_overflowed_operand():
     rets = np.array([1.0, -1e308, -1e308])  # the loss mass (and so its mean) overflows to -inf
     assert np.isnan(pool_moments(rets)["win_loss_ratio"])
     assert np.isnan(profit_factor(rets))
-    assert np.isnan(edge_ratio(np.array([-1e308, -1e308]), np.array([1.0, 1.0])))
+    assert np.isnan(edge_ratio(np.array([-1e308, -1.5e308]), np.array([1.0, 1.0])))
+    # an all-equal pool's exact mean is its value, never read off its overflowed sum
+    assert edge_ratio(np.array([-1e308, -1e308]), np.array([1.0, 1.0])) == 1.0 / 1e308
     # |p95 / p05| where p05 interpolates across ±1.7e308 and overflows to +inf
     tail = np.array([-1.7e308] + [1.7e308] * 9)
     with np.errstate(over="ignore"):
@@ -2877,9 +2899,7 @@ def test_episode_profile_hand_computed_three_episodes():
     assert mae_b["worst"] == pytest.approx(-0.06)
     assert mae_b["mean"] == pytest.approx((-0.06 - 0.01 - 0.03) / 3)
     assert mfe_b["best"] == pytest.approx(0.35)
-    assert prof["edge_ratio"] == pytest.approx(
-        np.mean([0.35, 0.01, 0.09]) / abs(np.mean([-0.06, -0.01, -0.03]))
-    )
+    assert prof["edge_ratio"] == mfe_b["mean"] / abs(mae_b["mean"])  # no hole: the blocks' means
 
 
 def test_episode_profile_deduplicates_what_row_level_statistics_inflate():

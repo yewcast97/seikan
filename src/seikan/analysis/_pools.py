@@ -348,13 +348,15 @@ def pool_quantiles(vals: np.ndarray) -> PoolQuantiles:
 @np.errstate(over="ignore", invalid="ignore")
 def mae_block(vals: np.ndarray) -> MaeQuantiles:
     """The MAE excursion block — ``{n, mean, p05..p95, worst}`` over the FINITE subset of the
-    values handed in (a censored path column contributes nothing; ``n`` counts the subset). One
-    declaration of the emitted key ORDER, shared by the per-target, pooled and episode panels."""
+    values handed in (a censored path column contributes nothing; ``n`` counts the subset). The
+    mean is :func:`exact_mean`, so it never passes ``worst`` (a sum rounded before its division
+    can). One declaration of the emitted key ORDER, shared by the per-target, pooled and episode
+    panels."""
     v = np.asarray(vals, dtype=float)
     v = v[np.isfinite(v)]
     return {
         "n": int(v.size),
-        "mean": float(np.mean(v)) if v.size else _NAN,
+        "mean": exact_mean(v),
         **pool_quantiles(v),
         "worst": float(np.min(v)) if v.size else _NAN,
     }
@@ -362,12 +364,13 @@ def mae_block(vals: np.ndarray) -> MaeQuantiles:
 
 @np.errstate(over="ignore", invalid="ignore")
 def mfe_block(vals: np.ndarray) -> MfeQuantiles:
-    """The MFE twin of :func:`mae_block` — ``best`` (the max) where MAE carries ``worst``."""
+    """The MFE twin of :func:`mae_block` — ``best`` (the max) where MAE carries ``worst``, and
+    the exact mean never passes it."""
     v = np.asarray(vals, dtype=float)
     v = v[np.isfinite(v)]
     return {
         "n": int(v.size),
-        "mean": float(np.mean(v)) if v.size else _NAN,
+        "mean": exact_mean(v),
         **pool_quantiles(v),
         "best": float(np.max(v)) if v.size else _NAN,
     }
@@ -419,7 +422,8 @@ def edge_ratio(mae_rows: np.ndarray, mfe_rows: np.ndarray) -> float:
     of two means over DIFFERENT event subsets would compare pains and gains that never shared a
     trade. The ``mae_quantiles``/``mfe_quantiles`` blocks keep their own per-leg subsets, so
     under asymmetric holes this ratio need not equal ``mfe_quantiles.mean / |mae_quantiles.mean|``
-    — the pairing is the point. NaN when no pair
+    — the pairing is the point; each mean is the blocks' exact one (:func:`exact_mean`), so where
+    no row holds a hole it is that quotient, rounded once. NaN when no pair
     survives or the paired adverse mean is exactly zero — an unbounded ratio is refused, never
     emitted — or when either mean leaves the double range (:func:`_finite_ratio`). Evidence-only;
     no check reads it."""
@@ -429,10 +433,10 @@ def edge_ratio(mae_rows: np.ndarray, mfe_rows: np.ndarray) -> float:
     m_a, m_f = m_a[keep], m_f[keep]
     if m_a.size == 0:
         return _NAN
-    denom = abs(float(np.mean(m_a)))
+    denom = abs(exact_mean(m_a))
     if denom == 0:
         return _NAN
-    return _finite_ratio(float(np.mean(m_f)), denom)
+    return _finite_ratio(exact_mean(m_f), denom)
 
 
 #: The low mantissa bits a leg's HIGH half clears (:func:`cross_mean_pooled_mean`): the high half
