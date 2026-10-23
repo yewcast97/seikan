@@ -1326,7 +1326,7 @@ def test_a_mean_lies_within_its_pools_extrema():
     for mean in (-0.18, 0.31):  # the fixtures' extrema
         cell = _cell(mean_ret=mean)
         assert _cell_checks(evaluate_gate(_summary(cells=[cell])))["cell_evidence"].met
-        cell = _basket_cell(pooled=_pooled(mean_ret=mean))
+        cell = _basket_cell(mean_ret=mean, pooled=_pooled(mean_ret=mean))
         assert _cell_checks(evaluate_gate(_basket(cells=[cell])))["cell_evidence"].met
     # beside a numeric mean an absent or unreadable extremum refuses; a null mean is support's
     for key, value in (("worst_ret", None), ("best_ret", "junk"), ("best_ret", float("inf"))):
@@ -2047,6 +2047,48 @@ def test_unreadable_pooled_mean_fails_closed(bad):
     cell = _basket_cell()
     cell["pooled"]["mean_ret"] = bad
     assert not _cell_checks(evaluate_gate(_basket(cells=[cell])))["support"].met
+
+
+def _basket_means(pooled_mean, a, b, benchmark=None):
+    """``cell_evidence`` of the basket fixture with its members' and pool's means rewritten."""
+    cell = _basket_cell()
+    cell["by_target"]["AAA"]["mean_ret"] = a
+    cell["by_target"]["BBB"]["mean_ret"] = b
+    cell["pooled"]["mean_ret"] = pooled_mean
+    return _cell_checks(evaluate_gate(_basket(cells=[cell], benchmark=benchmark)))["cell_evidence"]
+
+
+def test_a_baskets_mean_lies_within_its_members_means():
+    # The tamper: both members' means at −0.0009, the pool's rewritten to 0.001 — inside the
+    # pool's extrema, the support floor met. The pool's rows are its members', so its exact mean
+    # is theirs weighted by their counts and, rounding being monotone, within their range: both
+    # bounds meet, an ulp past either refuses.
+    check = _basket_means(0.001, -0.0009, -0.0009)
+    assert not check.met
+    assert "pooled: mean_ret=0.001 lies outside [-0.0009, -0.0009]" in check.detail
+    assert _basket_means(0.02, 0.02, 0.08).met and _basket_means(0.08, 0.02, 0.08).met
+    assert not _basket_means(math.nextafter(0.08, 1.0), 0.02, 0.08).met
+    assert not _basket_means(math.nextafter(0.02, 0.0), 0.02, 0.08).met
+    # beside a numeric pooled mean, a populated member without one leaves nothing to reconcile
+    check = _basket_means(0.05, 0.05, None)
+    assert (
+        not check.met and "populated member(s) ['BBB'] without a numeric mean_ret" in check.detail
+    )
+    assert _cell_checks(evaluate_gate(_basket()))["cell_evidence"].met  # 0.05 among 0.05s
+
+
+def test_a_cross_mean_baskets_mean_lies_within_its_members_means_to_their_rounding():
+    # Under cross_mean the pooled mean is the rows' EXACT excess sum while each member averages
+    # its rows' rounded excesses, each within half an ulp of the pool's largest |row| (0.31 in
+    # the fixture): the pool may sit outside its members' range by that rounding, never by more
+    # than 2·ulp(0.31).
+    u = math.ulp(0.31)
+    assert not _basket_means(0.05 + u, 0.05, 0.05).met
+    assert _basket_means(0.05 + u, 0.05, 0.05, benchmark="cross_mean").met
+    assert _basket_means(0.05 - 2 * u, 0.05, 0.05, benchmark="cross_mean").met
+    check = _basket_means(0.05 + 3 * u, 0.05, 0.05, benchmark="cross_mean")
+    assert not check.met and "widened by 2·ulp(0.31) under cross_mean" in check.detail
+    assert not _basket_means(0.001, -0.0009, -0.0009, benchmark="cross_mean").met
 
 
 def test_pooled_n_must_total_the_member_counts():

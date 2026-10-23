@@ -267,8 +267,8 @@ would have to be some cell's, and naming one cell is the selection this engine d
 `policy_version` (**4** — v4: a cell names its horizon, which bounds its non-overlapping
 counts, and they bound its episode count, no two cells name one assignment, a basket's
 one-name read is the largest share of its member decomposition, a mean lies within its pool's
-extrema, a source's start is a timestamp inside the evaluated interval, and a count is an
-integer, read exactly; v3: a never-available source refuses, and the support floor reads the renamed
+extrema and a basket's within its members' means, a source's start is a timestamp inside the
+evaluated interval, and a count is an integer, read exactly; v3: a never-available source refuses, and the support floor reads the renamed
 `n_nonoverlap`) names the checklist semantics (two cell results compare only
 under the same version); `summary.statistics_version` (**5** — v2 ADDED evidence: the p05/p95
 quantile tails, the promoted per-cell shape reads, `benchmark_regression`, `timing` and the
@@ -580,7 +580,12 @@ within its members; the review's 8 beside members at 1 and 1, two pooled, met th
 `pooled.n ≤ len(targets) × max(0, n_bars − 1 − horizon)` (each member fires at most once
 per bar and closes at most that many), `pooled.concentration.top_share_abs ≥ k / pooled.n` (the
 same floor, over the pool the basket rubric grades), a numeric `pooled.mean_ret` within
-`[pooled.worst_ret, pooled.best_ret]`, and a `member_share.max_member_share_abs`
+`[pooled.worst_ret, pooled.best_ret]` and within its populated members' `by_target.mean_ret` (the
+pool's rows are theirs, so its exact mean is theirs weighted by their counts and, rounding being
+monotone, inside their range — `2·ulp` of the pool's largest |ret| wider under `cross_mean`,
+whose pooled mean is the rows' exact excess sum while each member averages its rows' rounded
+excesses; a pooled 0.001 beside two members at −0.0009, inside the pool's extrema, met every
+check), and a `member_share.max_member_share_abs`
 that is a share is the largest of its `by_target` shares, string-keyed over the targets exactly
 and summing to 1 within rounding — each share the correctly rounded exact quotient of exact masses, so within
 2**-50 (0.5 beside shares `{AAA: 1.0, BBB: 0.0}` met every check, and so did 0.5 beside

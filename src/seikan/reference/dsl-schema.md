@@ -233,7 +233,8 @@ cross-sectional Series nodes (`cross_rank` / `cross_demean` / `cross_agg`) and
 statistics block which the checklist grades instead of per-member floors. A basket thesis is
 about the RANKING RULE, not its current top name — "the top momentum quintile of this group
 outperforms the group", never "buy whichever ticker ranks first today". The engine still selects
-among members never: `by_target` stays in the report as attribution, read by no check.
+among members never: `by_target` stays in the report as attribution, graded by no check —
+`cell_evidence` reads it only to reconcile the pooled block with its members.
 
 Both modes stand on the same ONE-bar-clock rule: multi-target runs refuse unequal target indices
 (exit 2, naming what is missing where) rather than intersecting them — and basket leans on that
@@ -1485,8 +1486,10 @@ complete statistics are still in `summary.cells[i]` — a checklist result never
   `pooled.n <= len(targets) × max(0, n_bars − 1 − horizon)` (each member fires at most once per bar
   and closes at most that many), `pooled.concentration.top_share_abs >= k / pooled.n` (the same
   floor over the pool the basket rubric grades), a numeric `pooled.mean_ret` within
-  `[pooled.worst_ret, pooled.best_ret]`, and a
-  `member_share.max_member_share_abs` that is a share is the largest of its `by_target` shares,
+  `[pooled.worst_ret, pooled.best_ret]` and within its populated members' `by_target.mean_ret`
+  (the pool's rows are theirs, so its mean is theirs weighted by their counts — `2·ulp` of the
+  pool's largest |ret| wider under `cross_mean`, whose pooled mean is the rows' exact excess sum),
+  and a `member_share.max_member_share_abs` that is a share is the largest of its `by_target` shares,
   string-keyed over the targets exactly and summing to 1 within rounding (each the correctly
   rounded exact quotient of exact masses). A `pooled` key on a conjunction cell
   REFUSES: the engine writes `pooled` only in basket mode, so a conjunction-stamped report
