@@ -9,6 +9,7 @@ from __future__ import annotations
 import csv
 import io
 import threading
+import time
 
 import numpy as np
 import pandas as pd
@@ -169,6 +170,25 @@ def test_value_cells_read_correctly_rounded(tmp_path):
     df, rep = _run(tmp_path, "datetime,y\n2021-01-01,\n2021-01-02,NaN\n2021-01-03, 2.5 \n")
     assert rep.ok and df is not None
     assert np.isnan(df["y"].iloc[0]) and np.isnan(df["y"].iloc[1]) and df["y"].iloc[2] == 2.5
+
+
+@pytest.mark.parametrize(
+    "cell",
+    [
+        "1" * 32768 + "x",
+        "1" * 16384 + "." + "1" * 16384 + "x",
+        "1" * 16384 + "e" + "1" * 16384 + "x",
+    ],
+    ids=["digits", "fraction", "exponent"],
+)
+def test_a_malformed_cell_refuses_in_time_linear_in_its_length(tmp_path, cell):
+    # Two adjacent digit runs try every split of a long digit string before the grammar refuses
+    # it — quadratic in the cell, seconds at a quarter of the field limit. Each digit run of the
+    # grammar opens after a mark the one before it cannot match, so the refusal takes a scan.
+    started = time.perf_counter()
+    df, rep = _run(tmp_path, f"datetime,close\n2021-01-01,{cell}\n2021-01-02,1\n")
+    assert time.perf_counter() - started < 1.0
+    assert df is None and [e["code"] for e in rep.errors] == ["non_numeric_value"]
 
 
 def test_unpadded_iso_ordering_accepted(tmp_path):

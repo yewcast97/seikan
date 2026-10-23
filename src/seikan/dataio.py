@@ -79,8 +79,11 @@ _SPACED_QUOTE = re.compile(rb'\n[ \t]+"')
 #: The value-cell grammar, ASCII only: a signed decimal (``1``, ``1.``, ``.5``, ``-0``) with an
 #: optional exponent, or a signed ``inf``/``infinity`` in any case (non-finite, refused later by
 #: :func:`check_frame`). It gates ``float()``, which alone would also read ``1_000``,
-#: Arabic-Indic (``١٢٣``) and full-width digits.
-_NUMBER = r"[+-]?(?:(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?|(?i:inf|infinity))"
+#: Arabic-Indic (``١٢٣``) and full-width digits. No two of its repetitions can match the same
+#: characters — the point opens the fraction's digits, the mark the exponent's — so a cell it
+#: refuses is rejected in time linear in its length: two adjacent digit runs would try every
+#: split of a long digit string first, quadratic in it.
+_NUMBER = r"[+-]?(?:(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?|(?i:inf|infinity))"
 
 
 class DataError(ValueError):
