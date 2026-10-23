@@ -1010,9 +1010,10 @@ def fully_initialized(node: Condition, md: MarketData) -> npt.NDArray[np.bool_]:
     for a firing (warmup never fires, and T∨U = T), it is not a decided False — so whatever
     NEGATES a condition waits for this mask instead: every threshold's own init (and every
     condition embedded in its operands — ``mask``, the event nodes' ``event``, a cross node's
-    ``where`` — fully initialized on the same column), carried through ``rolling`` windows and
-    ``lag`` shifts exactly as each node carries its own init. Monotone (a latch) and a subset of
-    ``init`` by construction. Memoized through ``md.full_memo``; immutable like the others.
+    ``where`` — fully initialized on the same column, on every bar the operand reads it:
+    :func:`_operand_full`), carried through ``rolling`` windows and ``lag`` shifts exactly as
+    each node carries its own init. Monotone (a latch) and a subset of ``init`` by construction.
+    Memoized through ``md.full_memo``; immutable like the others.
     """
     return _memoized(md.full_memo, node, lambda: _fully_initialized(node, md))
 
@@ -1040,21 +1041,26 @@ def _fully_initialized(node: Condition, md: MarketData) -> npt.NDArray[np.bool_]
 
 
 def _operand_full(node: Series, md: MarketData) -> npt.NDArray[np.bool_]:
-    """Where every Condition embedded in a threshold operand is fully initialized ON THE BARS THE
+    """Where every Condition embedded in a threshold operand is fully initialized ON EVERY BAR THE
     OPERAND READS IT AT (rows × targets) — the operand half of :func:`fully_initialized`.
 
-    It follows the bars each node reads exactly as its own ``init`` does: ``shift`` and
-    ``change`` read their input ``periods`` bars back (:func:`_lagged`), so what is embedded
-    in that input must be full THERE; ``event_value`` / ``event_agg`` read their input from the
+    It follows the bars each node reads: ``shift`` and ``change`` read their input ``periods``
+    bars back (:func:`_lagged`), so what is embedded in that input must be full THERE; a trailing
+    window reads its inputs on every bar of the window (:func:`_rolling_full_window`, the
+    ``rolling`` condition's read); a transform that carries state (:func:`_carries_state`) reads
+    every bar its input has had a value on, and a bar read before its embedded conditions were
+    full stays in that state for good; ``event_value`` / ``event_agg`` read their input from the
     event bar ``s(t)`` on (:func:`_derived_latch_at`), so its embedded conditions are read at
     ``s(t)`` — and the event condition itself, whose history up to ``t`` places the anchor, at
-    ``t``. Every other node reads its children through the current bar and ANDs them. Read flat
-    at the current bar instead, ``not(shift(S, 20) > 1000)`` over ``S = bars_since_event(or(A >
-    0, B > 0))`` would read, through the shift, a bar where ``A`` still warmed and "no event" was
-    no decided claim; read at the bars it reads, it waits for ``A`` as ``lag(not(S > 1000), 20)``
-    does. A bar whose anchor became unknowable (a hole in the event condition) reads its input's
-    mask at ``t``: the node is NaN there, a decision over it is undefined, and it must stay
-    ledgered, never become warmup."""
+    ``t``; ``native`` reads its feed's prints, which embed no condition. Every other node reads
+    its children at the current bar (:func:`_children_full`). Read flat at the current bar
+    instead, ``not(shift(S, 20) > 1000)`` over ``S = bars_since_event(or(A > 0, B > 0))`` would
+    read, through the shift, a bar where ``A`` still warmed and "no event" was no decided claim,
+    and ``not(rolling_agg(S, 40, "min") > 39)`` such bars through its window; read where they
+    read, they wait for ``A`` as ``lag(not(S > 1000), 20)`` and ``not(rolling(all, S > 39,
+    40))`` do. A bar whose anchor became unknowable (a hole in the event condition) reads its
+    input's mask at ``t``: the node is NaN there, a decision over it is undefined, and it must
+    stay ledgered, never become warmup."""
     match node:
         case Shift(input=inp, periods=p) | Change(input=inp, periods=p):
             return _lagged(_operand_full(inp, md), xf.scalar(p))
@@ -1066,13 +1072,45 @@ def _operand_full(node: Series, md: MarketData) -> npt.NDArray[np.bool_]:
                 s_idx >= 0, at_s, inner
             )
             return event_full
+        case Native():
+            return _all_true(md)
+        case (
+            EMA(input=inp)
+            | ZScore(input=inp)
+            | RollingAgg(input=inp)
+            | Drawdown(input=inp)
+            | Runup(input=inp)
+            | BarsSinceExtremum(input=inp)
+        ) if _carries_state(node):
+            inner = _children_full(node, md)
+            read = np.isfinite(build_series(inp, md)[0].to_numpy(dtype=float))
+            history: npt.NDArray[np.bool_] = inner & np.logical_and.accumulate(
+                inner | ~read, axis=0
+            )
+            return history
+        case (
+            ZScore(window=w)
+            | Percentile(window=w)
+            | RollingAgg(window=w)
+            | Drawdown(window=w)
+            | Runup(window=w)
+            | BarsSinceExtremum(window=w)
+            | RollingCorr(window=w)
+        ) if w is not None:
+            return _rolling_full_window(_df(_children_full(node, md), md), xf.scalar(w))
         case _:
-            full = np.ones((len(md.index), len(md.targets)), dtype=bool)
-            for cond in iter_child_conditions(node):
-                full &= fully_initialized(cond, md)
-            for child in iter_child_series(node):
-                full &= _operand_full(child, md)
-            return full
+            return _children_full(node, md)
+
+
+def _children_full(node: Series, md: MarketData) -> npt.NDArray[np.bool_]:
+    """Where the Conditions ``node`` embeds, and those its Series children read, are fully
+    initialized at the current bar — :func:`_operand_full`'s read of a node's children."""
+    full = _all_true(md)
+    for cond in iter_child_conditions(node):
+        full &= fully_initialized(cond, md)
+    for child in iter_child_series(node):
+        full &= _operand_full(child, md)
+    return full
 
 
 def signal(node: Condition, md: MarketData) -> pd.DataFrame:

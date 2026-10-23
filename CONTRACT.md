@@ -870,9 +870,14 @@ distinct exam visible so the caller can enforce its own budget. Deployment judgm
   every reader of the label. A feature snapshot reads the same channel: a firing on a bar where
   the feature's series has not initialized snapshots NaN, never the value it carries there, and
   enters no association or bucket. Negation's full warmup follows the same bars: a condition embedded
-  in a `shift`ed or `change`d operand must be past warmup on the bar the lag reads, one embedded
-  in an event snapshot's input on its event bar (`not(shift(bars_since_event(or(A, B)), 20) >
-  1000)` waits for A twenty bars longer, as `lag(not(…), 20)` does). Over thresholds on
+  in a `shift`ed or `change`d operand must be past warmup on the bar the lag reads, one under a
+  trailing window on every bar of the window, one under a transform that carries state (`ema`,
+  the EW `zscore`, an expanding aggregate) on every bar it has read — a bar read while a branch
+  still warmed stays in the state, and the negation stays warmup for good — and one embedded in
+  an event snapshot's input on its event bar (`not(shift(bars_since_event(or(A, B)), 20) >
+  1000)` waits for A twenty bars longer, as `lag(not(…), 20)` does, and
+  `not(rolling_agg(bars_since_event(or(A, B)), N, "min") > c)` N − 1 bars longer, as
+  `not(rolling(all, bars_since_event(or(A, B)) > c, N))` does). Over thresholds on
   window-local operands,
   `and`/`or`/`not`/`mask`, `rolling` and `lag`, lengthening a hole-free warmup can therefore only
   remove firings (a path-dependent transform — `ema`, an expanding aggregate, a cross-section —

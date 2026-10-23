@@ -893,10 +893,15 @@ expression that says the thesis.
   still warms is no-signal, not a decided False, so `not(or(A, B))` ("none of these") waits for
   A and B both. The same holds through `rolling`/`lag` (their windows/shifts) and into conditions
   embedded in the operand's series (`mask`, the event nodes, a cross node's `where`), on each
-  member's own column — on the bars the operand reads them: through a `shift` / `change` the bar
-  it reads back to, through an `event_value` / `event_agg` the event bar its input was read on
+  member's own column — on every bar the operand reads them: through a `shift` / `change` the
+  bar it reads back to, through a trailing window every bar of the window, through a transform
+  that carries state (`ema`, the EW `zscore`, an expanding aggregate) every bar it has read (one
+  read while a branch still warmed stays in the state, so the negation stays warmup for good),
+  through an `event_value` / `event_agg` the event bar its input was read on
   (`not(shift(bars_since_event(or(A, B)), 20) > 1000)` waits for A twenty bars longer, exactly
-  as `lag(not(bars_since_event(or(A, B)) > 1000), 20)` does). The signal-level reads differ by
+  as `lag(not(bars_since_event(or(A, B)) > 1000), 20)` does, and
+  `not(rolling_agg(bars_since_event(or(A, B)), 40, "min") > 39)` 39 bars longer, as
+  `not(rolling(all, bars_since_event(or(A, B)) > 39, 40))` does). The signal-level reads differ by
   design: an event, a `first_true` edge and
   a `where` population read the TRADABLE SIGNAL, for which a warming branch is simply not firing —
   `bars_since_event(or(A, B)) > 5` counts B's events while A warms, where

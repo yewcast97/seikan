@@ -361,10 +361,12 @@ def _ref_cond_init(node, df) -> np.ndarray:
 
 def _ref_operand_full(series, df) -> np.ndarray:
     """Where every condition embedded in a Series tree (``mask``'s condition, an event node's
-    event) is fully initialized AT THE BARS THE TREE READS IT ON: a ``shift``/``change`` reads its
-    input ``periods`` bars back, an ``event_value``/``event_agg`` its input from the event bar
-    ``s(t)`` on (at ``t`` while the anchor is unknown) and its event through ``t``, every other
-    node its children through the current bar."""
+    event) is fully initialized AT EVERY BAR THE TREE READS IT ON: a ``shift``/``change`` reads its
+    input ``periods`` bars back, a trailing window every bar of its window, a stateful transform
+    (:func:`_ref_stateful`) every bar its input has had a value on, an
+    ``event_value``/``event_agg`` its input from the event bar ``s(t)`` on (at ``t`` while the
+    anchor is unknown) and its event through ``t``, every other node its children through the
+    current bar."""
     t = series.type
     n = len(df)
     if t in ("shift", "change"):
@@ -388,7 +390,28 @@ def _ref_operand_full(series, df) -> np.ndarray:
         child = getattr(series, attr, None)
         if child is not None:
             out = out & _ref_operand_full(child, df)
+    if _ref_stateful(series):
+        seen = ~np.isnan(_ref_series(series.input, df))
+        held = True
+        for j in range(n):
+            held = held and (out[j] or not seen[j])
+            out[j] = out[j] and held
+        return out
+    if t in _REF_TRAILING:
+        return ref.rolling_all(out, int(series.window))
     return out
+
+
+#: The transforms that read their inputs over a trailing ``window`` wherever they hold no state.
+_REF_TRAILING = (
+    "zscore",
+    "percentile",
+    "rolling_agg",
+    "drawdown",
+    "runup",
+    "bars_since_extremum",
+    "rolling_corr",
+)
 
 
 def _ref_full(node, df) -> np.ndarray:
@@ -2181,6 +2204,100 @@ def test_negation_waits_for_the_bars_a_lagged_operand_reads():
         assert not vz.undefined_mask(node, md).any(), node.type
         inner = node.condition
         np.testing.assert_array_equal(vz.fully_initialized(inner, md)[:, 0], _ref_full(inner, df))
+
+
+def _min_over_shifts(series, window):
+    """``min(S, shift(S, 1), …, shift(S, window − 1))`` — a trailing minimum spelled as lags."""
+    out = series
+    for k in range(1, window):
+        out = BinaryOp(left=out, op="min", right=Shift(input=series, periods=k))
+    return out
+
+
+@pytest.mark.parametrize("window", [2, 3, 8, 40])
+def test_negation_waits_for_the_window_an_operand_reads(window):
+    # S = bars_since_event(or(a > 0, b > 0)) reads b's bar-0 event while `a` warms to bar 40, so
+    # S[t] = t, and a trailing window over S reads bars where "no event" was no decided claim
+    # until the whole window lies from bar 40 on, at bar 39 + window. The window aggregate, the
+    # rolling condition and the same minimum spelled through shifts wait alike, and none fires:
+    # the window's minimum is 40 from there on.
+    df, md = _late_or()
+    cut = Constant(value=39.0)
+    live = np.arange(80) >= 39 + window
+    for inner in (
+        ThresholdCondition(
+            left=RollingAgg(input=_SINCE_AB, window=window, agg="min"), op=">", right=cut
+        ),
+        RollingCondition(
+            window=window,
+            agg="all",
+            condition=ThresholdCondition(left=_SINCE_AB, op=">", right=cut),
+        ),
+        ThresholdCondition(left=_min_over_shifts(_SINCE_AB, window), op=">", right=cut),
+    ):
+        node = NotCondition(condition=inner)
+        np.testing.assert_array_equal(_chan(node, md)[1], live, err_msg=inner.type)
+        assert _first_true_bar(node, md) is None
+        np.testing.assert_array_equal(_series3(Mask(condition=inner), md)[1], live)
+        np.testing.assert_array_equal(vz.fully_initialized(inner, md)[:, 0], _ref_full(inner, df))
+
+
+@pytest.mark.parametrize(
+    "operand",
+    [
+        ZScore(input=_SINCE_AB, window=5, mean_type="sma"),
+        Percentile(input=_SINCE_AB, window=5),
+        RollingAgg(input=_SINCE_AB, window=5, agg="mean"),
+        Drawdown(input=_SINCE_AB, window=5),
+        Runup(input=_SINCE_AB, window=5),
+        BarsSinceExtremum(input=_SINCE_AB, extremum="max", window=5),
+        RollingCorr(left=_SINCE_AB, right=Field(column="close"), window=5),
+    ],
+    ids=lambda node: node.type,
+)
+def test_negation_waits_for_every_bar_a_trailing_window_reads(operand):
+    # Every trailing window over S reads S on each bar of its window: its negation starts once
+    # the window lies from bar 40 on, at bar 44.
+    df, md = _late_or()
+    inner = ThresholdCondition(left=operand, op=">", right=_BIG)
+    assert _first_true_bar(NotCondition(condition=inner), md) == 44
+    np.testing.assert_array_equal(vz.fully_initialized(inner, md)[:, 0], _ref_full(inner, df))
+
+
+def test_negation_waits_for_every_bar_a_stateful_operand_has_read():
+    # A transform carrying state reads every bar its input has had a value on: S's values from bar
+    # 0, read while `a` warmed, stay in an expanding minimum or an ema for good, so a negation over
+    # either never initializes — nor over the expanding minimum's exact identity through a window
+    # and a shift. A state that starts reading after the warmup is untouched: mask(E) is NaN until
+    # bar 40, and an ema over it is negated from its own first value, at bar 44.
+    df, md = _late_or()
+    expanding = RollingAgg(input=_SINCE_AB, agg="min")
+    identity = BinaryOp(
+        left=RollingAgg(input=_SINCE_AB, window=40, agg="min"),
+        op="min",
+        right=Shift(input=expanding, periods=40),
+    )
+    for operand in (expanding, identity, EMA(input=_SINCE_AB, window=5)):
+        inner = ThresholdCondition(left=operand, op=">", right=Constant(value=39.0))
+        assert not _chan(NotCondition(condition=inner), md)[1].any(), operand.type
+        np.testing.assert_array_equal(vz.fully_initialized(inner, md)[:, 0], _ref_full(inner, df))
+    after = ThresholdCondition(
+        left=EMA(input=Mask(condition=_SINCE_AB.event), window=5), op=">", right=_BIG
+    )
+    assert _first_true_bar(NotCondition(condition=after), md) == 44
+    np.testing.assert_array_equal(vz.fully_initialized(after, md)[:, 0], _ref_full(after, df))
+
+
+def test_negation_over_a_native_window_reads_the_feeds_prints(ohlcv):
+    # A native expr's window runs over its feed's prints, which embed no condition: six prints
+    # before the first bar make the windowed value live from bar 0, and its negation with it.
+    stamps = (ohlcv.index[0] - pd.to_timedelta(np.arange(6, 0, -1), unit="D")).append(
+        ohlcv.index[10:20]
+    )
+    md = _md(ohlcv, natives={"eps": _native_prints(stamps, np.arange(16.0) + 1.0)})
+    native = Native(name="eps", expr=RollingAgg(input=External(name="eps"), window=5, agg="max"))
+    node = NotCondition(condition=ThresholdCondition(left=native, op=">", right=_BIG))
+    assert _first_true_bar(node, md) == 0
 
 
 @pytest.mark.parametrize("snapshot", [EventValue, EventAgg])
