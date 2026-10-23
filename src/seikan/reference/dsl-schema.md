@@ -1486,9 +1486,10 @@ complete statistics are still in `summary.cells[i]` — a checklist result never
   `pooled.n <= len(targets) × max(0, n_bars − 1 − horizon)` (each member fires at most once per bar
   and closes at most that many), `pooled.concentration.top_share_abs >= k / pooled.n` (the same
   floor over the pool the basket rubric grades), a numeric `pooled.mean_ret` within
-  `[pooled.worst_ret, pooled.best_ret]` and within its populated members' `by_target.mean_ret`
-  (the pool's rows are theirs, so its mean is theirs weighted by their counts — `2·ulp` of the
-  pool's largest |ret| wider under `cross_mean`, whose pooled mean is the rows' exact excess sum),
+  `[pooled.worst_ret, pooled.best_ret]` and rounding from its populated members'
+  `by_target.mean_ret` weighted by their `n` (the pool's rows are theirs, so its exact mean is
+  theirs weighted by their counts — `ulp/2` of the pool's largest |ret| wider under `cross_mean`,
+  whose pooled mean is the rows' exact excess sum),
   and a `member_share.max_member_share_abs` that is a share is the largest of its `by_target` shares,
   string-keyed over the targets exactly, summing to 1 within rounding (each the correctly
   rounded exact quotient of exact masses) and exactly 0 for a member with no observation, whose

@@ -152,20 +152,23 @@ def _grade_pooled_mean(
     cross_mean: bool,
     unmet: list[str],
 ) -> None:
-    """``pooled.mean_ret`` must lie within its populated members' means (``by_target`` panels with
-    ``n > 0``): the pool's rows are theirs, so its exact mean is theirs weighted by their counts,
-    and rounding is monotone — exact, every mean being its rows' exact sum over their count,
-    rounded once. Under ``cross_mean`` the pooled mean is the rows' EXACT excess sum while each
-    member averages its rows' rounded excesses, every rounding within half an ulp of ``W``, the
-    pool's largest |row| (``|worst_ret|`` or ``|best_ret|``): the bound widens by ``2·ulp(W)``,
-    compared exactly. Beside a numeric pooled mean a populated member without one refuses (an
-    honest one is a member sum past the double range, whose mass ``concentration`` already
-    refuses); a null pooled mean is ``support``'s, an unreadable extremum
-    :func:`_grade_mean_range`'s."""
+    """``pooled.mean_ret`` must round from its populated members' (``by_target`` panels with
+    ``n > 0``) means weighted by their counts. The pool's rows are theirs, so its exact mean is
+    ``Σ n·x / Σ n`` over the members' exact means ``x``, and every mean is its rows' exact sum
+    over their count rounded once: each ``x`` lies where its member's mean rounds from
+    (:func:`_rounding_interval`), so the exact pooled mean lies in their count-weighted interval,
+    and the pooled mean must round from a point of it — exact, and never wider than the members'
+    range. Under ``cross_mean`` the pooled mean is the rows' EXACT excess sum while each member
+    averages its rows' rounded excesses, every rounding within half an ulp of ``W``, the pool's
+    largest |row| (``|worst_ret|`` or ``|best_ret|``): the interval widens by ``ulp(W)/2``.
+    Beside a numeric pooled mean a populated member without one refuses (an honest one is a
+    member sum past the double range, whose mass ``concentration`` already refuses); a null
+    pooled mean is ``support``'s, an unreadable extremum :func:`_grade_mean_range`'s."""
     mean = _num(pooled.get("mean_ret"))
     if mean is None:
         return
-    means = {t: _num(_as_dict(by_tgt.get(t)).get("mean_ret")) for t, n in by_target_n.items() if n}
+    counts = {t: n for t, n in by_target_n.items() if n}
+    means = {t: _num(_as_dict(by_tgt.get(t)).get("mean_ret")) for t in counts}
     unread = sorted(t for t, m in means.items() if m is None)
     if unread:
         unmet.append(
@@ -173,23 +176,47 @@ def _grade_pooled_mean(
             "mean_ret — the pooled mean cannot be reconciled with its members; drifted input"
         )
         return
-    readable = [m for m in means.values() if m is not None]
-    if not readable:
+    terms = [(counts[t], m) for t, m in means.items() if m is not None]
+    if not terms:
         return
-    lo, hi = min(readable), max(readable)
-    slack, widened = Fraction(0), ""
+    total = sum(n for n, _ in terms)
+    lo = hi = Fraction(0)
+    closed = True
+    for n, m in terms:
+        m_lo, m_hi, m_closed = _rounding_interval(m)
+        lo, hi, closed = lo + n * m_lo, hi + n * m_hi, closed and m_closed
+    lo, hi = lo / total, hi / total
+    widened = ""
     if cross_mean:
         worst, best = _num(pooled.get("worst_ret")), _num(pooled.get("best_ret"))
         if worst is None or best is None:
             return
         w = max(abs(worst), abs(best))
-        slack, widened = 2 * Fraction(math.ulp(w)), f" widened by 2·ulp({w}) under cross_mean"
-    if not Fraction(lo) - slack <= Fraction(mean) <= Fraction(hi) + slack:
+        lo, hi = lo - Fraction(math.ulp(w)) / 2, hi + Fraction(math.ulp(w)) / 2
+        widened = f", widened by ulp({w})/2 under cross_mean"
+    p_lo, p_hi, p_closed = _rounding_interval(mean)
+    # Two intervals meet where each starts before the other ends — at a shared end only where
+    # both hold it.
+    meets = (p_lo <= hi and lo <= p_hi) if closed and p_closed else (p_lo < hi and lo < p_hi)
+    if not meets:
+        weighted = float(sum(n * Fraction(m) for n, m in terms) / total)
         unmet.append(
-            f"pooled: mean_ret={mean} lies outside [{lo}, {hi}], its populated members' "
-            f"mean_ret range{widened} — the pool's rows are its members', so its mean is "
-            "theirs weighted by their counts; drifted input"
+            f"pooled: mean_ret={mean} is not its populated members' mean_ret weighted by their "
+            f"n ({weighted}) to within their rounding{widened} — the pool's rows are its "
+            "members', so its mean is theirs weighted by their counts; drifted input"
         )
+
+
+def _rounding_interval(x: float) -> tuple[Fraction, Fraction, bool]:
+    """``(lo, hi, closed)``: the reals that round to the double ``x`` — those between the
+    midpoints to its neighbours, both midpoints included exactly where ``x``'s significand is even
+    (a tie rounds to even). ``±max`` has no outer neighbour; its outer midpoint, where rounding
+    overflows, lies half an ulp out."""
+    v, ulp = Fraction(x), Fraction(math.ulp(x))
+    below, above = math.nextafter(x, -math.inf), math.nextafter(x, math.inf)
+    lo = (v + Fraction(below)) / 2 if math.isfinite(below) else v - ulp / 2
+    hi = (v + Fraction(above)) / 2 if math.isfinite(above) else v + ulp / 2
+    return lo, hi, (v / ulp).numerator % 2 == 0
 
 
 def _grade_by_target(
@@ -384,9 +411,9 @@ def _grade_pooled(
     unmet: list[str],
 ) -> None:
     """The mode-dispatched pooled-panel contract: a basket cell must carry one that reconciles
-    with the member panels — their total ``n``, their means, around which the pooled mean lies
-    (:func:`_grade_pooled_mean`), and their ``n_nonoverlap`` counts (``member_windows``),
-    between whose largest and whose total the pooled count lies — with
+    with the member panels — their total ``n``, their means, whose count-weighted mean the
+    pooled mean rounds from (:func:`_grade_pooled_mean`), and their ``n_nonoverlap`` counts
+    (``member_windows``), between whose largest and whose total the pooled count lies — with
     the bar clock (``closable``, the most observations of the cell's horizon that close inside
     the index per member; ``windows``, the most non-overlapping windows among them) and with the
     episode panel over the same pool, whose ``n_clusters`` the pooled greedy count bounds
@@ -587,11 +614,11 @@ def _check_cell_evidence(cell: object, s: Mapping[str, object], t: GateThreshold
     len(targets) × max(0, n_bars − 1 − horizon)`` (each member fires at most once per bar and
     closes at most that many), ``pooled.concentration.top_share_abs`` at least ``k / pooled.n``
     (the same floor, over the pool the basket rubric grades), ``pooled.mean_ret`` within its
-    pool's extrema (the same range) and within its populated members' means (the pool's rows are
-    theirs; ``2·ulp`` of its largest |row| wider under ``cross_mean`` —
-    :func:`_grade_pooled_mean`), and a ``member_share`` panel's one-name read is the largest
-    share of its ``by_target`` decomposition, string-keyed over the targets exactly, summing to 1
-    within rounding and giving a member with no observation none of the mass
+    pool's extrema (the same range) and rounding from its populated members' means weighted by
+    their counts (the pool's rows are theirs; ``ulp/2`` of its largest |row| wider under
+    ``cross_mean`` — :func:`_grade_pooled_mean`), and a ``member_share`` panel's one-name read is
+    the largest share of its ``by_target`` decomposition, string-keyed over the targets exactly,
+    summing to 1 within rounding and giving a member with no observation none of the mass
     (:func:`_grade_member_share` — the ceiling never grades a number its own breakdown
     contradicts). Conjunction cells are graded by the per-target rules — and a
     ``pooled`` key under a conjunction stamp REFUSES, because the runner writes pooled only in
@@ -626,9 +653,10 @@ def _check_cell_evidence(cell: object, s: Mapping[str, object], t: GateThreshold
         "episode_stats.n_clusters<=pooled.n_nonoverlap, "
         "pooled.n<=len(targets)×max(0,n_bars-1-horizon), "
         "pooled.concentration.top_share_abs>=k/pooled.n, "
-        "pooled.worst_ret<=pooled.mean_ret<=pooled.best_ret, pooled.mean_ret within the "
-        "populated members' by_target.mean_ret (the pool's rows are theirs; under cross_mean "
-        "2·ulp(max(|pooled.worst_ret|,|pooled.best_ret|)) wider), member_share.by_target "
+        "pooled.worst_ret<=pooled.mean_ret<=pooled.best_ret, pooled.mean_ret the populated "
+        "members' by_target.mean_ret weighted by their n, to within their rounding (the pool's "
+        "rows are theirs; under cross_mean ulp(max(|pooled.worst_ret|,|pooled.best_ret|))/2 "
+        "wider), member_share.by_target "
         "string-keyed over the targets exactly and, where max_member_share_abs is a share, "
         "every share in [0,1] with max==max_member_share_abs and sum==1 within 2**-50, and 0 "
         "for a member with by_target.n==0); a pooled key on a conjunction cell refuses (a "

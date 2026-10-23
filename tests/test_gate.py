@@ -1975,10 +1975,9 @@ def test_conjunction_with_cross_mean_benchmark_refuses_evidence_complete():
     assert _run(evaluate_gate(_basket(benchmark="cross_mean")))["evidence_complete"].met
 
 
-def test_a_starving_member_with_a_healthy_pool_meets_basket_support():
-    # THE anti-weakest pin: basket floors read the POOLED panel, never per member — a thin
-    # member does not sink a basket cell, because the claim is about the pool, not any name in
-    # it. (Under conjunction the same numbers would fail on BBB.)
+def _thin_member_basket(pooled_mean: float) -> dict:
+    """The basket fixture with BBB thinned to 3 rows at −0.02 beside AAA's 42 at 0.05, its pool
+    reconciled to their 45 rows at ``pooled_mean``."""
     cell = _basket_cell()
     cell["by_target"]["BBB"] = _tgt_cell(
         n=3,
@@ -1989,8 +1988,20 @@ def test_a_starving_member_with_a_healthy_pool_meets_basket_support():
     )
     cell["outcome_coverage"]["BBB"] = _cov(3)
     cell["episode_stats"]["n"] = 45  # 42 + 3
-    cell["pooled"].update(n=45, n_nonoverlap=15)
-    report = evaluate_gate(_basket(cells=[cell]))
+    cell["pooled"].update(n=45, n_nonoverlap=15, mean_ret=pooled_mean)
+    return _basket(cells=[cell])
+
+
+#: The thin-member basket's pooled mean: its members' weighted by their counts,
+#: (42·0.05 + 3·(−0.02)) / 45.
+_THIN_MEMBER_POOLED_MEAN = 0.04533333333333334
+
+
+def test_a_starving_member_with_a_healthy_pool_meets_basket_support():
+    # THE anti-weakest pin: basket floors read the POOLED panel, never per member — a thin
+    # member does not sink a basket cell, because the claim is about the pool, not any name in
+    # it. (Under conjunction the same numbers would fail on BBB.)
+    report = evaluate_gate(_thin_member_basket(_THIN_MEMBER_POOLED_MEAN))
     checks = _cell_checks(report)
     assert checks["support"].met
     assert checks["cell_evidence"].met  # the panels still reconcile
@@ -2058,37 +2069,55 @@ def _basket_means(pooled_mean, a, b, benchmark=None):
     return _cell_checks(evaluate_gate(_basket(cells=[cell], benchmark=benchmark)))["cell_evidence"]
 
 
-def test_a_baskets_mean_lies_within_its_members_means():
-    # The tamper: both members' means at −0.0009, the pool's rewritten to 0.001 — inside the
-    # pool's extrema, the support floor met. The pool's rows are its members', so its exact mean
-    # is theirs weighted by their counts and, rounding being monotone, within their range: both
-    # bounds meet, an ulp past either refuses.
-    check = _basket_means(0.001, -0.0009, -0.0009)
+def test_a_baskets_mean_is_its_members_means_weighted_by_their_counts():
+    # The tamper: members at +2.0% and −2.5% over equal counts, the pool's −0.25% rewritten to
+    # 0.001 — inside the members' range and the pool's extrema, the support floor met. The pool's
+    # rows are its members', so its exact mean is theirs weighted by their counts, and it must
+    # round from where their means round from.
+    a, b = 0.020000000000000014, -0.025000000000000026
+    assert _basket_means(-0.0025000000000000057, a, b).met
+    check = _basket_means(0.001, a, b)
     assert not check.met
-    assert "pooled: mean_ret=0.001 lies outside [-0.0009, -0.0009]" in check.detail
-    assert _basket_means(0.02, 0.02, 0.08).met and _basket_means(0.08, 0.02, 0.08).met
-    assert not _basket_means(math.nextafter(0.08, 1.0), 0.02, 0.08).met
-    assert not _basket_means(math.nextafter(0.02, 0.0), 0.02, 0.08).met
+    assert (
+        "pooled: mean_ret=0.001 is not its populated members' mean_ret weighted by their n "
+        "(-0.0025000000000000057) to within their rounding" in check.detail
+    )
+    # an edge of the members' range is no weighted mean of theirs
+    assert not _basket_means(0.02, 0.02, 0.08).met
+    # equal means admit their own value alone: an ulp either side refuses
+    assert _basket_means(0.05, 0.05, 0.05).met
+    assert not _basket_means(math.nextafter(0.05, 1.0), 0.05, 0.05).met
+    assert not _basket_means(math.nextafter(0.05, 0.0), 0.05, 0.05).met
+    # a tie rounds to even: members at ±5e-324 over equal counts pool to an exact mean strictly
+    # inside (−2.5e-324, 2.5e-324), which rounds to 0.0 alone — never to the support floor's sign
+    assert _basket_means(0.0, -5e-324, 5e-324).met
+    assert not _basket_means(5e-324, -5e-324, 5e-324).met
     # beside a numeric pooled mean, a populated member without one leaves nothing to reconcile
     check = _basket_means(0.05, 0.05, None)
     assert (
         not check.met and "populated member(s) ['BBB'] without a numeric mean_ret" in check.detail
     )
-    assert _cell_checks(evaluate_gate(_basket()))["cell_evidence"].met  # 0.05 among 0.05s
 
 
-def test_a_cross_mean_baskets_mean_lies_within_its_members_means_to_their_rounding():
+def test_a_baskets_mean_weighs_its_members_by_their_counts():
+    # 42 rows at 0.05 beside 3 at −0.02: the pool reads their count-weighted mean, never the
+    # midpoint of their means.
+    for mean, met in ((_THIN_MEMBER_POOLED_MEAN, True), (0.015000000000000001, False)):
+        check = _cell_checks(evaluate_gate(_thin_member_basket(mean)))["cell_evidence"]
+        assert check.met is met, check.detail
+
+
+def test_a_cross_mean_baskets_mean_is_its_members_weighted_mean_to_their_rows_rounding():
     # Under cross_mean the pooled mean is the rows' EXACT excess sum while each member averages
     # its rows' rounded excesses, each within half an ulp of the pool's largest |row| (0.31 in
-    # the fixture): the pool may sit outside its members' range by that rounding, never by more
-    # than 2·ulp(0.31).
-    u = math.ulp(0.31)
-    assert not _basket_means(0.05 + u, 0.05, 0.05).met
-    assert _basket_means(0.05 + u, 0.05, 0.05, benchmark="cross_mean").met
-    assert _basket_means(0.05 - 2 * u, 0.05, 0.05, benchmark="cross_mean").met
-    check = _basket_means(0.05 + 3 * u, 0.05, 0.05, benchmark="cross_mean")
-    assert not check.met and "widened by 2·ulp(0.31) under cross_mean" in check.detail
-    assert not _basket_means(0.001, -0.0009, -0.0009, benchmark="cross_mean").met
+    # the fixture): the interval widens by ulp(0.31)/2, four ulps of the members' 0.05.
+    half = math.ulp(0.31) / 2
+    assert not _basket_means(0.05 + half, 0.05, 0.05).met
+    assert _basket_means(0.05 + half, 0.05, 0.05, benchmark="cross_mean").met
+    assert _basket_means(0.05 - half, 0.05, 0.05, benchmark="cross_mean").met
+    check = _basket_means(0.05 + 2 * half, 0.05, 0.05, benchmark="cross_mean")
+    assert not check.met and "widened by ulp(0.31)/2 under cross_mean" in check.detail
+    assert not _basket_means(0.001, 0.02, -0.025, benchmark="cross_mean").met
 
 
 def test_pooled_n_must_total_the_member_counts():
