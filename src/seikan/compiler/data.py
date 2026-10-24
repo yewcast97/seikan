@@ -8,14 +8,16 @@ invocation). :func:`resolve_data_files` builds the second from a flat ``{key: pa
 an optional ``{key: column}`` one, checking it against the thesis, and :func:`load_market_data`
 re-checks the path bindings against the declaration it loads.
 
-Each target (one CSV file) becomes a column; all targets are aligned on their common DatetimeIndex
-(inner join) so a single vectorized backtest can run them together. External (alternative-data)
-feeds are forward-filled onto the bar index — the invocation names the CSV **column** each key
-reads (``--column KEY=COL``, needed only when the file holds several numeric columns), so one file
-can hold several series. A shared (single-path) feed
-is exposed as a ``Series`` broadcast to every target column at use, a per-target feed as a
-(rows × targets) ``DataFrame``; an optional publication lag shifts a feed's timestamps before the
-asof anchor so values aren't usable before their release.
+Each target (one CSV file) becomes a column, and the targets must carry the same timestamps so a
+single vectorized backtest runs them on one bar clock: a timestamp one target carries and another
+lacks refuses as ``target_index_mismatch``, never intersected away, since an intersection would
+delete that bar from every target before any coverage ledger counts it. External
+(alternative-data) feeds are forward-filled onto the bar index — the invocation names the CSV
+**column** each key reads (``--column KEY=COL``, needed only when the file holds several numeric
+columns), so one file can hold several series. A shared (single-path) feed is exposed as a
+``Series`` broadcast to every target column at use, a per-target feed as a (rows × targets)
+``DataFrame``; an optional publication lag shifts a feed's timestamps before the asof anchor so
+values aren't usable before their release.
 
 Every referenced file is read under :func:`seikan.dataio.read_strict_csv`'s strict contract for
 untrusted external data (ISO-8601 naive timestamps, forced-float columns, OHLC invariants; see that
