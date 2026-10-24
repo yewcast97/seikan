@@ -25,6 +25,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import typing
 from itertools import pairwise
 from pathlib import Path
@@ -3560,6 +3561,30 @@ def test_outputs_leave_no_tmp_residue(tmp_path, capsys):
     )
     assert code == 0
     assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_outputs_named_at_the_filesystem_limit_publish(tmp_path, capsys):
+    # Every output named at the filesystem's name-length limit publishes: a staged temporary
+    # named by extending its target's name would pass that limit.
+    px = _write_ohlcv(tmp_path / "px.csv")
+    thesis = _write_thesis(tmp_path / "t.json")
+    out = tmp_path / "out"
+    out.mkdir()
+    limit = os.pathconf(out, "PC_NAME_MAX")
+    names = {
+        "--report-out": "r" * (limit - 5) + ".json",
+        "--trades-out": "t" * (limit - 4) + ".csv",
+        "--root-series-out": "s" * (limit - 4) + ".csv",
+        "--entry-flags-out": "f" * (limit - 4) + ".csv",
+    }
+    argv = ["run", str(thesis), *_target(px)]
+    for flag, name in names.items():
+        argv += [flag, str(out / name)]
+    assert main(argv) == 0
+    assert capsys.readouterr().out == ""
+    doc = json.loads((out / names["--report-out"]).read_text(encoding="utf-8"))
+    assert doc["outputs"]["trades"]["path"] == str(out / names["--trades-out"])
+    assert sorted(p.name for p in out.iterdir()) == sorted(names.values())  # no temp residue
 
 
 def test_failed_report_write_leaves_previous_report_intact(tmp_path, capsys, monkeypatch):

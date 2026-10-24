@@ -37,6 +37,8 @@ def staged_outputs() -> Iterator[Callable[[str], str]]:
 
     Yields ``stage(path)``, which returns a temporary path in the TARGET's own directory
     (``os.replace`` is atomic only within one filesystem) for the caller to write that output to.
+    The temporary takes a fixed-length name of its own, never the target's extended, so a target
+    named at the filesystem's length limit stages like any other.
     The target is ``path`` with its symlinks resolved, so a link is written through, never
     replaced: the file it names takes the output (created where the link dangles) and the link
     stays — the file the CLI preflight's collision checks, which follow links, compared. Nothing
@@ -53,7 +55,7 @@ def staged_outputs() -> Iterator[Callable[[str], str]]:
 
     def stage(path: str) -> str:
         target = Path(path).resolve()
-        fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=target.name + ".", suffix=".tmp")
+        fd, tmp = tempfile.mkstemp(dir=target.parent, prefix="seikan-", suffix=".tmp")
         os.close(fd)
         staged.append((tmp, target))
         return tmp
